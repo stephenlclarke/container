@@ -3,14 +3,11 @@
 This fork keeps two public environments for `container-compose` testers and
 contributors.
 
-- `main`: release lane for people trying the app/plugin without chasing active
+- `main`: stable lane for people trying the app/plugin without chasing active
   runtime development. Move it only after a validation pass, and treat it as
   frozen between promoted snapshots.
 - `develop`: development lane for day-to-day runtime integration testing. Move
   it freely as fork-backed runtime work lands.
-
-The old `release` branch name is a legacy alias for the frozen lane. Do not
-land work there independently of `main`.
 
 Use matching branches in the plugin and runtime checkouts:
 
