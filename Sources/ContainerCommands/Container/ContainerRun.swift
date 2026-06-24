@@ -19,6 +19,7 @@ import ContainerAPIClient
 import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
+import ContainerRuntimeLinuxClient
 import Containerization
 import ContainerizationError
 import ContainerizationExtras
@@ -108,12 +109,20 @@ extension Application {
 
             progress.set(description: "Starting container")
 
-            let options = ContainerCreateOptions(autoRemove: managementFlags.remove)
+            let options = try Parser.createOptions(
+                autoRemove: managementFlags.remove,
+                restart: managementFlags.restart,
+                restartDelay: managementFlags.restartDelay,
+                restartWindow: managementFlags.restartWindow
+            )
+            let blockIO = try Parser.blockIO(specs: managementFlags.blkio)
+            let runtimeData: Data? = try blockIO.map { try JSONEncoder().encode(LinuxRuntimeData(blockIO: $0)) }
             try await client.create(
                 configuration: ck.0,
                 options: options,
                 kernel: ck.1,
-                initImage: ck.2
+                initImage: ck.2,
+                runtimeData: runtimeData
             )
 
             let detach = self.managementFlags.detach

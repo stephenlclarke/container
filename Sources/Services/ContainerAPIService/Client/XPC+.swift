@@ -48,6 +48,10 @@ public enum XPCKeys: String {
     case fd
     /// FDs pointing to container logs key.
     case logs
+    /// FD pointing to timestamped container log records.
+    case logRecordFile
+    /// Timestamped container log records key.
+    case logRecords
     /// Options for stopping a container key.
     case stopOptions
     /// Whether to force stop a container when deleting.
@@ -129,6 +133,8 @@ public enum XPCKeys: String {
 
     /// Container statistics
     case statistics
+    /// Container process identifiers
+    case processes
     case containerSize
 
     /// Container list filters
@@ -142,6 +148,21 @@ public enum XPCKeys: String {
     case destinationPath
     case fileMode
     case createParents
+    case followSymlink
+    case preserveOwnership
+
+    /// Optional tail line limit for container logs.
+    case logTail
+    /// Optional lower timestamp bound for container logs.
+    case logSince
+    /// Optional upper timestamp bound for container logs.
+    case logUntil
+    /// Whether static log replay should include rotated local log files.
+    case logIncludeRotated
+    /// Optional lower timestamp bound for container events.
+    case eventSince
+    /// Optional upper timestamp bound for container events.
+    case eventUntil
 }
 
 public enum XPCRoute: String {
@@ -153,13 +174,20 @@ public enum XPCRoute: String {
     case containerWait
     case containerDelete
     case containerStop
+    case containerPause
+    case containerUnpause
     case containerDial
     case containerResize
     case containerKill
     case containerState
     case containerLogs
+    case containerFollowLogs
+    case containerLogRecordFile
+    case containerLogRecords
+    case containerFollowLogRecords
     case containerEvent
     case containerStats
+    case containerProcesses
     case containerDiskUsage
     case containerCopyIn
     case containerCopyOut
@@ -200,6 +228,10 @@ extension XPCMessage {
 
     public func dataNoCopy(key: XPCKeys) -> Data? {
         dataNoCopy(key: key.rawValue)
+    }
+
+    public func contains(key: XPCKeys) -> Bool {
+        contains(key: key.rawValue)
     }
 
     public func set(key: XPCKeys, value: Data) {

@@ -22,6 +22,8 @@ public struct Attachment: Codable, Sendable {
     public let network: String
     /// The hostname associated with the attachment.
     public let hostname: String
+    /// Additional DNS names that resolve to this attachment.
+    public let aliases: [String]
     /// The CIDR address describing the interface IPv4 address, with the prefix length of the subnet.
     public let ipv4Address: CIDRv4
     /// The IPv4 gateway address.
@@ -37,6 +39,7 @@ public struct Attachment: Codable, Sendable {
     public init(
         network: String,
         hostname: String,
+        aliases: [String] = [],
         ipv4Address: CIDRv4,
         ipv4Gateway: IPv4Address,
         ipv6Address: CIDRv6?,
@@ -45,6 +48,7 @@ public struct Attachment: Codable, Sendable {
     ) {
         self.network = network
         self.hostname = hostname
+        self.aliases = aliases
         self.ipv4Address = ipv4Address
         self.ipv4Gateway = ipv4Gateway
         self.ipv6Address = ipv6Address
@@ -55,6 +59,7 @@ public struct Attachment: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case network
         case hostname
+        case aliases
         case ipv4Address
         case ipv4Gateway
         case ipv6Address
@@ -72,6 +77,7 @@ public struct Attachment: Codable, Sendable {
 
         network = try container.decode(String.self, forKey: .network)
         hostname = try container.decode(String.self, forKey: .hostname)
+        aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
         if let address = try? container.decode(CIDRv4.self, forKey: .ipv4Address) {
             ipv4Address = address
         } else {
@@ -93,6 +99,7 @@ public struct Attachment: Codable, Sendable {
 
         try container.encode(network, forKey: .network)
         try container.encode(hostname, forKey: .hostname)
+        try container.encode(aliases, forKey: .aliases)
         try container.encode(ipv4Address, forKey: .ipv4Address)
         try container.encode(ipv4Gateway, forKey: .ipv4Gateway)
         try container.encodeIfPresent(ipv6Address, forKey: .ipv6Address)

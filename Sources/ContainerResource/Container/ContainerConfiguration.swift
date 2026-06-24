@@ -34,8 +34,14 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var sysctls: [String: String] = [:]
     /// The networks the container will be added to.
     public var networks: [AttachmentConfiguration] = []
+    /// Optional hostname visible inside the container's UTS namespace.
+    public var hostname: String?
+    /// Optional NIS domain name visible inside the container's UTS namespace.
+    public var domainname: String?
     /// The DNS configuration for the container.
     public var dns: DNSConfiguration? = nil
+    /// Additional entries to append to the container's /etc/hosts file.
+    public var hosts: [HostEntry] = []
     /// Whether to enable rosetta x86-64 translation for the container.
     public var rosetta: Bool = false
     /// Initial or main process of the container.
@@ -44,6 +50,10 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var platform: ContainerizationOCI.Platform = .current
     /// Resource values for the container.
     public var resources: Resources = .init()
+    /// Logging policy for captured container stdio.
+    public var logging: ContainerLogConfiguration = .default
+    /// Optional health probe configuration for the running container.
+    public var healthCheck: ContainerHealthCheck?
     /// Name of the runtime that supports the container.
     public var runtimeHandler: String = "container-runtime-linux"
     /// Configure exposing virtualization support in the container.
@@ -74,11 +84,16 @@ public struct ContainerConfiguration: Sendable, Codable {
         case labels
         case sysctls
         case networks
+        case hostname
+        case domainname
         case dns
+        case hosts
         case rosetta
         case initProcess
         case platform
         case resources
+        case logging
+        case healthCheck
         case runtimeHandler
         case virtualization
         case ssh
@@ -111,10 +126,15 @@ public struct ContainerConfiguration: Sendable, Codable {
         }
 
         dns = try container.decodeIfPresent(DNSConfiguration.self, forKey: .dns)
+        hostname = try container.decodeIfPresent(String.self, forKey: .hostname)
+        domainname = try container.decodeIfPresent(String.self, forKey: .domainname)
+        hosts = try container.decodeIfPresent([HostEntry].self, forKey: .hosts) ?? []
         rosetta = try container.decodeIfPresent(Bool.self, forKey: .rosetta) ?? false
         initProcess = try container.decode(ProcessConfiguration.self, forKey: .initProcess)
         platform = try container.decodeIfPresent(ContainerizationOCI.Platform.self, forKey: .platform) ?? .current
         resources = try container.decodeIfPresent(Resources.self, forKey: .resources) ?? .init()
+        logging = try container.decodeIfPresent(ContainerLogConfiguration.self, forKey: .logging) ?? .default
+        healthCheck = try container.decodeIfPresent(ContainerHealthCheck.self, forKey: .healthCheck)
         runtimeHandler = try container.decodeIfPresent(String.self, forKey: .runtimeHandler) ?? "container-runtime-linux"
         virtualization = try container.decodeIfPresent(Bool.self, forKey: .virtualization) ?? false
         ssh = try container.decodeIfPresent(Bool.self, forKey: .ssh) ?? false
@@ -145,6 +165,27 @@ public struct ContainerConfiguration: Sendable, Codable {
             self.domain = domain
             self.searchDomains = searchDomains
             self.options = options
+        }
+    }
+
+    /// Host mapping appended to /etc/hosts before the container starts.
+    public struct HostEntry: Sendable, Codable, Equatable {
+        /// Magic value resolved to the first network gateway when the container starts.
+        public static let hostGatewayAddress = "host-gateway"
+
+        /// IP address, or `host-gateway`, written as the first field in the hosts entry.
+        public let ipAddress: String
+        /// One or more hostnames written after the address.
+        public let hostnames: [String]
+
+        /// Whether this entry should resolve to the first network gateway at runtime.
+        public var requiresHostGateway: Bool {
+            ipAddress == Self.hostGatewayAddress
+        }
+
+        public init(ipAddress: String, hostnames: [String]) {
+            self.ipAddress = ipAddress
+            self.hostnames = hostnames
         }
     }
 

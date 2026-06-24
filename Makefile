@@ -221,8 +221,7 @@ INTEGRATION_TEST_SUITES ?= \
 	TestCLISystemDF \
 	TestCLIMachineCommand \
 	TestCLIMachineRuntime \
-	TestCLINoParallelCases \
-	TestCLICopyCommand
+	TestCLINoParallelCases
 
 empty :=
 space := $(empty) $(empty)

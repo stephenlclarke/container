@@ -78,6 +78,32 @@ public struct ContainersHarness: Sendable {
     }
 
     @Sendable
+    public func pause(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        try await service.pause(id: id)
+        return message.reply()
+    }
+
+    @Sendable
+    public func unpause(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        try await service.unpause(id: id)
+        return message.reply()
+    }
+
+    @Sendable
     public func dial(_ message: XPCMessage) async throws -> XPCMessage {
         let id = message.string(key: .id)
         guard let id else {
@@ -289,10 +315,110 @@ public struct ContainersHarness: Sendable {
                 message: "id cannot be empty"
             )
         }
-        let fds = try await service.logs(id: id)
+        let options = Self.logOptions(from: message)
+        let replay = Self.logReplayOptions(from: message)
+        let fds = try await service.logs(id: id, options: options, replay: replay)
         let reply = message.reply()
         try reply.set(key: .logs, value: fds)
         return reply
+    }
+
+    @Sendable
+    public func followLogs(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let fd = try await service.followLogs(id: id, options: Self.logOptions(from: message))
+        let reply = message.reply()
+        try reply.set(key: .logs, value: [fd])
+        return reply
+    }
+
+    @Sendable
+    public func logRecords(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let records = try await service.logRecords(
+            id: id,
+            options: Self.logOptions(from: message),
+            replay: Self.logReplayOptions(from: message)
+        )
+        let reply = message.reply()
+        reply.set(key: .logRecords, value: try JSONEncoder().encode(records))
+        return reply
+    }
+
+    @Sendable
+    public func followLogRecords(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let file = try await service.followLogRecords(id: id, options: Self.logOptions(from: message))
+        let reply = message.reply()
+        reply.set(key: .logRecordFile, value: file)
+        return reply
+    }
+
+    @Sendable
+    public func logRecordFile(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let file = try await service.logRecordFile(id: id)
+        let reply = message.reply()
+        reply.set(key: .logRecordFile, value: file)
+        return reply
+    }
+
+    @Sendable
+    public func events(_ message: XPCMessage) async throws -> XPCMessage {
+        let subscription = await service.events(options: Self.eventOptions(from: message))
+        let reply = message.reply()
+        reply.set(key: .containerEvent, value: subscription.fileHandle)
+        return reply
+    }
+
+    static func eventOptions(from message: XPCMessage) -> ContainerEventOptions {
+        let since = message.contains(key: .eventSince) ? message.date(key: .eventSince) : nil
+        let until = message.contains(key: .eventUntil) ? message.date(key: .eventUntil) : nil
+        return ContainerEventOptions(
+            since: since,
+            until: until
+        )
+    }
+
+    static func logOptions(from message: XPCMessage) -> ContainerLogOptions {
+        let tail = message.contains(key: .logTail) ? Int(message.int64(key: .logTail)) : nil
+        let since = message.contains(key: .logSince) ? message.date(key: .logSince) : nil
+        let until = message.contains(key: .logUntil) ? message.date(key: .logUntil) : nil
+        return ContainerLogOptions(
+            tail: tail,
+            since: since,
+            until: until
+        )
+    }
+
+    static func logReplayOptions(from message: XPCMessage) -> ContainerLogReplayOptions {
+        ContainerLogReplayOptions(
+            includeRotated: message.bool(key: .logIncludeRotated)
+        )
     }
 
     @Sendable
@@ -317,8 +443,11 @@ public struct ContainersHarness: Sendable {
         }
         let mode = UInt32(message.uint64(key: .fileMode))
         let createParents = message.bool(key: .createParents)
+        let followSymlink = message.bool(key: .followSymlink)
+        let preserveOwnership = message.bool(key: .preserveOwnership)
 
-        try await service.copyIn(id: id, source: sourcePath, destination: destinationPath, mode: mode, createParents: createParents)
+        try await service.copyIn(
+            id: id, source: sourcePath, destination: destinationPath, mode: mode, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
         return message.reply()
     }
 
@@ -344,8 +473,11 @@ public struct ContainersHarness: Sendable {
         }
 
         let createParents = message.bool(key: .createParents)
+        let followSymlink = message.bool(key: .followSymlink)
+        let preserveOwnership = message.bool(key: .preserveOwnership)
 
-        try await service.copyOut(id: id, source: sourcePath, destination: destinationPath, createParents: createParents)
+        try await service.copyOut(
+            id: id, source: sourcePath, destination: destinationPath, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
         return message.reply()
     }
 
@@ -362,6 +494,22 @@ public struct ContainersHarness: Sendable {
         let data = try JSONEncoder().encode(stats)
         let reply = message.reply()
         reply.set(key: .statistics, value: data)
+        return reply
+    }
+
+    @Sendable
+    public func processes(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let processes = try await service.processes(id: id)
+        let data = try JSONEncoder().encode(processes)
+        let reply = message.reply()
+        reply.set(key: .processes, value: data)
         return reply
     }
 

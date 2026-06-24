@@ -53,7 +53,7 @@ let package = Package(
         .library(name: "MachineAPIService", targets: ["MachineAPIService"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/apple/containerization.git", exact: Version(stringLiteral: scVersion)),
+        .package(url: "https://github.com/stephenlclarke/containerization.git", branch: "integration/blkio-runtime"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
@@ -208,9 +208,13 @@ let package = Package(
             name: "ContainerAPIServiceTests",
             dependencies: [
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
+                "ContainerAPIClient",
+                "ContainerAPIService",
                 "ContainerResource",
                 "ContainerRuntimeLinuxClient",
                 "ContainerRuntimeClient",
+                "ContainerXPC",
             ]
         ),
         .target(
@@ -351,7 +355,9 @@ let package = Package(
         ),
         .target(
             name: "ContainerRuntimeLinuxClient",
-            dependencies: [],
+            dependencies: [
+                .product(name: "ContainerizationOCI", package: "containerization")
+            ],
             path: "Sources/Services/RuntimeLinux/Client"
         ),
         .executableTarget(
@@ -391,6 +397,13 @@ let package = Package(
                 "SocketForwarder",
             ],
             path: "Sources/Services/RuntimeLinux/Server"
+        ),
+        .testTarget(
+            name: "ContainerRuntimeLinuxServerTests",
+            dependencies: [
+                "ContainerResource",
+                "ContainerRuntimeLinuxServer",
+            ]
         ),
         .target(
             name: "ContainerRuntimeClient",

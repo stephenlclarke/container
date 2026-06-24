@@ -57,6 +57,12 @@ extension Application {
         @Argument(help: "Destination path (container:path or local path)")
         var destination: String
 
+        @Flag(name: [.customShort("a"), .customLong("archive")], help: "Archive mode. Preserve source UID/GID information.")
+        var archive = false
+
+        @Flag(name: [.customShort("L"), .customLong("follow-link")], help: "Always follow symbolic links in the source path")
+        var followLink = false
+
         public func run() async throws {
             let client = ContainerClient()
             let srcRef = try Self.parsePathRef(source)
@@ -65,19 +71,18 @@ extension Application {
             switch (srcRef, dstRef) {
             case (.container(let id, let path), .local(let localPath)):
                 let srcPath = FilePath(path)
-                let destPath = FilePath(URL(fileURLWithPath: localPath, relativeTo: .currentDirectory()).absoluteURL.path(percentEncoded: false))
+                let destPath = FilePath((localPath as NSString).standardizingPath)
                 var isDirectory: ObjCBool = false
                 let exists = FileManager.default.fileExists(atPath: destPath.string, isDirectory: &isDirectory)
 
-                var finalDestPath = destPath
                 if exists && isDirectory.boolValue {
                     guard let lastComponent = srcPath.lastComponent else {
                         throw ContainerizationError(.invalidArgument, message: "source path has no last component: \(path)")
                     }
-                    finalDestPath = destPath.appending(lastComponent)
-                    try await client.copyOut(id: id, source: path, destination: finalDestPath.string)
+                    let finalDest = destPath.appending(lastComponent)
+                    try await client.copyOut(id: id, source: path, destination: finalDest.string, followSymlink: followLink, preserveOwnership: archive)
                 } else if localPath.hasSuffix("/") {
-                    try await client.copyOut(id: id, source: path, destination: destPath.string)
+                    try await client.copyOut(id: id, source: path, destination: destPath.string, followSymlink: followLink, preserveOwnership: archive)
                     var resultIsDir: ObjCBool = false
                     if FileManager.default.fileExists(atPath: destPath.string, isDirectory: &resultIsDir),
                         !resultIsDir.boolValue
@@ -88,17 +93,11 @@ extension Application {
                             message: "destination is not a directory: \(localPath)")
                     }
                 } else {
-                    try await client.copyOut(id: id, source: path, destination: destPath.string)
+                    try await client.copyOut(id: id, source: path, destination: destPath.string, followSymlink: followLink, preserveOwnership: archive)
                 }
-                print(finalDestPath.string)
             case (.local(let localPath), .container(let id, let path)):
-                let srcPath = FilePath(URL(fileURLWithPath: localPath, relativeTo: .currentDirectory()).absoluteURL.path(percentEncoded: false))
+                let srcPath = FilePath((localPath as NSString).standardizingPath)
                 var isDirectory: ObjCBool = false
-
-                guard let lastComponent = srcPath.lastComponent else {
-                    throw ContainerizationError(.invalidArgument, message: "source path has no last component: \(localPath)")
-                }
-
                 guard FileManager.default.fileExists(atPath: srcPath.string, isDirectory: &isDirectory) else {
                     throw ContainerizationError(.notFound, message: "source path does not exist: \(localPath)")
                 }
@@ -106,9 +105,7 @@ extension Application {
                     throw ContainerizationError(.invalidArgument, message: "source path is not a directory: \(localPath)")
                 }
 
-                try await client.copyIn(id: id, source: srcPath.string, destination: path, createParents: true)
-                let printedDest = path.hasSuffix("/") ? "\(id):\(path)\(lastComponent.string)" : "\(id):\(path)"
-                print(printedDest)
+                try await client.copyIn(id: id, source: srcPath.string, destination: path, createParents: true, followSymlink: followLink, preserveOwnership: archive)
             case (.container, .container):
                 throw ContainerizationError(.invalidArgument, message: "copying between containers is not supported")
             case (.local, .local):

@@ -24,6 +24,49 @@ import Foundation
 /// resolved index descriptor and the per-platform variants that make up the
 /// image.
 public struct ImageResource: ManagedResource {
+    /// Docker image healthcheck metadata stored in OCI image config.
+    ///
+    /// Docker encodes durations as nanoseconds in the image config JSON.
+    public struct HealthCheck: Sendable, Codable, Equatable {
+        enum CodingKeys: String, CodingKey {
+            case test = "Test"
+            case intervalInNanoseconds = "Interval"
+            case timeoutInNanoseconds = "Timeout"
+            case startPeriodInNanoseconds = "StartPeriod"
+            case startIntervalInNanoseconds = "StartInterval"
+            case retries = "Retries"
+        }
+
+        /// Probe command encoded by Docker as `NONE`, `CMD`, or `CMD-SHELL`.
+        public let test: [String]?
+        /// Delay between health probes, in nanoseconds.
+        public let intervalInNanoseconds: Int64?
+        /// Maximum probe runtime, in nanoseconds.
+        public let timeoutInNanoseconds: Int64?
+        /// Grace period before failures count, in nanoseconds.
+        public let startPeriodInNanoseconds: Int64?
+        /// Delay between probes during the start period, in nanoseconds.
+        public let startIntervalInNanoseconds: Int64?
+        /// Number of consecutive failures before the container is unhealthy.
+        public let retries: Int?
+
+        public init(
+            test: [String]? = nil,
+            intervalInNanoseconds: Int64? = nil,
+            timeoutInNanoseconds: Int64? = nil,
+            startPeriodInNanoseconds: Int64? = nil,
+            startIntervalInNanoseconds: Int64? = nil,
+            retries: Int? = nil
+        ) {
+            self.test = test
+            self.intervalInNanoseconds = intervalInNanoseconds
+            self.timeoutInNanoseconds = timeoutInNanoseconds
+            self.startPeriodInNanoseconds = startPeriodInNanoseconds
+            self.startIntervalInNanoseconds = startIntervalInNanoseconds
+            self.retries = retries
+        }
+    }
+
     /// A single platform-specific variant of an image.
     public struct Variant: Sendable, Codable {
         /// The platform this variant targets.
@@ -34,12 +77,21 @@ public struct ImageResource: ManagedResource {
         public let size: Int64
         /// The OCI image config for this variant.
         public let config: ContainerizationOCI.Image
+        /// Optional healthcheck metadata inherited from the image config.
+        public let healthCheck: HealthCheck?
 
-        public init(platform: Platform, digest: String, size: Int64, config: ContainerizationOCI.Image) {
+        public init(
+            platform: Platform,
+            digest: String,
+            size: Int64,
+            config: ContainerizationOCI.Image,
+            healthCheck: HealthCheck? = nil
+        ) {
             self.platform = platform
             self.digest = digest
             self.size = size
             self.config = config
+            self.healthCheck = healthCheck
         }
     }
 

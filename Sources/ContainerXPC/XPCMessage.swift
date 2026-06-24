@@ -117,6 +117,13 @@ extension XPCMessage {
         return Data(bytes: bytes, count: length)
     }
 
+    /// Returns true when the message contains a value for the provided key.
+    public func contains(key: String) -> Bool {
+        lock.withLock {
+            xpc_dictionary_get_value(self.object, key) != nil
+        }
+    }
+
     /// dataNoCopy is similar to data, except the data is not copied
     /// to a new buffer. What this means in practice is the second the
     /// underlying xpc_object_t gets released by ARC the data will be

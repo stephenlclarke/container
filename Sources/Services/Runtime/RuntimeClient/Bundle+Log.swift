@@ -22,4 +22,9 @@ extension ContainerResource.Bundle {
     public var containerLog: URL {
         path.appendingPathComponent("stdio.log")
     }
+
+    /// The pathname for timestamped workload log records.
+    public var containerLogRecords: URL {
+        path.appendingPathComponent("stdio.jsonl")
+    }
 }

@@ -42,12 +42,16 @@ public enum RuntimeKeys: String {
 
     /// Container statistics
     case statistics
+    /// Container process identifiers
+    case processes
 
     /// Copy parameters
     case sourcePath
     case destinationPath
     case fileMode
     case createParents
+    case followSymlink
+    case preserveOwnership
 
     /// Special-case environment variables recomputed on each container start
     case dynamicEnv

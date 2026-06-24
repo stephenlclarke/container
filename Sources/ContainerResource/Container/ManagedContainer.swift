@@ -22,6 +22,10 @@ import Foundation
 public struct ManagedContainer: ManagedResource {
     public let configuration: ContainerConfiguration
     public let status: ContainerStatus
+    /// Exit code of the container init process, when the daemon observed it.
+    public let exitCode: Int32?
+    /// Timestamp when the container init process exited, when observed.
+    public let exitedDate: Date?
 
     // MARK: ManagedResource
     public var id: String { configuration.id }
@@ -48,9 +52,16 @@ public struct ManagedContainer: ManagedResource {
         return name.range(of: pattern, options: .regularExpression) != nil
     }
 
-    public init(configuration: ContainerConfiguration, status: ContainerStatus) {
+    public init(
+        configuration: ContainerConfiguration,
+        status: ContainerStatus,
+        exitCode: Int32? = nil,
+        exitedDate: Date? = nil
+    ) {
         self.configuration = configuration
         self.status = status
+        self.exitCode = exitCode
+        self.exitedDate = exitedDate
     }
 
     /// CLI-boundary factory: build from the snapshot the client returns today.
@@ -61,22 +72,34 @@ public struct ManagedContainer: ManagedResource {
             networks: snapshot.networks,
             startedDate: snapshot.startedDate
         )
+        self.exitCode = snapshot.exitCode
+        self.exitedDate = snapshot.exitedDate
     }
 }
 
 extension ManagedContainer {
-    enum CodingKeys: String, CodingKey { case id, configuration, status }
+    enum CodingKeys: String, CodingKey {
+        case id
+        case configuration
+        case status
+        case exitCode
+        case exitedDate
+    }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(configuration, forKey: .configuration)
         try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(exitCode, forKey: .exitCode)
+        try c.encodeIfPresent(exitedDate, forKey: .exitedDate)
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.configuration = try c.decode(ContainerConfiguration.self, forKey: .configuration)
         self.status = try c.decode(ContainerStatus.self, forKey: .status)
+        self.exitCode = try c.decodeIfPresent(Int32.self, forKey: .exitCode)
+        self.exitedDate = try c.decodeIfPresent(Date.self, forKey: .exitedDate)
     }
 }

@@ -115,6 +115,526 @@ public struct Parser {
         return resource
     }
 
+    /// Parses repeatable `--sysctl name=value` arguments into the container
+    /// configuration model. The runtime decides whether each key is supported
+    /// in the container's namespace.
+    public static func sysctls(_ specs: [String]) throws -> [String: String] {
+        try specs.reduce(into: [:]) { result, spec in
+            let parts = spec.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--sysctl must be formatted as name=value"
+                )
+            }
+            let name = String(parts[0])
+            let value = String(parts[1])
+            guard !name.isEmpty else {
+                throw ContainerizationError(.invalidArgument, message: "--sysctl name must not be empty")
+            }
+            result[name] = value
+        }
+    }
+
+    /// Parses repeatable `--blkio` specifications into Linux block I/O
+    /// runtime data. The format intentionally mirrors apple/container#1595:
+    /// `weight=500` for global settings and
+    /// `device=<path-or-major:minor>,read-bps=1048576` for device settings.
+    public static func blockIO(specs: [String]) throws -> ContainerizationOCI.LinuxBlockIO? {
+        guard !specs.isEmpty else {
+            return nil
+        }
+
+        var weight: UInt16?
+        var leafWeight: UInt16?
+        var weightDevices: [ContainerizationOCI.LinuxWeightDevice] = []
+        var readBpsDevices: [ContainerizationOCI.LinuxThrottleDevice] = []
+        var writeBpsDevices: [ContainerizationOCI.LinuxThrottleDevice] = []
+        var readIOPSDevices: [ContainerizationOCI.LinuxThrottleDevice] = []
+        var writeIOPSDevices: [ContainerizationOCI.LinuxThrottleDevice] = []
+
+        for spec in specs {
+            let pairs = try parseBlockIOSpec(spec)
+
+            if let devicePath = pairs["device"] {
+                let device = try parseBlockIODevice(devicePath)
+
+                var deviceWeight: UInt16?
+                var deviceLeafWeight: UInt16?
+                if let raw = pairs["weight"] {
+                    let value = try parseUInt16(raw, name: "weight")
+                    try validateBlockIOWeight(value)
+                    deviceWeight = value
+                }
+                if let raw = pairs["leaf-weight"] {
+                    let value = try parseUInt16(raw, name: "leaf-weight")
+                    try validateBlockIOWeight(value)
+                    deviceLeafWeight = value
+                }
+
+                if deviceWeight != nil || deviceLeafWeight != nil {
+                    weightDevices.append(
+                        ContainerizationOCI.LinuxWeightDevice(
+                            major: device.major,
+                            minor: device.minor,
+                            weight: deviceWeight,
+                            leafWeight: deviceLeafWeight
+                        ))
+                }
+
+                if let raw = pairs["read-bps"] {
+                    readBpsDevices.append(
+                        ContainerizationOCI.LinuxThrottleDevice(
+                            major: device.major,
+                            minor: device.minor,
+                            rate: try parseByteRate(raw)
+                        ))
+                }
+                if let raw = pairs["write-bps"] {
+                    writeBpsDevices.append(
+                        ContainerizationOCI.LinuxThrottleDevice(
+                            major: device.major,
+                            minor: device.minor,
+                            rate: try parseByteRate(raw)
+                        ))
+                }
+                if let raw = pairs["read-iops"] {
+                    readIOPSDevices.append(
+                        ContainerizationOCI.LinuxThrottleDevice(
+                            major: device.major,
+                            minor: device.minor,
+                            rate: try parseUInt64(raw, name: "read-iops")
+                        ))
+                }
+                if let raw = pairs["write-iops"] {
+                    writeIOPSDevices.append(
+                        ContainerizationOCI.LinuxThrottleDevice(
+                            major: device.major,
+                            minor: device.minor,
+                            rate: try parseUInt64(raw, name: "write-iops")
+                        ))
+                }
+
+                let allowedDeviceKeys: Set<String> = ["device", "weight", "leaf-weight", "read-bps", "write-bps", "read-iops", "write-iops"]
+                if let unknown = pairs.keys.first(where: { !allowedDeviceKeys.contains($0) }) {
+                    throw ContainerizationError(.invalidArgument, message: "unknown --blkio key '\(unknown)'")
+                }
+            } else {
+                if let raw = pairs["weight"] {
+                    let value = try parseUInt16(raw, name: "weight")
+                    try validateBlockIOWeight(value)
+                    if let existing = weight, existing != value {
+                        throw ContainerizationError(.invalidArgument, message: "--blkio weight specified multiple times with conflicting values")
+                    }
+                    weight = value
+                }
+                if let raw = pairs["leaf-weight"] {
+                    let value = try parseUInt16(raw, name: "leaf-weight")
+                    try validateBlockIOWeight(value)
+                    if let existing = leafWeight, existing != value {
+                        throw ContainerizationError(.invalidArgument, message: "--blkio leaf-weight specified multiple times with conflicting values")
+                    }
+                    leafWeight = value
+                }
+
+                let allowedGlobalKeys: Set<String> = ["weight", "leaf-weight"]
+                if let unknown = pairs.keys.first(where: { !allowedGlobalKeys.contains($0) }) {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "--blkio key '\(unknown)' is only valid when 'device=' is also set"
+                    )
+                }
+            }
+        }
+
+        return ContainerizationOCI.LinuxBlockIO(
+            weight: weight,
+            leafWeight: leafWeight,
+            weightDevice: weightDevices,
+            throttleReadBpsDevice: readBpsDevices,
+            throttleWriteBpsDevice: writeBpsDevices,
+            throttleReadIOPSDevice: readIOPSDevices,
+            throttleWriteIOPSDevice: writeIOPSDevices
+        )
+    }
+
+    private static func parseBlockIOSpec(_ spec: String) throws -> [String: String] {
+        var result: [String: String] = [:]
+        for token in spec.split(separator: ",", omittingEmptySubsequences: true) {
+            let parts = token.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--blkio entries must use 'key=value' (got '\(token)')"
+                )
+            }
+            let key = String(parts[0])
+            if result[key] != nil {
+                throw ContainerizationError(.invalidArgument, message: "--blkio key '\(key)' specified twice in a single spec")
+            }
+            result[key] = String(parts[1])
+        }
+        if result.isEmpty {
+            throw ContainerizationError(.invalidArgument, message: "--blkio spec must not be empty")
+        }
+        return result
+    }
+
+    private static func parseBlockIODevice(_ value: String) throws -> (major: Int64, minor: Int64) {
+        if value.hasPrefix("/") {
+            var info = stat()
+            guard stat(value, &info) == 0 else {
+                throw ContainerizationError(.notFound, message: "block I/O device path not found: \(value)")
+            }
+            let rawDevice = UInt32(bitPattern: info.st_rdev)
+            return (Int64((rawDevice >> 24) & 0xff), Int64(rawDevice & 0x00ff_ffff))
+        }
+
+        let parts = value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, let major = Int64(parts[0]), let minor = Int64(parts[1]) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--blkio device must be an absolute path or '<major>:<minor>' (got '\(value)')"
+            )
+        }
+        return (major, minor)
+    }
+
+    private static func parseByteRate(_ value: String) throws -> UInt64 {
+        let measurement = try Measurement.parse(parsing: value)
+        let bytes = measurement.converted(to: .bytes).value
+        guard bytes.isFinite, bytes >= 0, bytes <= Double(UInt64.max) else {
+            throw ContainerizationError(.invalidArgument, message: "--blkio rate '\(value)' is outside the supported range")
+        }
+        return UInt64(bytes)
+    }
+
+    private static func parseUInt16(_ value: String, name: String) throws -> UInt16 {
+        guard let parsed = UInt16(value) else {
+            throw ContainerizationError(.invalidArgument, message: "--blkio \(name) must be an unsigned 16-bit integer")
+        }
+        return parsed
+    }
+
+    private static func parseUInt64(_ value: String, name: String) throws -> UInt64 {
+        guard let parsed = UInt64(value) else {
+            throw ContainerizationError(.invalidArgument, message: "--blkio \(name) must be an unsigned 64-bit integer")
+        }
+        return parsed
+    }
+
+    private static func validateBlockIOWeight(_ value: UInt16) throws {
+        guard (10...1000).contains(value) else {
+            throw ContainerizationError(.invalidArgument, message: "block I/O weight must be between 10 and 1000")
+        }
+    }
+
+    /// Parses Docker-compatible local logging flags into the runtime log policy.
+    public static func logging(driver: String?, options: [String] = []) throws -> ContainerLogConfiguration {
+        var logging: ContainerLogConfiguration
+        switch driver {
+        case nil, "":
+            logging = .default
+        case "json-file", "local":
+            logging = .default
+        case "none":
+            logging = ContainerLogConfiguration(storage: .none)
+        case let driver?:
+            throw ContainerizationError(
+                .unsupported,
+                message: "unsupported log driver '\(driver)' (supported: json-file, local, none)"
+            )
+        }
+
+        guard !options.isEmpty else {
+            return logging
+        }
+
+        guard logging.storage == .local else {
+            let driverName = driver ?? "local"
+            throw ContainerizationError(
+                .unsupported,
+                message: "log options are not supported with log driver '\(driverName)'"
+            )
+        }
+
+        for option in options {
+            let (key, value) = try Self.logOption(option)
+            switch key {
+            case "max-size":
+                logging.maxSizeInBytes = try Self.logOptionSizeInBytes(value)
+            case "max-file":
+                logging.maxFileCount = try Self.logOptionFileCount(value)
+            default:
+                throw ContainerizationError(
+                    .unsupported,
+                    message: "unsupported log option '\(key)' (supported for local logging: max-size, max-file)"
+                )
+            }
+        }
+
+        return logging
+    }
+
+    private static func logOption(_ option: String) throws -> (key: String, value: String) {
+        let parts = option.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else {
+            throw ContainerizationError(.invalidArgument, message: "invalid log option '\(option)' (expected key=value)")
+        }
+
+        let key = String(parts[0])
+        let value = String(parts[1])
+        guard !key.isEmpty, !value.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "invalid log option '\(option)' (expected key=value)")
+        }
+        return (key, value)
+    }
+
+    private static func logOptionSizeInBytes(_ value: String) throws -> UInt64 {
+        let bytes: Double
+        do {
+            bytes = try Measurement<UnitInformationStorage>.parse(parsing: value).converted(to: .bytes).value
+        } catch {
+            throw ContainerizationError(.invalidArgument, message: "invalid log option max-size '\(value)'", cause: error)
+        }
+
+        guard bytes.isFinite, bytes > 0, bytes <= Double(UInt64.max) else {
+            throw ContainerizationError(.invalidArgument, message: "invalid log option max-size '\(value)'")
+        }
+
+        let result = UInt64(bytes)
+        guard result > 0 else {
+            throw ContainerizationError(.invalidArgument, message: "invalid log option max-size '\(value)'")
+        }
+        return result
+    }
+
+    private static func logOptionFileCount(_ value: String) throws -> Int {
+        guard let count = Int(value), count > 0 else {
+            throw ContainerizationError(.invalidArgument, message: "invalid log option max-file '\(value)'")
+        }
+        return count
+    }
+
+    public static func healthCheck(
+        command: String?,
+        interval: String?,
+        retries: Int?,
+        startInterval: String?,
+        startPeriod: String?,
+        timeout: String?,
+        disabled: Bool,
+        baseProcess: ProcessConfiguration
+    ) throws -> ContainerHealthCheck? {
+        let hasHealthOptions = [interval, startInterval, startPeriod, timeout].contains { $0 != nil } || retries != nil
+        if disabled {
+            guard command == nil, !hasHealthOptions else {
+                throw ContainerizationError(.invalidArgument, message: "--no-healthcheck cannot be combined with health check options")
+            }
+            return nil
+        }
+
+        guard let command else {
+            guard !hasHealthOptions else {
+                throw ContainerizationError(.invalidArgument, message: "health check options require --health-cmd")
+            }
+            return nil
+        }
+
+        guard !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "--health-cmd cannot be empty")
+        }
+
+        let resolvedRetries: UInt32
+        if let retries {
+            guard retries >= 0, retries <= Int(UInt32.max) else {
+                throw ContainerizationError(.invalidArgument, message: "--health-retries must be between 0 and \(UInt32.max)")
+            }
+            resolvedRetries = UInt32(retries)
+        } else {
+            resolvedRetries = ContainerHealthCheck.defaultRetries
+        }
+
+        return ContainerHealthCheck(
+            process: ProcessConfiguration(
+                executable: "/bin/sh",
+                arguments: ["-c", command],
+                environment: baseProcess.environment,
+                workingDirectory: baseProcess.workingDirectory,
+                terminal: false,
+                user: baseProcess.user,
+                supplementalGroups: baseProcess.supplementalGroups,
+                rlimits: baseProcess.rlimits
+            ),
+            intervalInNanoseconds: try healthDuration(interval, option: "--health-interval") ?? ContainerHealthCheck.defaultIntervalInNanoseconds,
+            timeoutInNanoseconds: try healthDuration(timeout, option: "--health-timeout") ?? ContainerHealthCheck.defaultTimeoutInNanoseconds,
+            startPeriodInNanoseconds: try healthDuration(startPeriod, option: "--health-start-period") ?? ContainerHealthCheck.defaultStartPeriodInNanoseconds,
+            startIntervalInNanoseconds: try healthDuration(startInterval, option: "--health-start-interval"),
+            retries: resolvedRetries
+        )
+    }
+
+    private static func healthDuration(_ value: String?, option: String) throws -> UInt64? {
+        guard let value else {
+            return nil
+        }
+        guard let seconds = ContainerLogTimestampParser.parseDuration(value), seconds.isFinite, seconds >= 0 else {
+            throw ContainerizationError(.invalidArgument, message: "invalid \(option) duration '\(value)'")
+        }
+        let nanoseconds = seconds * 1_000_000_000
+        guard nanoseconds <= Double(UInt64.max) else {
+            throw ContainerizationError(.invalidArgument, message: "invalid \(option) duration '\(value)'")
+        }
+        return UInt64(nanoseconds.rounded())
+    }
+
+    public static func createOptions(
+        autoRemove: Bool,
+        restart: String?,
+        restartDelay: String? = nil,
+        restartWindow: String? = nil
+    ) throws -> ContainerCreateOptions {
+        var restartPolicy = try Self.restartPolicy(restart)
+        let restartDelayInNanoseconds = try Self.restartDuration(restartDelay, option: "--restart-delay")
+        let restartWindowInNanoseconds = try Self.restartDuration(restartWindow, option: "--restart-window")
+        if restartPolicy.mode == .no && (restartDelayInNanoseconds != nil || restartWindowInNanoseconds != nil) {
+            throw ContainerizationError(.invalidArgument, message: "restart timing options require --restart")
+        }
+        restartPolicy = ContainerRestartPolicy(
+            mode: restartPolicy.mode,
+            maximumRetryCount: restartPolicy.maximumRetryCount,
+            retryDelayInNanoseconds: restartDelayInNanoseconds,
+            successfulRunDurationInNanoseconds: restartWindowInNanoseconds
+        )
+        if autoRemove && restartPolicy.mode != .no {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--rm cannot be combined with --restart"
+            )
+        }
+        return ContainerCreateOptions(autoRemove: autoRemove, restartPolicy: restartPolicy)
+    }
+
+    /// Parses Docker-compatible restart policy values.
+    public static func restartPolicy(_ value: String?) throws -> ContainerRestartPolicy {
+        guard let value else {
+            return .no
+        }
+        let components = value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let modeValue = components.first, !modeValue.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "invalid restart policy '\(value)'")
+        }
+        guard let mode = ContainerRestartPolicy.Mode(rawValue: String(modeValue)) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "unsupported restart policy '\(value)' (supported: no, on-failure[:max-retries], always, unless-stopped)"
+            )
+        }
+
+        let retryCount: UInt32?
+        if components.count == 2 {
+            guard mode == .onFailure else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "restart retry count is only supported with on-failure"
+                )
+            }
+            retryCount = try Self.restartRetryCount(String(components[1]), policy: value)
+        } else {
+            retryCount = nil
+        }
+
+        return ContainerRestartPolicy(mode: mode, maximumRetryCount: retryCount)
+    }
+
+    private static func restartRetryCount(_ value: String, policy: String) throws -> UInt32? {
+        guard let count = UInt32(value) else {
+            throw ContainerizationError(.invalidArgument, message: "invalid restart policy '\(policy)'")
+        }
+        return count == 0 ? nil : count
+    }
+
+    private static func restartDuration(_ value: String?, option: String) throws -> UInt64? {
+        guard let value else {
+            return nil
+        }
+        guard let seconds = ContainerLogTimestampParser.parseDuration(value), seconds.isFinite, seconds >= 0 else {
+            throw ContainerizationError(.invalidArgument, message: "invalid \(option) duration '\(value)'")
+        }
+        let nanoseconds = seconds * 1_000_000_000
+        guard nanoseconds <= Double(UInt64.max) else {
+            throw ContainerizationError(.invalidArgument, message: "invalid \(option) duration '\(value)'")
+        }
+        return UInt64(nanoseconds.rounded())
+    }
+
+    /// Validates a Docker-compatible RFC1123 hostname option.
+    public static func hostname(_ value: String?, option: String = "--hostname") throws -> String? {
+        guard let value else {
+            return nil
+        }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "invalid \(option) value: hostname is empty")
+        }
+        let hostname = normalized.hasSuffix(".") ? String(normalized.dropLast()) : normalized
+        guard !hostname.isEmpty, hostname.utf8.count <= 253 else {
+            throw ContainerizationError(.invalidArgument, message: "invalid \(option) value '\(value)'")
+        }
+
+        let labelPattern = #"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"#
+        let labels = hostname.split(separator: ".", omittingEmptySubsequences: false)
+        for label in labels {
+            guard label.range(of: labelPattern, options: .regularExpression) != nil else {
+                throw ContainerizationError(.invalidArgument, message: "invalid \(option) value '\(value)'")
+            }
+        }
+        return hostname
+    }
+
+    /// Parses Docker-compatible `--add-host` host mappings.
+    public static func hostEntries(_ rawHosts: [String]) throws -> [ContainerConfiguration.HostEntry] {
+        try rawHosts.map { raw in
+            let separator = raw.firstIndex(of: "=") ?? raw.firstIndex(of: ":")
+            guard let separator else {
+                throw ContainerizationError(.invalidArgument, message: "invalid --add-host value '\(raw)' (expected host:ip, host=ip, or host:host-gateway)")
+            }
+
+            let hostname = String(raw[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let rawAddress = String(raw[raw.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !hostname.isEmpty else {
+                throw ContainerizationError(.invalidArgument, message: "invalid --add-host value '\(raw)' (hostname is empty)")
+            }
+            guard !rawAddress.isEmpty else {
+                throw ContainerizationError(.invalidArgument, message: "invalid --add-host value '\(raw)' (IP address is empty)")
+            }
+
+            let ipAddress: String
+            if rawAddress == ContainerConfiguration.HostEntry.hostGatewayAddress {
+                ipAddress = ContainerConfiguration.HostEntry.hostGatewayAddress
+            } else {
+                ipAddress = unbracketedIPAddress(rawAddress)
+                do {
+                    _ = try IPAddress(ipAddress)
+                } catch {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "invalid --add-host value '\(raw)': '\(rawAddress)' is not a valid IPv4 or IPv6 address"
+                    )
+                }
+            }
+
+            return ContainerConfiguration.HostEntry(ipAddress: ipAddress, hostnames: [hostname])
+        }
+    }
+
+    private static func unbracketedIPAddress(_ value: String) -> String {
+        if value.hasPrefix("["), value.hasSuffix("]") {
+            return String(value.dropFirst().dropLast())
+        }
+        return value
+    }
+
     public static func allEnv(imageEnvs: [String], envFiles: [String], envs: [String]) throws -> [String] {
         var combined: [String] = []
         combined.append(contentsOf: Parser.env(envList: imageEnvs))
@@ -799,19 +1319,21 @@ public struct Parser {
     /// Parsed network attachment with optional properties
     public struct ParsedNetwork {
         public let name: String
+        public let aliases: [String]
         public let macAddress: String?
         public let mtu: UInt32?
 
-        public init(name: String, macAddress: String? = nil, mtu: UInt32? = nil) {
+        public init(name: String, aliases: [String] = [], macAddress: String? = nil, mtu: UInt32? = nil) {
             self.name = name
+            self.aliases = aliases
             self.macAddress = macAddress
             self.mtu = mtu
         }
     }
 
     /// Parse network attachment with optional properties
-    /// Format: network_name[,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]
-    /// Example: "backend,mac=02:42:ac:11:00:02,mtu=1500"
+    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]
+    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500"
     public static func network(_ networkSpec: String) throws -> ParsedNetwork {
         guard !networkSpec.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "network specification cannot be empty")
@@ -828,6 +1350,7 @@ public struct Parser {
             throw ContainerizationError(.invalidArgument, message: "network name cannot be empty")
         }
 
+        var aliases: [String] = []
         var macAddress: String?
         var mtu: UInt32?
 
@@ -848,6 +1371,16 @@ public struct Parser {
             value = String(keyVal[1])
 
             switch key {
+            case "alias":
+                guard let alias = try hostname(value, option: "network alias") else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "network alias value cannot be empty"
+                    )
+                }
+                if !aliases.contains(alias) {
+                    aliases.append(alias)
+                }
             case "mac":
                 if value.isEmpty {
                     throw ContainerizationError(
@@ -867,12 +1400,12 @@ public struct Parser {
             default:
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "unknown network property '\(key)'. Available properties: mac, mtu"
+                    message: "unknown network property '\(key)'. Available properties: alias, mac, mtu"
                 )
             }
         }
 
-        return ParsedNetwork(name: networkName, macAddress: macAddress, mtu: mtu)
+        return ParsedNetwork(name: networkName, aliases: aliases, macAddress: macAddress, mtu: mtu)
     }
 
     // MARK: DNS

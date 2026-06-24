@@ -35,15 +35,34 @@ public struct AttachmentOptions: Codable, Sendable {
     /// The hostname associated with the attachment.
     public let hostname: String
 
+    /// Additional DNS names that resolve to this attachment.
+    public let aliases: [String]
+
     /// The MAC address associated with the attachment (optional).
     public let macAddress: MACAddress?
 
     /// The MTU for the network interface.
     public let mtu: UInt32?
 
-    public init(hostname: String, macAddress: MACAddress? = nil, mtu: UInt32? = nil) {
+    public init(hostname: String, aliases: [String] = [], macAddress: MACAddress? = nil, mtu: UInt32? = nil) {
         self.hostname = hostname
+        self.aliases = aliases
         self.macAddress = macAddress
         self.mtu = mtu
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case hostname
+        case aliases
+        case macAddress
+        case mtu
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hostname = try container.decode(String.self, forKey: .hostname)
+        aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        macAddress = try container.decodeIfPresent(MACAddress.self, forKey: .macAddress)
+        mtu = try container.decodeIfPresent(UInt32.self, forKey: .mtu)
     }
 }

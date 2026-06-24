@@ -18,6 +18,7 @@ import ContainerResource
 import ContainerRuntimeClient
 import ContainerRuntimeLinuxClient
 import Containerization
+import ContainerizationOCI
 import Foundation
 import Testing
 
@@ -113,7 +114,18 @@ struct RuntimeConfigurationTests {
             platform: .linuxArm
         )
 
-        let linuxData = LinuxRuntimeData(variant: "test-variant")
+        let linuxData = LinuxRuntimeData(
+            variant: "test-variant",
+            blockIO: ContainerizationOCI.LinuxBlockIO(
+                weight: 500,
+                leafWeight: nil,
+                weightDevice: [],
+                throttleReadBpsDevice: [ContainerizationOCI.LinuxThrottleDevice(major: 8, minor: 0, rate: 1_048_576)],
+                throttleWriteBpsDevice: [],
+                throttleReadIOPSDevice: [],
+                throttleWriteIOPSDevice: []
+            )
+        )
         let encodedData = try JSONEncoder().encode(linuxData)
 
         let runtimeConfig = RuntimeConfiguration(
@@ -131,5 +143,7 @@ struct RuntimeConfigurationTests {
 
         let decodedData = try JSONDecoder().decode(LinuxRuntimeData.self, from: readRuntimeConfig.runtimeData!)
         #expect(decodedData.variant == "test-variant", "Variant should round-trip through RuntimeConfiguration")
+        #expect(decodedData.blockIO?.weight == 500, "Block I/O weight should round-trip through RuntimeConfiguration")
+        #expect(decodedData.blockIO?.throttleReadBpsDevice.first?.rate == 1_048_576, "Block I/O throttles should round-trip through RuntimeConfiguration")
     }
 }

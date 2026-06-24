@@ -28,7 +28,7 @@ import TerminalProgress
 // MARK: ClientImage structure
 
 public struct ClientImage: Sendable {
-    private let contentStore: ContentStore = RemoteContentStoreClient()
+    private let contentStore: ContentStore
     public let description: ImageDescription
 
     public var digest: String { description.digest }
@@ -36,7 +36,12 @@ public struct ClientImage: Sendable {
     public var reference: String { description.reference }
 
     public init(description: ImageDescription) {
+        self.init(description: description, contentStore: RemoteContentStoreClient())
+    }
+
+    init(description: ImageDescription, contentStore: ContentStore) {
         self.description = description
+        self.contentStore = contentStore
     }
 
     /// Returns the underlying OCI index for the image.
@@ -65,11 +70,17 @@ public struct ClientImage: Sendable {
     /// Returns the OCI config for the specified platform.
     public func config(for platform: Platform) async throws -> ContainerizationOCI.Image {
         let manifest = try await self.manifest(for: platform)
+        let content = try await self.configContent(from: manifest)
+        return try content.decode()
+    }
+
+    /// Returns the raw OCI config content for the specified manifest.
+    func configContent(from manifest: Manifest) async throws -> Content {
         let desc = manifest.config
         guard let content: Content = try await contentStore.get(digest: desc.digest) else {
             throw ContainerizationError(.notFound, message: "content with digest \(desc.digest)")
         }
-        return try content.decode()
+        return content
     }
 
     /// Returns the resolved OCI descriptor for the image.

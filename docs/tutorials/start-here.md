@@ -75,9 +75,11 @@ CONTAINER SUBCOMMANDS:
   kill                    Kill one or more running containers
   list, ls                List containers
   logs                    Fetch container stdio or boot logs
+  pause                   Pause one or more running containers
   run                     Run a container
   start                   Start a container
   stop                    Stop one or more running containers
+  unpause                 Resume one or more paused containers
 
 IMAGE SUBCOMMANDS:
   build                   Build an image from a Dockerfile

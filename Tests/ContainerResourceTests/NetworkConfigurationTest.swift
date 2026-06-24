@@ -16,9 +16,50 @@
 
 import ContainerizationError
 import ContainerizationExtras
+import Foundation
 import Testing
 
 @testable import ContainerResource
+
+struct AttachmentConfigurationTest {
+    @Test func attachmentOptionsRoundTripAliases() throws {
+        let options = AttachmentOptions(hostname: "api", aliases: ["web", "api.internal"], mtu: 1500)
+
+        let data = try JSONEncoder().encode(options)
+        let decoded = try JSONDecoder().decode(AttachmentOptions.self, from: data)
+
+        #expect(decoded.hostname == "api")
+        #expect(decoded.aliases == ["web", "api.internal"])
+        #expect(decoded.mtu == 1500)
+    }
+
+    @Test func attachmentOptionsDecodeMissingAliasesAsEmpty() throws {
+        let data = #"{"hostname":"api"}"#.data(using: .utf8)!
+
+        let decoded = try JSONDecoder().decode(AttachmentOptions.self, from: data)
+
+        #expect(decoded.hostname == "api")
+        #expect(decoded.aliases == [])
+    }
+
+    @Test func attachmentRoundTripsAliases() throws {
+        let attachment = Attachment(
+            network: "default",
+            hostname: "api",
+            aliases: ["web"],
+            ipv4Address: try CIDRv4("192.168.64.2/24"),
+            ipv4Gateway: try IPv4Address("192.168.64.1"),
+            ipv6Address: nil,
+            macAddress: nil
+        )
+
+        let data = try JSONEncoder().encode(attachment)
+        let decoded = try JSONDecoder().decode(Attachment.self, from: data)
+
+        #expect(decoded.hostname == "api")
+        #expect(decoded.aliases == ["web"])
+    }
+}
 
 struct NetworkConfigurationTest {
     @Test func testValidationOkDefaults() throws {

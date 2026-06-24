@@ -193,6 +193,38 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    /// Pause a running container.
+    public func pause(id: String) async throws {
+        do {
+            let request = XPCMessage(route: .containerPause)
+            request.set(key: .id, value: id)
+
+            try await xpcClient.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to pause container",
+                cause: error
+            )
+        }
+    }
+
+    /// Resume a paused container.
+    public func unpause(id: String) async throws {
+        do {
+            let request = XPCMessage(route: .containerUnpause)
+            request.set(key: .id, value: id)
+
+            try await xpcClient.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to unpause container",
+                cause: error
+            )
+        }
+    }
+
     /// Delete the container along with any resources.
     public func delete(id: String, force: Bool = false) async throws {
         do {
@@ -262,11 +294,34 @@ public struct ContainerClient: Sendable {
         }
     }
 
-    /// Get the log file handles for a container.
+    /// Get the raw log file handles for a container.
     public func logs(id: String) async throws -> [FileHandle] {
+        try await logs(id: id, options: .default, replay: .default)
+    }
+
+    /// Get the raw log file handles for a container.
+    ///
+    /// The returned handles contain bytes as stored. Options such as `tail`,
+    /// `since`, and `until` are applied to timestamp-prefixed raw lines where
+    /// possible; timestamp rendering is available through `logRecords(id:options:replay:)`.
+    public func logs(
+        id: String,
+        options: ContainerLogOptions,
+        replay: ContainerLogReplayOptions = .default
+    ) async throws -> [FileHandle] {
         do {
             let request = XPCMessage(route: .containerLogs)
             request.set(key: .id, value: id)
+            if let tail = options.tail {
+                request.set(key: .logTail, value: Int64(tail))
+            }
+            if let since = options.since {
+                request.set(key: .logSince, value: since)
+            }
+            if let until = options.until {
+                request.set(key: .logUntil, value: until)
+            }
+            request.set(key: .logIncludeRotated, value: replay.includeRotated)
 
             let response = try await xpcClient.send(request)
             let fds = response.fileHandles(key: .logs)
@@ -281,6 +336,182 @@ public struct ContainerClient: Sendable {
             throw ContainerizationError(
                 .internalError,
                 message: "failed to get logs for container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Follow the raw stdio log stream for a container.
+    ///
+    /// The returned handle starts with the requested replay window and then
+    /// streams future bytes from local log storage, including bytes written
+    /// after the active log file rotates. Use structured log record APIs for
+    /// timestamp filters.
+    public func followLogs(
+        id: String,
+        options: ContainerLogOptions = .default
+    ) async throws -> FileHandle {
+        do {
+            let request = XPCMessage(route: .containerFollowLogs)
+            request.set(key: .id, value: id)
+            if let tail = options.tail {
+                request.set(key: .logTail, value: Int64(tail))
+            }
+            if let since = options.since {
+                request.set(key: .logSince, value: since)
+            }
+            if let until = options.until {
+                request.set(key: .logUntil, value: until)
+            }
+
+            let response = try await xpcClient.send(request)
+            guard let fd = response.fileHandles(key: .logs)?.first else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "no log fd returned"
+                )
+            }
+            return fd
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to follow logs for container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Get timestamped runtime log records for a container.
+    ///
+    /// Retrieval options are applied after runtime chunks are rebuilt into
+    /// logical log lines. Returned records can therefore be split differently
+    /// from the stored record boundaries when a filter selects a subset of a
+    /// stored chunk.
+    public func logRecords(
+        id: String,
+        options: ContainerLogOptions = .default,
+        replay: ContainerLogReplayOptions = .default
+    ) async throws -> [ContainerLogRecord] {
+        do {
+            let request = XPCMessage(route: .containerLogRecords)
+            request.set(key: .id, value: id)
+            if let tail = options.tail {
+                request.set(key: .logTail, value: Int64(tail))
+            }
+            if let since = options.since {
+                request.set(key: .logSince, value: since)
+            }
+            if let until = options.until {
+                request.set(key: .logUntil, value: until)
+            }
+            request.set(key: .logIncludeRotated, value: replay.includeRotated)
+
+            let response = try await xpcClient.send(request)
+            guard let data = response.dataNoCopy(key: .logRecords) else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "no log records returned"
+                )
+            }
+            return try JSONDecoder().decode([ContainerLogRecord].self, from: data)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to get log records for container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Follow timestamped runtime log records for a container.
+    ///
+    /// The returned stream contains newline-delimited `ContainerLogRecord`
+    /// values after stored chunks are rebuilt into logical log lines. Retrieval
+    /// options are therefore applied to Docker-style line output while the
+    /// runtime still preserves the original stream and timestamp metadata.
+    public func followLogRecords(
+        id: String,
+        options: ContainerLogOptions = .default
+    ) async throws -> FileHandle {
+        do {
+            let request = XPCMessage(route: .containerFollowLogRecords)
+            request.set(key: .id, value: id)
+            if let tail = options.tail {
+                request.set(key: .logTail, value: Int64(tail))
+            }
+            if let since = options.since {
+                request.set(key: .logSince, value: since)
+            }
+            if let until = options.until {
+                request.set(key: .logUntil, value: until)
+            }
+
+            let response = try await xpcClient.send(request)
+            guard let fd = response.fileHandle(key: .logRecordFile) else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "no log record file returned"
+                )
+            }
+            return fd
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to follow log records for container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Get the timestamped log record file for a container.
+    public func logRecordFile(id: String) async throws -> FileHandle {
+        do {
+            let request = XPCMessage(route: .containerLogRecordFile)
+            request.set(key: .id, value: id)
+
+            let response = try await xpcClient.send(request)
+            guard let fd = response.fileHandle(key: .logRecordFile) else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "no log record file returned"
+                )
+            }
+            return fd
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to get log record file for container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Stream lifecycle events emitted by the API server.
+    ///
+    /// The returned handle contains newline-delimited `ContainerEvent` JSON
+    /// values. The stream remains open until the caller closes the handle or
+    /// the API server stops.
+    public func events(options: ContainerEventOptions = .default) async throws -> FileHandle {
+        do {
+            let request = XPCMessage(route: .containerEvent)
+            if let since = options.since {
+                request.set(key: .eventSince, value: since)
+            }
+            if let until = options.until {
+                request.set(key: .eventUntil, value: until)
+            }
+            let response = try await xpcClient.send(request)
+            guard let fd = response.fileHandle(key: .containerEvent) else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "no event file returned"
+                )
+            }
+            return fd
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream container events",
                 cause: error
             )
         }
@@ -312,13 +543,17 @@ public struct ContainerClient: Sendable {
     }
 
     /// Copy a file or directory from the host into the container.
-    public func copyIn(id: String, source: String, destination: String, mode: UInt32 = 0o644, createParents: Bool = true) async throws {
+    public func copyIn(
+        id: String, source: String, destination: String, mode: UInt32 = 0o644, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false
+    ) async throws {
         let request = XPCMessage(route: .containerCopyIn)
         request.set(key: .id, value: id)
         request.set(key: .sourcePath, value: source)
         request.set(key: .destinationPath, value: destination)
         request.set(key: .fileMode, value: UInt64(mode))
         request.set(key: .createParents, value: createParents)
+        request.set(key: .followSymlink, value: followSymlink)
+        request.set(key: .preserveOwnership, value: preserveOwnership)
 
         do {
             try await xpcSend(message: request, timeout: .seconds(300))
@@ -332,12 +567,14 @@ public struct ContainerClient: Sendable {
     }
 
     /// Copy a file or directory from the container to the host.
-    public func copyOut(id: String, source: String, destination: String, createParents: Bool = true) async throws {
+    public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         let request = XPCMessage(route: .containerCopyOut)
         request.set(key: .id, value: id)
         request.set(key: .sourcePath, value: source)
         request.set(key: .destinationPath, value: destination)
         request.set(key: .createParents, value: createParents)
+        request.set(key: .followSymlink, value: followSymlink)
+        request.set(key: .preserveOwnership, value: preserveOwnership)
 
         do {
             try await xpcSend(message: request, timeout: .seconds(300))
@@ -368,6 +605,29 @@ public struct ContainerClient: Sendable {
             throw ContainerizationError(
                 .internalError,
                 message: "failed to get statistics for container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Get process identifiers currently associated with a container.
+    public func processes(id: String) async throws -> ContainerProcesses {
+        let request = XPCMessage(route: .containerProcesses)
+        request.set(key: .id, value: id)
+
+        do {
+            let response = try await xpcClient.send(request)
+            guard let data = response.dataNoCopy(key: .processes) else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "no process data returned"
+                )
+            }
+            return try JSONDecoder().decode(ContainerProcesses.self, from: data)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to get processes for container \(id)",
                 cause: error
             )
         }

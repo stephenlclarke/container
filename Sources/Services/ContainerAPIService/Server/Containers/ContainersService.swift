@@ -35,6 +35,7 @@ public actor ContainersService {
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var client: RuntimeClient? = nil
+        var restart = ContainerRestartTracker()
 
         func getClient() throws -> RuntimeClient {
             guard let client else {
@@ -50,6 +51,7 @@ public actor ContainersService {
 
     private static let machServicePrefix = "com.apple.container"
     private static let launchdDomainString = try! ServiceManager.getDomainString()
+    private static let logTailReadChunkSize = UInt64(32 * 1024)
 
     private let log: Logger
     private let debugHelpers: Bool
@@ -57,10 +59,16 @@ public actor ContainersService {
     private let pluginLoader: PluginLoader
     private let runtimePlugins: [Plugin]
     private let exitMonitor: ExitMonitor
+    private let eventBroadcaster: ContainerEventBroadcaster
     private let containerSystemConfig: ContainerSystemConfig
 
     private let lock: AsyncLock
     private var containers: [String: ContainerState]
+    private var healthCheckTasks: [String: Task<Void, Never>] = [:]
+    private var restartTasks: [String: Task<Void, Never>] = [:]
+    private var restartTaskTokens: [String: UUID] = [:]
+    private var restartStabilityTasks: [String: Task<Void, Never>] = [:]
+    private var restartStabilityTaskTokens: [String: UUID] = [:]
 
     // FIXME: Find a better mechanism for services running on the APIServer to work with each other
     private weak var networksService: NetworksService?
@@ -81,12 +89,17 @@ public actor ContainersService {
         self.containerSystemConfig = containerSystemConfig
         self.log = log
         self.debugHelpers = debugHelpers
+        self.eventBroadcaster = ContainerEventBroadcaster()
         self.runtimePlugins = pluginLoader.findPlugins().filter { $0.hasType(.runtime) }
         self.containers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
     }
 
     public func setNetworksService(_ service: NetworksService) async {
         self.networksService = service
+    }
+
+    func events(options: ContainerEventOptions = .default) async -> ContainerEventSubscription {
+        await eventBroadcaster.subscribe(options: options)
     }
 
     static func loadAtBoot(root: URL, loader: PluginLoader, log: Logger) throws -> [String: ContainerState] {
@@ -282,7 +295,7 @@ public actor ContainersService {
             )
         }
 
-        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(configuration.id)"]) { context in
+        let createdSnapshot = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(configuration.id)"]) { context -> ContainerSnapshot in
             guard await self.containers[configuration.id] == nil else {
                 throw ContainerizationError(
                     .exists,
@@ -294,13 +307,19 @@ public actor ContainersService {
             for container in await self.containers.values {
                 for attachmentConfiguration in container.snapshot.configuration.networks {
                     allHostnames.insert(attachmentConfiguration.options.hostname)
+                    allHostnames.formUnion(attachmentConfiguration.options.aliases)
                 }
             }
 
             var conflictingHostnames = [String]()
+            var requestedHostnames = Set<String>()
             for attachmentConfiguration in configuration.networks {
-                if allHostnames.contains(attachmentConfiguration.options.hostname) {
-                    conflictingHostnames.append(attachmentConfiguration.options.hostname)
+                let requestedNames = Set([attachmentConfiguration.options.hostname] + attachmentConfiguration.options.aliases)
+                for requestedName in requestedNames.sorted() {
+                    if allHostnames.contains(requestedName) || requestedHostnames.contains(requestedName) {
+                        conflictingHostnames.append(requestedName)
+                    }
+                    requestedHostnames.insert(requestedName)
                 }
             }
 
@@ -381,10 +400,13 @@ public actor ContainersService {
                     startedDate: nil
                 )
                 await self.setContainerState(configuration.id, ContainerState(snapshot: snapshot), context: context)
+                return snapshot
             } catch {
                 throw error
             }
         }
+
+        await publishContainerEvent(action: "create", snapshot: createdSnapshot)
     }
 
     /// Bootstrap the init process of the container.
@@ -522,19 +544,20 @@ public actor ContainersService {
             )
         }
 
-        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)", "processId": "\(processID)"]) { context in
+        let restartPolicy = try getContainerCreationOptions(id: id).restartPolicy
+        let startedSnapshot = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)", "processId": "\(processID)"]) { context -> ContainerSnapshot? in
             var state = try await self.getContainerState(id: id, context: context)
 
             let isInit = Self.isInitProcess(id: id, processID: processID)
             if state.snapshot.status == .running && isInit {
-                return
+                return nil
             }
 
             let client = try state.getClient()
             try await client.startProcess(processID)
 
             guard isInit else {
-                return
+                return nil
             }
 
             do {
@@ -554,15 +577,36 @@ public actor ContainersService {
                 try await self.exitMonitor.track(id: id, waitingOn: waitFunc)
 
                 let sandboxSnapshot = try await client.state()
+                let startedDate = Date()
                 state.snapshot.status = .running
                 state.snapshot.networks = sandboxSnapshot.networks
-                state.snapshot.startedDate = Date()
+                state.snapshot.startedDate = startedDate
+                state.snapshot.exitCode = nil
+                state.snapshot.exitedDate = nil
+                state.snapshot.health = state.snapshot.configuration.healthCheck == nil ? nil : .starting
+                state.restart.markStarted()
                 await self.setContainerState(id, state, context: context)
+                await self.scheduleRestartStabilityReset(
+                    id: id,
+                    startedDate: startedDate,
+                    durationInNanoseconds: ContainerRestartTracker.stableRunDuration(for: restartPolicy)
+                )
+                await self.startHealthCheckMonitor(
+                    id: id,
+                    healthCheck: state.snapshot.configuration.healthCheck,
+                    client: client
+                )
+                return state.snapshot
             } catch {
+                await self.stopHealthCheckMonitor(id: id)
                 await self.exitMonitor.stopTracking(id: id)
                 try? await client.stop(options: ContainerStopOptions.default)
                 throw error
             }
+        }
+
+        if let startedSnapshot {
+            await publishContainerEvent(action: "start", snapshot: startedSnapshot)
         }
     }
 
@@ -588,7 +632,12 @@ public actor ContainersService {
             )
         }
 
-        let state = try self._getContainerState(id: id)
+        let state: ContainerState
+        if processID == id {
+            state = try await self.markContainerManuallyStopped(id: id)
+        } else {
+            state = try self._getContainerState(id: id)
+        }
         let client = try state.getClient()
         try await client.kill(processID, signal: signal)
 
@@ -620,7 +669,15 @@ public actor ContainersService {
             )
         }
 
-        let state = try self._getContainerState(id: id)
+        let currentState = try self._getContainerState(id: id)
+        guard currentState.snapshot.status != .paused else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "container is paused; unpause the container before stopping"
+            )
+        }
+
+        let state = try await self.markContainerManuallyStopped(id: id)
 
         // Stop should be idempotent.
         let client: RuntimeClient
@@ -643,6 +700,91 @@ public actor ContainersService {
             }
         }
         try await handleContainerExit(id: id)
+    }
+
+    /// Pause a running container.
+    public func pause(id: String) async throws {
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        let pausedSnapshot = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context -> ContainerSnapshot in
+            var state = try await self.getContainerState(id: id, context: context)
+            guard state.snapshot.status == .running else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container is not running"
+                )
+            }
+
+            let client = try state.getClient()
+            try await client.pause()
+
+            await self.stopHealthCheckMonitor(id: id)
+            state.snapshot.status = .paused
+            await self.setContainerState(id, state, context: context)
+            return state.snapshot
+        }
+
+        await publishContainerEvent(action: "pause", snapshot: pausedSnapshot)
+    }
+
+    /// Resume a paused container.
+    public func unpause(id: String) async throws {
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        let unpausedSnapshot = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context -> ContainerSnapshot in
+            var state = try await self.getContainerState(id: id, context: context)
+            guard state.snapshot.status == .paused else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container is not paused"
+                )
+            }
+
+            let client = try state.getClient()
+            try await client.resume()
+
+            state.snapshot.status = .running
+            state.snapshot.health = state.snapshot.configuration.healthCheck == nil ? nil : .starting
+            await self.setContainerState(id, state, context: context)
+            await self.startHealthCheckMonitor(
+                id: id,
+                healthCheck: state.snapshot.configuration.healthCheck,
+                client: client
+            )
+            return state.snapshot
+        }
+
+        await publishContainerEvent(action: "unpause", snapshot: unpausedSnapshot)
     }
 
     public func dial(id: String, port: UInt32) async throws -> FileHandle {
@@ -723,8 +865,17 @@ public actor ContainersService {
         try await client.resize(processID, size: size)
     }
 
-    // Get the logs for the container.
+    /// Get the logs for the container.
     public func logs(id: String) async throws -> [FileHandle] {
+        try await logs(id: id, options: .default, replay: .default)
+    }
+
+    /// Get the logs for the container.
+    public func logs(
+        id: String,
+        options: ContainerLogOptions = .default,
+        replay: ContainerLogReplayOptions = .default
+    ) async throws -> [FileHandle] {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -750,10 +901,11 @@ public actor ContainersService {
             _ = try _getContainerState(id: id)
             let path = self.containerRoot.appendingPathComponent(id)
             let bundle = ContainerResource.Bundle(path: path)
-            return [
-                try FileHandle(forReadingFrom: bundle.containerLog),
-                try FileHandle(forReadingFrom: bundle.bootlog),
+            let handles = [
+                try Self.logHandle(for: bundle.containerLog, options: options, replay: replay),
+                Self.applyLogOptions(to: try FileHandle(forReadingFrom: bundle.bootlog), options: options),
             ]
+            return handles
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -762,8 +914,581 @@ public actor ContainersService {
         }
     }
 
+    /// Follow raw stdio logs for the container.
+    public func followLogs(
+        id: String,
+        options: ContainerLogOptions = .default
+    ) async throws -> FileHandle {
+        guard options.since == nil && options.until == nil else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "raw followed logs do not support time filters; use structured log records"
+            )
+        }
+
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        do {
+            _ = try _getContainerState(id: id)
+            let path = self.containerRoot.appendingPathComponent(id)
+            let bundle = ContainerResource.Bundle(path: path)
+            return try Self.followLogFile(for: bundle.containerLog, options: options)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to follow container logs: \(error)"
+            )
+        }
+    }
+
+    /// Get timestamped log records for the container.
+    public func logRecords(
+        id: String,
+        options: ContainerLogOptions = .default,
+        replay: ContainerLogReplayOptions = .default
+    ) async throws -> [ContainerLogRecord] {
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        do {
+            _ = try _getContainerState(id: id)
+            let path = self.containerRoot.appendingPathComponent(id)
+            let bundle = ContainerResource.Bundle(path: path)
+            let data = try Self.logData(from: Self.logReplayURLs(for: bundle.containerLogRecords, includeRotated: replay.includeRotated))
+            return try Self.filteredLogRecords(data, options: options)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to open container log records: \(error)"
+            )
+        }
+    }
+
+    /// Get the timestamped log record file for the container.
+    public func logRecordFile(id: String) async throws -> FileHandle {
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        do {
+            _ = try _getContainerState(id: id)
+            let path = self.containerRoot.appendingPathComponent(id)
+            let bundle = ContainerResource.Bundle(path: path)
+            return try FileHandle(forReadingFrom: bundle.containerLogRecords)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to open container log record file: \(error)"
+            )
+        }
+    }
+
+    /// Follow timestamped log records for the container.
+    public func followLogRecords(
+        id: String,
+        options: ContainerLogOptions = .default
+    ) async throws -> FileHandle {
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        do {
+            _ = try _getContainerState(id: id)
+            let path = self.containerRoot.appendingPathComponent(id)
+            let bundle = ContainerResource.Bundle(path: path)
+            return try Self.followLogRecordFile(
+                for: bundle.containerLogRecords,
+                options: options,
+                isLive: { await self.isLiveForLogFollow(id: id) }
+            )
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to follow container log records: \(error)"
+            )
+        }
+    }
+
+    static func logHandle(
+        for url: URL,
+        options: ContainerLogOptions,
+        replay: ContainerLogReplayOptions
+    ) throws -> FileHandle {
+        guard replay.includeRotated else {
+            return Self.applyLogOptions(to: try FileHandle(forReadingFrom: url), options: options)
+        }
+
+        let urls = Self.logReplayURLs(for: url, includeRotated: true)
+        let filtered =
+            if let tail = options.tail, tail >= 0, options.since == nil, options.until == nil {
+                try Self.tailLogData(from: urls, lineCount: tail)
+            } else {
+                try Self.filteredLogData(Self.logData(from: urls), options: options)
+            }
+        guard let replayHandle = Self.temporaryFileHandle(containing: filtered) else {
+            return Self.applyLogOptions(to: try FileHandle(forReadingFrom: url), options: options)
+        }
+        return replayHandle
+    }
+
+    static func logReplayURLs(for url: URL, includeRotated: Bool) -> [URL] {
+        guard includeRotated else {
+            return [url]
+        }
+        return Self.rotatedLogURLs(for: url) + [url]
+    }
+
+    static func rotatedLogURLs(for url: URL) -> [URL] {
+        let directory = url.deletingLastPathComponent()
+        let prefix = "\(url.lastPathComponent)."
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey]) else {
+            return []
+        }
+
+        return urls.compactMap { candidate -> (index: Int, url: URL)? in
+            guard (try? candidate.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else {
+                return nil
+            }
+            let name = candidate.lastPathComponent
+            guard name.hasPrefix(prefix) else {
+                return nil
+            }
+            let suffix = name.dropFirst(prefix.count)
+            guard let index = Int(suffix), index > 0 else {
+                return nil
+            }
+            return (index, candidate)
+        }
+        .sorted { left, right in
+            left.index > right.index
+        }
+        .map { $0.url }
+    }
+
+    static func logData(from urls: [URL]) throws -> Data {
+        var data = Data()
+        for url in urls {
+            data.append(try Data(contentsOf: url))
+        }
+        return data
+    }
+
+    static func tailLogData(from urls: [URL], lineCount: Int) throws -> Data {
+        guard lineCount != 0 else {
+            return Data()
+        }
+        guard lineCount > 0 else {
+            return try logData(from: urls)
+        }
+
+        var buffer = TailLogBuffer()
+        for url in urls.reversed() {
+            guard buffer.lineCount <= lineCount else {
+                break
+            }
+
+            let handle = try FileHandle(forReadingFrom: url)
+            defer {
+                try? handle.close()
+            }
+            try appendTailData(from: handle, lineCount: lineCount, into: &buffer)
+        }
+        return filteredLogData(buffer.data, options: ContainerLogOptions(tail: lineCount))
+    }
+
+    private static func tailLogData(from handle: FileHandle, lineCount: Int) throws -> Data {
+        guard lineCount != 0 else {
+            return Data()
+        }
+        guard lineCount > 0 else {
+            try handle.seek(toOffset: 0)
+            return handle.readDataToEndOfFile()
+        }
+
+        var buffer = TailLogBuffer()
+        try appendTailData(from: handle, lineCount: lineCount, into: &buffer)
+        return filteredLogData(buffer.data, options: ContainerLogOptions(tail: lineCount))
+    }
+
+    private static func appendTailData(
+        from handle: FileHandle,
+        lineCount: Int,
+        into buffer: inout TailLogBuffer
+    ) throws {
+        var offset = try handle.seekToEnd()
+        while offset > 0, buffer.lineCount <= lineCount {
+            let readSize = min(logTailReadChunkSize, offset)
+            offset -= readSize
+            try handle.seek(toOffset: offset)
+            buffer.appendReverseChunk(handle.readData(ofLength: Int(readSize)))
+        }
+    }
+
+    private struct TailLogBuffer {
+        private var reverseChunks: [Data] = []
+        private var lineFeedCount = 0
+        private var newestByte: UInt8?
+
+        var data: Data {
+            var result = Data()
+            for chunk in reverseChunks.reversed() {
+                result.append(chunk)
+            }
+            return result
+        }
+
+        var lineCount: Int {
+            guard let newestByte else {
+                return 0
+            }
+            return newestByte == LogByte.lineFeed ? lineFeedCount : lineFeedCount + 1
+        }
+
+        mutating func appendReverseChunk(_ chunk: Data) {
+            guard !chunk.isEmpty else {
+                return
+            }
+            if newestByte == nil {
+                newestByte = chunk.last
+            }
+            lineFeedCount += chunk.reduce(0) { count, byte in
+                byte == LogByte.lineFeed ? count + 1 : count
+            }
+            reverseChunks.append(chunk)
+        }
+    }
+
+    static func applyLogOptions(to handle: FileHandle, options: ContainerLogOptions) -> FileHandle {
+        guard options.tail != nil || options.since != nil || options.until != nil else {
+            return handle
+        }
+        if let tail = options.tail, options.since == nil, options.until == nil {
+            guard tail >= 0 else {
+                return handle
+            }
+
+            do {
+                let data = try Self.tailLogData(from: handle, lineCount: tail)
+                guard let filteredHandle = Self.temporaryFileHandle(containing: data) else {
+                    try? handle.seek(toOffset: 0)
+                    return handle
+                }
+                try? handle.close()
+                return filteredHandle
+            } catch {
+                try? handle.seek(toOffset: 0)
+                return handle
+            }
+        }
+        guard let data = try? handle.readToEnd() else {
+            return handle
+        }
+        let filtered = Self.filteredLogData(data, options: options)
+        guard let filteredHandle = Self.temporaryFileHandle(containing: filtered) else {
+            try? handle.seek(toOffset: 0)
+            return handle
+        }
+        try? handle.close()
+        return filteredHandle
+    }
+
+    static func filteredLogData(_ data: Data, options: ContainerLogOptions) -> Data {
+        guard !data.isEmpty else {
+            return Data()
+        }
+        let appliesTail = options.tail.map { $0 >= 0 } ?? false
+        guard appliesTail || options.since != nil || options.until != nil else {
+            return data
+        }
+
+        var lines = logDataLines(data)
+
+        let timestampParser = LogTimestampParser()
+        lines = lines.filter { line in
+            guard let timestamp = timestampParser.timestampPrefix(from: line.data) else {
+                return true
+            }
+            if let since = options.since, timestamp < since {
+                return false
+            }
+            if let until = options.until, timestamp > until {
+                return false
+            }
+            return true
+        }
+
+        if let tail = options.tail, tail >= 0 {
+            if tail == 0 {
+                return Data()
+            }
+            lines = Array(lines.suffix(tail))
+        }
+
+        return joinedLogData(lines)
+    }
+
+    static func filteredLogRecords(_ data: Data, options: ContainerLogOptions) throws -> [ContainerLogRecord] {
+        guard !data.isEmpty else {
+            return []
+        }
+        let records = try decodedLogRecords(data)
+        return filteredLogRecords(records, options: options)
+    }
+
+    static func filteredLogRecords(_ records: [ContainerLogRecord], options: ContainerLogOptions) -> [ContainerLogRecord] {
+        let appliesTail = options.tail.map { $0 >= 0 } ?? false
+        guard appliesTail || options.since != nil || options.until != nil else {
+            return records
+        }
+        if options.tail == 0 {
+            return []
+        }
+
+        var accumulator = StructuredLogLineAccumulator()
+        var lines = records.flatMap { accumulator.append($0) }
+        if let line = accumulator.flush() {
+            lines.append(line)
+        }
+
+        lines = lines.filter { line in
+            if let since = options.since, line.timestamp < since {
+                return false
+            }
+            if let until = options.until, line.timestamp > until {
+                return false
+            }
+            return true
+        }
+
+        if let tail = options.tail, tail >= 0 {
+            lines = Array(lines.suffix(tail))
+        }
+
+        return lines.map(\.record)
+    }
+
+    private static func decodedLogRecords(_ data: Data) throws -> [ContainerLogRecord] {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try data.split(separator: LogByte.lineFeed).map { line in
+            try decoder.decode(ContainerLogRecord.self, from: Data(line))
+        }
+    }
+
+    private static func temporaryFileHandle(containing data: Data) -> FileHandle? {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("container-log-\(UUID().uuidString)")
+        do {
+            try data.write(to: url)
+            let handle = try FileHandle(forReadingFrom: url)
+            try? FileManager.default.removeItem(at: url)
+            return handle
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            return nil
+        }
+    }
+
+    private static func logDataLines(_ data: Data) -> [LogDataLine] {
+        var lines: [LogDataLine] = []
+        var current = Data()
+
+        for byte in data {
+            if byte == LogByte.lineFeed {
+                lines.append(LogDataLine(data: current, terminated: true))
+                current.removeAll()
+            } else {
+                current.append(byte)
+            }
+        }
+        if !current.isEmpty {
+            lines.append(LogDataLine(data: current, terminated: false))
+        }
+        return lines
+    }
+
+    private static func joinedLogData(_ lines: [LogDataLine]) -> Data {
+        var result = Data()
+        for (index, line) in lines.enumerated() {
+            result.append(line.data)
+            if line.terminated || index < lines.count - 1 {
+                result.append(LogByte.lineFeed)
+            }
+        }
+        return result
+    }
+
+    private struct LogDataLine {
+        var data: Data
+        var terminated: Bool
+    }
+
+    private struct StructuredLogLine {
+        var timestamp: Date
+        var stream: ContainerLogRecord.Stream
+        var data: Data
+        var terminated: Bool
+
+        var record: ContainerLogRecord {
+            var recordData = data
+            if terminated {
+                recordData.append(LogByte.lineFeed)
+            }
+            return ContainerLogRecord(timestamp: timestamp, stream: stream, data: recordData)
+        }
+    }
+
+    private struct StructuredLogLineAccumulator {
+        private var pending = Data()
+        private var pendingTimestamp: Date?
+        private var pendingStream: ContainerLogRecord.Stream?
+
+        mutating func append(_ record: ContainerLogRecord) -> [StructuredLogLine] {
+            guard !record.data.isEmpty else {
+                return []
+            }
+
+            var lines: [StructuredLogLine] = []
+            var index = record.data.startIndex
+            while index < record.data.endIndex {
+                let byte = record.data[index]
+                if byte == LogByte.lineFeed {
+                    lines.append(completeLine(record: record, terminated: true))
+                    index = record.data.index(after: index)
+                } else {
+                    if pendingTimestamp == nil {
+                        pendingTimestamp = record.timestamp
+                        pendingStream = record.stream
+                    }
+                    pending.append(byte)
+                    index = record.data.index(after: index)
+                }
+            }
+            return lines
+        }
+
+        mutating func flush() -> StructuredLogLine? {
+            guard !pending.isEmpty,
+                let timestamp = pendingTimestamp,
+                let stream = pendingStream
+            else {
+                return nil
+            }
+            let line = StructuredLogLine(timestamp: timestamp, stream: stream, data: pending, terminated: false)
+            pending.removeAll()
+            pendingTimestamp = nil
+            pendingStream = nil
+            return line
+        }
+
+        private mutating func completeLine(record: ContainerLogRecord, terminated: Bool) -> StructuredLogLine {
+            let line = StructuredLogLine(
+                timestamp: pendingTimestamp ?? record.timestamp,
+                stream: pendingStream ?? record.stream,
+                data: pending,
+                terminated: terminated
+            )
+            pending.removeAll()
+            pendingTimestamp = nil
+            pendingStream = nil
+            return line
+        }
+    }
+
+    private struct LogTimestampParser {
+        private let fractionalFormatter: ISO8601DateFormatter
+        private let formatter: ISO8601DateFormatter
+
+        init() {
+            let fractionalFormatter = ISO8601DateFormatter()
+            fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            self.fractionalFormatter = fractionalFormatter
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            self.formatter = formatter
+        }
+
+        func timestampPrefix(from line: Data) -> Date? {
+            let token = Data(line.prefix { $0 != UInt8(ascii: " ") })
+            guard let timestamp = String(data: token, encoding: .utf8) else {
+                return nil
+            }
+            return timestampPrefix(fromTimestampToken: timestamp)
+        }
+
+        private func timestampPrefix(fromTimestampToken timestamp: String) -> Date? {
+            if let date = fractionalFormatter.date(from: timestamp) {
+                return date
+            }
+
+            return formatter.date(from: timestamp)
+        }
+    }
+
+    private enum LogByte {
+        static let lineFeed = UInt8(ascii: "\n")
+    }
+
     /// Copy a file or directory from the host into the container.
-    public func copyIn(id: String, source: String, destination: String, mode: UInt32, createParents: Bool = true) async throws {
+    public func copyIn(id: String, source: String, destination: String, mode: UInt32, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false)
+        async throws
+    {
         self.log.debug("\(#function)")
 
         let state = try self._getContainerState(id: id)
@@ -771,11 +1496,12 @@ public actor ContainersService {
             throw ContainerizationError(.invalidState, message: "container \(id) is not running")
         }
         let client = try state.getClient()
-        try await client.copyIn(source: source, destination: destination, mode: mode, createParents: createParents)
+        try await client.copyIn(
+            source: source, destination: destination, mode: mode, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
     }
 
     /// Copy a file or directory from the container to the host.
-    public func copyOut(id: String, source: String, destination: String, createParents: Bool = true) async throws {
+    public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         self.log.debug("\(#function)")
 
         let state = try self._getContainerState(id: id)
@@ -783,7 +1509,7 @@ public actor ContainersService {
             throw ContainerizationError(.invalidState, message: "container \(id) is not running")
         }
         let client = try state.getClient()
-        try await client.copyOut(source: source, destination: destination, createParents: createParents)
+        try await client.copyOut(source: source, destination: destination, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
     }
 
     /// Get statistics for the container.
@@ -810,6 +1536,33 @@ public actor ContainersService {
         return try await client.statistics()
     }
 
+    /// Get process identifiers for the container.
+    public func processes(id: String) async throws -> ContainerProcesses {
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        let state = try self._getContainerState(id: id)
+        guard state.snapshot.status == .running || state.snapshot.status == .paused else {
+            throw ContainerizationError(.invalidState, message: "container \(id) is not running or paused")
+        }
+        let client = try state.getClient()
+        return try await client.processes()
+    }
+
     /// Delete a container and its resources.
     public func delete(id: String, force: Bool) async throws {
         log.info(
@@ -831,6 +1584,7 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        let events: [ContainerEvent]
         switch state.snapshot.status {
         case .running:
             if !force {
@@ -845,7 +1599,7 @@ public actor ContainersService {
             )
             let client = try state.getClient()
             try await client.stop(options: opts)
-            try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+            events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
                 self.log.info(
                     "ContainersService: attempt cleanup",
                     metadata: [
@@ -861,6 +1615,14 @@ public actor ContainersService {
                         "id": "\(id)",
                     ]
                 )
+                var stoppedSnapshot = state.snapshot
+                stoppedSnapshot.status = .stopped
+                stoppedSnapshot.networks = []
+                stoppedSnapshot.health = nil
+                return [
+                    Self.containerEvent(action: "stop", snapshot: stoppedSnapshot),
+                    Self.containerEvent(action: "delete", snapshot: stoppedSnapshot),
+                ]
             }
         case .stopping:
             throw ContainerizationError(
@@ -868,9 +1630,14 @@ public actor ContainersService {
                 message: "container \(id) is \(state.snapshot.status) and can not be deleted"
             )
         default:
-            try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+            events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
                 try await self.cleanUp(id: id, context: context)
+                return [Self.containerEvent(action: "delete", snapshot: state.snapshot)]
             }
+        }
+
+        for event in events {
+            await eventBroadcaster.publish(event)
         }
     }
 
@@ -912,12 +1679,15 @@ public actor ContainersService {
     }
 
     private func handleContainerExit(id: String, code: ExitStatus? = nil) async throws {
-        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { [self] context in
+        let events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { [self] context in
             try await handleContainerExit(id: id, code: code, context: context)
+        }
+        for event in events {
+            await eventBroadcaster.publish(event)
         }
     }
 
-    private func handleContainerExit(id: String, code: ExitStatus?, context: AsyncLock.Context) async throws {
+    private func handleContainerExit(id: String, code: ExitStatus?, context: AsyncLock.Context) async throws -> [ContainerEvent] {
         if let code {
             self.log.info(
                 "handling container exit",
@@ -931,14 +1701,15 @@ public actor ContainersService {
         do {
             state = try self.getContainerState(id: id, context: context)
             if state.snapshot.status == .stopped {
-                return
+                return []
             }
         } catch {
             // Was auto removed by the background thread, nothing for us to do.
-            return
+            return []
         }
 
         await self.exitMonitor.stopTracking(id: id)
+        self.stopHealthCheckMonitor(id: id)
 
         // Shutdown and deregister the runtime service
         self.log.info("shutting down runtime service", metadata: ["id": "\(id)"])
@@ -984,17 +1755,53 @@ public actor ContainersService {
 
         state.snapshot.status = .stopped
         state.snapshot.networks = []
+        state.snapshot.health = nil
+        if let code {
+            state.snapshot.exitCode = code.exitCode
+            state.snapshot.exitedDate = code.exitedAt
+        }
         state.client = nil
-        await self.setContainerState(id, state, context: context)
 
         let options = try getContainerCreationOptions(id: id)
+        let stopEvent = Self.containerEvent(action: "stop", snapshot: state.snapshot)
         if options.autoRemove {
+            await self.setContainerState(id, state, context: context)
             try await self.cleanUp(id: id, context: context)
+            return [
+                stopEvent,
+                Self.containerEvent(action: "delete", snapshot: state.snapshot),
+            ]
         }
+
+        let restartDelay = state.restart.restartDelay(
+            policy: options.restartPolicy,
+            exitCode: code?.exitCode
+        )
+        await self.setContainerState(id, state, context: context)
+        if let restartDelay {
+            self.scheduleRestart(id: id, delayInNanoseconds: restartDelay)
+        }
+        return [stopEvent]
     }
 
     private static func fullLaunchdServiceLabel(runtimeName: String, instanceId: String) -> String {
         "\(Self.launchdDomainString)/\(Self.machServicePrefix).\(runtimeName).\(instanceId)"
+    }
+
+    private static func containerEvent(action: String, snapshot: ContainerSnapshot) -> ContainerEvent {
+        var attributes = snapshot.configuration.labels
+        attributes["image"] = snapshot.configuration.image.reference
+        attributes["status"] = snapshot.status.rawValue
+        return ContainerEvent(
+            type: "container",
+            id: snapshot.id,
+            action: action,
+            attributes: attributes
+        )
+    }
+
+    private func publishContainerEvent(action: String, snapshot: ContainerSnapshot) async {
+        await eventBroadcaster.publish(Self.containerEvent(action: action, snapshot: snapshot))
     }
 
     private func _cleanUp(id: String) async throws {
@@ -1068,6 +1875,8 @@ public actor ContainersService {
     }
 
     private func cleanUp(id: String, context: AsyncLock.Context) async throws {
+        self.stopHealthCheckMonitor(id: id)
+        self.cancelRestartTasks(id: id)
         try await self._cleanUp(id: id)
     }
 
@@ -1111,6 +1920,282 @@ public actor ContainersService {
         self.containers[id] = state
     }
 
+    private func startHealthCheckMonitor(
+        id: String,
+        healthCheck: ContainerHealthCheck?,
+        client: RuntimeClient
+    ) async {
+        self.stopHealthCheckMonitor(id: id)
+        guard let healthCheck else {
+            return
+        }
+
+        healthCheckTasks[id] = Task {
+            await self.runHealthCheckMonitor(
+                id: id,
+                healthCheck: healthCheck,
+                client: client
+            )
+        }
+    }
+
+    private func stopHealthCheckMonitor(id: String) {
+        healthCheckTasks[id]?.cancel()
+        healthCheckTasks.removeValue(forKey: id)
+    }
+
+    private func markContainerManuallyStopped(id: String) async throws -> ContainerState {
+        cancelRestartTasks(id: id)
+        return try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+            var state = try await self.getContainerState(id: id, context: context)
+            state.restart.markManuallyStopped()
+            await self.setContainerState(id, state, context: context)
+            return state
+        }
+    }
+
+    private func cancelRestartTasks(id: String) {
+        restartTasks[id]?.cancel()
+        restartTasks.removeValue(forKey: id)
+        restartTaskTokens.removeValue(forKey: id)
+        restartStabilityTasks[id]?.cancel()
+        restartStabilityTasks.removeValue(forKey: id)
+        restartStabilityTaskTokens.removeValue(forKey: id)
+    }
+
+    private func scheduleRestart(id: String, delayInNanoseconds: UInt64) {
+        restartTasks[id]?.cancel()
+        let token = UUID()
+        restartTaskTokens[id] = token
+        restartTasks[id] = Task {
+            await self.runScheduledRestart(id: id, token: token, delayInNanoseconds: delayInNanoseconds)
+        }
+    }
+
+    private func runScheduledRestart(id: String, token: UUID, delayInNanoseconds: UInt64) async {
+        defer {
+            if restartTaskTokens[id] == token {
+                restartTasks.removeValue(forKey: id)
+                restartTaskTokens.removeValue(forKey: id)
+            }
+        }
+
+        do {
+            try await Task.sleep(for: Self.duration(fromNanoseconds: delayInNanoseconds))
+            try Task.checkCancellation()
+            guard try await prepareContainerForRestart(id: id) else {
+                return
+            }
+            try Task.checkCancellation()
+            guard restartTaskTokens[id] == token else {
+                return
+            }
+            try await bootstrap(id: id, stdio: [FileHandle?](repeating: nil, count: 3), dynamicEnv: [:])
+            try await startProcess(id: id, processID: id)
+        } catch is CancellationError {
+            return
+        } catch {
+            await markContainerRestartFailed(id: id)
+            log.error(
+                "failed to restart container",
+                metadata: [
+                    "id": "\(id)",
+                    "error": "\(error)",
+                ])
+        }
+    }
+
+    private func prepareContainerForRestart(id: String) async throws -> Bool {
+        try await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+            let state = try await self.getContainerState(id: id, context: context)
+            guard state.snapshot.status == .stopped, state.restart.allowsAutomaticRestart else {
+                return false
+            }
+            return true
+        }
+    }
+
+    private func markContainerRestartFailed(id: String) async {
+        await self.exitMonitor.stopTracking(id: id)
+        self.stopHealthCheckMonitor(id: id)
+
+        let cleanup = await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context -> (RuntimeClient?, String?) in
+            guard var state = try? await self.getContainerState(id: id, context: context) else {
+                return (nil, nil)
+            }
+
+            let label = Self.fullLaunchdServiceLabel(
+                runtimeName: state.snapshot.configuration.runtimeHandler,
+                instanceId: id
+            )
+            let client = state.client
+
+            state.snapshot.status = .stopped
+            state.snapshot.networks = []
+            state.snapshot.health = nil
+            state.client = nil
+            await self.setContainerState(id, state, context: context)
+            return (client, label)
+        }
+
+        if let client = cleanup.0 {
+            try? await client.stop(options: ContainerStopOptions.default)
+        }
+        if let label = cleanup.1 {
+            try? ServiceManager.deregister(fullServiceLabel: label)
+        }
+    }
+
+    private func scheduleRestartStabilityReset(
+        id: String,
+        startedDate: Date,
+        durationInNanoseconds: UInt64
+    ) {
+        restartStabilityTasks[id]?.cancel()
+        let token = UUID()
+        restartStabilityTaskTokens[id] = token
+        restartStabilityTasks[id] = Task {
+            await self.runRestartStabilityReset(
+                id: id,
+                token: token,
+                startedDate: startedDate,
+                durationInNanoseconds: durationInNanoseconds
+            )
+        }
+    }
+
+    private func runRestartStabilityReset(
+        id: String,
+        token: UUID,
+        startedDate: Date,
+        durationInNanoseconds: UInt64
+    ) async {
+        defer {
+            if restartStabilityTaskTokens[id] == token {
+                restartStabilityTasks.removeValue(forKey: id)
+                restartStabilityTaskTokens.removeValue(forKey: id)
+            }
+        }
+
+        do {
+            try await Task.sleep(for: Self.duration(fromNanoseconds: durationInNanoseconds))
+        } catch {
+            return
+        }
+
+        await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+            guard var state = try? await self.getContainerState(id: id, context: context),
+                state.snapshot.status == .running,
+                state.snapshot.startedDate == startedDate
+            else {
+                return
+            }
+            state.restart.markStable()
+            await self.setContainerState(id, state, context: context)
+        }
+    }
+
+    private func runHealthCheckMonitor(
+        id: String,
+        healthCheck: ContainerHealthCheck,
+        client: RuntimeClient
+    ) async {
+        var tracker = ContainerHealthProbeTracker(retries: healthCheck.retries)
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        while !Task.isCancelled {
+            let countsFailure =
+                startedAt.duration(to: clock.now)
+                >= Self.duration(
+                    fromNanoseconds: healthCheck.startPeriodInNanoseconds)
+            let exitCode = await runHealthProbe(id: id, healthCheck: healthCheck, client: client)
+            let status = tracker.record(exitCode: exitCode, countsFailure: countsFailure)
+            let isRunning = await updateHealthStatus(id: id, status: status)
+            guard isRunning else {
+                return
+            }
+
+            let delay =
+                countsFailure
+                ? healthCheck.intervalInNanoseconds
+                : (healthCheck.startIntervalInNanoseconds ?? healthCheck.intervalInNanoseconds)
+            do {
+                try await Task.sleep(for: Self.duration(fromNanoseconds: delay))
+            } catch {
+                return
+            }
+        }
+    }
+
+    private func runHealthProbe(
+        id: String,
+        healthCheck: ContainerHealthCheck,
+        client: RuntimeClient
+    ) async -> Int32 {
+        let processID = "\(id)-health-\(UUID().uuidString.lowercased())"
+        do {
+            try await client.createProcess(processID, config: healthCheck.process, stdio: [])
+            try await client.startProcess(processID)
+            return try await waitForHealthProbe(
+                processID: processID,
+                timeout: Self.duration(fromNanoseconds: healthCheck.timeoutInNanoseconds),
+                client: client
+            )
+        } catch {
+            self.log.debug(
+                "health probe failed",
+                metadata: [
+                    "id": "\(id)",
+                    "processId": "\(processID)",
+                    "error": "\(error)",
+                ])
+            return 1
+        }
+    }
+
+    private func waitForHealthProbe(
+        processID: String,
+        timeout: Duration,
+        client: RuntimeClient
+    ) async throws -> Int32 {
+        try await withThrowingTaskGroup(of: Int32.self) { group in
+            group.addTask {
+                try await client.wait(processID).exitCode
+            }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: timeout)
+                    try? await client.kill(processID, signal: "SIGKILL")
+                    return 137
+                } catch {
+                    return 137
+                }
+            }
+
+            guard let exitCode = try await group.next() else {
+                throw ContainerizationError(.internalError, message: "health probe did not return an exit code")
+            }
+            group.cancelAll()
+            return exitCode
+        }
+    }
+
+    private func updateHealthStatus(id: String, status: HealthStatus) async -> Bool {
+        await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+            guard var state = try? await self.getContainerState(id: id, context: context), state.snapshot.status == .running else {
+                return false
+            }
+            state.snapshot.health = status
+            await self.setContainerState(id, state, context: context)
+            return true
+        }
+    }
+
+    static func duration(fromNanoseconds nanoseconds: UInt64) -> Duration {
+        .nanoseconds(Int64(clamping: nanoseconds))
+    }
+
     private func getContainerState(id: String, context: AsyncLock.Context) throws -> ContainerState {
         try self._getContainerState(id: id)
     }
@@ -1124,6 +2209,13 @@ public actor ContainersService {
             )
         }
         return state
+    }
+
+    private func isLiveForLogFollow(id: String) -> Bool {
+        guard let state = try? _getContainerState(id: id) else {
+            return false
+        }
+        return state.snapshot.status == .running || state.snapshot.status == .stopping
     }
 
     private static func isInitProcess(id: String, processID: String) -> Bool {

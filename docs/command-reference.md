@@ -48,18 +48,21 @@ container run [<options>] <image> [<arguments> ...]
 *   `--cap-drop <cap>`: Drop a Linux capability (e.g. `CAP_NET_RAW`, `NET_RAW`, or `ALL`)
 *   `--cidfile <cidfile>`: Write the container ID to the path provided
 *   `-d, --detach`: Run the container and detach from the process
+*   `--add-host <host:address>`: Add a custom host mapping to `/etc/hosts` (format: `host:ip`, `host=ip`, or `host:host-gateway`)
 *   `--dns <ip>`: DNS nameserver IP address
 *   `--dns-domain <domain>`: Default DNS domain
 *   `--dns-option <option>`: DNS options
 *   `--dns-search <domain>`: DNS search domains
+*   `--domainname <domainname>`: Set the NIS domain name visible inside the container
 *   `--entrypoint <cmd>`: Override the entrypoint of the image
+*   `-h, --hostname <hostname>`: Set the hostname visible inside the container
 *   `--init`: Run an init process inside the container that forwards signals and reaps processes
 *   `--init-image <image>`: Use a custom init image instead of the default. This allows customizing boot-time behavior before the OCI container starts, such as running VM-level daemons, configuring eBPF filters, or debugging the init process.
 *   `-k, --kernel <path>`: Set a custom kernel path
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
+*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
@@ -71,6 +74,8 @@ container run [<options>] <image> [<arguments> ...]
 *   `--runtime`: Set the runtime handler for the container (default: container-runtime-linux)
 *   `--ssh`: Forward SSH agent socket to container
 *   `--shm-size <shm-size>`: Size of `/dev/shm` (e.g. 64M, 1G)
+*   `--blkio <option>`: Block I/O cgroup tuning options (format: `weight=500` or `device=<path|major:minor>,read-bps=1048576`)
+*   `--sysctl <name=value>`: Set a namespaced kernel parameter
 *   `--tmpfs <tmpfs>`: Add a tmpfs mount to the container at the given path
 *   `-v, --volume <volume>`: Bind mount a volume into the container
 *   `--virtualization`: Expose virtualization capabilities to the container (requires host and guest support)
@@ -113,6 +118,9 @@ container run -e NODE_ENV=production --cpus 2 --memory 1G node:18
 
 # run a container with a specific MAC address
 container run --network default,mac=02:42:ac:11:00:02 ubuntu:latest
+
+# run a container with a network alias
+container run --network default,alias=api.internal ubuntu:latest
 
 # run a container with an init process to reap zombies and forward signals
 container run --init ubuntu:latest my-app
@@ -221,18 +229,21 @@ container create [<options>] <image> [<arguments> ...]
 *   `--cap-drop <cap>`: Drop a Linux capability (e.g. `CAP_NET_RAW`, `NET_RAW`, or `ALL`)
 *   `--cidfile <cidfile>`: Write the container ID to the path provided
 *   `-d, --detach`: Run the container and detach from the process
+*   `--add-host <host:address>`: Add a custom host mapping to `/etc/hosts` (format: `host:ip`, `host=ip`, or `host:host-gateway`)
 *   `--dns <ip>`: DNS nameserver IP address
 *   `--dns-domain <domain>`: Default DNS domain
 *   `--dns-option <option>`: DNS options
 *   `--dns-search <domain>`: DNS search domains
+*   `--domainname <domainname>`: Set the NIS domain name visible inside the container
 *   `--entrypoint <cmd>`: Override the entrypoint of the image
+*   `-h, --hostname <hostname>`: Set the hostname visible inside the container
 *   `--init`: Run an init process inside the container that forwards signals and reaps processes
 *   `--init-image <image>`: Use a custom init image instead of the default. This allows customizing boot-time behavior before the OCI container starts, such as running VM-level daemons, configuring eBPF filters, or debugging the init process.
 *   `-k, --kernel <path>`: Set a custom kernel path
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
+*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
@@ -244,6 +255,8 @@ container create [<options>] <image> [<arguments> ...]
 *   `--runtime`: Set the runtime handler for the container (default: container-runtime-linux)  
 *   `--ssh`: Forward SSH agent socket to container
 *   `--shm-size <shm-size>`: Size of `/dev/shm` (e.g. 64M, 1G)
+*   `--blkio <option>`: Block I/O cgroup tuning options (format: `weight=500` or `device=<path|major:minor>,read-bps=1048576`)
+*   `--sysctl <name=value>`: Set a namespaced kernel parameter
 *   `--tmpfs <tmpfs>`: Add a tmpfs mount to the container at the given path
 *   `-v, --volume <volume>`: Bind mount a volume into the container
 *   `--virtualization`: Expose virtualization capabilities to the container (requires host and guest support)
@@ -258,7 +271,7 @@ container create [<options>] <image> [<arguments> ...]
 
 ### `container start`
 
-Starts a stopped container. You can attach to the container's output streams and optionally keep STDIN open.
+Starts a stopped container. You can attach to the container's output streams and optionally keep STDIN open. A paused container must be resumed with `container unpause` before it can be started or stopped.
 
 **Usage**
 
@@ -294,6 +307,42 @@ container stop [--all] [--signal <signal>] [--time <time>] [--debug] [<container
 *   `-a, --all`: Stop all running containers
 *   `-s, --signal <signal>`: Signal to send to the containers (default: SIGTERM)
 *   `-t, --time <time>`: Seconds to wait before killing the containers (default: 5)
+
+### `container pause`
+
+Pauses running containers without terminating their processes. A paused container remains present in `container list` and can be resumed with `container unpause`.
+
+**Usage**
+
+```bash
+container pause [--all] [--debug] [<container-ids> ...]
+```
+
+**Arguments**
+
+*   `<container-ids>`: Container IDs
+
+**Options**
+
+*   `-a, --all`: Pause all running containers
+
+### `container unpause`
+
+Resumes paused containers.
+
+**Usage**
+
+```bash
+container unpause [--all] [--debug] [<container-ids> ...]
+```
+
+**Arguments**
+
+*   `<container-ids>`: Container IDs
+
+**Options**
+
+*   `-a, --all`: Resume all paused containers
 
 ### `container kill`
 
@@ -410,12 +459,12 @@ container export mycontainer > mycontainer.tar
 
 ### `container logs`
 
-Fetches logs from a container. You can follow the logs (`-f`/`--follow`), restrict the number of lines shown, or view boot logs.
+Fetches logs from a container. You can follow the logs (`-f`/`--follow`), restrict the number of lines shown, filter by RFC 3339 or Unix timestamp, include runtime capture timestamps, or view boot logs.
 
 **Usage**
 
 ```bash
-container logs [--boot] [--follow] [-n <n>] [--debug] <container-id>
+container logs [--boot] [--follow] [-n <n>] [--tail <n>] [--since <timestamp>] [--until <timestamp>] [--timestamps] [--debug] <container-id>
 ```
 
 **Arguments**
@@ -426,7 +475,33 @@ container logs [--boot] [--follow] [-n <n>] [--debug] <container-id>
 
 *   `--boot`: Display the boot log for the container instead of stdio
 *   `-f, --follow`: Follow log output
-*   `-n <n>`: Number of lines to show from the end of the logs. If not provided this will print all of the logs
+*   `-n, --tail <n>`: Number of lines to show from the end of the logs. If not provided this will print all of the logs
+*   `--since <timestamp>`: Show logs after the specified RFC 3339 or Unix timestamp
+*   `--until <timestamp>`: Show logs before the specified RFC 3339 or Unix timestamp
+*   `-t, --timestamps`: Show runtime capture timestamps
+
+`--timestamps`, `--since`, and `--until` apply to stdio logs and can be
+combined with `--follow`. `--boot` cannot be combined with `--timestamps`;
+followed boot logs also cannot use `--since` or `--until`.
+
+**Examples**
+
+```bash
+# show capture timestamps for existing stdio logs
+container logs --timestamps mycontainer
+
+# follow new stdio logs with capture timestamps
+container logs --follow --timestamps mycontainer
+
+# follow logs inside a time window
+container logs --follow \
+  --since 2026-06-18T10:00:00Z \
+  --until 2026-06-18T10:30:00Z \
+  mycontainer
+
+# replay logs inside a Unix timestamp window
+container logs --since 1781776800 --until 1781778600.25 mycontainer
+```
 
 ### `container inspect`
 
@@ -488,13 +563,18 @@ Copies files between a container and the local filesystem. The container must be
 **Usage**
 
 ```bash
-container copy [--debug] <source> <destination>
+container copy [--debug] [--archive] [--follow-link] <source> <destination>
 ```
 
 **Arguments**
 
 *   `<source>`: Source path (local path or `container_id:path`)
 *   `<destination>`: Destination path (local path or `container_id:path`)
+
+**Options**
+
+*   `-a, --archive`: Archive mode. Preserve source UID/GID information.
+*   `-L, --follow-link`: Always follow symbolic links in the source path.
 
 **Path Format**
 
@@ -512,6 +592,12 @@ container cp mycontainer:/var/log/app.log ./logs/
 
 # copy using the full command name
 container copy ./data.txt mycontainer:/tmp/
+
+# copy while preserving source UID/GID information
+container cp --archive mycontainer:/etc/app/config.json ./config.json
+
+# copy the target of a source symlink
+container cp --follow-link mycontainer:/tmp/current ./current
 ```
 
 ### `container prune`

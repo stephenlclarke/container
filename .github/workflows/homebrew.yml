@@ -1,0 +1,38 @@
+name: Homebrew
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - develop
+      - main
+    paths:
+      - "Formula/container.rb"
+      - ".github/workflows/homebrew.yml"
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - "Formula/container.rb"
+      - ".github/workflows/homebrew.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  formula:
+    name: Formula Syntax
+    runs-on: macos-26
+    steps:
+      - name: Checkout container
+        uses: actions/checkout@v6
+
+      - name: Validate Ruby syntax
+        run: ruby -c Formula/container.rb
+
+      - name: Validate tap formula
+        run: |
+          brew tap stephenlclarke/container "${GITHUB_WORKSPACE}"
+          brew info --formula stephenlclarke/container/container
+          brew untap stephenlclarke/container

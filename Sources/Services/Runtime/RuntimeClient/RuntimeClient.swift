@@ -195,6 +195,34 @@ extension RuntimeClient {
         }
     }
 
+    public func pause() async throws {
+        let request = XPCMessage(route: RuntimeRoutes.pause.rawValue)
+
+        do {
+            try await self.client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to pause container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
+    public func resume() async throws {
+        let request = XPCMessage(route: RuntimeRoutes.resume.rawValue)
+
+        do {
+            try await self.client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to resume container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
     public func kill(_ id: String, signal: String) async throws {
         let request = XPCMessage(route: RuntimeRoutes.kill.rawValue)
         request.set(key: RuntimeKeys.id.rawValue, value: id)
@@ -284,12 +312,14 @@ extension RuntimeClient {
         }
     }
 
-    public func copyIn(source: String, destination: String, mode: UInt32, createParents: Bool = true) async throws {
+    public func copyIn(source: String, destination: String, mode: UInt32, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         let request = XPCMessage(route: RuntimeRoutes.copyIn.rawValue)
         request.set(key: RuntimeKeys.sourcePath.rawValue, value: source)
         request.set(key: RuntimeKeys.destinationPath.rawValue, value: destination)
         request.set(key: RuntimeKeys.fileMode.rawValue, value: UInt64(mode))
         request.set(key: RuntimeKeys.createParents.rawValue, value: createParents)
+        request.set(key: RuntimeKeys.followSymlink.rawValue, value: followSymlink)
+        request.set(key: RuntimeKeys.preserveOwnership.rawValue, value: preserveOwnership)
 
         do {
             try await self.client.send(request, responseTimeout: .seconds(300))
@@ -302,11 +332,13 @@ extension RuntimeClient {
         }
     }
 
-    public func copyOut(source: String, destination: String, createParents: Bool = true) async throws {
+    public func copyOut(source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         let request = XPCMessage(route: RuntimeRoutes.copyOut.rawValue)
         request.set(key: RuntimeKeys.sourcePath.rawValue, value: source)
         request.set(key: RuntimeKeys.destinationPath.rawValue, value: destination)
         request.set(key: RuntimeKeys.createParents.rawValue, value: createParents)
+        request.set(key: RuntimeKeys.followSymlink.rawValue, value: followSymlink)
+        request.set(key: RuntimeKeys.preserveOwnership.rawValue, value: preserveOwnership)
 
         do {
             try await self.client.send(request, responseTimeout: .seconds(300))
@@ -341,6 +373,30 @@ extension RuntimeClient {
         }
 
         return try JSONDecoder().decode(ContainerStats.self, from: data)
+    }
+
+    public func processes() async throws -> ContainerProcesses {
+        let request = XPCMessage(route: RuntimeRoutes.processes.rawValue)
+
+        let response: XPCMessage
+        do {
+            response = try await self.client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to get processes for container \(self.id)",
+                cause: error
+            )
+        }
+
+        guard let data = response.dataNoCopy(key: RuntimeKeys.processes.rawValue) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "no process data returned"
+            )
+        }
+
+        return try JSONDecoder().decode(ContainerProcesses.self, from: data)
     }
 }
 

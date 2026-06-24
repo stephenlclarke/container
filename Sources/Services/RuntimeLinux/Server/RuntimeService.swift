@@ -19,6 +19,7 @@ import ContainerOS
 import ContainerPersistence
 import ContainerResource
 import ContainerRuntimeClient
+import ContainerRuntimeLinuxClient
 import ContainerXPC
 import Containerization
 import ContainerizationError
@@ -94,6 +95,36 @@ public actor RuntimeService {
         return URL(fileURLWithPath: sshSocket)
     }
 
+    /// Returns the runtime log writer for the configured container log policy.
+    static func containerLogWriter(bundle: ContainerResource.Bundle, logging: ContainerLogConfiguration) throws -> ContainerLogFileWriter? {
+        switch logging.storage {
+        case .local:
+            return try ContainerLogFileWriter(
+                rawLogURL: bundle.containerLog,
+                recordLogURL: bundle.containerLogRecords,
+                maxSizeInBytes: logging.maxSizeInBytes,
+                maxFileCount: logging.maxFileCount
+            )
+        case .none:
+            return nil
+        }
+    }
+
+    /// Combines caller-attached stdio with optional persisted log capture.
+    static func outputWriter(stdio: FileHandle?, logWriter: (any Writer)?) -> MultiWriter? {
+        var writers: [any Writer] = []
+        if let stdio {
+            writers.append(stdio)
+        }
+        if let logWriter {
+            writers.append(logWriter)
+        }
+        guard !writers.isEmpty else {
+            return nil
+        }
+        return MultiWriter(writers: writers)
+    }
+
     public init(
         root: URL,
         interfaceStrategies: [NetworkInterfaceKey: InterfaceStrategy],
@@ -157,6 +188,7 @@ public actor RuntimeService {
             let bundle = ContainerResource.Bundle(path: self.root)
             try bundle.createLogFile()
 
+            let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: self.root)
             var config = try bundle.configuration
 
             var kernel = try bundle.kernel
@@ -182,6 +214,7 @@ public actor RuntimeService {
                     sessions.append(session)
                     var (attachment, additionalData) = try await client.allocate(
                         hostname: attachmentConfig.options.hostname,
+                        aliases: attachmentConfig.options.aliases,
                         macAddress: attachmentConfig.options.macAddress,
                         on: session
                     )
@@ -189,6 +222,7 @@ public actor RuntimeService {
                         attachment = Attachment(
                             network: attachment.network,
                             hostname: attachment.hostname,
+                            aliases: attachment.aliases,
                             ipv4Address: attachment.ipv4Address,
                             ipv4Gateway: attachment.ipv4Gateway,
                             ipv6Address: attachment.ipv6Address,
@@ -228,23 +262,21 @@ public actor RuntimeService {
             }
 
             let stdio = message.stdio()
-            let containerLog = try FileHandle(forWritingTo: bundle.containerLog)
-            let stdout = {
-                if let h = stdio[1] {
-                    return MultiWriter(handles: [h, containerLog])
-                }
-                return MultiWriter(handles: [containerLog])
-            }()
+            let containerLogWriter = try Self.containerLogWriter(bundle: bundle, logging: config.logging)
+            let stdout = Self.outputWriter(
+                stdio: stdio[1],
+                logWriter: containerLogWriter?.writer(for: .stdout)
+            )
 
-            let stderr: MultiWriter? = {
+            let stderr: MultiWriter? =
                 if !config.initProcess.terminal {
-                    if let h = stdio[2] {
-                        return MultiWriter(handles: [h, containerLog])
-                    }
-                    return MultiWriter(handles: [containerLog])
+                    Self.outputWriter(
+                        stdio: stdio[2],
+                        logWriter: containerLogWriter?.writer(for: .stderr)
+                    )
+                } else {
+                    nil
                 }
-                return nil
-            }()
 
             let stdin = {
                 stdio[0] ?? nil
@@ -253,22 +285,23 @@ public actor RuntimeService {
             let id = config.id
             let rootfs = try bundle.containerRootfs.asMount
             let container = try LinuxContainer(id, rootfs: rootfs, vmm: vmm, logger: self.log) { czConfig in
-                try Self.configureContainer(czConfig: &czConfig, config: config, dynamicEnv: dynamicEnv, log: self.log)
+                try Self.configureContainer(
+                    czConfig: &czConfig,
+                    config: config,
+                    runtimeData: runtimeConfig.runtimeData,
+                    dynamicEnv: dynamicEnv,
+                    log: self.log
+                )
                 czConfig.interfaces = interfaces
                 czConfig.process.stdout = stdout
                 czConfig.process.stderr = stderr
                 czConfig.process.stdin = stdin
-                // NOTE: We can support a user providing new entries eventually, but for now craft
-                // a default /etc/hosts.
-                var hostsEntries = [Hosts.Entry.localHostIPV4()]
-                if !interfaces.isEmpty {
-                    let primaryIfaceAddr = interfaces[0].ipv4Address
-                    hostsEntries.append(
-                        Hosts.Entry(
-                            ipAddress: primaryIfaceAddr.address.description,
-                            hostnames: [czConfig.hostname ?? id],
-                        ))
-                }
+                let hostsEntries = try Self.resolvedHosts(
+                    hostname: czConfig.hostname ?? id,
+                    primaryAddress: interfaces.first?.ipv4Address.address.description,
+                    gatewayAddress: interfaces.first?.ipv4Gateway?.description,
+                    extraHosts: config.hosts
+                )
                 czConfig.hosts = Hosts(entries: hostsEntries)
                 czConfig.bootLog = BootLog.file(path: bundle.bootlog, append: true)
             }
@@ -365,6 +398,33 @@ public actor RuntimeService {
             let reply = message.reply()
             let data = try JSONEncoder().encode(containerStats)
             reply.set(key: RuntimeKeys.statistics.rawValue, value: data)
+            return reply
+        }
+    }
+
+    /// Get process identifiers for the container.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with no parameters.
+    ///
+    /// - Returns: An XPC message with the following parameters:
+    ///   - processes: JSON serialization of the `ContainerProcesses`.
+    @Sendable
+    public func processes(_ message: XPCMessage) async throws -> XPCMessage {
+        self.log.debug("enter", metadata: ["func": "\(#function)"])
+        defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
+
+        return try await self.lock.withLock { _ in
+            let containerInfo = try await self.getContainer()
+            let processIdentifiers = try await containerInfo.container.processIdentifiers()
+            let processes = ContainerProcesses(
+                id: containerInfo.container.id,
+                processIdentifiers: processIdentifiers
+            )
+
+            let reply = message.reply()
+            let data = try JSONEncoder().encode(processes)
+            reply.set(key: RuntimeKeys.processes.rawValue, value: data)
             return reply
         }
     }
@@ -476,6 +536,16 @@ public actor RuntimeService {
             status = .stopped
         case .stopping:
             status = .stopping
+        case .paused:
+            let ctr = try getContainer()
+
+            status = .paused
+            networks = ctr.attachments
+            cs = ContainerSnapshot(
+                configuration: ctr.config,
+                status: RuntimeStatus.paused,
+                networks: networks
+            )
         case .running:
             let ctr = try getContainer()
 
@@ -538,11 +608,72 @@ public actor RuntimeService {
                     self.log.error("failed to clean up container", metadata: ["error": "\(error)"])
                 }
                 await self.setState(.stopped)
+            case .paused:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot stop: container is paused; resume before stopping"
+                )
             default:
                 break
             }
             return message.reply()
         }
+    }
+
+    /// Pause the container workload without terminating its processes.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with no parameters.
+    ///
+    /// - Returns: An XPC message with no parameters.
+    @Sendable
+    public func pause(_ message: XPCMessage) async throws -> XPCMessage {
+        self.log.debug("enter", metadata: ["func": "\(#function)"])
+        defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
+
+        try await self.lock.withLock { _ in
+            switch await self.state {
+            case .running:
+                let ctr = try await self.getContainer()
+                try await ctr.container.pause()
+                await self.setState(.paused)
+            default:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot pause: container is not running"
+                )
+            }
+        }
+
+        return message.reply()
+    }
+
+    /// Resume a paused container workload.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with no parameters.
+    ///
+    /// - Returns: An XPC message with no parameters.
+    @Sendable
+    public func resume(_ message: XPCMessage) async throws -> XPCMessage {
+        self.log.debug("enter", metadata: ["func": "\(#function)"])
+        defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
+
+        try await self.lock.withLock { _ in
+            switch await self.state {
+            case .paused:
+                let ctr = try await self.getContainer()
+                try await ctr.container.resume()
+                await self.setState(.running)
+            default:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot resume: container is not paused"
+                )
+            }
+        }
+
+        return message.reply()
     }
 
     /// Signal a process running in the virtual machine.
@@ -709,13 +840,17 @@ public actor RuntimeService {
             }
             let mode = UInt32(message.uint64(key: RuntimeKeys.fileMode.rawValue))
             let createParents = message.bool(key: RuntimeKeys.createParents.rawValue)
+            let followSymlink = message.bool(key: RuntimeKeys.followSymlink.rawValue)
+            let preserveOwnership = message.bool(key: RuntimeKeys.preserveOwnership.rawValue)
 
             let ctr = try getContainer()
             try await ctr.container.copyIn(
                 from: URL(fileURLWithPath: source),
                 to: URL(fileURLWithPath: destination),
                 mode: mode,
-                createParents: createParents
+                createParents: createParents,
+                followSymlink: followSymlink,
+                preserveOwnership: preserveOwnership
             )
 
             return message.reply()
@@ -754,12 +889,16 @@ public actor RuntimeService {
             }
 
             let createParents = message.bool(key: RuntimeKeys.createParents.rawValue)
+            let followSymlink = message.bool(key: RuntimeKeys.followSymlink.rawValue)
+            let preserveOwnership = message.bool(key: RuntimeKeys.preserveOwnership.rawValue)
 
             let ctr = try getContainer()
             try await ctr.container.copyOut(
                 from: URL(fileURLWithPath: source),
                 to: URL(fileURLWithPath: destination),
-                createParents: createParents
+                createParents: createParents,
+                followSymlink: followSymlink,
+                preserveOwnership: preserveOwnership
             )
 
             return message.reply()
@@ -980,15 +1119,18 @@ public actor RuntimeService {
     private static func configureContainer(
         czConfig: inout LinuxContainer.Configuration,
         config: ContainerConfiguration,
+        runtimeData: Data? = nil,
         dynamicEnv: [String: String] = [:],
         log: Logger? = nil,
     ) throws {
         czConfig.cpus = config.resources.cpus
         czConfig.cpuOverhead = config.resources.cpuOverhead
         czConfig.memoryInBytes = config.resources.memoryInBytes
-        czConfig.sysctl = config.sysctls.reduce(into: [String: String]()) {
-            $0[$1.key] = $1.value
+        if let runtimeData {
+            let linuxData = try JSONDecoder().decode(LinuxRuntimeData.self, from: runtimeData)
+            czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
         }
+        czConfig.sysctl = try Self.resolvedSysctls(config: config)
         // If the host doesn't support this, we'll throw on container creation.
         czConfig.virtualization = config.virtualization
         czConfig.useInit = config.useInit
@@ -1044,11 +1186,7 @@ public actor RuntimeService {
             czConfig.sockets.append(socketConfig)
         }
 
-        let hostnameSource = config.networks.first?.options.hostname ?? config.id
-        czConfig.hostname =
-            hostnameSource.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: true)
-            .first
-            .map { String($0) } ?? config.id
+        czConfig.hostname = Self.resolvedHostname(config: config)
 
         if let dns = config.dns {
             czConfig.dns = DNS(
@@ -1197,6 +1335,30 @@ public actor RuntimeService {
         return Containerization.LinuxCapabilities(capabilities: Array(caps))
     }
 
+    /// Converts the OCI block I/O wire model carried in runtime data into the
+    /// containerization API wrapper used by `LinuxContainer.Configuration`.
+    private static func toContainerizationBlockIO(_ oci: ContainerizationOCI.LinuxBlockIO) -> Containerization.LinuxBlockIO {
+        Containerization.LinuxBlockIO(
+            weight: oci.weight,
+            leafWeight: oci.leafWeight,
+            weightDevice: oci.weightDevice.map {
+                Containerization.LinuxWeightDevice(major: $0.major, minor: $0.minor, weight: $0.weight, leafWeight: $0.leafWeight)
+            },
+            throttleReadBpsDevice: oci.throttleReadBpsDevice.map {
+                Containerization.LinuxThrottleDevice(major: $0.major, minor: $0.minor, rate: $0.rate)
+            },
+            throttleWriteBpsDevice: oci.throttleWriteBpsDevice.map {
+                Containerization.LinuxThrottleDevice(major: $0.major, minor: $0.minor, rate: $0.rate)
+            },
+            throttleReadIOPSDevice: oci.throttleReadIOPSDevice.map {
+                Containerization.LinuxThrottleDevice(major: $0.major, minor: $0.minor, rate: $0.rate)
+            },
+            throttleWriteIOPSDevice: oci.throttleWriteIOPSDevice.map {
+                Containerization.LinuxThrottleDevice(major: $0.major, minor: $0.minor, rate: $0.rate)
+            }
+        )
+    }
+
     private nonisolated func closeHandle(_ handle: Int32) throws {
         guard close(handle) == 0 else {
             guard let errCode = POSIXErrorCode(rawValue: errno) else {
@@ -1242,9 +1404,7 @@ public actor RuntimeService {
 
                 return code
             }
-        } catch {
-            self.log.error("graceful stop failed; forcing vm shutdown", metadata: ["error": "\(error)"])
-        }
+        } catch {}
 
         // Now actually bring down the vm.
         try await lc.stop()
@@ -1327,9 +1487,14 @@ extension XPCMessage {
 
 extension ContainerResource.Bundle {
     func createLogFile() throws {
+        try createLogFile(at: self.containerLog)
+        try createLogFile(at: self.containerLogRecords)
+    }
+
+    private func createLogFile(at path: URL) throws {
         // Create the log file we'll write stdio to.
         // O_TRUNC resolves a log delay issue on restarted containers by force-updating internal state
-        let fd = Darwin.open(self.containerLog.path, O_CREAT | O_RDONLY | O_TRUNC, 0o644)
+        let fd = Darwin.open(path.path, O_CREAT | O_RDONLY | O_TRUNC, 0o644)
         guard fd > 0 else {
             throw POSIXError(.init(rawValue: errno)!)
         }
@@ -1412,21 +1577,25 @@ extension Filesystem.SyncMode {
 }
 
 struct MultiWriter: Writer {
-    let handles: [FileHandle]
+    let writers: [any Writer]
 
     init(handles: [FileHandle]) {
-        self.handles = handles
+        self.writers = handles
+    }
+
+    init(writers: [any Writer]) {
+        self.writers = writers
     }
 
     func close() throws {
-        for handle in handles {
-            try handle.close()
+        for writer in writers {
+            try writer.close()
         }
     }
 
     func write(_ data: Data) throws {
-        for handle in handles {
-            try handle.write(contentsOf: data)
+        for writer in writers {
+            try writer.write(data)
         }
     }
 }
@@ -1454,6 +1623,68 @@ extension FileHandle: @retroactive ReaderStream, @retroactive Writer {
 // MARK: State handler and bundle creation helpers
 
 extension RuntimeService {
+    static let domainnameSysctl = "kernel.domainname"
+
+    static func resolvedSysctls(config: ContainerConfiguration) throws -> [String: String] {
+        var sysctls = config.sysctls.reduce(into: [String: String]()) {
+            $0[$1.key] = $1.value
+        }
+        guard let domainname = config.domainname, !domainname.isEmpty else {
+            return sysctls
+        }
+        if let existing = sysctls[domainnameSysctl], existing != domainname {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "domainname conflicts with sysctl \(domainnameSysctl)"
+            )
+        }
+        sysctls[domainnameSysctl] = domainname
+        return sysctls
+    }
+
+    static func resolvedHostname(config: ContainerConfiguration) -> String {
+        if let hostname = config.hostname, !hostname.isEmpty {
+            return hostname
+        }
+        let hostnameSource = config.networks.first?.options.hostname ?? config.id
+        return hostnameSource.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: true)
+            .first
+            .map { String($0) } ?? config.id
+    }
+
+    static func resolvedHosts(
+        hostname: String,
+        primaryAddress: String?,
+        gatewayAddress: String? = nil,
+        extraHosts: [ContainerConfiguration.HostEntry]
+    ) throws -> [Hosts.Entry] {
+        var hosts = [Hosts.Entry.localHostIPV4()]
+        if let primaryAddress {
+            hosts.append(Hosts.Entry(ipAddress: primaryAddress, hostnames: [hostname]))
+        }
+        for extraHost in extraHosts {
+            let ipAddress = try Self.resolvedHostEntryAddress(extraHost, gatewayAddress: gatewayAddress)
+            hosts.append(Hosts.Entry(ipAddress: ipAddress, hostnames: extraHost.hostnames))
+        }
+        return hosts
+    }
+
+    private static func resolvedHostEntryAddress(
+        _ extraHost: ContainerConfiguration.HostEntry,
+        gatewayAddress: String?
+    ) throws -> String {
+        guard extraHost.requiresHostGateway else {
+            return extraHost.ipAddress
+        }
+        guard let gatewayAddress else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "host-gateway requires a container network with an IPv4 gateway"
+            )
+        }
+        return gatewayAddress
+    }
+
     private func initializeWaiters(for id: String) throws {
         guard waiters[id] == nil else {
             throw ContainerizationError(.invalidState, message: "waiter for \(id) already initialized")
@@ -1529,6 +1760,8 @@ extension RuntimeService {
         case booted
         /// startProcess on the init process will transition .booted to .running.
         case running
+        /// pause() will transition .running to .paused.
+        case paused
         /// At the beginning of stop() .running will be transitioned to .stopping.
         case stopping
         /// Once a stop is successful, .stopping will transition to .stopped.

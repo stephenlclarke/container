@@ -35,9 +35,12 @@ extension ClientImage {
             }
             let config: ContainerizationOCI.Image
             let manifest: ContainerizationOCI.Manifest
+            let healthCheck: ImageResource.HealthCheck?
             do {
-                config = try await self.config(for: platform)
                 manifest = try await self.manifest(for: platform)
+                let content = try await self.configContent(from: manifest)
+                config = try content.decode()
+                healthCheck = Self.healthCheck(from: content)
             } catch {
                 continue
             }
@@ -45,7 +48,15 @@ extension ClientImage {
                 desc.size + manifest.config.size
                 + manifest.layers.reduce(0) { $0 + $1.size }
 
-            variants.append(.init(platform: platform, digest: desc.digest, size: size, config: config))
+            variants.append(
+                .init(
+                    platform: platform,
+                    digest: desc.digest,
+                    size: size,
+                    config: config,
+                    healthCheck: healthCheck
+                )
+            )
 
             // Use the earliest variant's creation timestamp as the image's date.
             if let date = config.created.flatMap(Self.parseCreated) {
@@ -69,4 +80,23 @@ extension ClientImage {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: value)
     }
+
+    private static func healthCheck(from content: Content) -> ImageResource.HealthCheck? {
+        guard let config: ImageConfigHealthCheck = try? content.decode() else {
+            return nil
+        }
+        return config.config?.healthCheck
+    }
+}
+
+private struct ImageConfigHealthCheck: Decodable {
+    struct Config: Decodable {
+        enum CodingKeys: String, CodingKey {
+            case healthCheck = "Healthcheck"
+        }
+
+        let healthCheck: ImageResource.HealthCheck?
+    }
+
+    let config: Config?
 }

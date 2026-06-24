@@ -70,6 +70,12 @@ extension Application {
                 print(containerId)
                 return
             }
+            if container.status == .paused {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container is paused; use `container unpause` to resume it"
+                )
+            }
 
             for mount in container.configuration.mounts where mount.isVirtiofs {
                 if !FileManager.default.fileExists(atPath: mount.source) {

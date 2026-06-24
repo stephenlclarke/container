@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerResource
 import ContainerizationError
 import ContainerizationExtras
 import Foundation
@@ -832,6 +833,7 @@ struct ParserTest {
     func testParseNetworkSimpleName() throws {
         let result = try Parser.network("default")
         #expect(result.name == "default")
+        #expect(result.aliases == [])
         #expect(result.macAddress == nil)
     }
 
@@ -839,7 +841,24 @@ struct ParserTest {
     func testParseNetworkWithMACAddress() throws {
         let result = try Parser.network("backend,mac=02:42:ac:11:00:02")
         #expect(result.name == "backend")
+        #expect(result.aliases == [])
         #expect(result.macAddress == "02:42:ac:11:00:02")
+    }
+
+    @Test
+    func testParseNetworkWithAliases() throws {
+        let result = try Parser.network("backend,alias=api,alias=api.internal")
+
+        #expect(result.name == "backend")
+        #expect(result.aliases == ["api", "api.internal"])
+    }
+
+    @Test
+    func testParseNetworkDeduplicatesAliases() throws {
+        let result = try Parser.network("backend,alias=api,alias=api,alias=web")
+
+        #expect(result.name == "backend")
+        #expect(result.aliases == ["api", "web"])
     }
 
     @Test
@@ -882,6 +901,18 @@ struct ParserTest {
                 return false
             }
             return error.description.contains("mac address value cannot be empty")
+        }
+    }
+
+    @Test
+    func testParseNetworkEmptyAlias() throws {
+        #expect {
+            _ = try Parser.network("backend,alias=")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("invalid network alias value: hostname is empty")
         }
     }
 
@@ -952,6 +983,268 @@ struct ParserTest {
         #expect(result[0].limit == "RLIMIT_MEMLOCK")
         #expect(result[0].soft == UInt64.max)
         #expect(result[0].hard == UInt64.max)
+    }
+
+    @Test
+    func testLogDriverParserDefaultsToLocal() throws {
+        let logging = try Parser.logging(driver: nil)
+
+        #expect(logging == .default)
+    }
+
+    @Test
+    func testLogDriverParserAcceptsJSONFileAsLocalCapture() throws {
+        let logging = try Parser.logging(driver: "json-file")
+
+        #expect(logging == .default)
+    }
+
+    @Test
+    func testLogDriverParserAcceptsLocalRotationOptions() throws {
+        let logging = try Parser.logging(driver: "local", options: ["max-size=10m", "max-file=3"])
+
+        #expect(logging.storage == .local)
+        #expect(logging.maxSizeInBytes == 10 * 1024 * 1024)
+        #expect(logging.maxFileCount == 3)
+    }
+
+    @Test
+    func testLogDriverParserAcceptsJSONFileRotationOptions() throws {
+        let logging = try Parser.logging(driver: "json-file", options: ["max-file=2"])
+
+        #expect(logging.storage == .local)
+        #expect(logging.maxFileCount == 2)
+    }
+
+    @Test
+    func testLogDriverParserAcceptsDefaultRotationOptions() throws {
+        let logging = try Parser.logging(driver: nil, options: ["max-size=512b"])
+
+        #expect(logging.storage == .local)
+        #expect(logging.maxSizeInBytes == 512)
+        #expect(logging.maxFileCount == nil)
+    }
+
+    @Test
+    func testLogDriverParserAcceptsNone() throws {
+        let logging = try Parser.logging(driver: "none")
+
+        #expect(logging.storage == .none)
+    }
+
+    @Test
+    func testLogDriverParserRejectsOptionsWithNone() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.logging(driver: "none", options: ["max-size=10m"])
+        }
+        #expect(error?.message == "log options are not supported with log driver 'none'")
+    }
+
+    @Test
+    func testLogDriverParserRejectsUnsupportedDrivers() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.logging(driver: "syslog")
+        }
+        #expect(error?.message == "unsupported log driver 'syslog' (supported: json-file, local, none)")
+    }
+
+    @Test
+    func testLogDriverParserRejectsUnsupportedOptions() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.logging(driver: "local", options: ["mode=blocking"])
+        }
+        #expect(error?.message == "unsupported log option 'mode' (supported for local logging: max-size, max-file)")
+    }
+
+    @Test
+    func testLogDriverParserRejectsMalformedOptions() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.logging(driver: "local", options: ["max-size"])
+        }
+        #expect(error?.message == "invalid log option 'max-size' (expected key=value)")
+    }
+
+    @Test
+    func testLogDriverParserRejectsInvalidRotationValues() throws {
+        let sizeError = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.logging(driver: "local", options: ["max-size=0"])
+        }
+        #expect(sizeError?.message == "invalid log option max-size '0'")
+
+        let fileError = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.logging(driver: "local", options: ["max-file=0"])
+        }
+        #expect(fileError?.message == "invalid log option max-file '0'")
+    }
+
+    @Test
+    func testRestartPolicyParserDefaultsToNo() throws {
+        let policy = try Parser.restartPolicy(nil)
+
+        #expect(policy == .no)
+    }
+
+    @Test
+    func testRestartPolicyParserAcceptsDockerValues() throws {
+        let always = try Parser.restartPolicy("always")
+        let unlessStopped = try Parser.restartPolicy("unless-stopped")
+        let onFailure = try Parser.restartPolicy("on-failure:3")
+        let onFailureUnlimited = try Parser.restartPolicy("on-failure:0")
+
+        #expect(always.mode == .always)
+        #expect(always.maximumRetryCount == nil)
+        #expect(unlessStopped.mode == .unlessStopped)
+        #expect(unlessStopped.maximumRetryCount == nil)
+        #expect(onFailure.mode == .onFailure)
+        #expect(onFailure.maximumRetryCount == 3)
+        #expect(onFailureUnlimited.mode == .onFailure)
+        #expect(onFailureUnlimited.maximumRetryCount == nil)
+    }
+
+    @Test
+    func testCreateOptionsParsesRestartTiming() throws {
+        let options = try Parser.createOptions(
+            autoRemove: false,
+            restart: "on-failure:3",
+            restartDelay: "5s",
+            restartWindow: "30s"
+        )
+
+        #expect(options.restartPolicy.mode == .onFailure)
+        #expect(options.restartPolicy.maximumRetryCount == 3)
+        #expect(options.restartPolicy.retryDelayInNanoseconds == 5_000_000_000)
+        #expect(options.restartPolicy.successfulRunDurationInNanoseconds == 30_000_000_000)
+    }
+
+    @Test
+    func testRestartPolicyParserRejectsInvalidValues() throws {
+        let invalidMode = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.restartPolicy("sometimes")
+        }
+        #expect(invalidMode?.message == "unsupported restart policy 'sometimes' (supported: no, on-failure[:max-retries], always, unless-stopped)")
+
+        let invalidRetry = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.restartPolicy("on-failure:-1")
+        }
+        #expect(invalidRetry?.message == "invalid restart policy 'on-failure:-1'")
+
+        let invalidModeRetry = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.restartPolicy("always:3")
+        }
+        #expect(invalidModeRetry?.message == "restart retry count is only supported with on-failure")
+    }
+
+    @Test
+    func testCreateOptionsRejectsInvalidRestartTiming() throws {
+        let missingPolicy = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.createOptions(autoRemove: false, restart: nil, restartDelay: "5s")
+        }
+        #expect(missingPolicy?.message == "restart timing options require --restart")
+
+        let invalidDelay = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.createOptions(autoRemove: false, restart: "always", restartDelay: "never")
+        }
+        #expect(invalidDelay?.message == "invalid --restart-delay duration 'never'")
+
+        let invalidWindow = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.createOptions(autoRemove: false, restart: "always", restartWindow: "-1s")
+        }
+        #expect(invalidWindow?.message == "invalid --restart-window duration '-1s'")
+    }
+
+    @Test
+    func testCreateOptionsRejectsRemoveWithRestartPolicy() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.createOptions(autoRemove: true, restart: "always")
+        }
+
+        #expect(error?.message == "--rm cannot be combined with --restart")
+    }
+
+    @Test
+    func testHealthCheckParserBuildsShellProbe() throws {
+        let baseProcess = ProcessConfiguration(
+            executable: "server",
+            arguments: [],
+            environment: ["PATH=/usr/bin"],
+            workingDirectory: "/srv",
+            user: .raw(userString: "app")
+        )
+
+        let healthCheck = try #require(
+            try Parser.healthCheck(
+                command: "test -f /tmp/ready",
+                interval: "5s",
+                retries: 2,
+                startInterval: "500ms",
+                startPeriod: "1m30s",
+                timeout: "250ms",
+                disabled: false,
+                baseProcess: baseProcess
+            ))
+
+        #expect(healthCheck.process.executable == "/bin/sh")
+        #expect(healthCheck.process.arguments == ["-c", "test -f /tmp/ready"])
+        #expect(healthCheck.process.environment == ["PATH=/usr/bin"])
+        #expect(healthCheck.process.workingDirectory == "/srv")
+        #expect(healthCheck.process.user.description == "app")
+        #expect(healthCheck.intervalInNanoseconds == 5_000_000_000)
+        #expect(healthCheck.retries == 2)
+        #expect(healthCheck.startIntervalInNanoseconds == 500_000_000)
+        #expect(healthCheck.startPeriodInNanoseconds == 90_000_000_000)
+        #expect(healthCheck.timeoutInNanoseconds == 250_000_000)
+    }
+
+    @Test
+    func testHealthCheckParserReturnsNilWithoutProbe() throws {
+        let healthCheck = try Parser.healthCheck(
+            command: nil,
+            interval: nil,
+            retries: nil,
+            startInterval: nil,
+            startPeriod: nil,
+            timeout: nil,
+            disabled: false,
+            baseProcess: ProcessConfiguration(executable: "server", arguments: [], environment: [])
+        )
+
+        #expect(healthCheck == nil)
+    }
+
+    @Test
+    func testHealthCheckParserRejectsOptionsWithoutProbe() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.healthCheck(
+                command: nil,
+                interval: "30s",
+                retries: nil,
+                startInterval: nil,
+                startPeriod: nil,
+                timeout: nil,
+                disabled: false,
+                baseProcess: ProcessConfiguration(executable: "server", arguments: [], environment: [])
+            )
+        }
+
+        #expect(error?.message == "health check options require --health-cmd")
+    }
+
+    @Test
+    func testHealthCheckParserRejectsDisabledWithProbeOptions() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.healthCheck(
+                command: "true",
+                interval: nil,
+                retries: nil,
+                startInterval: nil,
+                startPeriod: nil,
+                timeout: nil,
+                disabled: true,
+                baseProcess: ProcessConfiguration(executable: "server", arguments: [], environment: [])
+            )
+        }
+
+        #expect(error?.message == "--no-healthcheck cannot be combined with health check options")
     }
 
     @Test
@@ -1201,6 +1494,98 @@ struct ParserTest {
         #expect(result.memoryInBytes == 256.mib())
     }
 
+    @Test func testSysctlsParsesNameValuePairs() throws {
+        let result = try Parser.sysctls([
+            "net.ipv4.ip_forward=1",
+            "kernel.msgmax=65536",
+        ])
+
+        #expect(
+            result == [
+                "net.ipv4.ip_forward": "1",
+                "kernel.msgmax": "65536",
+            ])
+    }
+
+    @Test func testSysctlsLastDuplicateWins() throws {
+        let result = try Parser.sysctls([
+            "net.ipv4.ip_forward=0",
+            "net.ipv4.ip_forward=1",
+        ])
+
+        #expect(result["net.ipv4.ip_forward"] == "1")
+    }
+
+    @Test func testSysctlsRejectsMissingValueSeparator() throws {
+        #expect {
+            _ = try Parser.sysctls(["net.ipv4.ip_forward"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testSysctlsRejectsEmptyName() throws {
+        #expect {
+            _ = try Parser.sysctls(["=1"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testBlockIOSpecsCombined() throws {
+        let parsed = try Parser.blockIO(specs: [
+            "weight=500,leaf-weight=300",
+            "device=/dev/null,weight=700,leaf-weight=400",
+            "device=/dev/null,read-bps=1mb,write-bps=2mb",
+            "device=/dev/null,read-iops=1000,write-iops=2000",
+        ])
+        let blockIO = try #require(parsed)
+
+        #expect(blockIO.weight == 500)
+        #expect(blockIO.leafWeight == 300)
+        #expect(blockIO.weightDevice.first?.weight == 700)
+        #expect(blockIO.weightDevice.first?.leafWeight == 400)
+        #expect(blockIO.throttleReadBpsDevice.first?.rate == 1.mib())
+        #expect(blockIO.throttleWriteBpsDevice.first?.rate == 2.mib())
+        #expect(blockIO.throttleReadIOPSDevice.first?.rate == 1000)
+        #expect(blockIO.throttleWriteIOPSDevice.first?.rate == 2000)
+    }
+
+    @Test func testBlockIOAcceptsMajorMinorLiteral() throws {
+        let parsed = try Parser.blockIO(specs: ["device=8:0,weight=600,read-bps=512kb"])
+        let blockIO = try #require(parsed)
+        let weightDevice = try #require(blockIO.weightDevice.first)
+
+        #expect(weightDevice.major == 8)
+        #expect(weightDevice.minor == 0)
+        #expect(weightDevice.weight == 600)
+        #expect(blockIO.throttleReadBpsDevice.first?.rate == 512 * 1024)
+    }
+
+    @Test func testBlockIORejectsInvalidWeight() throws {
+        #expect {
+            _ = try Parser.blockIO(specs: ["weight=1"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testBlockIORejectsUnknownKey() throws {
+        #expect {
+            _ = try Parser.blockIO(specs: ["device=/dev/null,bogus=1"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testBlockIORejectsGlobalKeyOnDeviceSpec() throws {
+        #expect {
+            _ = try Parser.blockIO(specs: ["read-bps=1mb"])
+        } throws: { _ in
+            true
+        }
+    }
+
     @Test func testResourcesBuildPropertyLookup() async throws {
         let content = """
             [build]
@@ -1335,5 +1720,174 @@ struct ParserTest {
     @Test
     func testManagementFlagsAcceptsNoDNSAlone() throws {
         _ = try Flags.Management.parse(["--no-dns"])
+    }
+
+    @Test
+    func testHostEntriesParserAcceptsIPv4WithColonSeparator() throws {
+        let result = try Parser.hostEntries(["db:192.168.66.2"])
+
+        #expect(result == [.init(ipAddress: "192.168.66.2", hostnames: ["db"])])
+    }
+
+    @Test
+    func testHostEntriesParserAcceptsIPv6WithEqualsSeparator() throws {
+        let result = try Parser.hostEntries(["myhostv6=::1"])
+
+        #expect(result == [.init(ipAddress: "::1", hostnames: ["myhostv6"])])
+    }
+
+    @Test
+    func testHostEntriesParserAcceptsBracketedIPv6() throws {
+        let result = try Parser.hostEntries(["myhostv6=[2001:db8::1]"])
+
+        #expect(result == [.init(ipAddress: "2001:db8::1", hostnames: ["myhostv6"])])
+    }
+
+    @Test
+    func testHostEntriesParserAcceptsHostGateway() throws {
+        let result = try Parser.hostEntries(["host.docker.internal=host-gateway"])
+
+        #expect(result == [.init(ipAddress: ContainerConfiguration.HostEntry.hostGatewayAddress, hostnames: ["host.docker.internal"])])
+        #expect(result.first?.requiresHostGateway == true)
+    }
+
+    @Test
+    func testHostEntriesParserAcceptsMultipleEntries() throws {
+        let result = try Parser.hostEntries([
+            "db:10.0.0.5",
+            "cache=10.0.0.6",
+        ])
+
+        #expect(
+            result == [
+                .init(ipAddress: "10.0.0.5", hostnames: ["db"]),
+                .init(ipAddress: "10.0.0.6", hostnames: ["cache"]),
+            ])
+    }
+
+    @Test
+    func testHostEntriesParserRejectsMissingSeparator() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostEntries(["db-192.168.1.1"])
+        }
+    }
+
+    @Test
+    func testHostEntriesParserRejectsEmptyHostname() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostEntries([":192.168.1.1"])
+        }
+    }
+
+    @Test
+    func testHostEntriesParserRejectsEmptyAddress() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostEntries(["db:"])
+        }
+    }
+
+    @Test
+    func testHostEntriesParserRejectsInvalidAddress() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostEntries(["db:not-an-ip"])
+        }
+    }
+
+    @Test
+    func testManagementFlagsAcceptsAddHost() throws {
+        let flags = try Flags.Management.parse([
+            "--add-host", "db:192.168.66.2",
+            "--add-host", "cache=192.168.66.3",
+        ])
+
+        #expect(flags.addHost == ["db:192.168.66.2", "cache=192.168.66.3"])
+    }
+
+    @Test
+    func testHostnameParserAcceptsRFC1123Name() throws {
+        let result = try Parser.hostname("api-01.example.test.")
+
+        #expect(result == "api-01.example.test")
+    }
+
+    @Test
+    func testHostnameParserRejectsEmptyValue() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostname(" ")
+        }
+    }
+
+    @Test
+    func testHostnameParserRejectsInvalidLabel() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostname("bad_name")
+        }
+    }
+
+    @Test
+    func testDomainnameParserAcceptsRFC1123Name() throws {
+        let result = try Parser.hostname("example.test.", option: "--domainname")
+
+        #expect(result == "example.test")
+    }
+
+    @Test
+    func testDomainnameParserRejectsInvalidLabel() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostname("bad_name", option: "--domainname")
+        }
+    }
+
+    @Test
+    func testManagementFlagsAcceptsHostname() throws {
+        let flags = try Flags.Management.parse([
+            "--hostname", "api-01",
+        ])
+
+        #expect(flags.hostname == "api-01")
+    }
+
+    @Test
+    func testManagementFlagsAcceptsShortHostname() throws {
+        let flags = try Flags.Management.parse([
+            "-h", "api-01",
+        ])
+
+        #expect(flags.hostname == "api-01")
+    }
+
+    @Test
+    func testManagementFlagsAcceptsDomainname() throws {
+        let flags = try Flags.Management.parse([
+            "--domainname", "example.test",
+        ])
+
+        #expect(flags.domainname == "example.test")
+    }
+
+    @Test
+    func testManagementFlagsAcceptsLogDriver() throws {
+        let flags = try Flags.Management.parse(["--log-driver", "none"])
+
+        #expect(flags.logDriver == "none")
+    }
+
+    @Test
+    func testManagementFlagsAcceptsJSONFileLogDriver() throws {
+        let flags = try Flags.Management.parse(["--log-driver", "json-file"])
+
+        #expect(flags.logDriver == "json-file")
+    }
+
+    @Test
+    func testManagementFlagsAcceptsLogOptions() throws {
+        let flags = try Flags.Management.parse([
+            "--log-driver", "local",
+            "--log-opt", "max-size=10m",
+            "--log-opt", "max-file=3",
+        ])
+
+        #expect(flags.logDriver == "local")
+        #expect(flags.logOpt == ["max-size=10m", "max-file=3"])
     }
 }

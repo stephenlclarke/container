@@ -162,6 +162,17 @@ public struct Utility {
             defaultCPUs: containerSystemConfig.container.cpus,
             defaultMemory: containerSystemConfig.container.memory
         )
+        config.logging = try Parser.logging(driver: management.logDriver, options: management.logOpt)
+        config.healthCheck = try Parser.healthCheck(
+            command: management.healthCommand,
+            interval: management.healthInterval,
+            retries: management.healthRetries,
+            startInterval: management.healthStartInterval,
+            startPeriod: management.healthStartPeriod,
+            timeout: management.healthTimeout,
+            disabled: management.noHealthCheck,
+            baseProcess: pc
+        )
 
         let tmpfs = try Parser.tmpfsMounts(management.tmpFs)
         let volumesOrFs = try Parser.volumes(management.volumes)
@@ -197,6 +208,7 @@ public struct Utility {
         }
 
         config.virtualization = management.virtualization
+        config.sysctls = try Parser.sysctls(management.sysctls)
 
         // Parse network specifications with properties
         let parsedNetworks = try management.networks.map { try Parser.network($0) }
@@ -230,6 +242,7 @@ public struct Utility {
                 options: management.dns.options
             )
         }
+        config.hosts = try Parser.hostEntries(management.addHost)
 
         config.rosetta = management.rosetta || (Platform.current.architecture == "arm64" && requestedPlatform.architecture == "amd64")
 
@@ -238,6 +251,8 @@ public struct Utility {
         }
 
         config.labels = try Parser.labels(management.labels)
+        config.hostname = try Parser.hostname(management.hostname)
+        config.domainname = try Parser.hostname(management.domainname, option: "--domainname")
 
         config.publishedPorts = try Parser.publishPorts(management.publishPorts)
         guard config.publishedPorts.count <= publishedPortCountLimit else {
@@ -312,12 +327,12 @@ public struct Utility {
                 guard item.offset == 0 else {
                     return AttachmentConfiguration(
                         network: item.element.name,
-                        options: AttachmentOptions(hostname: containerId, macAddress: macAddress, mtu: mtu)
+                        options: AttachmentOptions(hostname: containerId, aliases: item.element.aliases, macAddress: macAddress, mtu: mtu)
                     )
                 }
                 return AttachmentConfiguration(
                     network: item.element.name,
-                    options: AttachmentOptions(hostname: fqdn ?? containerId, macAddress: macAddress, mtu: mtu)
+                    options: AttachmentOptions(hostname: fqdn ?? containerId, aliases: item.element.aliases, macAddress: macAddress, mtu: mtu)
                 )
             }
         }

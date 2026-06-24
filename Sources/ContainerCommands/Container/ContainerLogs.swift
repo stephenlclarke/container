@@ -16,9 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
-import ContainerizationError
-import Darwin
-import Dispatch
+import ContainerResource
 import Foundation
 
 extension Application {
@@ -36,8 +34,17 @@ extension Application {
         @Flag(name: .shortAndLong, help: "Follow log output")
         var follow: Bool = false
 
-        @Option(name: .short, help: "Number of lines to show from the end of the logs. If not provided this will print all of the logs")
+        @Option(name: [.short, .customLong("tail")], help: "Number of lines to show from the end of the logs. If not provided this will print all of the logs")
         var numLines: Int?
+
+        @Option(name: .long, help: "Show logs after the specified RFC 3339 or Unix timestamp")
+        var since: ContainerLogTimestamp?
+
+        @Option(name: .long, help: "Show logs before the specified RFC 3339 or Unix timestamp")
+        var until: ContainerLogTimestamp?
+
+        @Flag(name: [.customShort("t"), .customLong("timestamps")], help: "Show timestamps")
+        var timestamps: Bool = false
 
         @OptionGroup
         public var logOptions: Flags.Logging
@@ -45,98 +52,146 @@ extension Application {
         @Argument(help: "Container ID")
         var containerId: String
 
-        public func run() async throws {
-            let client = ContainerClient()
-            let fhs = try await client.logs(id: containerId)
-            let fileHandle = boot ? fhs[1] : fhs[0]
-
-            try await Self.tail(
-                fh: fileHandle,
-                n: numLines,
-                follow: follow
+        public func validate() throws {
+            try Self.validateLogOptions(
+                boot: boot,
+                follow: follow,
+                since: since,
+                until: until,
+                timestamps: timestamps
             )
         }
 
-        private static func tail(
-            fh: FileHandle,
-            n: Int?,
-            follow: Bool
-        ) async throws {
-            if let n {
-                var buffer = Data()
-                let size = try fh.seekToEnd()
-                var offset = size
-                var lines: [String] = []
-
-                while offset > 0, lines.count < n {
-                    let readSize = min(1024, offset)
-                    offset -= readSize
-                    try fh.seek(toOffset: offset)
-
-                    let data = fh.readData(ofLength: Int(readSize))
-                    buffer.insert(contentsOf: data, at: 0)
-
-                    if let chunk = String(data: buffer, encoding: .utf8) {
-                        lines = chunk.components(separatedBy: .newlines)
-                        lines = lines.filter { !$0.isEmpty }
+        public func run() async throws {
+            let client = ContainerClient()
+            let containerID = containerId
+            if !boot && Self.usesStructuredRecords(follow: follow, since: since, until: until, timestamps: timestamps) {
+                if follow {
+                    let options = ContainerLogOptions(
+                        tail: numLines,
+                        since: since?.date,
+                        until: until?.date
+                    )
+                    let recordFile = try await client.followLogRecords(id: containerID, options: options)
+                    defer {
+                        try? recordFile.close()
                     }
-                }
-
-                lines = Array(lines.suffix(n))
-                for line in lines {
-                    print(line)
-                }
-            } else {
-                // Fast path if all they want is the full file.
-                guard let data = try fh.readToEnd() else {
-                    // Seems you get nil if it's a zero byte read, or you
-                    // try and read from dev/null.
-                    return
-                }
-                guard let str = String(data: data, encoding: .utf8) else {
-                    throw ContainerizationError(
-                        .internalError,
-                        message: "failed to convert container logs to utf8"
+                    try await LogRecordOutput.write(
+                        recordFile: recordFile,
+                        n: nil,
+                        follow: true,
+                        since: nil,
+                        until: nil,
+                        timestamps: timestamps,
+                    )
+                } else {
+                    let records = try await client.logRecords(
+                        id: containerID,
+                        replay: Self.staticReplayOptions()
+                    )
+                    try LogRecordOutput.write(
+                        records: records,
+                        n: numLines,
+                        since: since?.date,
+                        until: until?.date,
+                        timestamps: timestamps
                     )
                 }
-                print(str.trimmingCharacters(in: .newlines))
+                return
             }
 
-            fflush(stdout)
-            if follow {
-                setbuf(stdout, nil)
-                try await Self.followFile(fh: fh)
-            }
-        }
+            let options = Self.retrievalOptions(
+                numLines: numLines,
+                follow: follow,
+                since: since,
+                until: until
+            )
 
-        private static func followFile(fh: FileHandle) async throws {
-            _ = try fh.seekToEnd()
-            let stream = AsyncStream<String> { cont in
-                fh.readabilityHandler = { handle in
-                    let data = handle.availableData
-                    if data.isEmpty {
-                        // Triggers on container restart - can exit here as well
-                        do {
-                            _ = try fh.seekToEnd()  // To continue streaming existing truncated log files
-                        } catch {
-                            fh.readabilityHandler = nil
-                            cont.finish()
-                            return
-                        }
-                    }
-                    if let str = String(data: data, encoding: .utf8), !str.isEmpty {
-                        var lines = str.components(separatedBy: .newlines)
-                        lines = lines.filter { !$0.isEmpty }
-                        for line in lines {
-                            cont.yield(line)
-                        }
-                    }
+            if follow && !boot {
+                let followOptions = ContainerLogOptions(
+                    tail: numLines,
+                    since: since?.date,
+                    until: until?.date
+                )
+                let fileHandle = try await client.followLogs(id: containerID, options: followOptions)
+                defer {
+                    try? fileHandle.close()
+                }
+                try await LogFileOutput.writeStream(fh: fileHandle)
+                return
+            }
+
+            let fhs = try await client.logs(id: containerID, options: options, replay: Self.replayOptions(follow: follow))
+            let fileHandle = boot ? fhs[1] : fhs[0]
+            defer {
+                for handle in fhs {
+                    try? handle.close()
                 }
             }
 
-            for await line in stream {
-                print(line)
+            try await LogFileOutput.write(
+                fh: fileHandle,
+                n: follow ? numLines : nil,
+                follow: follow,
+            )
+        }
+
+        static func validateLogOptions(
+            boot: Bool,
+            follow: Bool,
+            since: ContainerLogTimestamp?,
+            until: ContainerLogTimestamp?,
+            timestamps: Bool
+        ) throws {
+            if boot && timestamps {
+                throw ValidationError("--boot cannot be combined with --timestamps")
+            }
+            if boot && follow && (since != nil || until != nil) {
+                throw ValidationError("--boot cannot be combined with followed time filters")
             }
         }
+
+        static func retrievalOptions(
+            numLines: Int?,
+            follow: Bool,
+            since: ContainerLogTimestamp?,
+            until: ContainerLogTimestamp?
+        ) -> ContainerLogOptions {
+            ContainerLogOptions(
+                tail: follow ? nil : numLines,
+                since: since?.date,
+                until: until?.date
+            )
+        }
+
+        static func replayOptions(follow: Bool) -> ContainerLogReplayOptions {
+            ContainerLogReplayOptions(includeRotated: !follow)
+        }
+
+        static func staticReplayOptions() -> ContainerLogReplayOptions {
+            ContainerLogReplayOptions(includeRotated: true)
+        }
+
+        static func usesStructuredRecords(
+            follow: Bool,
+            since: ContainerLogTimestamp?,
+            until: ContainerLogTimestamp?,
+            timestamps: Bool
+        ) -> Bool {
+            timestamps || since != nil || until != nil
+        }
+
+    }
+}
+
+struct ContainerLogTimestamp: ExpressibleByArgument, Equatable {
+    let date: Date
+
+    init?(argument: String) {
+        if let date = ContainerLogTimestampParser.parse(argument) {
+            self.date = date
+            return
+        }
+        return nil
     }
 }

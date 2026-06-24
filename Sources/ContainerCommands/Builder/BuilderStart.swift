@@ -183,6 +183,15 @@ extension Application {
                         return
                     }
                     try await client.delete(id: existingContainer.id)
+                case .paused:
+                    // A paused builder is still the existing workload. Resume it
+                    // before reuse or replacement so lifecycle operations remain explicit.
+                    try await client.unpause(id: existingContainer.id)
+                    guard imageChanged || cpuChanged || memChanged || envChanged || dnsChanged else {
+                        return
+                    }
+                    try await client.stop(id: existingContainer.id)
+                    try await client.delete(id: existingContainer.id)
                 case .stopping:
                     throw ContainerizationError(
                         .invalidState,

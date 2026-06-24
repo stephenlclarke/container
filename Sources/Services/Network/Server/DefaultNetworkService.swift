@@ -56,6 +56,7 @@ public actor DefaultNetworkService: NetworkService {
     @Sendable
     public func allocate(
         hostname: String,
+        aliases: [String],
         macAddress: MACAddress?,
         session: XPCServerSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?) {
@@ -67,13 +68,14 @@ public actor DefaultNetworkService: NetworkService {
         }
 
         let macAddress = macAddress ?? MACAddress((UInt64.random(in: 0...UInt64.max) & 0x0cff_ffff_ffff) | 0xf200_0000_0000)
-        let index = try await allocator.allocate(hostname: hostname)
+        let index = try await allocator.allocate(hostname: hostname, aliases: aliases)
         let ipv6Address = try status.ipv6Subnet
             .map { try CIDRv6(macAddress.ipv6Address(network: $0.lower), prefix: $0.prefix) }
         let ip = IPv4Address(index)
         let attachment = Attachment(
             network: network.id,
             hostname: hostname,
+            aliases: aliases,
             ipv4Address: try CIDRv4(ip, prefix: status.ipv4Subnet.prefix),
             ipv4Gateway: status.ipv4Gateway,
             ipv6Address: ipv6Address,
@@ -83,6 +85,7 @@ public actor DefaultNetworkService: NetworkService {
             "allocated attachment",
             metadata: [
                 "hostname": "\(hostname)",
+                "aliases": "\(aliases.joined(separator: ","))",
                 "ipv4Address": "\(attachment.ipv4Address)",
                 "ipv4Gateway": "\(attachment.ipv4Gateway)",
                 "ipv6Address": "\(attachment.ipv6Address?.description ?? "unavailable")",
@@ -95,13 +98,13 @@ public actor DefaultNetworkService: NetworkService {
         }
         macAddresses[index] = macAddress
 
-        let isNewSession = allocationsBySession[session] == nil
-        allocationsBySession[session, default: []].append((hostname: hostname, index: index))
-        if isNewSession {
+        if allocationsBySession[session] == nil {
+            allocationsBySession[session] = []
             await session.onDisconnect { [weak self] in
                 await self?.releaseSession(session)
             }
         }
+        allocationsBySession[session]!.append((hostname: hostname, index: index))
 
         return (attachment: attachment, additionalData: additionalData)
     }
@@ -143,6 +146,7 @@ public actor DefaultNetworkService: NetworkService {
         let attachment = Attachment(
             network: network.id,
             hostname: hostname,
+            aliases: [],
             ipv4Address: ipv4Address,
             ipv4Gateway: status.ipv4Gateway,
             ipv6Address: ipv6Address,
