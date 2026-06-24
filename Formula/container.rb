@@ -2,7 +2,7 @@ class Container < Formula
   desc "Create and run Linux containers using lightweight virtual machines"
   homepage "https://apple.github.io/container/documentation/"
   license "Apache-2.0"
-  head "https://github.com/stephenlclarke/container.git", branch: "release"
+  head "https://github.com/stephenlclarke/container.git", branch: "main"
 
   depends_on xcode: ["26.0", :build]
   depends_on arch: :arm64
