@@ -54,7 +54,7 @@ class Container < Formula
 
     generate_completions_from_executable bin/"container", "--generate-completion-script"
 
-    bin.env_script_all_files libexec, CONTAINER_INSTALL_ROOT: opt_prefix
+    bin.env_script_all_files libexec/"bin", CONTAINER_INSTALL_ROOT: opt_prefix
   end
 
   def codesign(*args)
