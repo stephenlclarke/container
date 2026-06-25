@@ -25,6 +25,16 @@ Download the latest signed installer package for `container` from the [GitHub re
 
 To install the tool, double-click the package file and follow the instructions. Enter your administrator password when prompted, to give the installer permission to place the installed files under `/usr/local`.
 
+Stephen Clarke's fork also publishes Homebrew-ready prebuilt archives for the fork lanes. The `main` branch formula installs a release build, and the `develop` branch formula installs a debug build without requiring Xcode or Swift on the target machine:
+
+```bash
+brew tap stephenlclarke/container https://github.com/stephenlclarke/container
+git -C "$(brew --repo stephenlclarke/container)" checkout develop
+brew install stephenlclarke/container/container
+```
+
+For the release lane, check out `main` in the tap before installing.
+
 Start the system service with:
 
 ```bash
