@@ -79,7 +79,8 @@ public actor DefaultNetworkService: NetworkService {
             ipv4Address: try CIDRv4(ip, prefix: status.ipv4Subnet.prefix),
             ipv4Gateway: status.ipv4Gateway,
             ipv6Address: ipv6Address,
-            macAddress: macAddress
+            macAddress: macAddress,
+            variant: network.variant
         )
         log.info(
             "allocated attachment",
@@ -150,7 +151,8 @@ public actor DefaultNetworkService: NetworkService {
             ipv4Address: ipv4Address,
             ipv4Gateway: status.ipv4Gateway,
             ipv6Address: ipv6Address,
-            macAddress: macAddress
+            macAddress: macAddress,
+            variant: network.variant
         )
         log.debug(
             "lookup attachment",

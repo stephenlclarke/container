@@ -1,5 +1,5 @@
 {
-  "originHash" : "ad7b65924d32e63367ee83092884e4fb942932e875590e8fae1e46440b1ca269",
+  "originHash" : "efffa95ba60568922d4ac87d6405fec65873232e96f436eaffd009bf5aeb747f",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -16,7 +16,7 @@
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
         "branch" : "integration/blkio-runtime",
-        "revision" : "650eb6888d5b6f067a2b30cf99a0d9bfed5351b8"
+        "revision" : "a0b08ffeda51ea5396efb0788e060610c39f4b55"
       }
     },
     {
