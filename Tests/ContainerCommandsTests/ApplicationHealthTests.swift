@@ -85,6 +85,17 @@ struct ApplicationHealthTests {
     }
 
     @Test
+    func rootHelpProvenanceShowsCustomBuild() {
+        let help = Application.addBuildProvenance("USAGE: container\n\nPLUGINS:\n  compose")
+
+        #expect(help.contains("BUILD:"))
+        #expect(help.contains("distribution: custom"))
+        #expect(help.contains("source: stephenlclarke/container"))
+        #expect(help.contains("containerization: stephenlclarke/containerization@main"))
+        #expect(help.contains("PLUGINS:\n  compose"))
+    }
+
+    @Test
     func apiServerHealthReturnsSuccessfulHealthCheck() async throws {
         let expected = try Self.makeSystemHealth()
 

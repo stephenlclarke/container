@@ -24,6 +24,18 @@ const char* get_release_version() {
     return RELEASE_VERSION;
 }
 
+const char* get_container_source() {
+    return CONTAINER_SOURCE;
+}
+
+const char* get_containerization_source() {
+    return CONTAINERIZATION_SOURCE;
+}
+
+const char* get_containerization_ref() {
+    return CONTAINERIZATION_REF;
+}
+
 const char* get_swift_containerization_version() {
     return CZ_VERSION;
 }

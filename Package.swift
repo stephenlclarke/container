@@ -22,8 +22,11 @@ import PackageDescription
 
 let releaseVersion = ProcessInfo.processInfo.environment["RELEASE_VERSION"] ?? "0.0.0"
 let gitCommit = ProcessInfo.processInfo.environment["GIT_COMMIT"] ?? "unspecified"
+let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ?? "stephenlclarke/container"
 let builderShimVersion = "0.12.0"
 let scVersion = "0.35.0"
+let scSource = ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"] ?? "stephenlclarke/containerization"
+let scRef = ProcessInfo.processInfo.environment["CONTAINERIZATION_REF"] ?? "main"
 
 let package = Package(
     name: "container",
@@ -53,7 +56,7 @@ let package = Package(
         .library(name: "MachineAPIService", targets: ["MachineAPIService"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/stephenlclarke/containerization.git", branch: "integration/blkio-runtime"),
+        .package(url: "https://github.com/stephenlclarke/containerization.git", branch: "main"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
@@ -582,6 +585,9 @@ let package = Package(
                 .define("CZ_VERSION", to: "\"\(scVersion)\""),
                 .define("GIT_COMMIT", to: "\"\(gitCommit)\""),
                 .define("RELEASE_VERSION", to: "\"\(releaseVersion)\""),
+                .define("CONTAINER_SOURCE", to: "\"\(containerSource)\""),
+                .define("CONTAINERIZATION_SOURCE", to: "\"\(scSource)\""),
+                .define("CONTAINERIZATION_REF", to: "\"\(scRef)\""),
                 .define("BUILDER_SHIM_VERSION", to: "\"\(builderShimVersion)\""),
             ],
         ),

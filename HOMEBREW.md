@@ -1,27 +1,29 @@
-# Homebrew Branch Formula
+# Homebrew Formulae
 
-This fork carries a Homebrew formula for testing the `develop` and `main`
-branches before changes are accepted upstream by Apple. It mirrors the
-Homebrew/core `container` formula, but resolves `container` from
-`stephenlclarke/container` so the forked lanes can be installed explicitly.
+This fork publishes prebuilt Homebrew assets through
+`stephenlclarke/homebrew-tap`. The branch policy is documented in
+[`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
 
 Use the fully qualified formula name so Homebrew does not resolve
 Homebrew/core's `container` formula first.
 
-## Develop
-
-```sh
-brew tap stephenlclarke/container https://github.com/stephenlclarke/container
-git -C "$(brew --repo stephenlclarke/container)" checkout develop
-brew install --build-from-source --HEAD stephenlclarke/container/container
-brew services start container
-```
-
 ## Main
 
 ```sh
-brew tap stephenlclarke/container https://github.com/stephenlclarke/container
-git -C "$(brew --repo stephenlclarke/container)" checkout main
-brew reinstall --build-from-source --HEAD stephenlclarke/container/container
+brew tap stephenlclarke/tap
+brew install stephenlclarke/tap/container
+brew services start container
+container system version
+```
+
+## Release Branches
+
+The `release` branch publishes `container-release`. Tagged release branch copies
+publish branch-derived formula names such as `container-release-v0-1-0`.
+
+```sh
+brew tap stephenlclarke/tap
+brew install stephenlclarke/tap/container-release
 brew services restart container
+container system version
 ```

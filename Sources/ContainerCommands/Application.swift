@@ -152,8 +152,27 @@ public struct Application: AsyncLoggableCommand {
         try await createPluginLoader(healthTimeout: .seconds(10), wallTimeout: .seconds(10), healthCheck: defaultAPIServerHealthCheck(timeout:))
     }
 
+    static func createPluginLoaderFromCurrentRoots() throws -> PluginLoader {
+        let installRootPath = currentInstallRootPath()
+        return try PluginLoader(
+            appRoot: URL(fileURLWithPath: ApplicationRoot.path.string),
+            installRoot: URL(fileURLWithPath: installRootPath.string),
+            logRoot: LogRoot.path,
+            pluginDirectories: pluginDirectories(installRootPath: installRootPath),
+            pluginFactories: pluginFactories(),
+            log: bootstrapLogger
+        )
+    }
+
     static func pluginLoaderForHelp(healthCheck: @escaping APIServerHealthCheck = defaultAPIServerHealthCheck(timeout:)) async -> PluginLoader? {
-        try? await createPluginLoader(healthTimeout: .seconds(1), wallTimeout: .seconds(1), healthCheck: healthCheck)
+        if let pluginLoader = try? createPluginLoaderFromCurrentRoots(), !pluginLoader.findPlugins().filter(\.config.isCLI).isEmpty {
+            return pluginLoader
+        }
+        return try? await createPluginLoader(healthTimeout: .seconds(1), wallTimeout: .seconds(1), healthCheck: healthCheck)
+    }
+
+    static func pluginLoaderForDispatch() async -> PluginLoader? {
+        try? await createPluginLoader(healthTimeout: .seconds(1), wallTimeout: .seconds(1), healthCheck: defaultAPIServerHealthCheck(timeout:))
     }
 
     static func isRootHelpRequest(_ arguments: [String]) -> Bool {
@@ -161,9 +180,26 @@ public struct Application: AsyncLoggableCommand {
     }
 
     private static func createPluginLoader(healthTimeout: Duration, wallTimeout: Duration, healthCheck: @escaping APIServerHealthCheck) async throws -> PluginLoader {
-        let installRootPath = CommandLine.executablePath
+        let installRootPath = currentInstallRootPath()
+
+        let systemHealth = try await apiServerHealth(healthTimeout: healthTimeout, wallTimeout: wallTimeout, healthCheck: healthCheck)
+        return try PluginLoader(
+            appRoot: systemHealth.appRoot,
+            installRoot: systemHealth.installRoot,
+            logRoot: systemHealth.logRoot,
+            pluginDirectories: pluginDirectories(installRootPath: installRootPath),
+            pluginFactories: pluginFactories(),
+            log: bootstrapLogger
+        )
+    }
+
+    private static func currentInstallRootPath() -> FilePath {
+        CommandLine.executablePath
             .removingLastComponent()
             .removingLastComponent()
+    }
+
+    private static func pluginDirectories(installRootPath: FilePath) -> [URL] {
         // TODO: Remove when we convert PluginLoader to FilePath.
         let installRootURL = URL(fileURLWithPath: installRootPath.string)
         let pluginsURL = PluginLoader.userPluginsDir(installRoot: installRootURL)
@@ -181,26 +217,19 @@ public struct Application: AsyncLoggableCommand {
             .appending(FilePath.Component("container"))
             .appending(FilePath.Component("plugins"))
         let installRootPluginsURL = URL(fileURLWithPath: installRootPluginsPath.string)
-        let pluginDirectories = [
+
+        return [
             userPluginsURL,
             appBundlePluginsURL,
             installRootPluginsURL,
         ].compactMap { $0 }
+    }
 
-        let pluginFactories: [any PluginFactory] = [
+    private static func pluginFactories() -> [any PluginFactory] {
+        [
             DefaultPluginFactory(logger: bootstrapLogger),
             AppBundlePluginFactory(logger: bootstrapLogger),
         ]
-
-        let systemHealth = try await apiServerHealth(healthTimeout: healthTimeout, wallTimeout: wallTimeout, healthCheck: healthCheck)
-        return try PluginLoader(
-            appRoot: systemHealth.appRoot,
-            installRoot: systemHealth.installRoot,
-            logRoot: systemHealth.logRoot,
-            pluginDirectories: pluginDirectories,
-            pluginFactories: pluginFactories,
-            log: bootstrapLogger
-        )
     }
 
     private static func defaultAPIServerHealthCheck(timeout: Duration) async throws -> SystemHealth {
@@ -347,18 +376,26 @@ extension Application {
     static func printModifiedHelpText(pluginLoader: PluginLoader?) async {
         let original = Application.helpMessage(for: Application.self)
         guard let pluginLoader else {
-            print(addGroupSpacing(original))
+            print(addBuildProvenance(addGroupSpacing(original)))
             print("\nPLUGINS: not available, run `container system start`")
             return
         }
         let altered = pluginLoader.alterCLIHelpText(original: original)
-        print(addGroupSpacing(altered))
+        print(addBuildProvenance(addGroupSpacing(altered)))
     }
 
     private static func addGroupSpacing(_ text: String) -> String {
         text
             .replacingOccurrences(of: "\n([A-Z].+SUBCOMMANDS:)", with: "\n\n$1", options: .regularExpression)
             .replacingOccurrences(of: "\nPLUGINS:", with: "\n\nPLUGINS:")
+    }
+
+    static func addBuildProvenance(_ text: String) -> String {
+        let provenance = (["BUILD:"] + ReleaseVersion.provenanceLines()).joined(separator: "\n")
+        if text.contains("\nPLUGINS:") {
+            return text.replacingOccurrences(of: "\nPLUGINS:", with: "\n\n\(provenance)\n\nPLUGINS:")
+        }
+        return "\(text)\n\n\(provenance)"
     }
 
     func isTranslated() throws -> Bool {

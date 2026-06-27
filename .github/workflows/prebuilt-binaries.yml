@@ -18,7 +18,8 @@ on:
   push:
     branches:
       - main
-      - develop
+      - release
+      - "release-*"
   workflow_dispatch:
 
 permissions:
@@ -38,7 +39,7 @@ jobs:
     runs-on: macos-26
     steps:
       - name: Checkout container
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -47,22 +48,40 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          asset_slug="${GITHUB_REF_NAME//\//-}"
+          formula_slug="$(
+            printf '%s' "$asset_slug" \
+              | tr '[:upper:]' '[:lower:]' \
+              | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+          )"
           case "${GITHUB_REF_NAME}" in
             main)
               printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
               printf 'asset=container-homebrew-main-release-arm64.tar.gz\n' >> "$GITHUB_OUTPUT"
               printf 'release_name=Homebrew main release prebuilt\n' >> "$GITHUB_OUTPUT"
+              printf 'formula=container.rb\n' >> "$GITHUB_OUTPUT"
+              printf 'formula_class=Container\n' >> "$GITHUB_OUTPUT"
+              printf 'label=main release\n' >> "$GITHUB_OUTPUT"
               ;;
-            develop)
-              printf 'configuration=debug\n' >> "$GITHUB_OUTPUT"
-              printf 'asset=container-homebrew-develop-debug-arm64.tar.gz\n' >> "$GITHUB_OUTPUT"
-              printf 'release_name=Homebrew develop debug prebuilt\n' >> "$GITHUB_OUTPUT"
+            release|release-*)
+              formula_class="$(python3 -c 'import re, sys; print("Container" + "".join(part.capitalize() for part in re.split(r"[^a-zA-Z0-9]+", sys.argv[1]) if part))' "$formula_slug")"
+              printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
+              printf 'asset=container-homebrew-%s-release-arm64.tar.gz\n' "$asset_slug" >> "$GITHUB_OUTPUT"
+              printf 'release_name=Homebrew %s release prebuilt\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              printf 'formula=container-%s.rb\n' "$formula_slug" >> "$GITHUB_OUTPUT"
+              printf 'formula_class=%s\n' "$formula_class" >> "$GITHUB_OUTPUT"
+              printf 'label=%s release\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
               ;;
             *)
               printf 'Unsupported branch for prebuilt packaging: %s\n' "${GITHUB_REF_NAME}" >&2
               exit 1
               ;;
           esac
+          {
+            printf 'asset_slug=%s\n' "$asset_slug"
+            printf 'tag=homebrew-%s\n' "$asset_slug"
+            printf 'version=%s-release-%s\n' "$asset_slug" "${GITHUB_SHA:0:12}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build package
         run: make package BUILD_CONFIGURATION="${{ steps.lane.outputs.configuration }}" HOMEBREW_ARCHIVE="${RUNNER_TEMP}/${{ steps.lane.outputs.asset }}"
@@ -81,10 +100,10 @@ jobs:
           ASSET: ${{ steps.lane.outputs.asset }}
           CONFIGURATION: ${{ steps.lane.outputs.configuration }}
           RELEASE_NAME: ${{ steps.lane.outputs.release_name }}
+          RELEASE_TAG: ${{ steps.lane.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          tag="homebrew-${GITHUB_REF_NAME}"
           notes="$(mktemp)"
           {
             printf '%s\n\n' "${RELEASE_NAME}"
@@ -93,21 +112,79 @@ jobs:
             printf 'Build configuration: %s\n' "${CONFIGURATION}"
           } > "$notes"
 
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" \
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
               --target "$GITHUB_SHA" \
               --title "${RELEASE_NAME}" \
               --notes-file "$notes" \
               --prerelease
           else
-            gh release edit "$tag" \
+            gh release edit "$RELEASE_TAG" \
               --target "$GITHUB_SHA" \
               --title "${RELEASE_NAME}" \
               --notes-file "$notes" \
               --prerelease
           fi
 
-          gh release upload "$tag" \
+          gh release upload "$RELEASE_TAG" \
             "${RUNNER_TEMP}/${ASSET}" \
             "${RUNNER_TEMP}/${ASSET}.sha256" \
             --clobber
+
+      - name: Require Homebrew tap token
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${HOMEBREW_TAP_TOKEN}" ]]; then
+            printf 'HOMEBREW_TAP_TOKEN is required to update stephenlclarke/homebrew-tap\n' >&2
+            exit 1
+          fi
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: stephenlclarke/homebrew-tap
+          path: homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      - name: Update Homebrew tap formula
+        env:
+          ASSET: ${{ steps.lane.outputs.asset }}
+          FORMULA: ${{ steps.lane.outputs.formula }}
+          FORMULA_CLASS: ${{ steps.lane.outputs.formula_class }}
+          LABEL: ${{ steps.lane.outputs.label }}
+          RELEASE_TAG: ${{ steps.lane.outputs.tag }}
+          VERSION: ${{ steps.lane.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/stephenlclarke/container/releases/download/${RELEASE_TAG}/${ASSET}"
+          sha256="$(awk '{print $1}' "${RUNNER_TEMP}/${ASSET}.sha256")"
+          python3 scripts/update-homebrew-formula.py \
+            --formula "homebrew-tap/Formula/${FORMULA}" \
+            --template "homebrew-tap/Formula/container.rb" \
+            --formula-class "$FORMULA_CLASS" \
+            --url "$url" \
+            --sha256 "$sha256" \
+            --version "$VERSION" \
+            --label "$LABEL" \
+            --asset "$ASSET"
+          git -C homebrew-tap diff -- Formula
+
+      - name: Commit Homebrew tap update
+        shell: bash
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- Formula; then
+            printf 'Homebrew tap formula already points at %s\n' "${{ steps.lane.outputs.asset }}"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "Formula/${{ steps.lane.outputs.formula }}"
+          git commit -m "chore(homebrew): update ${{ github.ref_name }} container formula"
+          git push

@@ -65,23 +65,18 @@ struct DefaultCommand: AsyncLoggableCommand {
             .map { $0.appendingPathComponent(command).path(percentEncoded: false) }
             .joined(separator: "\n  - ")
 
-        // See if we have a possible plugin command.
-        let pluginLoader = try? await Application.createPluginLoader()
-
-        // If plugin loader couldn't be created, the system/APIServer likely isn't running.
-        if pluginLoader == nil {
-            throw ValidationError(
-                """
-                Plugins are unavailable. Start the container system services and retry:
-
-                    container system start
-
-                Check to see that the plugin exists under:
-                  - \(hintPaths)
-
-                """
-            )
+        if let pluginLoader = try? Application.createPluginLoaderFromCurrentRoots(),
+            let plugin = pluginLoader.findPlugin(name: command),
+            plugin.config.isCLI
+        {
+            // Before execing into the plugin, restore default SIGINT/SIGTERM so the plugin can manage signals.
+            Self.resetSignalsForPluginExec()
+            // Exec performs execvp (with no fork).
+            try plugin.exec(args: remaining)
         }
+
+        // See if we have a possible plugin command using service-provided roots.
+        let pluginLoader = await Application.pluginLoaderForDispatch()
 
         guard let plugin = pluginLoader?.findPlugin(name: command), plugin.config.isCLI else {
             throw ValidationError(

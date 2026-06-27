@@ -39,7 +39,10 @@ extension Application {
                 version: ReleaseVersion.version(),
                 buildType: ReleaseVersion.buildType(),
                 commit: ReleaseVersion.gitCommit() ?? "unspecified",
-                appName: "container"
+                appName: "container",
+                distribution: ReleaseVersion.distribution(),
+                source: ReleaseVersion.containerSource(),
+                containerization: "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())"
             )
 
             // Try to get API server version info
@@ -64,8 +67,20 @@ extension Application {
         }
 
         private static func versionTable(_ versions: [VersionInfo]) -> String {
-            let header = ["COMPONENT", "VERSION", "BUILD", "COMMIT"]
-            let rows = [header] + versions.map { [$0.appName, $0.version, $0.buildType, $0.commit] }
+            let header = ["COMPONENT", "VERSION", "BUILD", "COMMIT", "DISTRIBUTION", "SOURCE", "CONTAINERIZATION"]
+            let rows =
+                [header]
+                + versions.map {
+                    [
+                        $0.appName,
+                        $0.version,
+                        $0.buildType,
+                        $0.commit,
+                        $0.distribution ?? "-",
+                        $0.source ?? "-",
+                        $0.containerization ?? "-",
+                    ]
+                }
             return TableOutput(rows: rows).format()
         }
     }
@@ -75,5 +90,27 @@ extension Application {
         let buildType: String
         let commit: String
         let appName: String
+
+        let distribution: String?
+        let source: String?
+        let containerization: String?
+
+        init(
+            version: String,
+            buildType: String,
+            commit: String,
+            appName: String,
+            distribution: String? = nil,
+            source: String? = nil,
+            containerization: String? = nil
+        ) {
+            self.version = version
+            self.buildType = buildType
+            self.commit = commit
+            self.appName = appName
+            self.distribution = distribution
+            self.source = source
+            self.containerization = containerization
+        }
     }
 }

@@ -26,6 +26,18 @@
 #define RELEASE_VERSION "0.0.0"
 #endif
 
+#ifndef CONTAINER_SOURCE
+#define CONTAINER_SOURCE "apple/container"
+#endif
+
+#ifndef CONTAINERIZATION_SOURCE
+#define CONTAINERIZATION_SOURCE "apple/containerization"
+#endif
+
+#ifndef CONTAINERIZATION_REF
+#define CONTAINERIZATION_REF CZ_VERSION
+#endif
+
 #ifndef BUILDER_SHIM_VERSION
 #define BUILDER_SHIM_VERSION "0.0.0"
 #endif
@@ -33,6 +45,12 @@
 const char* get_git_commit();
 
 const char* get_release_version();
+
+const char* get_container_source();
+
+const char* get_containerization_source();
+
+const char* get_containerization_ref();
 
 const char* get_swift_containerization_version();
 
