@@ -42,7 +42,7 @@ extension Application {
             name: .long,
             help: "Path to the root directory for application executables and plugins",
             transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) })
-        var installRoot = InstallRoot.defaultPath
+        var installRoot = InstallRoot.path
 
         @Option(
             name: .long,

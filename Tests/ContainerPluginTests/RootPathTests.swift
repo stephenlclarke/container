@@ -37,6 +37,28 @@ struct InstallRootTests {
     @Test func defaultPathIsGrandparentOfExecutable() {
         #expect(InstallRoot.defaultPath == CommandLine.executablePath.removingLastComponent().removingLastComponent())
     }
+
+    @Test func pathUsesEnvironmentOverride() {
+        #expect(
+            InstallRoot.resolve(
+                environment: [InstallRoot.environmentName: "/opt/container"],
+                currentDirectory: "/tmp"
+            ) == FilePath("/opt/container")
+        )
+    }
+
+    @Test func pathResolvesRelativeEnvironmentOverride() {
+        #expect(
+            InstallRoot.resolve(
+                environment: [InstallRoot.environmentName: "container-root"],
+                currentDirectory: "/opt/homebrew"
+            ) == FilePath("/opt/homebrew/container-root")
+        )
+    }
+
+    @Test func pathFallsBackToDefaultWhenEnvironmentIsMissing() {
+        #expect(InstallRoot.resolve(environment: [:], currentDirectory: "/tmp") == InstallRoot.defaultPath)
+    }
 }
 
 struct LogRootTests {

@@ -39,10 +39,18 @@ public struct InstallRoot {
     /// If the environment variable is set to an absolute path, that path is used directly.
     /// If it is set to a relative path, the path is resolved against the working directory.
     /// Otherwise, ``defaultPath`` is used.
-    public static let path = FilePath(FileManager.default.currentDirectoryPath).resolve(
-        ProcessInfo.processInfo.environment[environmentName],
-        defaultPath: defaultPath
-    )
+    public static let path = resolve()
+
+    /// Resolves the root directory path from an environment mapping.
+    public static func resolve(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        currentDirectory: String = FileManager.default.currentDirectoryPath
+    ) -> FilePath {
+        FilePath(currentDirectory).resolve(
+            environment[environmentName],
+            defaultPath: defaultPath
+        )
+    }
 
     /// The pathname to the root directory
     public static let pathname = path.string
