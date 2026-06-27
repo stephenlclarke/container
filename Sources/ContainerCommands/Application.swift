@@ -193,10 +193,11 @@ public struct Application: AsyncLoggableCommand {
         )
     }
 
-    private static func currentInstallRootPath() -> FilePath {
-        CommandLine.executablePath
-            .removingLastComponent()
-            .removingLastComponent()
+    static func currentInstallRootPath(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        currentDirectory: String = FileManager.default.currentDirectoryPath
+    ) -> FilePath {
+        InstallRoot.resolve(environment: environment, currentDirectory: currentDirectory)
     }
 
     private static func pluginDirectories(installRootPath: FilePath) -> [URL] {

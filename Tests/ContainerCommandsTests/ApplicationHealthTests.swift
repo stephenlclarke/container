@@ -15,9 +15,11 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerAPIClient
+import ContainerPlugin
 import ContainerizationError
 import Darwin
 import Foundation
+import SystemPackage
 import Testing
 
 @testable import ContainerCommands
@@ -33,6 +35,31 @@ struct ApplicationHealthTests {
     ])
     func rootHelpRequestDetection(arguments: [String], expected: Bool) {
         #expect(Application.isRootHelpRequest(arguments) == expected)
+    }
+
+    @Test
+    func currentInstallRootPathUsesEnvironmentOverride() {
+        #expect(
+            Application.currentInstallRootPath(
+                environment: [InstallRoot.environmentName: "/opt/homebrew/opt/container"],
+                currentDirectory: "/tmp"
+            ) == FilePath("/opt/homebrew/opt/container")
+        )
+    }
+
+    @Test
+    func currentInstallRootPathResolvesRelativeEnvironmentOverride() {
+        #expect(
+            Application.currentInstallRootPath(
+                environment: [InstallRoot.environmentName: "container-root"],
+                currentDirectory: "/opt/homebrew"
+            ) == FilePath("/opt/homebrew/container-root")
+        )
+    }
+
+    @Test
+    func currentInstallRootPathFallsBackToInstallRootDefault() {
+        #expect(Application.currentInstallRootPath(environment: [:], currentDirectory: "/tmp") == InstallRoot.defaultPath)
     }
 
     @Test
