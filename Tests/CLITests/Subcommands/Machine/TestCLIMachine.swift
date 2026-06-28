@@ -142,6 +142,7 @@ class TestCLIMachineRuntime: CLITest {
         name: String? = nil,
         root: Bool = false,
         env: [String] = [],
+        ulimits: [String] = [],
         cwd: String? = nil,
         command: [String]
     ) throws -> String {
@@ -150,6 +151,7 @@ class TestCLIMachineRuntime: CLITest {
         if root { args.append("--root") }
         if let cwd { args.append(contentsOf: ["--cwd", cwd]) }
         for e in env { args.append(contentsOf: ["-e", e]) }
+        for ulimit in ulimits { args.append(contentsOf: ["--ulimit", ulimit]) }
         args.append(contentsOf: command)
         let (_, output, error, status) = try runMachine(arguments: args)
         if status != 0 {
@@ -295,6 +297,28 @@ class TestCLIMachineRuntime: CLITest {
         #expect(
             output.trimmingCharacters(in: .whitespacesAndNewlines) == "hello",
             "run should execute command and return output"
+        )
+    }
+
+    @Test func testRunCommandUlimitNofile() throws {
+        let name = getTestName()
+        let softLimit = "1024"
+        let hardLimit = "2048"
+        try doMachineCreate(name: name)
+        defer { cleanupMachine(name) }
+
+        _ = try doMachineBoot(name: name)
+        try waitForMachineStatus(name, status: "running")
+
+        let output = try doMachineRun(
+            name: name,
+            root: true,
+            ulimits: ["nofile=\(softLimit):\(hardLimit)"],
+            command: ["ulimit", "-n"]
+        )
+        #expect(
+            output.trimmingCharacters(in: .whitespacesAndNewlines) == softLimit,
+            "run with --ulimit should apply the requested soft nofile limit"
         )
     }
 

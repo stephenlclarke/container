@@ -109,6 +109,32 @@ class TestCLIExecCommand: CLITest {
         }
     }
 
+    @Test func testExecCommandUlimitNofile() throws {
+        do {
+            let name = getTestName()
+            let softLimit = "1024"
+            let hardLimit = "2048"
+            try doCreate(name: name)
+            defer {
+                try? doStop(name: name)
+            }
+            try doStart(name: name)
+
+            var output = try doExec(
+                name: name,
+                cmd: ["sh", "-c", "ulimit -n"],
+                args: ["--ulimit", "nofile=\(softLimit):\(hardLimit)"]
+            )
+            output = output.trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(output == softLimit, "expected ulimit -n to return \(softLimit), got \(output)")
+
+            try doStop(name: name)
+        } catch {
+            Issue.record("failed to exec with ulimit in container \(error)")
+            return
+        }
+    }
+
     @Test func testExecOnExitingContainer() throws {
         do {
             let name = getTestName()

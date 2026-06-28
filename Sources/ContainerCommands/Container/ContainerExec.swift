@@ -16,6 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerResource
 import ContainerizationError
 import ContainerizationOS
 import Foundation
@@ -56,28 +57,12 @@ extension Application {
                 throw ContainerizationError(.invalidArgument, message: "no command specified for exec")
             }
 
-            var config = container.configuration.initProcess
-            config.executable = executable
-            config.arguments = [String](self.arguments.dropFirst())
-            config.terminal = tty
-            config.environment.append(
-                contentsOf: try Parser.allEnv(
-                    imageEnvs: [],
-                    envFiles: self.processFlags.envFile,
-                    envs: self.processFlags.env
-                ))
-
-            if let cwd = self.processFlags.cwd {
-                config.workingDirectory = cwd
-            }
-            config.privileged = self.processFlags.privileged
-
-            let defaultUser = config.user
-            let (user, additionalGroups) = Parser.user(
-                user: processFlags.user, uid: processFlags.uid,
-                gid: processFlags.gid, defaultUser: defaultUser)
-            config.user = user
-            config.supplementalGroups.append(contentsOf: additionalGroups)
+            let config = try processConfiguration(
+                baseProcess: container.configuration.initProcess,
+                executable: executable,
+                arguments: [String](self.arguments.dropFirst()),
+                tty: tty
+            )
 
             do {
                 let io = try ProcessIO.create(tty: tty, interactive: stdin, detach: self.detach)
@@ -116,6 +101,40 @@ extension Application {
                 throw ContainerizationError(.internalError, message: "failed to exec process \(error)")
             }
             throw ArgumentParser.ExitCode(exitCode)
+        }
+
+        func processConfiguration(
+            baseProcess: ProcessConfiguration,
+            executable: String,
+            arguments: [String],
+            tty: Bool
+        ) throws -> ProcessConfiguration {
+            var config = baseProcess
+            config.executable = executable
+            config.arguments = arguments
+            config.terminal = tty
+            config.environment.append(
+                contentsOf: try Parser.allEnv(
+                    imageEnvs: [],
+                    envFiles: self.processFlags.envFile,
+                    envs: self.processFlags.env
+                ))
+
+            if let cwd = self.processFlags.cwd {
+                config.workingDirectory = cwd
+            }
+            if !self.processFlags.ulimits.isEmpty {
+                config.rlimits = try Parser.rlimits(self.processFlags.ulimits)
+            }
+            config.privileged = self.processFlags.privileged
+
+            let defaultUser = config.user
+            let (user, additionalGroups) = Parser.user(
+                user: processFlags.user, uid: processFlags.uid,
+                gid: processFlags.gid, defaultUser: defaultUser)
+            config.user = user
+            config.supplementalGroups.append(contentsOf: additionalGroups)
+            return config
         }
     }
 }

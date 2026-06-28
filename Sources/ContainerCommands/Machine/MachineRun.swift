@@ -104,7 +104,7 @@ extension Application {
                 envs: processFlags.env
             )
 
-            let processConfig = processConfiguration(
+            let processConfig = try processConfiguration(
                 executable: executablePath,
                 arguments: args,
                 environment: envVars,
@@ -169,7 +169,7 @@ extension Application {
             terminal: Bool,
             user: ProcessConfiguration.User,
             supplementalGroups: [UInt32]
-        ) -> ProcessConfiguration {
+        ) throws -> ProcessConfiguration {
             ProcessConfiguration(
                 executable: executable,
                 arguments: arguments,
@@ -178,6 +178,7 @@ extension Application {
                 terminal: terminal,
                 user: user,
                 supplementalGroups: supplementalGroups,
+                rlimits: try Parser.rlimits(processFlags.ulimits),
                 privileged: processFlags.privileged
             )
         }

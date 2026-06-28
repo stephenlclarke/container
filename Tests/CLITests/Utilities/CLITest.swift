@@ -300,7 +300,13 @@ class CLITest {
         }
     }
 
-    func doExec(name: String, cmd: [String], detach: Bool = false, user: String? = nil) throws -> String {
+    func doExec(
+        name: String,
+        cmd: [String],
+        detach: Bool = false,
+        user: String? = nil,
+        args: [String] = []
+    ) throws -> String {
         var execArgs = [
             "exec"
         ]
@@ -311,6 +317,7 @@ class CLITest {
         if let user {
             execArgs.append(contentsOf: ["-u", user])
         }
+        execArgs.append(contentsOf: args)
         execArgs.append(name)
         execArgs.append(contentsOf: cmd)
         let (_, resp, error, status) = try run(arguments: execArgs)
