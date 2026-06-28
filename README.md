@@ -9,6 +9,15 @@ The tool consumes and produces [OCI-compatible container images](https://github.
 
 `container` uses the [Containerization](https://github.com/apple/containerization) Swift package for low-level container, image, and process management.
 
+Stephen Clarke's fork is part of a four-repository preview stack:
+
+- [`container`](https://github.com/stephenlclarke/container): this fork-backed runtime and CLI.
+- [`container-compose`](https://github.com/stephenlclarke/container-compose): the Docker Compose style plugin installed beside the matching runtime lane.
+- [`containerization`](https://github.com/stephenlclarke/containerization): the Swift runtime package consumed by this CLI and by `container-compose`; `main` builds use `containerization` `main`, and release builds use `containerization` `release`.
+- [`container-builder-shim`](https://github.com/stephenlclarke/container-builder-shim): the Go BuildKit bridge used by `container build`; this package pins the immutable builder image version, currently `0.13.3`.
+
+The aggregate Homebrew tap is [`homebrew-tap`](https://github.com/stephenlclarke/homebrew-tap). It tracks the four source repositories on `main` for maintenance and installs prebuilt release-quality package assets for users. Go artifacts across the stack are treated as release code, not debug helpers.
+
 ![introductory movie showing some basic commands](./docs/assets/landing-movie.gif)
 
 ## Get started

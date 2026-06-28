@@ -28,7 +28,7 @@ class Container < Formula
 
   def caveats
     <<~EOS
-      This formula installs the main release prebuilt release asset:
+      This formula installs the main lane prebuilt package asset:
         container-homebrew-main-release-arm64.tar.gz
     EOS
   end

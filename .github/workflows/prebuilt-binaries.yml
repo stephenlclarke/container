@@ -58,19 +58,28 @@ jobs:
             main)
               printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
               printf 'asset=container-homebrew-main-release-arm64.tar.gz\n' >> "$GITHUB_OUTPUT"
-              printf 'release_name=Homebrew main release prebuilt\n' >> "$GITHUB_OUTPUT"
+              printf 'release_name=Homebrew main lane prebuilt\n' >> "$GITHUB_OUTPUT"
               printf 'formula=container.rb\n' >> "$GITHUB_OUTPUT"
               printf 'formula_class=Container\n' >> "$GITHUB_OUTPUT"
-              printf 'label=main release\n' >> "$GITHUB_OUTPUT"
+              printf 'label=main lane\n' >> "$GITHUB_OUTPUT"
               ;;
-            release|release-*)
+            release)
               formula_class="$(python3 -c 'import re, sys; print("Container" + "".join(part.capitalize() for part in re.split(r"[^a-zA-Z0-9]+", sys.argv[1]) if part))' "$formula_slug")"
               printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
               printf 'asset=container-homebrew-%s-release-arm64.tar.gz\n' "$asset_slug" >> "$GITHUB_OUTPUT"
-              printf 'release_name=Homebrew %s release prebuilt\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              printf 'release_name=Homebrew release lane prebuilt\n' >> "$GITHUB_OUTPUT"
               printf 'formula=container-%s.rb\n' "$formula_slug" >> "$GITHUB_OUTPUT"
               printf 'formula_class=%s\n' "$formula_class" >> "$GITHUB_OUTPUT"
-              printf 'label=%s release\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              printf 'label=release lane\n' >> "$GITHUB_OUTPUT"
+              ;;
+            release-*)
+              formula_class="$(python3 -c 'import re, sys; print("Container" + "".join(part.capitalize() for part in re.split(r"[^a-zA-Z0-9]+", sys.argv[1]) if part))' "$formula_slug")"
+              printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
+              printf 'asset=container-homebrew-%s-release-arm64.tar.gz\n' "$asset_slug" >> "$GITHUB_OUTPUT"
+              printf 'release_name=Homebrew %s branch prebuilt\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              printf 'formula=container-%s.rb\n' "$formula_slug" >> "$GITHUB_OUTPUT"
+              printf 'formula_class=%s\n' "$formula_class" >> "$GITHUB_OUTPUT"
+              printf 'label=%s branch\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
               ;;
             *)
               printf 'Unsupported branch for prebuilt packaging: %s\n' "${GITHUB_REF_NAME}" >&2
