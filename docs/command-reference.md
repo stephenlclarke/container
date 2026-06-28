@@ -162,9 +162,13 @@ container build [<options>] [<context-dir>]
 *   `--os <value>`: Add the OS type to the build
 *   `--platform <platform>`: Add the platform to the build (format: os/arch[/variant], takes precedence over --os and --arch)
 *   `--progress <type>`: Progress type (format: auto|plain|tty) (default: auto)
+*   `--provenance <value>`: Add a provenance attestation. Use `false` to
+    explicitly disable.
 *   `--pull`: Pull latest image
 *   `-q, --quiet`: Suppress build output
 *   `--secret <id=key,...>`: Set build-time secrets (format: id=<key>[,env=<ENV_VAR>|,src=<local/path>])
+*   `--sbom <value>`: Add an SBOM attestation. Use `false` to explicitly
+    disable.
 *   `--ssh <value>`: Set SSH authentication used during the build from
     `SSH_AUTH_SOCK`, a named ID, or one or more explicit Unix socket paths (for
     example: `default`, `git`, `default=/tmp/agent.sock`, or

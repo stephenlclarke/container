@@ -274,6 +274,23 @@ values that point different IDs at different host Unix sockets. Explicit host
 socket paths are mounted into the builder and rewritten to guest socket paths
 before BuildKit sees them.
 
+## Add build provenance and SBOM attestations
+
+Use `container build --provenance` and `container build --sbom` to request
+BuildKit attestations on supported build outputs:
+
+```console
+% container build --provenance=true --sbom=true -t attested-build .
+% container build --provenance=mode=max --sbom=true -t attested-build .
+```
+
+Use `false`, `0`, or `no` to explicitly disable either attestation in scripts
+that share Docker-compatible build options:
+
+```console
+% container build --provenance=false --sbom=false -t regular-build .
+```
+
 ```console
 % container run -it --rm --ssh alpine:latest sh 
 / # env

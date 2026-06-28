@@ -117,6 +117,9 @@ extension Application {
         @Option(name: .long, help: ArgumentHelp("Progress type (format: auto|plain|tty)", valueName: "type"))
         var progress: ProgressType = .auto
 
+        @Option(name: .long, help: ArgumentHelp("Add a provenance attestation. Use false to explicitly disable.", valueName: "value"))
+        var provenance: String?
+
         @Flag(name: .shortAndLong, help: "Suppress build output")
         var quiet: Bool = false
 
@@ -127,6 +130,9 @@ extension Application {
 
         @Option(name: .long, help: ArgumentHelp("Set SSH authentication used during the build from SSH_AUTH_SOCK or id=/path/to/socket values", valueName: "value"))
         var ssh: [String] = []
+
+        @Option(name: .long, help: ArgumentHelp("Add an SBOM attestation. Use false to explicitly disable.", valueName: "value"))
+        var sbom: String?
 
         @Option(name: [.short, .customLong("tag")], help: ArgumentHelp("Name for the built image", valueName: "name"))
         var targetImageNames: [String] = {
@@ -169,6 +175,7 @@ extension Application {
 
                 let sshForwarding = try BuildSSHForwarding.resolve(values: ssh)
                 let enableSSHForwarding = sshForwarding.isEnabled
+                let attestations = buildAttestations()
                 let dnsNameservers = self.dns.nameservers
                 if enableSSHForwarding {
                     progress.set(tasks: 0)
@@ -375,7 +382,7 @@ extension Application {
                     group.addTask {
                         [
                             terminal, buildArg, secretsData, sshForwarding, contextDir, ignoreFileData, label,
-                            noCache, target, quiet, cacheIn, cacheOut, pull, exports, imageNames, tempURL, log,
+                            noCache, target, quiet, cacheIn, cacheOut, pull, exports, imageNames, tempURL, log, attestations,
                         ] in
                         let config = Builder.BuildConfig(
                             buildID: buildID,
@@ -383,6 +390,7 @@ extension Application {
                             buildArgs: buildArg,
                             secrets: secretsData,
                             ssh: sshForwarding.metadataValues,
+                            attestations: attestations,
                             contextDir: contextDir,
                             dockerfile: buildFileData,
                             dockerignore: ignoreFileData,
@@ -536,6 +544,32 @@ extension Application {
                 } else {
                     throw ValidationError("secret bad value \(parts[1])")
                 }
+            }
+        }
+
+        private func buildAttestations() -> [String: String] {
+            var values: [String: String] = [:]
+            if let provenance = attestationValue(provenance) {
+                values["attest-provenance"] = provenance
+            }
+            if let sbom = attestationValue(sbom) {
+                values["attest-sbom"] = sbom
+            }
+            return values
+        }
+
+        private func attestationValue(_ value: String?) -> String? {
+            guard let value else {
+                return nil
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch trimmed.lowercased() {
+            case "false", "0", "no":
+                return nil
+            case "", "true", "1", "yes":
+                return ""
+            default:
+                return trimmed
             }
         }
     }

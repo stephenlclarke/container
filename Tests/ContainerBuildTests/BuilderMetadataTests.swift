@@ -31,6 +31,10 @@ struct BuilderMetadataTests {
             buildArgs: [],
             secrets: [:],
             ssh: ["default", "git=/tmp/agent.sock"],
+            attestations: [
+                "attest-provenance": "mode=max",
+                "attest-sbom": "",
+            ],
             contextDir: "/tmp/context",
             dockerfile: Data("FROM scratch\n".utf8),
             dockerignore: nil,
@@ -51,6 +55,8 @@ struct BuilderMetadataTests {
         let metadata = try Builder.buildMetadata(config)
 
         #expect(Array(metadata[stringValues: "ssh"]) == ["default", "git=/tmp/agent.sock"])
+        #expect(Array(metadata[stringValues: "attest-provenance"]) == ["mode=max"])
+        #expect(Array(metadata[stringValues: "attest-sbom"]) == [""])
     }
 }
 

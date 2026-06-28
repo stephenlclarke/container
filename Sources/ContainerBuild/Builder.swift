@@ -267,6 +267,7 @@ public struct Builder: Sendable {
         public let buildArgs: [String]
         public let secrets: [String: Data]
         public let ssh: [String]
+        public let attestations: [String: String]
         public let contextDir: String
         public let dockerfile: Data
         public let dockerignore: Data?
@@ -289,6 +290,7 @@ public struct Builder: Sendable {
             buildArgs: [String],
             secrets: [String: Data],
             ssh: [String] = [],
+            attestations: [String: String] = [:],
             contextDir: String,
             dockerfile: Data,
             dockerignore: Data?,
@@ -310,6 +312,7 @@ public struct Builder: Sendable {
             self.buildArgs = buildArgs
             self.secrets = secrets
             self.ssh = ssh
+            self.attestations = attestations
             self.contextDir = contextDir
             self.dockerfile = dockerfile
             self.dockerignore = dockerignore
@@ -359,6 +362,9 @@ public struct Builder: Sendable {
         }
         for ssh in config.ssh {
             metadata.addString(ssh, forKey: "ssh")
+        }
+        for (key, value) in config.attestations.sorted(by: { $0.key < $1.key }) {
+            metadata.addString(value, forKey: key)
         }
         for output in config.exports {
             metadata.addString(try output.stringValue, forKey: "outputs")
