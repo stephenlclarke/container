@@ -82,8 +82,9 @@ final public class BuildConfig: Codable, Sendable {
     public static let defaultCPUs = 2
     public static let defaultMemory = try! MemorySize("2048MB")
     public static var defaultImage: String {
+        let repository = String(cString: get_container_builder_shim_repository())
         let tag = String(cString: get_container_builder_shim_version())
-        return "ghcr.io/apple/container-builder-shim/builder:\(tag)"
+        return "\(repository):\(tag)"
     }
 
     public let rosetta: Bool

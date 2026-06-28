@@ -90,14 +90,16 @@ class TestCLIBuildBase: CLITest {
         tag: String,
         tempDir: URL,
         buildArgs: [String] = [],
-        otherArgs: [String] = []
+        otherArgs: [String] = [],
+        env: [String: String] = [:]
     ) throws -> String {
         try buildWithPaths(
             tags: [tag],
             tempContext: tempDir,
             tempDockerfileContext: tempDir,
             buildArgs: buildArgs,
-            otherArgs: otherArgs
+            otherArgs: otherArgs,
+            env: env
         )
     }
 
@@ -106,14 +108,16 @@ class TestCLIBuildBase: CLITest {
         tags: [String],
         tempDir: URL,
         buildArgs: [String] = [],
-        otherArgs: [String] = []
+        otherArgs: [String] = [],
+        env: [String: String] = [:]
     ) throws -> String {
         try buildWithPaths(
             tags: tags,
             tempContext: tempDir,
             tempDockerfileContext: tempDir,
             buildArgs: buildArgs,
-            otherArgs: otherArgs
+            otherArgs: otherArgs,
+            env: env
         )
     }
 
@@ -125,7 +129,8 @@ class TestCLIBuildBase: CLITest {
         tempContext: URL,
         tempDockerfileContext: URL,
         buildArgs: [String] = [],
-        otherArgs: [String] = []
+        otherArgs: [String] = [],
+        env: [String: String] = [:]
     ) throws -> String {
         let contextDir: URL = tempContext.appendingPathComponent("context")
         let contextDirPath = contextDir.absoluteURL.path
@@ -146,7 +151,7 @@ class TestCLIBuildBase: CLITest {
 
         args.append(contentsOf: otherArgs)
 
-        let response = try run(arguments: args)
+        let response = try run(arguments: args, env: env)
         if response.status != 0 {
             throw CLIError.executionFailed("build failed: stdout=\(response.output) stderr=\(response.error)")
         }

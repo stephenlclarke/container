@@ -23,7 +23,8 @@ import PackageDescription
 let releaseVersion = ProcessInfo.processInfo.environment["RELEASE_VERSION"] ?? "0.0.0"
 let gitCommit = ProcessInfo.processInfo.environment["GIT_COMMIT"] ?? "unspecified"
 let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ?? "stephenlclarke/container"
-let builderShimVersion = "0.12.0"
+let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
+let builderShimVersion = "0.13.2"
 let scVersion = "0.35.0"
 let scSource = ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"] ?? "stephenlclarke/containerization"
 let scRef = ProcessInfo.processInfo.environment["CONTAINERIZATION_REF"] ?? "main"
@@ -160,7 +161,10 @@ let package = Package(
         .testTarget(
             name: "ContainerBuildTests",
             dependencies: [
-                "ContainerBuild"
+                .product(name: "ContainerizationOCI", package: "containerization"),
+                .product(name: "GRPCCore", package: "grpc-swift-2"),
+                "ContainerPersistence",
+                "ContainerBuild",
             ]
         ),
         .testTarget(
@@ -588,6 +592,7 @@ let package = Package(
                 .define("CONTAINER_SOURCE", to: "\"\(containerSource)\""),
                 .define("CONTAINERIZATION_SOURCE", to: "\"\(scSource)\""),
                 .define("CONTAINERIZATION_REF", to: "\"\(scRef)\""),
+                .define("BUILDER_SHIM_REPOSITORY", to: "\"\(builderShimRepository)\""),
                 .define("BUILDER_SHIM_VERSION", to: "\"\(builderShimVersion)\""),
             ],
         ),

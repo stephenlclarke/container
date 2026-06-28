@@ -125,6 +125,9 @@ extension Application {
 
         var secrets: [String: SecretType] = [:]
 
+        @Option(name: .long, help: ArgumentHelp("Set SSH authentication used during the build from SSH_AUTH_SOCK (for example: default)", valueName: "value"))
+        var ssh: [String] = []
+
         @Option(name: [.short, .customLong("tag")], help: ArgumentHelp("Name for the built image", valueName: "name"))
         var targetImageNames: [String] = {
             [UUID().uuidString.lowercased()]
@@ -164,8 +167,9 @@ extension Application {
 
                 progress.set(description: "Dialing builder")
 
+                let enableSSHForwarding = !ssh.isEmpty
                 let dnsNameservers = self.dns.nameservers
-                let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) { [vsockPort, cpus, memory, dnsNameservers] group in
+                let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) { [vsockPort, cpus, memory, dnsNameservers, enableSSHForwarding] group in
                     defer {
                         group.cancelAll()
                     }
@@ -193,6 +197,7 @@ extension Application {
                                     memory: memory,
                                     log: log,
                                     dnsNameservers: dnsNameservers,
+                                    enableSSHForwarding: enableSSHForwarding,
                                     progressUpdate: progress.handler,
                                     containerSystemConfig: containerSystemConfig,
                                 )
@@ -349,13 +354,15 @@ extension Application {
                     }()
                     group.addTask {
                         [
-                            terminal, buildArg, secretsData, contextDir, ignoreFileData, label, noCache, target, quiet, cacheIn, cacheOut, pull, exports, imageNames, tempURL, log,
+                            terminal, buildArg, secretsData, ssh, contextDir, ignoreFileData, label,
+                            noCache, target, quiet, cacheIn, cacheOut, pull, exports, imageNames, tempURL, log,
                         ] in
                         let config = Builder.BuildConfig(
                             buildID: buildID,
                             contentStore: RemoteContentStoreClient(),
                             buildArgs: buildArg,
                             secrets: secretsData,
+                            ssh: ssh,
                             contextDir: contextDir,
                             dockerfile: buildFileData,
                             dockerignore: ignoreFileData,

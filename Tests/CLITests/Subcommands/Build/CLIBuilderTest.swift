@@ -202,6 +202,60 @@ extension TestCLIBuildBase {
             #expect(try self.inspectImage(imageName) == imageName, "expected to have successfully built \(imageName)")
         }
 
+        @Test func testBuildSSHForwarding() throws {
+            let socketDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: socketDir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: socketDir) }
+
+            let socketPath = socketDir.appendingPathComponent("ssh-auth.sock").path
+            let serverFd = socket(AF_UNIX, SOCK_STREAM, 0)
+            precondition(serverFd >= 0, "socket() failed")
+            defer { Darwin.close(serverFd) }
+
+            var addr = sockaddr_un()
+            addr.sun_family = sa_family_t(AF_UNIX)
+            withUnsafeMutableBytes(of: &addr.sun_path) { bytes in
+                socketPath.withCString { cStr in
+                    bytes.copyMemory(from: UnsafeRawBufferPointer(start: cStr, count: socketPath.utf8.count + 1))
+                }
+            }
+            let bindResult = withUnsafePointer(to: addr) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                    bind(serverFd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            precondition(bindResult == 0, "bind() failed: \(errno)")
+            precondition(listen(serverFd, 5) == 0, "listen() failed")
+
+            let acceptThread = Thread {
+                while true {
+                    let clientFd = accept(serverFd, nil, nil)
+                    if clientFd < 0 { break }
+                    Darwin.close(clientFd)
+                }
+            }
+            acceptThread.start()
+
+            try? builderStop()
+            try? builderDelete(force: true)
+
+            let tempDir: URL = try createTempDir()
+            let dockerfile: String =
+                """
+                FROM ghcr.io/linuxcontainers/alpine:3.20
+                RUN --mount=type=ssh test -S "$SSH_AUTH_SOCK"
+                """
+            try createContext(tempDir: tempDir, dockerfile: dockerfile)
+            let imageName: String = "registry.local/ssh-forwarding:\(UUID().uuidString)"
+            try self.build(
+                tag: imageName,
+                tempDir: tempDir,
+                otherArgs: ["--ssh", "default"],
+                env: ["SSH_AUTH_SOCK": socketPath]
+            )
+            #expect(try self.inspectImage(imageName) == imageName, "expected to have successfully built \(imageName)")
+        }
+
         @Test func testBuildNetworkAccess() throws {
             let tempDir: URL = try createTempDir()
             let dockerfile: String =

@@ -43,3 +43,7 @@ const char* get_swift_containerization_version() {
 const char* get_container_builder_shim_version() {
     return BUILDER_SHIM_VERSION;
 }
+
+const char* get_container_builder_shim_repository() {
+    return BUILDER_SHIM_REPOSITORY;
+}

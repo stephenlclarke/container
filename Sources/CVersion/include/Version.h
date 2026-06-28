@@ -42,6 +42,10 @@
 #define BUILDER_SHIM_VERSION "0.0.0"
 #endif
 
+#ifndef BUILDER_SHIM_REPOSITORY
+#define BUILDER_SHIM_REPOSITORY "ghcr.io/apple/container-builder-shim/builder"
+#endif
+
 const char* get_git_commit();
 
 const char* get_release_version();
@@ -55,3 +59,5 @@ const char* get_containerization_ref();
 const char* get_swift_containerization_version();
 
 const char* get_container_builder_shim_version();
+
+const char* get_container_builder_shim_repository();
