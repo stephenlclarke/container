@@ -264,12 +264,15 @@ Builds can also use SSH forwarding with Dockerfile SSH mounts:
 ```console
 % container build --ssh default -t private-build .
 % container build --ssh git=/tmp/agent.sock -t private-build .
+% container build --ssh default=/tmp/default-agent.sock \
+    --ssh git=/tmp/git-agent.sock -t private-build .
 ```
 
-The build path supports named IDs such as `default` or `git`, plus one explicit
-host Unix socket path. All requested IDs are backed by the single socket
-forwarded into the builder container; requests for multiple distinct socket
-paths fail early with a validation error.
+The build path supports named IDs such as `default` or `git` from
+`SSH_AUTH_SOCK`, explicit `id=/path/to/socket` values, and repeated `--ssh`
+values that point different IDs at different host Unix sockets. Explicit host
+socket paths are mounted into the builder and rewritten to guest socket paths
+before BuildKit sees them.
 
 ```console
 % container run -it --rm --ssh alpine:latest sh 

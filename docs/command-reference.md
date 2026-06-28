@@ -166,8 +166,9 @@ container build [<options>] [<context-dir>]
 *   `-q, --quiet`: Suppress build output
 *   `--secret <id=key,...>`: Set build-time secrets (format: id=<key>[,env=<ENV_VAR>|,src=<local/path>])
 *   `--ssh <value>`: Set SSH authentication used during the build from
-    `SSH_AUTH_SOCK`, a named ID, or one explicit Unix socket path (for example:
-    `default`, `git`, or `git=/tmp/agent.sock`)
+    `SSH_AUTH_SOCK`, a named ID, or one or more explicit Unix socket paths (for
+    example: `default`, `git`, `default=/tmp/agent.sock`, or
+    `git=/tmp/git-agent.sock`)
 *   `-t, --tag <name>`: Name for the built image (can be specified multiple times)
 *   `--target <stage>`: Set the target build stage
 *   `--vsock-port <port>`: Builder shim vsock port (default: 8088)

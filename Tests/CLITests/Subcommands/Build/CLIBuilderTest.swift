@@ -208,33 +208,42 @@ extension TestCLIBuildBase {
             defer { try? FileManager.default.removeItem(at: socketDir) }
 
             let socketPath = socketDir.appendingPathComponent("ssh-auth.sock").path
-            let serverFd = socket(AF_UNIX, SOCK_STREAM, 0)
-            precondition(serverFd >= 0, "socket() failed")
+            let gitSocketPath = socketDir.appendingPathComponent("git-auth.sock").path
+
+            func startUnixSocket(at path: String) -> Int32 {
+                let serverFd = socket(AF_UNIX, SOCK_STREAM, 0)
+                precondition(serverFd >= 0, "socket() failed")
+
+                var addr = sockaddr_un()
+                addr.sun_family = sa_family_t(AF_UNIX)
+                withUnsafeMutableBytes(of: &addr.sun_path) { bytes in
+                    path.withCString { cStr in
+                        bytes.copyMemory(from: UnsafeRawBufferPointer(start: cStr, count: path.utf8.count + 1))
+                    }
+                }
+                let bindResult = withUnsafePointer(to: addr) { ptr in
+                    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                        bind(serverFd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
+                    }
+                }
+                precondition(bindResult == 0, "bind() failed: \(errno)")
+                precondition(listen(serverFd, 5) == 0, "listen() failed")
+
+                let acceptThread = Thread {
+                    while true {
+                        let clientFd = accept(serverFd, nil, nil)
+                        if clientFd < 0 { break }
+                        Darwin.close(clientFd)
+                    }
+                }
+                acceptThread.start()
+                return serverFd
+            }
+
+            let serverFd = startUnixSocket(at: socketPath)
             defer { Darwin.close(serverFd) }
-
-            var addr = sockaddr_un()
-            addr.sun_family = sa_family_t(AF_UNIX)
-            withUnsafeMutableBytes(of: &addr.sun_path) { bytes in
-                socketPath.withCString { cStr in
-                    bytes.copyMemory(from: UnsafeRawBufferPointer(start: cStr, count: socketPath.utf8.count + 1))
-                }
-            }
-            let bindResult = withUnsafePointer(to: addr) { ptr in
-                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
-                    bind(serverFd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
-            precondition(bindResult == 0, "bind() failed: \(errno)")
-            precondition(listen(serverFd, 5) == 0, "listen() failed")
-
-            let acceptThread = Thread {
-                while true {
-                    let clientFd = accept(serverFd, nil, nil)
-                    if clientFd < 0 { break }
-                    Darwin.close(clientFd)
-                }
-            }
-            acceptThread.start()
+            let gitServerFd = startUnixSocket(at: gitSocketPath)
+            defer { Darwin.close(gitServerFd) }
 
             try? builderStop()
             try? builderDelete(force: true)
@@ -269,6 +278,26 @@ extension TestCLIBuildBase {
                 otherArgs: ["--ssh", "git=\(socketPath)"]
             )
             #expect(try self.inspectImage(namedImageName) == namedImageName, "expected to have successfully built \(namedImageName)")
+
+            let multiTempDir: URL = try createTempDir()
+            let multiDockerfile: String =
+                """
+                FROM ghcr.io/linuxcontainers/alpine:3.20
+                RUN --mount=type=ssh,id=default,target=/tmp/default.sock \\
+                    --mount=type=ssh,id=git,target=/tmp/git.sock \\
+                    test -S /tmp/default.sock && test -S /tmp/git.sock
+                """
+            try createContext(tempDir: multiTempDir, dockerfile: multiDockerfile)
+            let multiImageName: String = "registry.local/ssh-forwarding-multiple:\(UUID().uuidString)"
+            try self.build(
+                tag: multiImageName,
+                tempDir: multiTempDir,
+                otherArgs: [
+                    "--ssh", "default=\(socketPath)",
+                    "--ssh", "git=\(gitSocketPath)",
+                ]
+            )
+            #expect(try self.inspectImage(multiImageName) == multiImageName, "expected to have successfully built \(multiImageName)")
         }
 
         @Test func testBuildNetworkAccess() throws {

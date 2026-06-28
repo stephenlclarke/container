@@ -21,8 +21,32 @@ struct BuildSSHForwarding: Equatable, Sendable {
     static let guestSocketPath = "/var/host-services/ssh-auth.sock"
     static let builderSocketLabel = "com.apple.container.builder.ssh-auth-sock"
 
+    struct SocketMount: Equatable, Sendable {
+        let id: String
+        let hostPath: String
+        let guestPath: String
+    }
+
     let metadataValues: [String]
-    let hostSocketPath: String?
+    let socketMounts: [SocketMount]
+    let environmentSocketGuestPath: String?
+
+    var isEnabled: Bool {
+        !socketMounts.isEmpty
+    }
+
+    var builderSocketLabelValue: String? {
+        Self.builderSocketLabelValue(socketMounts: socketMounts, environmentSocketGuestPath: environmentSocketGuestPath)
+    }
+
+    static func builderSocketLabelValue(socketMounts: [SocketMount], environmentSocketGuestPath: String?) -> String? {
+        guard !socketMounts.isEmpty else { return nil }
+        let mounts = socketMounts
+            .map { "\($0.id)=\($0.hostPath)->\($0.guestPath)" }
+            .sorted()
+            .joined(separator: "|")
+        return [environmentSocketGuestPath ?? "-", mounts].joined(separator: "|")
+    }
 
     static func resolve(
         values: [String],
@@ -30,12 +54,12 @@ struct BuildSSHForwarding: Equatable, Sendable {
         isSocket: (String) -> Bool = isUnixSocket
     ) throws -> BuildSSHForwarding {
         guard !values.isEmpty else {
-            return BuildSSHForwarding(metadataValues: [], hostSocketPath: nil)
+            return BuildSSHForwarding(metadataValues: [], socketMounts: [], environmentSocketGuestPath: nil)
         }
 
-        var metadataValues: [String] = []
-        var explicitHostSocketPath: String?
-        var hasImplicitSocket = false
+        var metadataEntries: [SSHMetadataEntry] = []
+        var socketMountsByID: [String: SocketMount] = [:]
+        var implicitIDs: Set<String> = []
 
         for value in values {
             let spec = SSHSpec(value)
@@ -46,35 +70,61 @@ struct BuildSSHForwarding: Equatable, Sendable {
                 guard isSocket(path) else {
                     throw ValidationError("build --ssh \(spec.id)=\(path) must reference a Unix socket")
                 }
-                if let existing = explicitHostSocketPath, existing != path {
-                    throw ValidationError("build --ssh currently supports one host SSH socket; got \(existing) and \(path)")
+                let guestPath = guestSocketPath(for: spec.id)
+                let socketMount = SocketMount(id: spec.id, hostPath: path, guestPath: guestPath)
+                if let existing = socketMountsByID[spec.id], existing.hostPath != path {
+                    throw ValidationError("build --ssh \(spec.id) was specified with multiple host sockets: \(existing.hostPath) and \(path)")
                 }
-                explicitHostSocketPath = path
-                metadataValues.append("\(spec.id)=\(guestSocketPath)")
+                socketMountsByID[spec.id] = socketMount
+                metadataEntries.append(.explicit(id: spec.id, guestPath: guestPath))
             } else {
-                hasImplicitSocket = true
-                metadataValues.append(spec.id)
+                implicitIDs.insert(spec.id)
+                metadataEntries.append(.implicit(id: spec.id))
             }
         }
 
-        if let explicitHostSocketPath {
-            if hasImplicitSocket,
-               let envSocket = normalizedEnvironmentSocket(environment),
-               envSocket != explicitHostSocketPath
-            {
-                throw ValidationError("build --ssh currently supports one host SSH socket; \(BuildSSHForwarding.envKey) is \(envSocket) but an explicit socket \(explicitHostSocketPath) was also requested")
+        var environmentSocketGuestPath: String?
+        if !implicitIDs.isEmpty {
+            guard let envSocket = normalizedEnvironmentSocket(environment) else {
+                throw ValidationError("build --ssh requires \(envKey) or an explicit --ssh id=/path/to/socket value")
             }
-            return BuildSSHForwarding(metadataValues: metadataValues, hostSocketPath: explicitHostSocketPath)
+            guard isSocket(envSocket) else {
+                throw ValidationError("build --ssh requires \(envKey) to reference a Unix socket")
+            }
+            let envGuestPath = environmentGuestSocketPath(
+                for: envSocket,
+                avoiding: Array(socketMountsByID.values)
+            )
+            environmentSocketGuestPath = envGuestPath
+            for id in implicitIDs {
+                if let existing = socketMountsByID[id], existing.hostPath != envSocket {
+                    throw ValidationError("build --ssh \(id) cannot use both \(envKey)=\(envSocket) and \(existing.hostPath)")
+                }
+                guard socketMountsByID[id] == nil else {
+                    throw ValidationError("build --ssh \(id) cannot be specified both implicitly and explicitly")
+                }
+                let socketMount = SocketMount(id: id, hostPath: envSocket, guestPath: envGuestPath)
+                socketMountsByID[id] = socketMount
+            }
         }
 
-        guard let envSocket = normalizedEnvironmentSocket(environment) else {
-            throw ValidationError("build --ssh requires \(envKey) or an explicit --ssh id=/path/to/socket value")
-        }
-        guard isSocket(envSocket) else {
-            throw ValidationError("build --ssh requires \(envKey) to reference a Unix socket")
+        let resolvedMetadataValues = try metadataEntries.map { entry in
+            switch entry {
+            case .explicit(let id, let guestPath):
+                return "\(id)=\(guestPath)"
+            case .implicit(let id):
+                guard let environmentSocketGuestPath else {
+                    throw ValidationError("build --ssh requires \(envKey) or an explicit --ssh id=/path/to/socket value")
+                }
+                return "\(id)=\(environmentSocketGuestPath)"
+            }
         }
 
-        return BuildSSHForwarding(metadataValues: metadataValues, hostSocketPath: envSocket)
+        return BuildSSHForwarding(
+            metadataValues: resolvedMetadataValues,
+            socketMounts: uniqueSocketMounts(Array(socketMountsByID.values)),
+            environmentSocketGuestPath: environmentSocketGuestPath
+        )
     }
 
     private static let envKey = "SSH_AUTH_SOCK"
@@ -87,6 +137,68 @@ struct BuildSSHForwarding: Equatable, Sendable {
     private static func isUnixSocket(_ path: String) -> Bool {
         let attributes = try? FileManager.default.attributesOfItem(atPath: path)
         return attributes?[.type] as? FileAttributeType == .typeSocket
+    }
+
+    private static func uniqueSocketMounts(_ mounts: [SocketMount]) -> [SocketMount] {
+        var seen: Set<String> = []
+        return mounts
+            .sorted { lhs, rhs in
+                if lhs.id != rhs.id {
+                    return lhs.id < rhs.id
+                }
+                if lhs.guestPath != rhs.guestPath {
+                    return lhs.guestPath < rhs.guestPath
+                }
+                return lhs.hostPath < rhs.hostPath
+            }
+            .filter { mount in
+                let key = "\(mount.hostPath)\u{0}\(mount.guestPath)"
+                return seen.insert(key).inserted
+            }
+    }
+
+    private static func environmentGuestSocketPath(for hostPath: String, avoiding mounts: [SocketMount]) -> String {
+        func canUse(_ guestPath: String) -> Bool {
+            !mounts.contains { $0.guestPath == guestPath && $0.hostPath != hostPath }
+        }
+
+        if canUse(guestSocketPath) {
+            return guestSocketPath
+        }
+
+        let environmentSocketPath = "/var/host-services/ssh-auth-env.sock"
+        if canUse(environmentSocketPath) {
+            return environmentSocketPath
+        }
+
+        var suffix = 2
+        while true {
+            let candidate = "/var/host-services/ssh-auth-env-\(suffix).sock"
+            if canUse(candidate) {
+                return candidate
+            }
+            suffix += 1
+        }
+    }
+
+    private static func guestSocketPath(for id: String) -> String {
+        guard id != "default" else {
+            return guestSocketPath
+        }
+        return "/var/host-services/ssh-auth-\(percentEncodedPathComponent(id)).sock"
+    }
+
+    private static func percentEncodedPathComponent(_ value: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-".utf8)
+        var result = ""
+        for byte in value.utf8 {
+            if allowed.contains(byte), let scalar = UnicodeScalar(Int(byte)) {
+                result.unicodeScalars.append(scalar)
+            } else {
+                result += String(format: "%%%02X", byte)
+            }
+        }
+        return result.isEmpty ? "default" : result
     }
 
     private struct SSHSpec: Sendable {
@@ -114,5 +226,10 @@ struct BuildSSHForwarding: Equatable, Sendable {
             self.id = value.isEmpty ? "default" : value
             self.path = nil
         }
+    }
+
+    private enum SSHMetadataEntry: Sendable {
+        case explicit(id: String, guestPath: String)
+        case implicit(id: String)
     }
 }

@@ -50,8 +50,18 @@ struct BuildCommandTests {
             isSocket: { $0 == "/tmp/agent.sock" }
         )
 
-        #expect(forwarding.hostSocketPath == "/tmp/agent.sock")
-        #expect(forwarding.metadataValues == ["default", "git"])
+        #expect(forwarding.metadataValues == [
+            "default=\(BuildSSHForwarding.guestSocketPath)",
+            "git=\(BuildSSHForwarding.guestSocketPath)",
+        ])
+        #expect(forwarding.environmentSocketGuestPath == BuildSSHForwarding.guestSocketPath)
+        #expect(forwarding.socketMounts == [
+            BuildSSHForwarding.SocketMount(
+                id: "default",
+                hostPath: "/tmp/agent.sock",
+                guestPath: BuildSSHForwarding.guestSocketPath
+            ),
+        ])
     }
 
     @Test
@@ -62,8 +72,15 @@ struct BuildCommandTests {
             isSocket: { $0 == "/tmp/git.sock" }
         )
 
-        #expect(forwarding.hostSocketPath == "/tmp/git.sock")
-        #expect(forwarding.metadataValues == ["git=\(BuildSSHForwarding.guestSocketPath)"])
+        #expect(forwarding.environmentSocketGuestPath == nil)
+        #expect(forwarding.metadataValues == ["git=/var/host-services/ssh-auth-git.sock"])
+        #expect(forwarding.socketMounts == [
+            BuildSSHForwarding.SocketMount(
+                id: "git",
+                hostPath: "/tmp/git.sock",
+                guestPath: "/var/host-services/ssh-auth-git.sock"
+            ),
+        ])
     }
 
     @Test
@@ -74,27 +91,104 @@ struct BuildCommandTests {
             isSocket: { $0 == "/tmp/default.sock" }
         )
 
-        #expect(forwarding.hostSocketPath == "/tmp/default.sock")
+        #expect(forwarding.environmentSocketGuestPath == nil)
         #expect(forwarding.metadataValues == ["default=\(BuildSSHForwarding.guestSocketPath)"])
+        #expect(forwarding.socketMounts == [
+            BuildSSHForwarding.SocketMount(
+                id: "default",
+                hostPath: "/tmp/default.sock",
+                guestPath: BuildSSHForwarding.guestSocketPath
+            ),
+        ])
     }
 
     @Test
-    func buildSSHForwardingRejectsDistinctSocketPaths() throws {
+    func buildSSHForwardingSupportsDistinctSocketPaths() throws {
+        let forwarding = try BuildSSHForwarding.resolve(
+            values: ["default=/tmp/default.sock", "git=/tmp/git.sock"],
+            environment: [:],
+            isSocket: { _ in true }
+        )
+
+        #expect(forwarding.environmentSocketGuestPath == nil)
+        #expect(forwarding.metadataValues == [
+            "default=\(BuildSSHForwarding.guestSocketPath)",
+            "git=/var/host-services/ssh-auth-git.sock",
+        ])
+        #expect(forwarding.socketMounts == [
+            BuildSSHForwarding.SocketMount(
+                id: "default",
+                hostPath: "/tmp/default.sock",
+                guestPath: BuildSSHForwarding.guestSocketPath
+            ),
+            BuildSSHForwarding.SocketMount(
+                id: "git",
+                hostPath: "/tmp/git.sock",
+                guestPath: "/var/host-services/ssh-auth-git.sock"
+            ),
+        ])
+    }
+
+    @Test
+    func buildSSHForwardingSupportsImplicitAndExplicitDistinctSockets() throws {
+        let forwarding = try BuildSSHForwarding.resolve(
+            values: ["default", "git=/tmp/git.sock"],
+            environment: ["SSH_AUTH_SOCK": "/tmp/default.sock"],
+            isSocket: { _ in true }
+        )
+
+        #expect(forwarding.environmentSocketGuestPath == BuildSSHForwarding.guestSocketPath)
+        #expect(forwarding.metadataValues == [
+            "default=\(BuildSSHForwarding.guestSocketPath)",
+            "git=/var/host-services/ssh-auth-git.sock",
+        ])
+        #expect(forwarding.socketMounts == [
+            BuildSSHForwarding.SocketMount(
+                id: "default",
+                hostPath: "/tmp/default.sock",
+                guestPath: BuildSSHForwarding.guestSocketPath
+            ),
+            BuildSSHForwarding.SocketMount(
+                id: "git",
+                hostPath: "/tmp/git.sock",
+                guestPath: "/var/host-services/ssh-auth-git.sock"
+            ),
+        ])
+    }
+
+    @Test
+    func buildSSHForwardingAvoidsEnvironmentGuestPathCollisions() throws {
+        let forwarding = try BuildSSHForwarding.resolve(
+            values: ["default=/tmp/default.sock", "git"],
+            environment: ["SSH_AUTH_SOCK": "/tmp/git.sock"],
+            isSocket: { _ in true }
+        )
+
+        #expect(forwarding.environmentSocketGuestPath == "/var/host-services/ssh-auth-env.sock")
+        #expect(forwarding.metadataValues == [
+            "default=\(BuildSSHForwarding.guestSocketPath)",
+            "git=/var/host-services/ssh-auth-env.sock",
+        ])
+        #expect(forwarding.socketMounts == [
+            BuildSSHForwarding.SocketMount(
+                id: "default",
+                hostPath: "/tmp/default.sock",
+                guestPath: BuildSSHForwarding.guestSocketPath
+            ),
+            BuildSSHForwarding.SocketMount(
+                id: "git",
+                hostPath: "/tmp/git.sock",
+                guestPath: "/var/host-services/ssh-auth-env.sock"
+            ),
+        ])
+    }
+
+    @Test
+    func buildSSHForwardingRejectsDuplicateIDsWithDifferentSockets() throws {
         #expect(throws: ValidationError.self) {
             try BuildSSHForwarding.resolve(
-                values: ["default=/tmp/default.sock", "git=/tmp/git.sock"],
+                values: ["git=/tmp/git.sock", "git=/tmp/other.sock"],
                 environment: [:],
-                isSocket: { _ in true }
-            )
-        }
-    }
-
-    @Test
-    func buildSSHForwardingRejectsImplicitAndExplicitDistinctSockets() throws {
-        #expect(throws: ValidationError.self) {
-            try BuildSSHForwarding.resolve(
-                values: ["default", "git=/tmp/git.sock"],
-                environment: ["SSH_AUTH_SOCK": "/tmp/default.sock"],
                 isSocket: { _ in true }
             )
         }

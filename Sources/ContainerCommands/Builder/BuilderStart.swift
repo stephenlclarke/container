@@ -91,6 +91,7 @@ extension Application {
             dnsOptions: [String] = [],
             enableSSHForwarding: Bool = false,
             sshAuthSocketPath: String? = nil,
+            sshSocketMounts: [BuildSSHForwarding.SocketMount] = [],
             progressUpdate: @escaping ProgressUpdateHandler,
             containerSystemConfig: ContainerSystemConfig,
         ) async throws {
@@ -126,7 +127,13 @@ extension Application {
             }
             targetEnvVars.sort()
             let targetSSHAuthSocketPath = enableSSHForwarding
-                ? sshAuthSocketPath ?? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
+                ? sshAuthSocketPath ?? (sshSocketMounts.isEmpty ? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] : nil)
+                : nil
+            let targetSSHSocketLabelValue = enableSSHForwarding
+                ? BuildSSHForwarding.builderSocketLabelValue(
+                    socketMounts: sshSocketMounts,
+                    environmentSocketGuestPath: targetSSHAuthSocketPath
+                ) ?? targetSSHAuthSocketPath
                 : nil
 
             let defaultBuildCPUs: Int = containerSystemConfig.build.cpus
@@ -145,7 +152,6 @@ extension Application {
                 let existingResources = existingContainer.configuration.resources
                 let existingEnv = existingContainer.configuration.initProcess.environment
                 let existingDNS = existingContainer.configuration.dns
-                let existingSSHForwarding = existingContainer.configuration.ssh
                 let existingSSHAuthSocketPath = existingContainer.configuration.labels[BuildSSHForwarding.builderSocketLabel]
 
                 let existingManagedEnv = existingEnv.filter { envVar in
@@ -159,7 +165,7 @@ extension Application {
                 let cpuChanged = existingResources.cpus != resources.cpus
                 let memChanged = existingResources.memoryInBytes != resources.memoryInBytes
                 let sshChanged = enableSSHForwarding
-                    && (!existingSSHForwarding || existingSSHAuthSocketPath != targetSSHAuthSocketPath)
+                    && existingSSHAuthSocketPath != targetSSHSocketLabelValue
                 let dnsChanged = {
                     if !dnsNameservers.isEmpty {
                         return existingDNS?.nameservers != dnsNameservers
@@ -194,7 +200,8 @@ extension Application {
                             id: existingContainer.id,
                             progressUpdate,
                             nil,
-                            sshAuthSocketPath: targetSSHAuthSocketPath
+                            sshAuthSocketPath: targetSSHAuthSocketPath,
+                            inheritSSHAuthSocketFromEnvironment: sshSocketMounts.isEmpty
                         )
                         return
                     }
@@ -265,13 +272,13 @@ extension Application {
 
             var config = ContainerConfiguration(id: Builder.builderContainerId, image: imageDesc, process: processConfig)
             config.resources = resources
-            config.ssh = enableSSHForwarding
+            config.ssh = enableSSHForwarding && sshSocketMounts.isEmpty
             config.labels = [
                 ResourceLabelKeys.plugin: "builder",
                 ResourceLabelKeys.role: ResourceRoleValues.builder,
             ]
-            if let targetSSHAuthSocketPath {
-                config.labels[BuildSSHForwarding.builderSocketLabel] = targetSSHAuthSocketPath
+            if let targetSSHSocketLabelValue {
+                config.labels[BuildSSHForwarding.builderSocketLabel] = targetSSHSocketLabelValue
             }
             config.capAdd = ["ALL"]
             config.mounts = [
@@ -288,6 +295,9 @@ extension Application {
                     options: []
                 ),
             ]
+            config.mounts.append(contentsOf: sshSocketMounts.map { socketMount in
+                .virtiofs(source: socketMount.hostPath, destination: socketMount.guestPath, options: [])
+            })
             // Enable Rosetta only if the user didn't ask to disable it
             config.rosetta = useRosetta
 
@@ -330,7 +340,8 @@ extension Application {
                 id: Builder.builderContainerId,
                 progressUpdate,
                 taskManager,
-                sshAuthSocketPath: targetSSHAuthSocketPath
+                sshAuthSocketPath: targetSSHAuthSocketPath,
+                inheritSSHAuthSocketFromEnvironment: sshSocketMounts.isEmpty
             )
             log.debug("starting BuildKit and BuildKit-shim")
         }
@@ -346,7 +357,8 @@ private func startBuildKit(
     id: String,
     _ progress: @escaping ProgressUpdateHandler,
     _ taskManager: ProgressTaskCoordinator? = nil,
-    sshAuthSocketPath: String? = nil
+    sshAuthSocketPath: String? = nil,
+    inheritSSHAuthSocketFromEnvironment: Bool = true
 ) async throws {
     do {
         let io = try ProcessIO.create(
@@ -357,7 +369,8 @@ private func startBuildKit(
         defer { try? io.close() }
 
         var dynamicEnv: [String: String] = [:]
-        if let sshAuthSock = sshAuthSocketPath ?? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] {
+        let inheritedSSHAuthSocket = inheritSSHAuthSocketFromEnvironment ? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] : nil
+        if let sshAuthSock = sshAuthSocketPath ?? inheritedSSHAuthSocket {
             dynamicEnv["SSH_AUTH_SOCK"] = sshAuthSock
         }
 

@@ -125,7 +125,7 @@ extension Application {
 
         var secrets: [String: SecretType] = [:]
 
-        @Option(name: .long, help: ArgumentHelp("Set SSH authentication used during the build from SSH_AUTH_SOCK (for example: default)", valueName: "value"))
+        @Option(name: .long, help: ArgumentHelp("Set SSH authentication used during the build from SSH_AUTH_SOCK or id=/path/to/socket values", valueName: "value"))
         var ssh: [String] = []
 
         @Option(name: [.short, .customLong("tag")], help: ArgumentHelp("Name for the built image", valueName: "name"))
@@ -168,7 +168,7 @@ extension Application {
                 progress.set(description: "Dialing builder")
 
                 let sshForwarding = try BuildSSHForwarding.resolve(values: ssh)
-                let enableSSHForwarding = sshForwarding.hostSocketPath != nil
+                let enableSSHForwarding = sshForwarding.isEnabled
                 let dnsNameservers = self.dns.nameservers
                 if enableSSHForwarding {
                     progress.set(tasks: 0)
@@ -179,7 +179,8 @@ extension Application {
                         log: log,
                         dnsNameservers: dnsNameservers,
                         enableSSHForwarding: true,
-                        sshAuthSocketPath: sshForwarding.hostSocketPath,
+                        sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
+                        sshSocketMounts: sshForwarding.socketMounts,
                         progressUpdate: progress.handler,
                         containerSystemConfig: containerSystemConfig,
                     )
@@ -215,7 +216,8 @@ extension Application {
                                     log: log,
                                     dnsNameservers: dnsNameservers,
                                     enableSSHForwarding: enableSSHForwarding,
-                                    sshAuthSocketPath: sshForwarding.hostSocketPath,
+                                    sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
+                                    sshSocketMounts: sshForwarding.socketMounts,
                                     progressUpdate: progress.handler,
                                     containerSystemConfig: containerSystemConfig,
                                 )
