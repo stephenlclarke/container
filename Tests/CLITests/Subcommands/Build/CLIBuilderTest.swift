@@ -254,6 +254,21 @@ extension TestCLIBuildBase {
                 env: ["SSH_AUTH_SOCK": socketPath]
             )
             #expect(try self.inspectImage(imageName) == imageName, "expected to have successfully built \(imageName)")
+
+            let namedTempDir: URL = try createTempDir()
+            let namedDockerfile: String =
+                """
+                FROM ghcr.io/linuxcontainers/alpine:3.20
+                RUN --mount=type=ssh,id=git test -S "$SSH_AUTH_SOCK"
+                """
+            try createContext(tempDir: namedTempDir, dockerfile: namedDockerfile)
+            let namedImageName: String = "registry.local/ssh-forwarding-named:\(UUID().uuidString)"
+            try self.build(
+                tag: namedImageName,
+                tempDir: namedTempDir,
+                otherArgs: ["--ssh", "git=\(socketPath)"]
+            )
+            #expect(try self.inspectImage(namedImageName) == namedImageName, "expected to have successfully built \(namedImageName)")
         }
 
         @Test func testBuildNetworkAccess() throws {

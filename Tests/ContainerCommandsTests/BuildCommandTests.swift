@@ -41,4 +41,73 @@ struct BuildCommandTests {
         #expect(command.contextDir == directory.path)
         #expect(command.targetImageNames == ["example/app:latest"])
     }
+
+    @Test
+    func buildSSHForwardingUsesEnvironmentSocketForImplicitIDs() throws {
+        let forwarding = try BuildSSHForwarding.resolve(
+            values: ["default", "git"],
+            environment: ["SSH_AUTH_SOCK": "/tmp/agent.sock"],
+            isSocket: { $0 == "/tmp/agent.sock" }
+        )
+
+        #expect(forwarding.hostSocketPath == "/tmp/agent.sock")
+        #expect(forwarding.metadataValues == ["default", "git"])
+    }
+
+    @Test
+    func buildSSHForwardingRewritesExplicitSocketToGuestPath() throws {
+        let forwarding = try BuildSSHForwarding.resolve(
+            values: ["git=/tmp/git.sock"],
+            environment: [:],
+            isSocket: { $0 == "/tmp/git.sock" }
+        )
+
+        #expect(forwarding.hostSocketPath == "/tmp/git.sock")
+        #expect(forwarding.metadataValues == ["git=\(BuildSSHForwarding.guestSocketPath)"])
+    }
+
+    @Test
+    func buildSSHForwardingRewritesBarePathToDefaultID() throws {
+        let forwarding = try BuildSSHForwarding.resolve(
+            values: ["/tmp/default.sock"],
+            environment: [:],
+            isSocket: { $0 == "/tmp/default.sock" }
+        )
+
+        #expect(forwarding.hostSocketPath == "/tmp/default.sock")
+        #expect(forwarding.metadataValues == ["default=\(BuildSSHForwarding.guestSocketPath)"])
+    }
+
+    @Test
+    func buildSSHForwardingRejectsDistinctSocketPaths() throws {
+        #expect(throws: ValidationError.self) {
+            try BuildSSHForwarding.resolve(
+                values: ["default=/tmp/default.sock", "git=/tmp/git.sock"],
+                environment: [:],
+                isSocket: { _ in true }
+            )
+        }
+    }
+
+    @Test
+    func buildSSHForwardingRejectsImplicitAndExplicitDistinctSockets() throws {
+        #expect(throws: ValidationError.self) {
+            try BuildSSHForwarding.resolve(
+                values: ["default", "git=/tmp/git.sock"],
+                environment: ["SSH_AUTH_SOCK": "/tmp/default.sock"],
+                isSocket: { _ in true }
+            )
+        }
+    }
+
+    @Test
+    func buildSSHForwardingRejectsMissingImplicitEnvironmentSocket() throws {
+        #expect(throws: ValidationError.self) {
+            try BuildSSHForwarding.resolve(
+                values: ["default"],
+                environment: [:],
+                isSocket: { _ in true }
+            )
+        }
+    }
 }

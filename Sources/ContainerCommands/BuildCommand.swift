@@ -167,14 +167,31 @@ extension Application {
 
                 progress.set(description: "Dialing builder")
 
-                let enableSSHForwarding = !ssh.isEmpty
+                let sshForwarding = try BuildSSHForwarding.resolve(values: ssh)
+                let enableSSHForwarding = sshForwarding.hostSocketPath != nil
                 let dnsNameservers = self.dns.nameservers
-                let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) { [vsockPort, cpus, memory, dnsNameservers, enableSSHForwarding] group in
+                if enableSSHForwarding {
+                    progress.set(tasks: 0)
+                    progress.set(totalTasks: 3)
+                    try await BuilderStart.start(
+                        cpus: cpus,
+                        memory: memory,
+                        log: log,
+                        dnsNameservers: dnsNameservers,
+                        enableSSHForwarding: true,
+                        sshAuthSocketPath: sshForwarding.hostSocketPath,
+                        progressUpdate: progress.handler,
+                        containerSystemConfig: containerSystemConfig,
+                    )
+                    progress.set(description: "Dialing builder")
+                }
+
+                let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) { [vsockPort, cpus, memory, dnsNameservers, enableSSHForwarding, sshForwarding] group in
                     defer {
                         group.cancelAll()
                     }
 
-                    group.addTask { [vsockPort, cpus, memory, log, dnsNameservers] in
+                    group.addTask { [vsockPort, cpus, memory, log, dnsNameservers, sshForwarding] in
                         let client = ContainerClient()
                         while true {
                             do {
@@ -198,6 +215,7 @@ extension Application {
                                     log: log,
                                     dnsNameservers: dnsNameservers,
                                     enableSSHForwarding: enableSSHForwarding,
+                                    sshAuthSocketPath: sshForwarding.hostSocketPath,
                                     progressUpdate: progress.handler,
                                     containerSystemConfig: containerSystemConfig,
                                 )
@@ -354,7 +372,7 @@ extension Application {
                     }()
                     group.addTask {
                         [
-                            terminal, buildArg, secretsData, ssh, contextDir, ignoreFileData, label,
+                            terminal, buildArg, secretsData, sshForwarding, contextDir, ignoreFileData, label,
                             noCache, target, quiet, cacheIn, cacheOut, pull, exports, imageNames, tempURL, log,
                         ] in
                         let config = Builder.BuildConfig(
@@ -362,7 +380,7 @@ extension Application {
                             contentStore: RemoteContentStoreClient(),
                             buildArgs: buildArg,
                             secrets: secretsData,
-                            ssh: ssh,
+                            ssh: sshForwarding.metadataValues,
                             contextDir: contextDir,
                             dockerfile: buildFileData,
                             dockerignore: ignoreFileData,

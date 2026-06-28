@@ -259,6 +259,18 @@ Use the `--ssh` option to mount the macOS SSH authentication socket into your co
 
 When you use `--ssh`, it performs the equivalent of the options `--volume "${SSH_AUTH_SOCK}:/run/host-services/ssh-auth.sock" --env SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock"`. The added benefit of `--ssh` is that when you stop your container, log out, log back in, and restart your container, the system automatically updates the target path for the socket mount to the new value of `SSH_AUTH_SOCK`, so that socket forwarding continues to function.
 
+Builds can also use SSH forwarding with Dockerfile SSH mounts:
+
+```console
+% container build --ssh default -t private-build .
+% container build --ssh git=/tmp/agent.sock -t private-build .
+```
+
+The build path supports named IDs such as `default` or `git`, plus one explicit
+host Unix socket path. All requested IDs are backed by the single socket
+forwarded into the builder container; requests for multiple distinct socket
+paths fail early with a validation error.
+
 ```console
 % container run -it --rm --ssh alpine:latest sh 
 / # env

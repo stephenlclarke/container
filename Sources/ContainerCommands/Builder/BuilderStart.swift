@@ -90,6 +90,7 @@ extension Application {
             dnsSearchDomains: [String] = [],
             dnsOptions: [String] = [],
             enableSSHForwarding: Bool = false,
+            sshAuthSocketPath: String? = nil,
             progressUpdate: @escaping ProgressUpdateHandler,
             containerSystemConfig: ContainerSystemConfig,
         ) async throws {
@@ -124,6 +125,9 @@ extension Application {
                 targetEnvVars.append("NO_COLOR=true")
             }
             targetEnvVars.sort()
+            let targetSSHAuthSocketPath = enableSSHForwarding
+                ? sshAuthSocketPath ?? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"]
+                : nil
 
             let defaultBuildCPUs: Int = containerSystemConfig.build.cpus
             let defaultBuildMemory = containerSystemConfig.build.memory
@@ -142,6 +146,7 @@ extension Application {
                 let existingEnv = existingContainer.configuration.initProcess.environment
                 let existingDNS = existingContainer.configuration.dns
                 let existingSSHForwarding = existingContainer.configuration.ssh
+                let existingSSHAuthSocketPath = existingContainer.configuration.labels[BuildSSHForwarding.builderSocketLabel]
 
                 let existingManagedEnv = existingEnv.filter { envVar in
                     envVar.hasPrefix("BUILDKIT_COLORS=") || envVar.hasPrefix("NO_COLOR=")
@@ -153,7 +158,8 @@ extension Application {
                 let imageChanged = existingImage != builderImage
                 let cpuChanged = existingResources.cpus != resources.cpus
                 let memChanged = existingResources.memoryInBytes != resources.memoryInBytes
-                let sshChanged = enableSSHForwarding && !existingSSHForwarding
+                let sshChanged = enableSSHForwarding
+                    && (!existingSSHForwarding || existingSSHAuthSocketPath != targetSSHAuthSocketPath)
                 let dnsChanged = {
                     if !dnsNameservers.isEmpty {
                         return existingDNS?.nameservers != dnsNameservers
@@ -183,7 +189,13 @@ extension Application {
                     // If the builder is stopped and matches our requirements, start it
                     // Otherwise, delete it and create a new one
                     guard imageChanged || cpuChanged || memChanged || envChanged || sshChanged || dnsChanged else {
-                        try await startBuildKit(client: client, id: existingContainer.id, progressUpdate, nil)
+                        try await startBuildKit(
+                            client: client,
+                            id: existingContainer.id,
+                            progressUpdate,
+                            nil,
+                            sshAuthSocketPath: targetSSHAuthSocketPath
+                        )
                         return
                     }
                     try await client.delete(id: existingContainer.id)
@@ -258,6 +270,9 @@ extension Application {
                 ResourceLabelKeys.plugin: "builder",
                 ResourceLabelKeys.role: ResourceRoleValues.builder,
             ]
+            if let targetSSHAuthSocketPath {
+                config.labels[BuildSSHForwarding.builderSocketLabel] = targetSSHAuthSocketPath
+            }
             config.capAdd = ["ALL"]
             config.mounts = [
                 .init(
@@ -310,7 +325,13 @@ extension Application {
                 kernel: kernel
             )
 
-            try await startBuildKit(client: client, id: Builder.builderContainerId, progressUpdate, taskManager)
+            try await startBuildKit(
+                client: client,
+                id: Builder.builderContainerId,
+                progressUpdate,
+                taskManager,
+                sshAuthSocketPath: targetSSHAuthSocketPath
+            )
             log.debug("starting BuildKit and BuildKit-shim")
         }
     }
@@ -324,7 +345,8 @@ private func startBuildKit(
     client: ContainerClient,
     id: String,
     _ progress: @escaping ProgressUpdateHandler,
-    _ taskManager: ProgressTaskCoordinator? = nil
+    _ taskManager: ProgressTaskCoordinator? = nil,
+    sshAuthSocketPath: String? = nil
 ) async throws {
     do {
         let io = try ProcessIO.create(
@@ -335,7 +357,7 @@ private func startBuildKit(
         defer { try? io.close() }
 
         var dynamicEnv: [String: String] = [:]
-        if let sshAuthSock = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] {
+        if let sshAuthSock = sshAuthSocketPath ?? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] {
             dynamicEnv["SSH_AUTH_SOCK"] = sshAuthSock
         }
 
