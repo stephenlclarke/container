@@ -283,6 +283,7 @@ public struct Builder: Sendable {
         public let cacheOut: [String]
         public let pull: Bool
         public let containerSystemConfig: ContainerSystemConfig
+        public let check: Bool
 
         public init(
             buildID: String,
@@ -305,7 +306,8 @@ public struct Builder: Sendable {
             cacheIn: [String],
             cacheOut: [String],
             pull: Bool,
-            containerSystemConfig: ContainerSystemConfig
+            containerSystemConfig: ContainerSystemConfig,
+            check: Bool = false
         ) {
             self.buildID = buildID
             self.contentStore = contentStore
@@ -328,6 +330,7 @@ public struct Builder: Sendable {
             self.cacheOut = cacheOut
             self.pull = pull
             self.containerSystemConfig = containerSystemConfig
+            self.check = check
         }
     }
 
@@ -350,6 +353,9 @@ public struct Builder: Sendable {
         }
         if config.noCache {
             metadata.addString("", forKey: "no-cache")
+        }
+        if config.check {
+            metadata.addString("", forKey: "check")
         }
         for label in config.labels {
             metadata.addString(label, forKey: "labels")

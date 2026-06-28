@@ -16,10 +16,10 @@ ROOT_DIR := $(shell git rev-parse --show-toplevel)
 LOCAL_DIR := $(ROOT_DIR)/.local
 LOCAL_BIN_DIR := $(LOCAL_DIR)/bin
 
-BUILDER_SHIM_REPO ?= https://github.com/apple/container-builder-shim.git
+BUILDER_SHIM_REPO ?= https://github.com/stephenlclarke/container-builder-shim.git
 
 # Versions
-BUILDER_SHIM_VERSION ?= $(shell sed -n 's/let builderShimVersion *= *"\(.*\)"/\1/p' Package.swift)
+BUILDER_SHIM_VERSION ?= $(shell sed -n 's/let builderShimVersion *=.*"\([^"]*\)"$$/\1/p' Package.swift)
 PROTOC_VERSION := 26.1
 
 # Protoc binary installation

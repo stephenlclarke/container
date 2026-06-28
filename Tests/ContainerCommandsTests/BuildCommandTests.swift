@@ -31,12 +31,14 @@ struct BuildCommandTests {
         try Data("FROM scratch\n".utf8).write(to: directory.appendingPathComponent("Dockerfile"))
 
         let command = try Application.BuildCommand.parse([
+            "--check",
             "--ssh", "default",
             "--ssh", "git=/tmp/agent.sock",
             "--tag", "example/app:latest",
             directory.path,
         ])
 
+        #expect(command.check)
         #expect(command.ssh == ["default", "git=/tmp/agent.sock"])
         #expect(command.contextDir == directory.path)
         #expect(command.targetImageNames == ["example/app:latest"])

@@ -33,7 +33,7 @@ BUILD_CONFIGURATION=release make install
 
 ## Compile protobufs
 
-`container` uses gRPC to communicate to the builder virtual machine that creates images from `Dockerfile`s, and depends on specific versions of `grpc-swift` and `swift-protobuf`. If you make changes to the gRPC APIs in the [container-builder-shim](https://github.com/apple/container-builder-shim) project, install the tools and re-generate the gRPC code in this project using:
+`container` uses gRPC to communicate to the builder virtual machine that creates images from `Dockerfile`s, and depends on specific versions of `grpc-swift` and `swift-protobuf`. If you make changes to the gRPC APIs in the [container-builder-shim](https://github.com/stephenlclarke/container-builder-shim) fork, install the tools and re-generate the gRPC code in this project using:
 
 ```bash
 make protos
@@ -129,7 +129,7 @@ To revert to using the Containerization dependency from your `Package.swift`:
 
 To test changes that require the `container-builder-shim` project:
 
-1. Clone the [container-builder-shim](https://github.com/apple/container-builder-shim) repository and navigate to its directory.
+1. Clone the [container-builder-shim](https://github.com/stephenlclarke/container-builder-shim) fork and navigate to its directory.
 
 2. After making the necessary changes, build the custom builder image, set it as the active builder image in `~/.config/container/config.toml`, and remove the existing `buildkit` container so the new image will be used:
 

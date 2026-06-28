@@ -49,7 +49,8 @@ struct BuilderMetadataTests {
             cacheIn: [],
             cacheOut: [],
             pull: false,
-            containerSystemConfig: ContainerSystemConfig()
+            containerSystemConfig: ContainerSystemConfig(),
+            check: true
         )
 
         let metadata = try Builder.buildMetadata(config)
@@ -57,6 +58,7 @@ struct BuilderMetadataTests {
         #expect(Array(metadata[stringValues: "ssh"]) == ["default", "git=/tmp/agent.sock"])
         #expect(Array(metadata[stringValues: "attest-provenance"]) == ["mode=max"])
         #expect(Array(metadata[stringValues: "attest-sbom"]) == [""])
+        #expect(Array(metadata[stringValues: "check"]) == [""])
     }
 }
 

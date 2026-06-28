@@ -63,6 +63,9 @@ extension Application {
         @Option(name: .long, help: ArgumentHelp("Set build-time variables", valueName: "key=val"))
         var buildArg: [String] = []
 
+        @Flag(name: .long, help: "Check build configuration without exporting an image")
+        var check: Bool = false
+
         @Option(name: .long, help: ArgumentHelp("Cache imports for the build", valueName: "value", visibility: .hidden))
         var cacheIn: [String] = {
             []
@@ -177,22 +180,20 @@ extension Application {
                 let enableSSHForwarding = sshForwarding.isEnabled
                 let attestations = buildAttestations()
                 let dnsNameservers = self.dns.nameservers
-                if enableSSHForwarding {
-                    progress.set(tasks: 0)
-                    progress.set(totalTasks: 3)
-                    try await BuilderStart.start(
-                        cpus: cpus,
-                        memory: memory,
-                        log: log,
-                        dnsNameservers: dnsNameservers,
-                        enableSSHForwarding: true,
-                        sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
-                        sshSocketMounts: sshForwarding.socketMounts,
-                        progressUpdate: progress.handler,
-                        containerSystemConfig: containerSystemConfig,
-                    )
-                    progress.set(description: "Dialing builder")
-                }
+                progress.set(tasks: 0)
+                progress.set(totalTasks: 3)
+                try await BuilderStart.start(
+                    cpus: cpus,
+                    memory: memory,
+                    log: log,
+                    dnsNameservers: dnsNameservers,
+                    enableSSHForwarding: enableSSHForwarding,
+                    sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
+                    sshSocketMounts: sshForwarding.socketMounts,
+                    progressUpdate: progress.handler,
+                    containerSystemConfig: containerSystemConfig,
+                )
+                progress.set(description: "Dialing builder")
 
                 let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) { [vsockPort, cpus, memory, dnsNameservers, enableSSHForwarding, sshForwarding] group in
                     defer {
@@ -382,7 +383,7 @@ extension Application {
                     group.addTask {
                         [
                             terminal, buildArg, secretsData, sshForwarding, contextDir, ignoreFileData, label,
-                            noCache, target, quiet, cacheIn, cacheOut, pull, exports, imageNames, tempURL, log, attestations,
+                            noCache, target, quiet, cacheIn, cacheOut, pull, check, exports, imageNames, tempURL, log, attestations,
                         ] in
                         let config = Builder.BuildConfig(
                             buildID: buildID,
@@ -406,10 +407,14 @@ extension Application {
                             cacheOut: cacheOut,
                             pull: pull,
                             containerSystemConfig: containerSystemConfig,
+                            check: check,
                         )
                         progress.finish()
 
                         try await builder.build(config)
+                        if check {
+                            return
+                        }
 
                         let unpackProgressConfig = try ProgressConfig(
                             description: "Unpacking built image",
