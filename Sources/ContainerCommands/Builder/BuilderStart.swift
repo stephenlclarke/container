@@ -126,10 +126,12 @@ extension Application {
                 targetEnvVars.append("NO_COLOR=true")
             }
             targetEnvVars.sort()
-            let targetSSHAuthSocketPath = enableSSHForwarding
+            let targetSSHAuthSocketPath =
+                enableSSHForwarding
                 ? sshAuthSocketPath ?? (sshSocketMounts.isEmpty ? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] : nil)
                 : nil
-            let targetSSHSocketLabelValue = enableSSHForwarding
+            let targetSSHSocketLabelValue =
+                enableSSHForwarding
                 ? BuildSSHForwarding.builderSocketLabelValue(
                     socketMounts: sshSocketMounts,
                     environmentSocketGuestPath: targetSSHAuthSocketPath
@@ -164,7 +166,8 @@ extension Application {
                 let imageChanged = existingImage != builderImage
                 let cpuChanged = existingResources.cpus != resources.cpus
                 let memChanged = existingResources.memoryInBytes != resources.memoryInBytes
-                let sshChanged = enableSSHForwarding
+                let sshChanged =
+                    enableSSHForwarding
                     && existingSSHAuthSocketPath != targetSSHSocketLabelValue
                 let dnsChanged = {
                     if !dnsNameservers.isEmpty {
@@ -295,9 +298,10 @@ extension Application {
                     options: []
                 ),
             ]
-            config.mounts.append(contentsOf: sshSocketMounts.map { socketMount in
-                .virtiofs(source: socketMount.hostPath, destination: socketMount.guestPath, options: [])
-            })
+            config.mounts.append(
+                contentsOf: sshSocketMounts.map { socketMount in
+                    .virtiofs(source: socketMount.hostPath, destination: socketMount.guestPath, options: [])
+                })
             // Enable Rosetta only if the user didn't ask to disable it
             config.rosetta = useRosetta
 

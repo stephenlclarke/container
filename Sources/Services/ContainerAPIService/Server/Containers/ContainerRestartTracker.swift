@@ -77,9 +77,7 @@ struct ContainerRestartTracker {
             return nil
         }
 
-        if let retryDelayInNanoseconds = policy.retryDelayInNanoseconds {
-            return retryDelayInNanoseconds
-        } else {
+        guard let retryDelayInNanoseconds = policy.retryDelayInNanoseconds else {
             defer {
                 nextDelayInNanoseconds = min(
                     nextDelayInNanoseconds * 2,
@@ -88,5 +86,6 @@ struct ContainerRestartTracker {
             }
             return nextDelayInNanoseconds
         }
+        return retryDelayInNanoseconds
     }
 }

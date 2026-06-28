@@ -41,7 +41,8 @@ struct BuildSSHForwarding: Equatable, Sendable {
 
     static func builderSocketLabelValue(socketMounts: [SocketMount], environmentSocketGuestPath: String?) -> String? {
         guard !socketMounts.isEmpty else { return nil }
-        let mounts = socketMounts
+        let mounts =
+            socketMounts
             .map { "\($0.id)=\($0.hostPath)->\($0.guestPath)" }
             .sorted()
             .joined(separator: "|")
@@ -141,7 +142,8 @@ struct BuildSSHForwarding: Equatable, Sendable {
 
     private static func uniqueSocketMounts(_ mounts: [SocketMount]) -> [SocketMount] {
         var seen: Set<String> = []
-        return mounts
+        return
+            mounts
             .sorted { lhs, rhs in
                 if lhs.id != rhs.id {
                     return lhs.id < rhs.id

@@ -43,9 +43,7 @@ make protos
 
 To make changes to `container` that require changes to the Containerization project, or vice versa:
 
-1. Clone the [Containerization](https://github.com/apple/containerization) repository such that it sits next to your clone
-of the `container` repository. Ensure that you [follow containerization instructions](https://github.com/apple/containerization/blob/main/README.md#prepare-to-build-package)
-to prepare your build environment.
+1. Clone the matching [`stephenlclarke/containerization`](https://github.com/stephenlclarke/containerization) fork-backed lane such that it sits next to your clone of the `container` repository. Ensure that you [follow containerization instructions](https://github.com/stephenlclarke/containerization/blob/main/README.md#prepare-to-build-package) to prepare your build environment. Use Apple's upstream `containerization` checkout only when deliberately testing upstream compatibility gaps.
 
 2. In your development shell, go to the `container` project directory.
 
@@ -70,7 +68,7 @@ to prepare your build environment.
     > If you are using Xcode, do **not** run `swift package edit`. Instead, temporarily modify `Package.swift` to replace the versioned `containerization` dependency:
     >
     > ```swift
-    > .package(url: "https://github.com/apple/containerization.git", exact: Version(stringLiteral: scVersion)),
+    > .package(url: "https://github.com/stephenlclarke/containerization.git", branch: "main"),
     > ```
     >
     > with the local path dependency:
@@ -90,13 +88,13 @@ to prepare your build environment.
 
 6. Build `container`.
 
-    ```
+    ```bash
     make clean all
     ```
 
 7. Restart the `container` services.
 
-    ```
+    ```bash
     bin/container system stop
     bin/container system start
     ```
@@ -133,23 +131,23 @@ To test changes that require the `container-builder-shim` project:
 
 2. After making the necessary changes, build the custom builder image, set it as the active builder image in `~/.config/container/config.toml`, and remove the existing `buildkit` container so the new image will be used:
 
-```bash
-container build -t builder .
-container rm -f buildkit
-```
+    ```bash
+    container build -t builder .
+    container rm -f buildkit
+    ```
 
-Add the following to your `~/.config/container/config.toml`:
+    Add the following to your `~/.config/container/config.toml`:
 
-```toml
-[build]
-image = "builder:latest"
-```
+    ```toml
+    [build]
+    image = "builder:latest"
+    ```
 
 3. Run the `container` build as usual:
 
-```bash
-container build ...
-```
+    ```bash
+    container build ...
+    ```
 
 > [!IMPORTANT]
 > If your modified builder image is broken, make sure to rebuild and correctly tag the builder image before attempting to build `container-builder-shim` again.

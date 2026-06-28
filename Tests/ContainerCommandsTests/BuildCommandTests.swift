@@ -52,18 +52,20 @@ struct BuildCommandTests {
             isSocket: { $0 == "/tmp/agent.sock" }
         )
 
-        #expect(forwarding.metadataValues == [
-            "default=\(BuildSSHForwarding.guestSocketPath)",
-            "git=\(BuildSSHForwarding.guestSocketPath)",
-        ])
+        #expect(
+            forwarding.metadataValues == [
+                "default=\(BuildSSHForwarding.guestSocketPath)",
+                "git=\(BuildSSHForwarding.guestSocketPath)",
+            ])
         #expect(forwarding.environmentSocketGuestPath == BuildSSHForwarding.guestSocketPath)
-        #expect(forwarding.socketMounts == [
-            BuildSSHForwarding.SocketMount(
-                id: "default",
-                hostPath: "/tmp/agent.sock",
-                guestPath: BuildSSHForwarding.guestSocketPath
-            ),
-        ])
+        #expect(
+            forwarding.socketMounts == [
+                BuildSSHForwarding.SocketMount(
+                    id: "default",
+                    hostPath: "/tmp/agent.sock",
+                    guestPath: BuildSSHForwarding.guestSocketPath
+                )
+            ])
     }
 
     @Test
@@ -76,13 +78,14 @@ struct BuildCommandTests {
 
         #expect(forwarding.environmentSocketGuestPath == nil)
         #expect(forwarding.metadataValues == ["git=/var/host-services/ssh-auth-git.sock"])
-        #expect(forwarding.socketMounts == [
-            BuildSSHForwarding.SocketMount(
-                id: "git",
-                hostPath: "/tmp/git.sock",
-                guestPath: "/var/host-services/ssh-auth-git.sock"
-            ),
-        ])
+        #expect(
+            forwarding.socketMounts == [
+                BuildSSHForwarding.SocketMount(
+                    id: "git",
+                    hostPath: "/tmp/git.sock",
+                    guestPath: "/var/host-services/ssh-auth-git.sock"
+                )
+            ])
     }
 
     @Test
@@ -95,13 +98,14 @@ struct BuildCommandTests {
 
         #expect(forwarding.environmentSocketGuestPath == nil)
         #expect(forwarding.metadataValues == ["default=\(BuildSSHForwarding.guestSocketPath)"])
-        #expect(forwarding.socketMounts == [
-            BuildSSHForwarding.SocketMount(
-                id: "default",
-                hostPath: "/tmp/default.sock",
-                guestPath: BuildSSHForwarding.guestSocketPath
-            ),
-        ])
+        #expect(
+            forwarding.socketMounts == [
+                BuildSSHForwarding.SocketMount(
+                    id: "default",
+                    hostPath: "/tmp/default.sock",
+                    guestPath: BuildSSHForwarding.guestSocketPath
+                )
+            ])
     }
 
     @Test
@@ -113,22 +117,24 @@ struct BuildCommandTests {
         )
 
         #expect(forwarding.environmentSocketGuestPath == nil)
-        #expect(forwarding.metadataValues == [
-            "default=\(BuildSSHForwarding.guestSocketPath)",
-            "git=/var/host-services/ssh-auth-git.sock",
-        ])
-        #expect(forwarding.socketMounts == [
-            BuildSSHForwarding.SocketMount(
-                id: "default",
-                hostPath: "/tmp/default.sock",
-                guestPath: BuildSSHForwarding.guestSocketPath
-            ),
-            BuildSSHForwarding.SocketMount(
-                id: "git",
-                hostPath: "/tmp/git.sock",
-                guestPath: "/var/host-services/ssh-auth-git.sock"
-            ),
-        ])
+        #expect(
+            forwarding.metadataValues == [
+                "default=\(BuildSSHForwarding.guestSocketPath)",
+                "git=/var/host-services/ssh-auth-git.sock",
+            ])
+        #expect(
+            forwarding.socketMounts == [
+                BuildSSHForwarding.SocketMount(
+                    id: "default",
+                    hostPath: "/tmp/default.sock",
+                    guestPath: BuildSSHForwarding.guestSocketPath
+                ),
+                BuildSSHForwarding.SocketMount(
+                    id: "git",
+                    hostPath: "/tmp/git.sock",
+                    guestPath: "/var/host-services/ssh-auth-git.sock"
+                ),
+            ])
     }
 
     @Test
@@ -140,22 +146,24 @@ struct BuildCommandTests {
         )
 
         #expect(forwarding.environmentSocketGuestPath == BuildSSHForwarding.guestSocketPath)
-        #expect(forwarding.metadataValues == [
-            "default=\(BuildSSHForwarding.guestSocketPath)",
-            "git=/var/host-services/ssh-auth-git.sock",
-        ])
-        #expect(forwarding.socketMounts == [
-            BuildSSHForwarding.SocketMount(
-                id: "default",
-                hostPath: "/tmp/default.sock",
-                guestPath: BuildSSHForwarding.guestSocketPath
-            ),
-            BuildSSHForwarding.SocketMount(
-                id: "git",
-                hostPath: "/tmp/git.sock",
-                guestPath: "/var/host-services/ssh-auth-git.sock"
-            ),
-        ])
+        #expect(
+            forwarding.metadataValues == [
+                "default=\(BuildSSHForwarding.guestSocketPath)",
+                "git=/var/host-services/ssh-auth-git.sock",
+            ])
+        #expect(
+            forwarding.socketMounts == [
+                BuildSSHForwarding.SocketMount(
+                    id: "default",
+                    hostPath: "/tmp/default.sock",
+                    guestPath: BuildSSHForwarding.guestSocketPath
+                ),
+                BuildSSHForwarding.SocketMount(
+                    id: "git",
+                    hostPath: "/tmp/git.sock",
+                    guestPath: "/var/host-services/ssh-auth-git.sock"
+                ),
+            ])
     }
 
     @Test
@@ -167,22 +175,24 @@ struct BuildCommandTests {
         )
 
         #expect(forwarding.environmentSocketGuestPath == "/var/host-services/ssh-auth-env.sock")
-        #expect(forwarding.metadataValues == [
-            "default=\(BuildSSHForwarding.guestSocketPath)",
-            "git=/var/host-services/ssh-auth-env.sock",
-        ])
-        #expect(forwarding.socketMounts == [
-            BuildSSHForwarding.SocketMount(
-                id: "default",
-                hostPath: "/tmp/default.sock",
-                guestPath: BuildSSHForwarding.guestSocketPath
-            ),
-            BuildSSHForwarding.SocketMount(
-                id: "git",
-                hostPath: "/tmp/git.sock",
-                guestPath: "/var/host-services/ssh-auth-env.sock"
-            ),
-        ])
+        #expect(
+            forwarding.metadataValues == [
+                "default=\(BuildSSHForwarding.guestSocketPath)",
+                "git=/var/host-services/ssh-auth-env.sock",
+            ])
+        #expect(
+            forwarding.socketMounts == [
+                BuildSSHForwarding.SocketMount(
+                    id: "default",
+                    hostPath: "/tmp/default.sock",
+                    guestPath: BuildSSHForwarding.guestSocketPath
+                ),
+                BuildSSHForwarding.SocketMount(
+                    id: "git",
+                    hostPath: "/tmp/git.sock",
+                    guestPath: "/var/host-services/ssh-auth-env.sock"
+                ),
+            ])
     }
 
     @Test
