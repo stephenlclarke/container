@@ -104,7 +104,7 @@ extension Application {
                 envs: processFlags.env
             )
 
-            let processConfig = ProcessConfiguration(
+            let processConfig = processConfiguration(
                 executable: executablePath,
                 arguments: args,
                 environment: envVars,
@@ -159,6 +159,27 @@ extension Application {
                 return fallback
             }
             return cwd.string
+        }
+
+        func processConfiguration(
+            executable: String,
+            arguments: [String],
+            environment: [String],
+            workingDirectory: String,
+            terminal: Bool,
+            user: ProcessConfiguration.User,
+            supplementalGroups: [UInt32]
+        ) -> ProcessConfiguration {
+            ProcessConfiguration(
+                executable: executable,
+                arguments: arguments,
+                environment: environment,
+                workingDirectory: workingDirectory,
+                terminal: terminal,
+                user: user,
+                supplementalGroups: supplementalGroups,
+                privileged: processFlags.privileged
+            )
         }
     }
 }

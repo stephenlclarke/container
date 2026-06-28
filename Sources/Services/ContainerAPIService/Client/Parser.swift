@@ -843,7 +843,8 @@ public struct Parser {
             terminal: processFlags.tty,
             user: user,
             supplementalGroups: additionalGroups,
-            rlimits: rlimits
+            rlimits: rlimits,
+            privileged: processFlags.privileged
         )
     }
 

@@ -14,18 +14,29 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import ArgumentParser
+import ContainerResource
 import Testing
 
 @testable import ContainerCommands
 
-struct ContainerExecCommandTests {
+struct MachineRunCommandTests {
     @Test
-    func execParsesPrivilegedFlag() throws {
-        let command = try Application.ContainerExec.parse(["--privileged", "demo-api-1", "id"])
+    func runParsesPrivilegedFlagIntoProcessConfiguration() throws {
+        let command = try Application.MachineRun.parse(["--privileged", "id"])
+
+        let configuration = command.processConfiguration(
+            executable: "/sbin.machine/init",
+            arguments: ["-s", "id"],
+            environment: [],
+            workingDirectory: "/",
+            terminal: false,
+            user: .id(uid: 0, gid: 0),
+            supplementalGroups: []
+        )
 
         #expect(command.processFlags.privileged)
-        #expect(command.containerId == "demo-api-1")
-        #expect(command.arguments == ["id"])
+        #expect(configuration.executable == "/sbin.machine/init")
+        #expect(configuration.arguments == ["-s", "id"])
+        #expect(configuration.privileged)
     }
 }

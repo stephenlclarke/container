@@ -522,6 +522,14 @@ To grant all capabilities:
 container run --cap-add ALL alpine sh -c "ip link set lo down && echo ok"
 ```
 
+To grant the process the runtime's extended Linux capability set directly:
+
+```bash
+container run --privileged alpine sh -c "ip link set lo down && echo ok"
+```
+
+`--privileged` affects the process capability set. Use the explicit mount, network, security, and device flags for other isolation boundaries.
+
 To drop all capabilities and selectively re-add only what you need:
 
 ```bash

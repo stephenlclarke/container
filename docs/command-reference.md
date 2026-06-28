@@ -30,6 +30,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `--env-file <env-file>`: Read in a file of environment variables (key=value format, ignores # comments and blank lines)
 *   `--gid <gid>`: Set the group ID for the process
 *   `-i, --interactive`: Keep the standard input open even if not attached
+*   `--privileged`: Give extended Linux capabilities to the process
 *   `-t, --tty`: Open a TTY with the process
 *   `-u, --user <user>`: Set the user for the process (format: name|uid[:gid])
 *   `--uid <uid>`: Set the user ID for the process
@@ -219,6 +220,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `--env-file <env-file>`: Read in a file of environment variables (key=value format, ignores # comments and blank lines)
 *   `--gid <gid>`: Set the group ID for the process
 *   `-i, --interactive`: Keep the standard input open even if not attached
+*   `--privileged`: Give extended Linux capabilities to the process
 *   `-t, --tty`: Open a TTY with the process
 *   `-u, --user <user>`: Set the user for the process (format: name|uid[:gid])
 *   `--uid <uid>`: Set the user ID for the process
@@ -413,7 +415,7 @@ Executes a command inside a running container. It uses the same process flags as
 **Usage**
 
 ```bash
-container exec [--detach] [--env <env> ...] [--env-file <env-file> ...] [--gid <gid>] [--interactive] [--tty] [--user <user>] [--uid <uid>] [--workdir <dir>] [--debug] <container-id> <arguments> ...
+container exec [--detach] [--env <env> ...] [--env-file <env-file> ...] [--gid <gid>] [--interactive] [--privileged] [--tty] [--user <user>] [--uid <uid>] [--workdir <dir>] [--debug] <container-id> <arguments> ...
 ```
 
 **Arguments**
@@ -431,6 +433,7 @@ container exec [--detach] [--env <env> ...] [--env-file <env-file> ...] [--gid <
 *   `--env-file <env-file>`: Read in a file of environment variables (key=value format, ignores # comments and blank lines)
 *   `--gid <gid>`: Set the group ID for the process
 *   `-i, --interactive`: Keep the standard input open even if not attached
+*   `--privileged`: Give extended Linux capabilities to the process
 *   `-t, --tty`: Open a TTY with the process
 *   `-u, --user <user>`: Set the user for the process (format: name|uid[:gid])
 *   `--uid <uid>`: Set the user ID for the process
@@ -1242,6 +1245,7 @@ container machine run [<options>] [<executable>] [<arguments> ...]
 *   `--env-file <env-file>`: Read in a file of environment variables (key=value format, ignores # comments and blank lines)
 *   `--gid <gid>`: Set the group ID for the process
 *   `-i, --interactive`: Keep the standard input open even if not attached
+*   `--privileged`: Give extended Linux capabilities to the process
 *   `-t, --tty`: Open a TTY with the process
 *   `-u, --user <user>`: Set the user for the process (format: name|uid[:gid])
 *   `--uid <uid>`: Set the user ID for the process

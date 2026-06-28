@@ -959,6 +959,22 @@ struct ParserTest {
     }
 
     @Test
+    func testProcessPrivilegedFlag() throws {
+        let processFlags = try Flags.Process.parse(["--privileged"])
+        let managementFlags = try Flags.Management.parse([])
+
+        let result = try Parser.process(
+            arguments: ["id"],
+            processFlags: processFlags,
+            managementFlags: managementFlags,
+            config: nil
+        )
+
+        #expect(result.executable == "id")
+        #expect(result.privileged)
+    }
+
+    @Test
     func testUlimitParserSoftAndHard() throws {
         let result = try Parser.rlimits(["nofile=1024:2048"])
         #expect(result.count == 1)

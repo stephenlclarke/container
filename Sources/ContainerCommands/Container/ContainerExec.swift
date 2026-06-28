@@ -37,9 +37,6 @@ extension Application {
         @Flag(name: .shortAndLong, help: "Run the process and detach from it")
         var detach = false
 
-        @Flag(name: .customLong("privileged"), help: "Give extended Linux capabilities to the process")
-        var privileged = false
-
         @Argument(help: "Container ID")
         var containerId: String
 
@@ -73,7 +70,7 @@ extension Application {
             if let cwd = self.processFlags.cwd {
                 config.workingDirectory = cwd
             }
-            config.privileged = self.privileged
+            config.privileged = self.processFlags.privileged
 
             let defaultUser = config.user
             let (user, additionalGroups) = Parser.user(
