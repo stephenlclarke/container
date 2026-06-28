@@ -1279,10 +1279,7 @@ public actor RuntimeService {
                 soft: $0.soft
             )
         }
-        proc.capabilities = try Self.effectiveCapabilities(
-            capAdd: containerConfig.capAdd,
-            capDrop: containerConfig.capDrop
-        )
+        proc.capabilities = try Self.execCapabilities(containerConfig: containerConfig, processConfig: config)
         switch config.user {
         case .raw(let name):
             proc.user = .init(
@@ -1334,6 +1331,16 @@ public actor RuntimeService {
         }
 
         return Containerization.LinuxCapabilities(capabilities: Array(caps))
+    }
+
+    static func execCapabilities(
+        containerConfig: ContainerConfiguration,
+        processConfig: ProcessConfiguration
+    ) throws -> Containerization.LinuxCapabilities {
+        if processConfig.privileged {
+            return .allCapabilities
+        }
+        return try effectiveCapabilities(capAdd: containerConfig.capAdd, capDrop: containerConfig.capDrop)
     }
 
     /// Converts the OCI block I/O wire model carried in runtime data into the

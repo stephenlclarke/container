@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import Containerization
 import Testing
 
 @testable import ContainerRuntimeLinuxServer
@@ -161,6 +162,39 @@ struct RuntimeServiceHostsTests {
 
         #expect(hosts.map(\.ipAddress) == ["127.0.0.1", "10.0.0.15"])
         #expect(hosts.map(\.hostnames) == [["localhost"], ["db"]])
+    }
+
+    @Test
+    func execCapabilitiesHonorContainerCapabilityDropsByDefault() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.capDrop = ["ALL"]
+        let process = ProcessConfiguration(executable: "/bin/sh", arguments: [], environment: [])
+
+        let capabilities = try RuntimeService.execCapabilities(containerConfig: config, processConfig: process)
+
+        #expect(capabilities.bounding.isEmpty)
+        #expect(capabilities.effective.isEmpty)
+        #expect(capabilities.permitted.isEmpty)
+    }
+
+    @Test
+    func privilegedExecCapabilitiesUseAllCapabilities() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.capDrop = ["ALL"]
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: [],
+            privileged: true
+        )
+
+        let capabilities = try RuntimeService.execCapabilities(containerConfig: config, processConfig: process)
+        let allCapabilities = LinuxCapabilities.allCapabilities
+
+        #expect(Set(capabilities.bounding) == Set(allCapabilities.bounding))
+        #expect(Set(capabilities.effective) == Set(allCapabilities.effective))
+        #expect(Set(capabilities.permitted) == Set(allCapabilities.permitted))
+        #expect(Set(capabilities.ambient) == Set(allCapabilities.ambient))
     }
 
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {

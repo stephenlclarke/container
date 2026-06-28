@@ -33,6 +33,8 @@ public struct ProcessConfiguration: Sendable, Codable {
     public var supplementalGroups: [UInt32]
     /// Rlimits for the Process.
     public var rlimits: [Rlimit]
+    /// Whether the process should run with all available Linux capabilities.
+    public var privileged: Bool
 
     /// Rlimits for Processes.
     public struct Rlimit: Sendable, Codable {
@@ -78,7 +80,8 @@ public struct ProcessConfiguration: Sendable, Codable {
         terminal: Bool = false,
         user: User = .id(uid: 0, gid: 0),
         supplementalGroups: [UInt32] = [],
-        rlimits: [Rlimit] = []
+        rlimits: [Rlimit] = [],
+        privileged: Bool = false
     ) {
         self.executable = executable
         self.arguments = arguments
@@ -88,5 +91,44 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.user = user
         self.supplementalGroups = supplementalGroups
         self.rlimits = rlimits
+        self.privileged = privileged
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case executable
+        case arguments
+        case environment
+        case workingDirectory
+        case terminal
+        case user
+        case supplementalGroups
+        case rlimits
+        case privileged
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.executable = try container.decode(String.self, forKey: .executable)
+        self.arguments = try container.decode([String].self, forKey: .arguments)
+        self.environment = try container.decode([String].self, forKey: .environment)
+        self.workingDirectory = try container.decode(String.self, forKey: .workingDirectory)
+        self.terminal = try container.decode(Bool.self, forKey: .terminal)
+        self.user = try container.decode(User.self, forKey: .user)
+        self.supplementalGroups = try container.decode([UInt32].self, forKey: .supplementalGroups)
+        self.rlimits = try container.decode([Rlimit].self, forKey: .rlimits)
+        self.privileged = try container.decodeIfPresent(Bool.self, forKey: .privileged) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(executable, forKey: .executable)
+        try container.encode(arguments, forKey: .arguments)
+        try container.encode(environment, forKey: .environment)
+        try container.encode(workingDirectory, forKey: .workingDirectory)
+        try container.encode(terminal, forKey: .terminal)
+        try container.encode(user, forKey: .user)
+        try container.encode(supplementalGroups, forKey: .supplementalGroups)
+        try container.encode(rlimits, forKey: .rlimits)
+        try container.encode(privileged, forKey: .privileged)
     }
 }

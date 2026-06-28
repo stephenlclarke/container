@@ -73,6 +73,37 @@ struct ContainerConfigurationResourcesTests {
     }
 }
 
+struct ProcessConfigurationPrivilegeTests {
+    @Test func roundTripsPrivilegedProcessConfiguration() throws {
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: ["-c", "id"],
+            environment: ["PATH=/usr/bin"],
+            privileged: true
+        )
+
+        let data = try JSONEncoder().encode(process)
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: data)
+
+        #expect(decoded.privileged)
+    }
+
+    @Test func decodesMissingPrivilegedProcessConfigurationAsFalse() throws {
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: []
+        )
+        let data = try JSONEncoder().encode(process)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj.removeValue(forKey: "privileged")
+        let stripped = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: stripped)
+
+        #expect(!decoded.privileged)
+    }
+}
+
 struct ContainerConfigurationLoggingTests {
     @Test func roundTripsLoggingConfiguration() throws {
         var config = makeTestConfiguration()
