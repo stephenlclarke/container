@@ -63,6 +63,9 @@ extension Application {
         @Option(name: .long, help: ArgumentHelp("Set build-time variables", valueName: "key=val"))
         var buildArg: [String] = []
 
+        @Option(name: .long, help: ArgumentHelp("Set builder to use", valueName: "name"))
+        var builder: String?
+
         @Flag(name: .long, help: "Check build configuration without exporting an image")
         var check: Bool = false
 
@@ -176,6 +179,7 @@ extension Application {
 
                 progress.set(description: "Dialing builder")
 
+                let builderContainerId = try Builder.containerId(for: builder)
                 let sshForwarding = try BuildSSHForwarding.resolve(values: ssh)
                 let enableSSHForwarding = sshForwarding.isEnabled
                 let attestations = buildAttestations()
@@ -190,21 +194,23 @@ extension Application {
                     enableSSHForwarding: enableSSHForwarding,
                     sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
                     sshSocketMounts: sshForwarding.socketMounts,
+                    builderContainerId: builderContainerId,
                     progressUpdate: progress.handler,
                     containerSystemConfig: containerSystemConfig,
                 )
                 progress.set(description: "Dialing builder")
 
-                let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) { [vsockPort, cpus, memory, dnsNameservers, enableSSHForwarding, sshForwarding] group in
+                let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) {
+                    [builderContainerId, vsockPort, cpus, memory, dnsNameservers, enableSSHForwarding, sshForwarding] group in
                     defer {
                         group.cancelAll()
                     }
 
-                    group.addTask { [vsockPort, cpus, memory, log, dnsNameservers, sshForwarding] in
+                    group.addTask { [builderContainerId, vsockPort, cpus, memory, log, dnsNameservers, sshForwarding] in
                         let client = ContainerClient()
                         while true {
                             do {
-                                let fh = try await client.dial(id: "buildkit", port: vsockPort)
+                                let fh = try await client.dial(id: builderContainerId, port: vsockPort)
 
                                 let threadGroup: MultiThreadedEventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
                                 let b = try Builder(socket: fh, group: threadGroup, logger: log)
@@ -226,6 +232,7 @@ extension Application {
                                     enableSSHForwarding: enableSSHForwarding,
                                     sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
                                     sshSocketMounts: sshForwarding.socketMounts,
+                                    builderContainerId: builderContainerId,
                                     progressUpdate: progress.handler,
                                     containerSystemConfig: containerSystemConfig,
                                 )

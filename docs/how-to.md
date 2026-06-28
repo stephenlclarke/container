@@ -25,6 +25,11 @@ By default, the builder VM receives 2 GiBytes of RAM and 2 CPUs. You can change 
 container builder start --cpus 8 --memory 32g
 ```
 
+To configure a separate named builder, pass the same builder name to the lifecycle
+and build commands, for example
+`container builder start --builder remote --cpus 8 --memory 32g` followed by
+`container build --builder remote .`.
+
 If your builder is already running and you need to modify the limits, just stop, delete, and restart the builder:
 
 ```bash

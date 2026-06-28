@@ -31,6 +31,20 @@ import NIOPosix
 
 public struct Builder: Sendable {
     public static let builderContainerId = "buildkit"
+    public static let defaultBuilderName = "default"
+
+    public static func containerId(for builderName: String?) throws -> String {
+        guard let name = builderName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+            return builderContainerId
+        }
+        guard name != defaultBuilderName else {
+            return builderContainerId
+        }
+        try ContainerAPIClient.Utility.validEntityName(name)
+        let id = "\(builderContainerId)-\(name)"
+        try ContainerAPIClient.Utility.validEntityName(id)
+        return id
+    }
 
     let client: Com_Apple_Container_Build_V1_Builder.Client<HTTP2ClientTransport.WrappedChannel>
     let grpcClient: GRPCClient<HTTP2ClientTransport.WrappedChannel>

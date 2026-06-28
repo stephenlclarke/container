@@ -129,11 +129,15 @@ To test changes that require the `container-builder-shim` project:
 
 1. Clone the [container-builder-shim](https://github.com/stephenlclarke/container-builder-shim) fork and navigate to its directory.
 
-2. After making the necessary changes, build the custom builder image, set it as the active builder image in `~/.config/container/config.toml`, and remove the existing `buildkit` container so the new image will be used:
+2. After making the necessary changes, build the custom builder image, set it as the
+   active builder image in `~/.config/container/config.toml`, and remove any existing
+   builder containers that should pick up the new image. The default builder uses the
+   `buildkit` container; a named builder such as `remote` uses `buildkit-remote`.
 
     ```bash
     container build -t builder .
-    container rm -f buildkit
+    container builder delete --force
+    container builder delete --builder remote --force
     ```
 
     Add the following to your `~/.config/container/config.toml`:

@@ -150,6 +150,9 @@ container build [<options>] [<context-dir>]
 
 *   `-a, --arch <value>`: Add the architecture type to the build
 *   `--build-arg <key=val>`: Set build-time variables
+*   `--builder <name>`: Set builder to use. Omit it or use `default` for the
+    ordinary `buildkit` builder; any other valid builder name uses a separate
+    `buildkit-<name>` builder container.
 *   `-c, --cpus <cpus>`: Number of CPUs to allocate to the builder container (default: 2)
 *   `--dns <ip>`: DNS nameserver IP address
 *   `--dns-domain <domain>`: Default DNS domain
@@ -806,11 +809,14 @@ Starts the BuildKit builder container. CPU and memory limits can be set for the 
 **Usage**
 
 ```bash
-container builder start [--cpus <cpus>] [--memory <memory>] [--dns <ip> ...] [--dns-domain <domain>] [--dns-option <option> ...] [--dns-search <domain> ...] [--debug]
+container builder start [--builder <name>] [--cpus <cpus>] [--memory <memory>] [--dns <ip> ...] [--dns-domain <domain>] [--dns-option <option> ...] [--dns-search <domain> ...] [--debug]
 ```
 
 **Options**
 
+*   `--builder <name>`: Builder to start. Omit it or use `default` for the
+    ordinary `buildkit` builder; any other valid builder name uses a separate
+    `buildkit-<name>` builder container.
 *   `-c, --cpus <cpus>`: Number of CPUs to allocate to the builder container (default: 2)
 *   `-m, --memory <memory>`: Amount of builder container memory (1MiByte granularity), with optional K, M, G, T, or P suffix (default: 2048MB)
 *   `--dns <ip>`: DNS nameserver IP address
@@ -825,11 +831,13 @@ Shows the current status of the BuildKit builder. Without flags a human-readable
 **Usage**
 
 ```bash
-container builder status [--format <format>] [--quiet] [--debug]
+container builder status [--builder <name>] [--format <format>] [--quiet] [--debug]
 ```
 
 **Options**
 
+*   `--builder <name>`: Builder to inspect. Omit it or use `default` for the
+    ordinary `buildkit` builder.
 *   `--format <format>`: Format of the output (values: json, table, yaml, toml; default: table)
 *   `-q, --quiet`: Only output the container ID
 
@@ -840,12 +848,13 @@ Stops the BuildKit builder container.
 **Usage**
 
 ```bash
-container builder stop [--debug]
+container builder stop [--builder <name>] [--debug]
 ```
 
 **Options**
 
-No options.
+*   `--builder <name>`: Builder to stop. Omit it or use `default` for the
+    ordinary `buildkit` builder.
 
 ### `container builder delete (rm)`
 
@@ -854,11 +863,13 @@ Deletes the BuildKit builder container. It can optionally force deletion if the 
 **Usage**
 
 ```bash
-container builder delete [--force] [--debug]
+container builder delete [--builder <name>] [--force] [--debug]
 ```
 
 **Options**
 
+*   `--builder <name>`: Builder to delete. Omit it or use `default` for the
+    ordinary `buildkit` builder.
 *   `-f, --force`: Delete the builder even if it is running
 
 ## Network Management (macOS 26+)

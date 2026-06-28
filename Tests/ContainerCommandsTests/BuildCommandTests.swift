@@ -32,6 +32,7 @@ struct BuildCommandTests {
 
         let command = try Application.BuildCommand.parse([
             "--check",
+            "--builder", "remote",
             "--ssh", "default",
             "--ssh", "git=/tmp/agent.sock",
             "--tag", "example/app:latest",
@@ -39,9 +40,26 @@ struct BuildCommandTests {
         ])
 
         #expect(command.check)
+        #expect(command.builder == "remote")
         #expect(command.ssh == ["default", "git=/tmp/agent.sock"])
         #expect(command.contextDir == directory.path)
         #expect(command.targetImageNames == ["example/app:latest"])
+    }
+
+    @Test
+    func builderCommandsParseNamedBuilderOptions() throws {
+        let start = try Application.BuilderStart.parse(["--builder", "remote"])
+        #expect(start.builder == "remote")
+
+        let status = try Application.BuilderStatus.parse(["--builder", "remote"])
+        #expect(status.builder == "remote")
+
+        let stop = try Application.BuilderStop.parse(["--builder", "remote"])
+        #expect(stop.builder == "remote")
+
+        let delete = try Application.BuilderDelete.parse(["--builder", "remote", "--force"])
+        #expect(delete.builder == "remote")
+        #expect(delete.force)
     }
 
     @Test

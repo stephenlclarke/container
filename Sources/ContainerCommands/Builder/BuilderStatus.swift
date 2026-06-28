@@ -16,6 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerBuild
 import ContainerResource
 import ContainerizationError
 import ContainerizationExtras
@@ -39,12 +40,15 @@ extension Application {
         @OptionGroup
         public var logOptions: Flags.Logging
 
+        @Option(name: .long, help: ArgumentHelp("Set builder to use", valueName: "name"))
+        var builder: String?
+
         public init() {}
 
         public func run() async throws {
             do {
                 let client = ContainerClient()
-                let container = try await client.get(id: "buildkit")
+                let container = try await client.get(id: try Builder.containerId(for: builder))
 
                 if format == .table && quiet && container.status != .running {
                     return

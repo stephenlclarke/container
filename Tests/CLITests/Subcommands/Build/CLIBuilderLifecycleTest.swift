@@ -34,6 +34,34 @@ extension TestCLIBuildBase {
             }
         }
 
+        @Test func testNamedBuilderStartBuildStopDelete() throws {
+            let builderName = "integration-\(UUID().uuidString.lowercased())"
+            let builderContainer = "buildkit-\(builderName)"
+            let imageName = "registry.local/named-builder:\(UUID().uuidString)"
+            let tempDir = try createTempDir()
+            try createContext(tempDir: tempDir, dockerfile: "FROM \(alpine)\nRUN printf named-builder >/named-builder.txt\n")
+
+            defer {
+                _ = try? run(arguments: ["image", "delete", imageName])
+                try? builderDelete(builder: builderName, force: true)
+            }
+
+            try builderStart(builder: builderName)
+            try waitForBuilderRunning(builderContainer)
+
+            let status = try getContainerStatus(builderContainer)
+            #expect(status == "running", "Named BuildKit container is not running")
+
+            _ = try build(tag: imageName, tempDir: tempDir, otherArgs: ["--builder", builderName])
+
+            let inspect = try run(arguments: ["image", "inspect", imageName])
+            #expect(inspect.status == 0, "Named builder image build did not create \(imageName): \(inspect.error)")
+
+            try builderStop(builder: builderName)
+            let stoppedStatus = try getContainerStatus(builderContainer)
+            #expect(stoppedStatus == "stopped", "Named BuildKit container is not stopped")
+        }
+
         @Test func testBuilderEnvironmentColors() throws {
             let testColors = "run=green:warning=yellow:error=red:cancel=cyan"
             let testNoColor = "true"

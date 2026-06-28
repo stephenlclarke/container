@@ -49,6 +49,9 @@ extension Application {
         @OptionGroup
         public var dns: Flags.DNS
 
+        @Option(name: .long, help: ArgumentHelp("Set builder to use", valueName: "name"))
+        var builder: String?
+
         @OptionGroup
         public var logOptions: Flags.Logging
 
@@ -75,6 +78,7 @@ extension Application {
                 dnsSearchDomains: self.dns.searchDomains,
                 dnsOptions: self.dns.options,
                 enableSSHForwarding: false,
+                builderContainerId: try Builder.containerId(for: builder),
                 progressUpdate: progress.handler,
                 containerSystemConfig: containerSystemConfig,
             )
@@ -92,6 +96,7 @@ extension Application {
             enableSSHForwarding: Bool = false,
             sshAuthSocketPath: String? = nil,
             sshSocketMounts: [BuildSSHForwarding.SocketMount] = [],
+            builderContainerId: String = Builder.builderContainerId,
             progressUpdate: @escaping ProgressUpdateHandler,
             containerSystemConfig: ContainerSystemConfig,
         ) async throws {
@@ -148,7 +153,7 @@ extension Application {
             )
 
             let client = ContainerClient()
-            let existingContainer = try? await client.get(id: "buildkit")
+            let existingContainer = try? await client.get(id: builderContainerId)
             if let existingContainer {
                 let existingImage = existingContainer.configuration.image.reference
                 let existingResources = existingContainer.configuration.resources
@@ -235,7 +240,7 @@ extension Application {
                 useRosetta ? nil : "--enable-qemu",
             ].compactMap { $0 }
 
-            try ContainerAPIClient.Utility.validEntityName(Builder.builderContainerId)
+            try ContainerAPIClient.Utility.validEntityName(builderContainerId)
 
             let image = try await ClientImage.fetch(
                 reference: builderImage,
@@ -273,7 +278,7 @@ extension Application {
                 user: .id(uid: 0, gid: 0)
             )
 
-            var config = ContainerConfiguration(id: Builder.builderContainerId, image: imageDesc, process: processConfig)
+            var config = ContainerConfiguration(id: builderContainerId, image: imageDesc, process: processConfig)
             config.resources = resources
             config.ssh = enableSSHForwarding && sshSocketMounts.isEmpty
             config.labels = [
@@ -310,7 +315,7 @@ extension Application {
                 throw ContainerizationError(.invalidState, message: "default network is not present")
             }
             config.networks = [
-                AttachmentConfiguration(network: defaultNetwork.id, options: AttachmentOptions(hostname: Builder.builderContainerId))
+                AttachmentConfiguration(network: defaultNetwork.id, options: AttachmentOptions(hostname: builderContainerId))
             ]
             config.dns = ContainerConfiguration.DNSConfiguration(
                 nameservers: dnsNameservers,
@@ -341,7 +346,7 @@ extension Application {
 
             try await startBuildKit(
                 client: client,
-                id: Builder.builderContainerId,
+                id: builderContainerId,
                 progressUpdate,
                 taskManager,
                 sshAuthSocketPath: targetSSHAuthSocketPath,

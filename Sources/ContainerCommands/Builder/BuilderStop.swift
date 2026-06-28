@@ -16,6 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerBuild
 import ContainerizationError
 import Foundation
 
@@ -31,12 +32,15 @@ extension Application {
         @OptionGroup
         public var logOptions: Flags.Logging
 
+        @Option(name: .long, help: ArgumentHelp("Set builder to use", valueName: "name"))
+        var builder: String?
+
         public init() {}
 
         public func run() async throws {
             do {
                 let client = ContainerClient()
-                try await client.stop(id: "buildkit")
+                try await client.stop(id: try Builder.containerId(for: builder))
             } catch {
                 if error is ContainerizationError {
                     if (error as? ContainerizationError)?.code == .notFound {

@@ -37,8 +37,7 @@ class TestCLIBuildBase: CLITest {
         try? builderDelete(force: true)
     }
 
-    func waitForBuilderRunning() throws {
-        let buildkitName = "buildkit"
+    func waitForBuilderRunning(_ buildkitName: String = "buildkit") throws {
         try waitForContainerRunning(buildkitName, 10)
 
         // exec into buildkit and check if builder-shim is running
@@ -302,35 +301,40 @@ class TestCLIBuildBase: CLITest {
         case data(Data)
     }
 
-    func builderStart(cpus: Int64 = 2, memoryInGBs: Int64 = 2) throws {
-        let (_, _, error, status) = try run(arguments: [
-            "builder",
-            "start",
-            "-c",
-            "\(cpus)",
-            "-m",
-            "\(memoryInGBs)GB",
-        ])
+    func builderStart(builder: String? = nil, cpus: Int64 = 2, memoryInGBs: Int64 = 2) throws {
+        let (_, _, error, status) = try run(
+            arguments: [
+                "builder",
+                "start",
+                builder.map { "--builder=\($0)" },
+                "-c",
+                "\(cpus)",
+                "-m",
+                "\(memoryInGBs)GB",
+            ].compactMap { $0 })
         if status != 0 {
             throw CLIError.executionFailed("command failed: \(error)")
         }
     }
 
-    func builderStop() throws {
-        let (_, _, error, status) = try run(arguments: [
-            "builder",
-            "stop",
-        ])
+    func builderStop(builder: String? = nil) throws {
+        let (_, _, error, status) = try run(
+            arguments: [
+                "builder",
+                "stop",
+                builder.map { "--builder=\($0)" },
+            ].compactMap { $0 })
         if status != 0 {
             throw CLIError.executionFailed("command failed: \(error)")
         }
     }
 
-    func builderDelete(force: Bool = false) throws {
+    func builderDelete(builder: String? = nil, force: Bool = false) throws {
         let (_, _, error, status) = try run(
             arguments: [
                 "builder",
                 "delete",
+                builder.map { "--builder=\($0)" },
                 force ? "--force" : nil,
             ].compactMap { $0 })
         if status != 0 {
