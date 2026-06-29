@@ -34,7 +34,39 @@ public struct StderrLogHandler: LogHandler {
 
     public init() {}
 
+    public func log(event: LogEvent) {
+        writeLog(
+            level: event.level,
+            message: event.message,
+            metadata: event.metadata,
+            source: event.source,
+            file: event.file,
+            function: event.function,
+            line: event.line
+        )
+    }
+
     public func log(
+        level: Logger.Level,
+        message: Logger.Message,
+        metadata: Logger.Metadata?,
+        source: String,
+        file: String,
+        function: String,
+        line: UInt
+    ) {
+        writeLog(
+            level: level,
+            message: message,
+            metadata: metadata,
+            source: source,
+            file: file,
+            function: function,
+            line: line
+        )
+    }
+
+    private func writeLog(
         level: Logger.Level,
         message: Logger.Message,
         metadata: Logger.Metadata?,
@@ -48,23 +80,15 @@ public struct StderrLogHandler: LogHandler {
         case .debug, .trace:
             let timestamp = isoTimestamp()
             if let metadata, !metadata.isEmpty {
-                data =
-                    "\(timestamp) \(message.description): \(metadata.description)\n"
-                    .data(using: .utf8) ?? Data()
+                data = Data("\(timestamp) \(message.description): \(metadata.description)\n".utf8)
             } else {
-                data =
-                    "\(timestamp) \(message.description)\n"
-                    .data(using: .utf8) ?? Data()
+                data = Data("\(timestamp) \(message.description)\n".utf8)
             }
         default:
             if let metadata, !metadata.isEmpty {
-                data =
-                    "\(message.description): \(metadata.description)\n"
-                    .data(using: .utf8) ?? Data()
+                data = Data("\(message.description): \(metadata.description)\n".utf8)
             } else {
-                data =
-                    "\(message.description)\n"
-                    .data(using: .utf8) ?? Data()
+                data = Data("\(message.description)\n".utf8)
             }
         }
 
@@ -74,14 +98,14 @@ public struct StderrLogHandler: LogHandler {
     private func isoTimestamp() -> String {
         let date = Date()
         var time = time_t(date.timeIntervalSince1970)
-        var ms = Int(date.timeIntervalSince1970 * 1000) % 1000
-        if ms < 0 { ms += 1000 }
-        var tm = tm()
-        gmtime_r(&time, &tm)
+        var milliseconds = Int(date.timeIntervalSince1970 * 1000) % 1000
+        if milliseconds < 0 { milliseconds += 1000 }
+        var utcTime = tm()
+        gmtime_r(&time, &utcTime)
         let buf = withUnsafeTemporaryAllocation(of: CChar.self, capacity: 32) { ptr -> String in
-            strftime(ptr.baseAddress!, 32, "%Y-%m-%dT%H:%M:%S", &tm)
+            strftime(ptr.baseAddress!, 32, "%Y-%m-%dT%H:%M:%S", &utcTime)
             return String(cString: ptr.baseAddress!)
         }
-        return String(format: "%@.%03dZ", buf, ms)
+        return String(format: "%@.%03dZ", buf, milliseconds)
     }
 }

@@ -112,13 +112,14 @@ struct ApplicationHealthTests {
     }
 
     @Test
-    func rootHelpProvenanceShowsCustomBuild() {
+    func rootHelpProvenanceShowsCustomBuild() throws {
         let help = Application.addBuildProvenance("USAGE: container\n\nPLUGINS:\n  compose")
+        let containerization = try Self.expectedContainerizationProvenance()
 
         #expect(help.contains("BUILD:"))
         #expect(help.contains("distribution: custom"))
         #expect(help.contains("source: stephenlclarke/container"))
-        #expect(help.contains("containerization: stephenlclarke/containerization@main"))
+        #expect(help.contains("containerization: \(containerization)"))
         #expect(help.contains("PLUGINS:\n  compose"))
     }
 
@@ -214,6 +215,31 @@ struct ApplicationHealthTests {
         let url = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private static func expectedContainerizationProvenance() throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let pins = try #require(object["pins"] as? [[String: Any]])
+        let pin = try #require(pins.first { ($0["identity"] as? String) == "containerization" })
+        let location = try #require(pin["location"] as? String)
+        let state = try #require(pin["state"] as? [String: Any])
+        let revision = try #require(state["revision"] as? String)
+        return "\(githubRepositoryPath(from: location))@\(revision)"
+    }
+
+    private static func githubRepositoryPath(from location: String) -> String {
+        var repository = location
+        for prefix in ["https://github.com/", "git@github.com:"] {
+            if repository.hasPrefix(prefix) {
+                repository.removeFirst(prefix.count)
+                break
+            }
+        }
+        if repository.hasSuffix(".git") {
+            repository.removeLast(4)
+        }
+        return repository
     }
 
     private static func requireCompletesWithin(_ timeout: Duration, operation: @escaping @Sendable () async throws -> Void) async throws {

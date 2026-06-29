@@ -20,14 +20,57 @@
 import Foundation
 import PackageDescription
 
+func resolvedPackagePin(identity: String) -> [String: Any]? {
+    guard
+        let data = try? Data(contentsOf: URL(fileURLWithPath: "Package.resolved")),
+        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let pins = object["pins"] as? [[String: Any]]
+    else {
+        return nil
+    }
+    return pins.first { ($0["identity"] as? String) == identity }
+}
+
+func resolvedPackageLocation(identity: String) -> String? {
+    resolvedPackagePin(identity: identity)?["location"] as? String
+}
+
+func resolvedPackageState(identity: String, key: String) -> String? {
+    guard let state = resolvedPackagePin(identity: identity)?["state"] as? [String: Any] else {
+        return nil
+    }
+    return state[key] as? String
+}
+
+func githubRepositoryPath(from location: String) -> String {
+    var repository = location
+    for prefix in ["https://github.com/", "git@github.com:"] {
+        if repository.hasPrefix(prefix) {
+            repository.removeFirst(prefix.count)
+            break
+        }
+    }
+    if repository.hasSuffix(".git") {
+        repository.removeLast(4)
+    }
+    return repository
+}
+
 let releaseVersion = ProcessInfo.processInfo.environment["RELEASE_VERSION"] ?? "0.0.0"
 let gitCommit = ProcessInfo.processInfo.environment["GIT_COMMIT"] ?? "unspecified"
 let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ?? "stephenlclarke/container"
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
-let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "0.13.4"
+let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "0.13.3"
 let scVersion = "0.35.0"
-let scSource = ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"] ?? "stephenlclarke/containerization"
-let scRef = ProcessInfo.processInfo.environment["CONTAINERIZATION_REF"] ?? "main"
+let scSource =
+    ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
+    ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
+    ?? "stephenlclarke/containerization"
+let scRef =
+    ProcessInfo.processInfo.environment["CONTAINERIZATION_REF"]
+    ?? resolvedPackageState(identity: "containerization", key: "revision")
+    ?? resolvedPackageState(identity: "containerization", key: "branch")
+    ?? "main"
 
 let package = Package(
     name: "container",
@@ -61,7 +104,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.13.2"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.36.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),

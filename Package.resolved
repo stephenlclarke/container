@@ -1,5 +1,5 @@
 {
-  "originHash" : "06ee363f2999033e995f8d3e0e34c1452c95ca517b9cf7f0283412e6a4b30a14",
+  "originHash" : "aa727240828316e0c5adf72073a226ff972fc69833ff0c4d20d8ab1d4f40548b",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -16,7 +16,7 @@
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
         "branch" : "main",
-        "revision" : "a0b08ffeda51ea5396efb0788e060610c39f4b55"
+        "revision" : "4d129c6d360d1d20b257818d894a64f24bd39f74"
       }
     },
     {
@@ -177,8 +177,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-log.git",
       "state" : {
-        "revision" : "bbd81b6725ae874c69e9b8c8804d462356b55523",
-        "version" : "1.10.1"
+        "revision" : "92448c359f00ebe36ae97d3bd9086f13c7692b5a",
+        "version" : "1.13.2"
       }
     },
     {

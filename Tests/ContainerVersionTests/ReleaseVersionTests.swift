@@ -15,24 +15,52 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerVersion
+import Foundation
 import Testing
 
 struct ReleaseVersionTests {
     @Test
-    func singleLineIncludesForkProvenance() {
+    func singleLineIncludesForkProvenance() throws {
         let line = ReleaseVersion.singleLine(appName: "container CLI")
+        let containerization = try Self.expectedContainerizationProvenance()
 
         #expect(line.contains("distribution: custom"))
         #expect(line.contains("source: stephenlclarke/container"))
-        #expect(line.contains("containerization: stephenlclarke/containerization@main"))
+        #expect(line.contains("containerization: \(containerization)"))
     }
 
     @Test
-    func provenanceLinesIncludeSourceAndContainerization() {
+    func provenanceLinesIncludeSourceAndContainerization() throws {
         let lines = ReleaseVersion.provenanceLines(indent: "")
+        let containerization = try Self.expectedContainerizationProvenance()
 
         #expect(lines.contains("distribution: custom"))
         #expect(lines.contains("source: stephenlclarke/container"))
-        #expect(lines.contains("containerization: stephenlclarke/containerization@main"))
+        #expect(lines.contains("containerization: \(containerization)"))
+    }
+
+    private static func expectedContainerizationProvenance() throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let pins = try #require(object["pins"] as? [[String: Any]])
+        let pin = try #require(pins.first { ($0["identity"] as? String) == "containerization" })
+        let location = try #require(pin["location"] as? String)
+        let state = try #require(pin["state"] as? [String: Any])
+        let revision = try #require(state["revision"] as? String)
+        return "\(githubRepositoryPath(from: location))@\(revision)"
+    }
+
+    private static func githubRepositoryPath(from location: String) -> String {
+        var repository = location
+        for prefix in ["https://github.com/", "git@github.com:"] {
+            if repository.hasPrefix(prefix) {
+                repository.removeFirst(prefix.count)
+                break
+            }
+        }
+        if repository.hasSuffix(".git") {
+            repository.removeLast(4)
+        }
+        return repository
     }
 }

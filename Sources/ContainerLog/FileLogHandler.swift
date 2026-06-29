@@ -60,7 +60,39 @@ public struct FileLogHandler: LogHandler {
         self.fileHandle.seekToEndOfFile()
     }
 
+    public func log(event: LogEvent) {
+        writeLog(
+            level: event.level,
+            message: event.message,
+            metadata: event.metadata,
+            source: event.source,
+            file: event.file,
+            function: event.function,
+            line: event.line
+        )
+    }
+
     public func log(
+        level: Logger.Level,
+        message: Logger.Message,
+        metadata: Logger.Metadata?,
+        source: String,
+        file: String,
+        function: String,
+        line: UInt
+    ) {
+        writeLog(
+            level: level,
+            message: message,
+            metadata: metadata,
+            source: source,
+            file: file,
+            function: function,
+            line: line
+        )
+    }
+
+    private func writeLog(
         level: Logger.Level,
         message: Logger.Message,
         metadata: Logger.Metadata?,
@@ -88,9 +120,7 @@ public struct FileLogHandler: LogHandler {
         } else {
             text = "\(timestamp) [\(level)] \(label): \(category) \(message)\n"
         }
-        if let data = text.data(using: .utf8) {
-            fileHandle.write(data)
-        }
+        fileHandle.write(Data(text.utf8))
     }
 
     /// Failures relating to the log handler.

@@ -33,6 +33,23 @@ public struct Builder: Sendable {
     public static let builderContainerId = "buildkit"
     public static let defaultBuilderName = "default"
 
+    private final class ShutdownState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var isShutdown = false
+
+        func beginShutdown() -> Bool {
+            self.lock.lock()
+            defer {
+                self.lock.unlock()
+            }
+            guard !self.isShutdown else {
+                return false
+            }
+            self.isShutdown = true
+            return true
+        }
+    }
+
     public static func containerId(for builderName: String?) throws -> String {
         guard let name = builderName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
             return builderContainerId
@@ -52,6 +69,7 @@ public struct Builder: Sendable {
     let builderShimSocket: FileHandle
     let clientTask: Task<Void, any Swift.Error>
     let logger: Logger
+    private let shutdownState: ShutdownState
 
     public init(socket: FileHandle, group: EventLoopGroup, logger: Logger) throws {
         try socket.setSendBufSize(4 << 20)
@@ -76,6 +94,7 @@ public struct Builder: Sendable {
         self.group = group
         self.builderShimSocket = socket
         self.logger = logger
+        self.shutdownState = ShutdownState()
 
         // Start the client connection loop in a background task
         self.clientTask = Task {
@@ -100,6 +119,23 @@ public struct Builder: Sendable {
         var opts = CallOptions.defaults
         opts.timeout = .seconds(30)
         return try await self.client.info(InfoRequest(), options: opts)
+    }
+
+    public func shutdown() async {
+        guard self.shutdownState.beginShutdown() else {
+            return
+        }
+
+        self.grpcClient.beginGracefulShutdown()
+        self.clientTask.cancel()
+
+        do {
+            try await self.group.shutdownGracefully()
+        } catch {
+            self.logger.debug("builder event loop shutdown failed: \(error)")
+        }
+
+        try? self.builderShimSocket.close()
     }
 
     // TODO
@@ -163,11 +199,14 @@ public struct Builder: Sendable {
                 }
             )
         } catch Error.buildComplete {
-            self.grpcClient.beginGracefulShutdown()
-            self.clientTask.cancel()
-            try await group.shutdownGracefully()
+            await self.shutdown()
             return
+        } catch {
+            await self.shutdown()
+            throw error
         }
+
+        await self.shutdown()
     }
 
     public struct BuildExport: Sendable {
@@ -188,13 +227,18 @@ public struct Builder: Sendable {
             var destinationValue: URL?
             var additionalFields: [String: String] = [:]
 
-            let pairs = input.components(separatedBy: ",")
+            let pairs = input.split(separator: ",", omittingEmptySubsequences: false)
             for pair in pairs {
-                let parts = pair.components(separatedBy: "=")
-                guard parts.count == 2 else { continue }
+                let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard parts.count == 2 else {
+                    throw Builder.Error.invalidExport(input, "invalid field format: \(pair)")
+                }
 
-                let key = parts[0].trimmingCharacters(in: .whitespaces)
-                let value = parts[1].trimmingCharacters(in: .whitespaces)
+                let key = String(parts[0]).trimmingCharacters(in: .whitespaces)
+                let value = String(parts[1]).trimmingCharacters(in: .whitespaces)
+                guard !key.isEmpty else {
+                    throw Builder.Error.invalidExport(input, "field key is required")
+                }
 
                 switch key {
                 case "type":

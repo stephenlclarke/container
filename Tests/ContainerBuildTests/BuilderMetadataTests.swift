@@ -24,6 +24,21 @@ import Testing
 
 struct BuilderMetadataTests {
     @Test
+    func buildExportPreservesEqualsInsideValues() throws {
+        let export = try Builder.BuildExport(from: "type=oci,annotation=key=value")
+
+        #expect(export.type == "oci")
+        #expect(export.additionalFields["annotation"] == "key=value")
+    }
+
+    @Test
+    func buildExportRejectsMalformedFields() throws {
+        #expect(throws: Builder.Error.self) {
+            try Builder.BuildExport(from: "type=oci,malformed")
+        }
+    }
+
+    @Test
     func buildMetadataIncludesRepeatedSSHValues() throws {
         let config = Builder.BuildConfig(
             buildID: "build-id",

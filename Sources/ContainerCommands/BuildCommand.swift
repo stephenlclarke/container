@@ -165,6 +165,7 @@ extension Application {
 
         public func run() async throws {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
+            var activeBuilder: Builder?
             do {
                 let timeout: Duration = .seconds(300)
                 let progressConfig = try ProgressConfig(
@@ -259,6 +260,7 @@ extension Application {
                 guard let builder else {
                     throw ValidationError("builder is not running")
                 }
+                activeBuilder = builder
 
                 let buildFileData: Data
                 var ignoreFileData: Data? = nil
@@ -491,7 +493,12 @@ extension Application {
 
                     try await group.next()
                 }
+                await builder.shutdown()
+                activeBuilder = nil
             } catch {
+                if let activeBuilder {
+                    await activeBuilder.shutdown()
+                }
                 throw NSError(domain: "Build", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(error)"])
             }
         }
