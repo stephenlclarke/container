@@ -15,13 +15,15 @@
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [-a APP_ROOT | --app-root APP_ROOT] [-l LOG_ROOT | --log-root LOG_ROOT] [-h | --help]
+Usage: $(basename "$0") [-a APP_ROOT | --app-root APP_ROOT] [-l LOG_ROOT | --log-root LOG_ROOT] [--enable-kernel-install | --disable-kernel-install] [-h | --help]
 
 Install the init image for container system.
 
 Options:
     -a, --app-root APP_ROOT    Install the init image under the APP_ROOT path
     -l, --log-root LOG_ROOT    Install the init image under the LOG_ROOT path
+    --enable-kernel-install    Install the recommended default kernel if it is missing
+    --disable-kernel-install   Do not install the default kernel if it is missing
     -h, --help                 Show this help message
 
 EOF
@@ -47,6 +49,10 @@ while [[ $# -gt 0 ]]; do
             fi
             START_ARGS+=(--log-root "$2")
             shift 2
+            ;;
+        --enable-kernel-install|--disable-kernel-install)
+            START_ARGS+=("$1")
+            shift
             ;;
         -h|--help)
             usage

@@ -34,6 +34,8 @@ CODESIGN_OPTS ?= --force --sign - --timestamp=none
 
 # Conditionally use a temporary data directory for integration tests
 SYSTEM_START_OPTS :=
+KERNEL_INSTALL ?= true
+KERNEL_INSTALL_OPT := $(if $(filter false,$(KERNEL_INSTALL)),--disable-kernel-install,--enable-kernel-install)
 ifneq ($(strip $(APP_ROOT)),)
 	SYSTEM_START_OPTS += --app-root "$(strip $(APP_ROOT))"
 endif
@@ -80,7 +82,7 @@ release: all
 .PHONY: init-block
 init-block:
 	@echo Building initfs if containerization is in edit mode
-	@scripts/install-init.sh $(SYSTEM_START_OPTS)
+	@scripts/install-init.sh $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS)
 
 .PHONY: install
 install: installer-pkg
@@ -247,7 +249,7 @@ define RUN_INTEGRATION
 		fi ; \
 	fi
 	@echo Running the integration tests...
-	@bin/container --debug system start --timeout 60 --enable-kernel-install $(SYSTEM_START_OPTS) && \
+	@bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
 	{ \
 		CLITEST_LOG_ROOT=$(LOG_ROOT) && export CLITEST_LOG_ROOT ; \
 		CONTAINER_CLI_PATH=$(ROOT_DIR)/bin/container && export CONTAINER_CLI_PATH ; \
@@ -272,7 +274,7 @@ integration-new: init-block
 .PHONY: coverage-integration-new
 coverage-integration-new: INTEGRATION_SWIFT_EXTRA = --skip-build --enable-code-coverage
 coverage-integration-new: INTEGRATION_POST_TEST = cp $(COV_DATA_DIR)/*.profraw $(COVERAGE_OUTPUT_DIR)/integration/ ;
-coverage-integration-new: all
+coverage-integration-new: coverage-build all
 	@mkdir -p $(COVERAGE_OUTPUT_DIR)/integration
 	$(RUN_INTEGRATION)
 
@@ -340,7 +342,7 @@ coverage: coverage-build coverage-unit coverage-integration
 	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/combined/default.profdata,combined)
 
 .PHONY: coverage-unit
-coverage-unit:
+coverage-unit: coverage-build
 	@echo Running unit test coverage...
 	@rm -f $(COV_DATA_DIR)/*.profraw
 	@mkdir -p $(COVERAGE_OUTPUT_DIR)/unit
@@ -350,7 +352,7 @@ coverage-unit:
 	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/unit/default.profdata,unit)
 
 .PHONY: coverage-integration
-coverage-integration: all
+coverage-integration: coverage-build all
 	@echo Ensuring apiserver stopped before the coverage integration tests...
 	@bin/container system stop && sleep 3 && scripts/ensure-container-stopped.sh
 	@echo Running integration test coverage...
@@ -382,7 +384,7 @@ integration: init-block
 		find "$(APP_ROOT)" -mindepth 1 -maxdepth 1 ! -name kernels -exec rm -rf {} + ; \
 	fi
 	@echo Running the integration tests...
-	@bin/container --debug system start --timeout 60 --enable-kernel-install $(SYSTEM_START_OPTS) && \
+	@bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
 	echo "Starting CLI integration tests" && \
 	{ \
 		CLITEST_LOG_ROOT=$(LOG_ROOT) && export CLITEST_LOG_ROOT ; \
