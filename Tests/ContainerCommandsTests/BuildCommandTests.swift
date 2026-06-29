@@ -33,6 +33,14 @@ struct BuildCommandTests {
         let command = try Application.BuildCommand.parse([
             "--check",
             "--builder", "remote",
+            "--build-context", "shared=./shared",
+            "--build-context", "base=docker-image://example/base:latest",
+            "--allow", "network.host",
+            "--add-host", "build.local=127.0.0.1",
+            "--network", "host",
+            "--privileged",
+            "--shm-size", "67108864",
+            "--ulimit", "nofile=1024:2048",
             "--ssh", "default",
             "--ssh", "git=/tmp/agent.sock",
             "--tag", "example/app:latest",
@@ -41,6 +49,13 @@ struct BuildCommandTests {
 
         #expect(command.check)
         #expect(command.builder == "remote")
+        #expect(command.buildContext == ["shared=./shared", "base=docker-image://example/base:latest"])
+        #expect(command.allow == ["network.host"])
+        #expect(command.addHost == ["build.local=127.0.0.1"])
+        #expect(command.network == "host")
+        #expect(command.privileged)
+        #expect(command.shmSize == "67108864")
+        #expect(command.ulimit == ["nofile=1024:2048"])
         #expect(command.ssh == ["default", "git=/tmp/agent.sock"])
         #expect(command.contextDir == directory.path)
         #expect(command.targetImageNames == ["example/app:latest"])

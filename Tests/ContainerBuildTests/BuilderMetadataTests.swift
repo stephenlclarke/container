@@ -44,12 +44,23 @@ struct BuilderMetadataTests {
             buildID: "build-id",
             contentStore: NoopContentStore(),
             buildArgs: [],
+            buildContexts: [
+                "base": "docker-image://example/base:latest",
+                "shared": "local:shared",
+            ],
+            localBuildContexts: ["shared": "/tmp/shared"],
             secrets: [:],
             ssh: ["default", "git=/tmp/agent.sock"],
+            entitlements: ["network.host"],
             attestations: [
                 "attest-provenance": "mode=max",
                 "attest-sbom": "",
             ],
+            addHosts: ["build.local=127.0.0.1"],
+            network: "host",
+            privileged: true,
+            shmSize: "67108864",
+            ulimits: ["nofile=1024:2048"],
             contextDir: "/tmp/context",
             dockerfile: Data("FROM scratch\n".utf8),
             dockerignore: nil,
@@ -71,6 +82,17 @@ struct BuilderMetadataTests {
         let metadata = try Builder.buildMetadata(config)
 
         #expect(Array(metadata[stringValues: "ssh"]) == ["default", "git=/tmp/agent.sock"])
+        #expect(
+            Array(metadata[stringValues: "build-contexts"]) == [
+                "base=docker-image://example/base:latest",
+                "shared=local:shared",
+            ])
+        #expect(Array(metadata[stringValues: "entitlements"]) == ["network.host"])
+        #expect(Array(metadata[stringValues: "add-hosts"]) == ["build.local=127.0.0.1"])
+        #expect(Array(metadata[stringValues: "network"]) == ["host"])
+        #expect(Array(metadata[stringValues: "privileged"]) == [""])
+        #expect(Array(metadata[stringValues: "shm-size"]) == ["67108864"])
+        #expect(Array(metadata[stringValues: "ulimit"]) == ["nofile=1024:2048"])
         #expect(Array(metadata[stringValues: "attest-provenance"]) == ["mode=max"])
         #expect(Array(metadata[stringValues: "attest-sbom"]) == [""])
         #expect(Array(metadata[stringValues: "check"]) == [""])

@@ -28,7 +28,7 @@ public actor BuildPipeline {
     public init(_ config: Builder.BuildConfig) async throws {
         self.handlers =
             [
-                try BuildFSSync(URL(filePath: config.contextDir)),
+                try BuildFSSync(URL(filePath: config.contextDir), namedContexts: config.localBuildContexts),
                 try BuildRemoteContentProxy(config.contentStore),
                 try BuildImageResolver(
                     config.contentStore,

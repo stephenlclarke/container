@@ -51,6 +51,11 @@ extension Application {
             case file(String)
         }
 
+        struct ParsedBuildContexts: Sendable {
+            var sources: [String: String]
+            var localPaths: [String: String]
+        }
+
         @Option(
             name: .shortAndLong,
             help: ArgumentHelp("Add the architecture type to the build", valueName: "value"),
@@ -62,6 +67,9 @@ extension Application {
 
         @Option(name: .long, help: ArgumentHelp("Set build-time variables", valueName: "key=val"))
         var buildArg: [String] = []
+
+        @Option(name: .long, help: ArgumentHelp("Additional build context (format: name=path|url)", valueName: "name=source"))
+        var buildContext: [String] = []
 
         @Option(name: .long, help: ArgumentHelp("Set builder to use", valueName: "name"))
         var builder: String?
@@ -90,6 +98,12 @@ extension Application {
         @Option(name: .shortAndLong, help: ArgumentHelp("Set a label", valueName: "key=val"))
         var label: [String] = []
 
+        @Option(name: .long, help: ArgumentHelp("Allow BuildKit entitlement", valueName: "value"))
+        var allow: [String] = []
+
+        @Option(name: .long, help: ArgumentHelp("Add host mapping during build (format: host=ip)", valueName: "host=ip"))
+        var addHost: [String] = []
+
         @Option(
             name: .shortAndLong,
             help: "Amount of builder container memory (1MiByte granularity), with optional K, M, G, T, or P suffix"
@@ -98,6 +112,9 @@ extension Application {
 
         @Flag(name: .long, help: "Do not use cache")
         var noCache: Bool = false
+
+        @Option(name: .long, help: ArgumentHelp("Set Dockerfile RUN network mode (default|none|host|sandbox)", valueName: "mode"))
+        var network: String?
 
         @Option(name: .shortAndLong, help: ArgumentHelp("Output configuration for the build (format: type=<oci|tar|local>[,dest=])", valueName: "value"))
         var output: [String] = {
@@ -129,6 +146,9 @@ extension Application {
         @Flag(name: .shortAndLong, help: "Suppress build output")
         var quiet: Bool = false
 
+        @Flag(name: .long, help: "Allow privileged Dockerfile RUN steps")
+        var privileged: Bool = false
+
         @Option(name: .long, help: ArgumentHelp("Set build-time secrets (format: id=<key>[,env=<ENV_VAR>|,src=<local/path>])", valueName: "id=key,..."))
         var secret: [String] = []
 
@@ -140,6 +160,9 @@ extension Application {
         @Option(name: .long, help: ArgumentHelp("Add an SBOM attestation. Use false to explicitly disable.", valueName: "value"))
         var sbom: String?
 
+        @Option(name: .long, help: ArgumentHelp("Set /dev/shm size in bytes for Dockerfile RUN steps", valueName: "bytes"))
+        var shmSize: String?
+
         @Option(name: [.short, .customLong("tag")], help: ArgumentHelp("Name for the built image", valueName: "name"))
         var targetImageNames: [String] = {
             [UUID().uuidString.lowercased()]
@@ -147,6 +170,9 @@ extension Application {
 
         @Option(name: .long, help: ArgumentHelp("Set the target build stage", valueName: "stage"))
         var target: String = ""
+
+        @Option(name: .long, help: ArgumentHelp("Set Dockerfile RUN ulimit (format: name=soft[:hard])", valueName: "name=value"))
+        var ulimit: [String] = []
 
         @Option(name: .long, help: ArgumentHelp("Builder shim vsock port", valueName: "port"))
         var vsockPort: UInt32 = 8088
@@ -351,6 +377,7 @@ extension Application {
                     }
                     return exp
                 }
+                let buildContexts = try parsedBuildContexts()
 
                 try await withThrowingTaskGroup(of: Void.self) { [terminal] group in
                     defer {
@@ -393,14 +420,23 @@ extension Application {
                         [
                             terminal, buildArg, secretsData, sshForwarding, contextDir, ignoreFileData, label,
                             noCache, target, quiet, cacheIn, cacheOut, pull, check, exports, imageNames, tempURL, log, attestations,
+                            buildContexts, allow, addHost, network, privileged, shmSize, ulimit,
                         ] in
                         let config = Builder.BuildConfig(
                             buildID: buildID,
                             contentStore: RemoteContentStoreClient(),
                             buildArgs: buildArg,
+                            buildContexts: buildContexts.sources,
+                            localBuildContexts: buildContexts.localPaths,
                             secrets: secretsData,
                             ssh: sshForwarding.metadataValues,
+                            entitlements: allow,
                             attestations: attestations,
+                            addHosts: addHost,
+                            network: network,
+                            privileged: privileged,
+                            shmSize: shmSize,
+                            ulimits: ulimit,
                             contextDir: contextDir,
                             dockerfile: buildFileData,
                             dockerignore: ignoreFileData,
@@ -590,6 +626,62 @@ extension Application {
             default:
                 return trimmed
             }
+        }
+
+        private func parsedBuildContexts() throws -> ParsedBuildContexts {
+            var sources: [String: String] = [:]
+            var localPaths: [String: String] = [:]
+            for raw in buildContext {
+                let (name, source) = try parseBuildContext(raw)
+                if isLocalBuildContextSource(source) {
+                    let path = URL(fileURLWithPath: expandedHomePath(source), relativeTo: .currentDirectory())
+                        .standardizedFileURL
+                        .path
+                    sources[name] = "local:\(name)"
+                    localPaths[name] = path
+                } else {
+                    sources[name] = source
+                }
+            }
+            return ParsedBuildContexts(sources: sources, localPaths: localPaths)
+        }
+
+        private func parseBuildContext(_ raw: String) throws -> (name: String, source: String) {
+            let parts = raw.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 2 else {
+                throw ValidationError("build context must use name=source")
+            }
+            let name = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+            let source = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else {
+                throw ValidationError("build context name must not be empty")
+            }
+            guard !source.isEmpty else {
+                throw ValidationError("build context source must not be empty")
+            }
+            return (name, source)
+        }
+
+        private func isLocalBuildContextSource(_ source: String) -> Bool {
+            if source.contains("://") || source.hasPrefix("git@") {
+                return false
+            }
+            if source.hasPrefix("/") || source.hasPrefix(".") || source.hasPrefix("~") {
+                return true
+            }
+            return !source.contains(":")
+        }
+
+        private func expandedHomePath(_ path: String) -> String {
+            if path == "~" {
+                return FileManager.default.homeDirectoryForCurrentUser.path
+            }
+            if path.hasPrefix("~/") {
+                return FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(String(path.dropFirst(2)))
+                    .path
+            }
+            return path
         }
     }
 }

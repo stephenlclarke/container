@@ -24,8 +24,9 @@ import GRPCCore
 
 actor BuildFSSync: BuildPipelineHandler {
     let contextDir: URL
+    let namedContexts: [String: URL]
 
-    init(_ contextDir: URL) throws {
+    init(_ contextDir: URL, namedContexts: [String: String] = [:]) throws {
         guard FileManager.default.fileExists(atPath: contextDir.cleanPath) else {
             throw Error.contextNotFound(contextDir.cleanPath)
         }
@@ -34,6 +35,21 @@ actor BuildFSSync: BuildPipelineHandler {
         }
 
         self.contextDir = contextDir
+        self.namedContexts = try namedContexts.reduce(into: [String: URL]()) { result, item in
+            let name = item.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let path = item.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else {
+                throw Error.invalidNamedContextName
+            }
+            let url = URL(filePath: path).standardizedFileURL
+            guard FileManager.default.fileExists(atPath: url.cleanPath) else {
+                throw Error.contextNotFound(url.cleanPath)
+            }
+            guard try url.isDir() else {
+                throw Error.contextIsNotDirectory(url.cleanPath)
+            }
+            result[name] = url
+        }
     }
 
     nonisolated func accept(_ packet: ServerStream) throws -> Bool {
@@ -66,17 +82,18 @@ actor BuildFSSync: BuildPipelineHandler {
     func read(_ sender: AsyncStream<ClientStream>.Continuation, _ packet: BuildTransfer, _ buildID: String) async throws {
         let offset: UInt64 = packet.offset() ?? 0
         let size: Int = packet.len() ?? 0
+        let root = try contextRoot(for: packet)
         var path: URL
         if packet.source.hasPrefix("/") {
             path = URL(fileURLWithPath: packet.source).standardizedFileURL
         } else {
             path =
-                contextDir
+                root
                 .appendingPathComponent(packet.source)
                 .standardizedFileURL
         }
         if !FileManager.default.fileExists(atPath: path.cleanPath) {
-            path = URL(filePath: self.contextDir.cleanPath)
+            path = URL(filePath: root.cleanPath)
             path.append(components: packet.source.cleanPathComponent)
         }
         let data = try {
@@ -87,7 +104,7 @@ actor BuildFSSync: BuildPipelineHandler {
             return try file.data(offset: offset, length: size) ?? Data()
         }()
 
-        let transfer = try path.buildTransfer(id: packet.id, contextDir: self.contextDir, complete: true, data: data)
+        let transfer = try path.buildTransfer(id: packet.id, contextDir: root, complete: true, data: data)
         var response = ClientStream()
         response.buildID = buildID
         response.buildTransfer = transfer
@@ -96,16 +113,17 @@ actor BuildFSSync: BuildPipelineHandler {
     }
 
     func info(_ sender: AsyncStream<ClientStream>.Continuation, _ packet: BuildTransfer, _ buildID: String) async throws {
+        let root = try contextRoot(for: packet)
         let path: URL
         if packet.source.hasPrefix("/") {
             path = URL(fileURLWithPath: packet.source).standardizedFileURL
         } else {
             path =
-                contextDir
+                root
                 .appendingPathComponent(packet.source)
                 .standardizedFileURL
         }
-        let transfer = try path.buildTransfer(id: packet.id, contextDir: self.contextDir, complete: true)
+        let transfer = try path.buildTransfer(id: packet.id, contextDir: root, complete: true)
         var response = ClientStream()
         response.buildID = buildID
         response.buildTransfer = transfer
@@ -133,30 +151,31 @@ actor BuildFSSync: BuildPipelineHandler {
         _ buildID: String
     ) async throws {
         let wantsTar = packet.mode() == "tar"
+        let root = try contextRoot(for: packet)
 
         var entries: [String: Set<DirEntry>] = [:]
         let followPaths: [String] = packet.followPaths() ?? []
 
-        let followPathsWalked = try walk(root: self.contextDir, includePatterns: followPaths)
+        let followPathsWalked = try walk(root: root, includePatterns: followPaths)
         for url in followPathsWalked {
-            guard self.contextDir.absoluteURL.cleanPath != url.absoluteURL.cleanPath else {
+            guard root.absoluteURL.cleanPath != url.absoluteURL.cleanPath else {
                 continue
             }
-            guard self.contextDir.parentOf(url) else {
+            guard root.parentOf(url) else {
                 continue
             }
 
-            let relPath = try url.relativeChildPath(to: contextDir)
-            let parentPath = try url.deletingLastPathComponent().relativeChildPath(to: contextDir)
+            let relPath = try url.relativeChildPath(to: root)
+            let parentPath = try url.deletingLastPathComponent().relativeChildPath(to: root)
             let entry = DirEntry(url: url, isDirectory: url.hasDirectoryPath, relativePath: relPath)
             entries[parentPath, default: []].insert(entry)
 
             if url.isSymlink {
                 let target: URL = url.resolvingSymlinksInPath()
-                if self.contextDir.parentOf(target) {
-                    let relPath = try target.relativeChildPath(to: self.contextDir)
+                if root.parentOf(target) {
+                    let relPath = try target.relativeChildPath(to: root)
                     let entry = DirEntry(url: target, isDirectory: target.hasDirectoryPath, relativePath: relPath)
-                    let parentPath: String = try target.deletingLastPathComponent().relativeChildPath(to: self.contextDir)
+                    let parentPath: String = try target.deletingLastPathComponent().relativeChildPath(to: root)
                     entries[parentPath, default: []].insert(entry)
                 }
             }
@@ -167,7 +186,7 @@ actor BuildFSSync: BuildPipelineHandler {
 
         if !wantsTar {
             let fileInfos = try fileOrder.map { rel -> FileInfo in
-                try FileInfo(path: contextDir.appendingPathComponent(rel), contextDir: contextDir)
+                try FileInfo(path: root.appendingPathComponent(rel), contextDir: root)
             }
 
             let data = try JSONEncoder().encode(fileInfos)
@@ -201,15 +220,15 @@ actor BuildFSSync: BuildPipelineHandler {
             filter: .none)
 
         let tarHash = try Archiver.compress(
-            source: contextDir,
+            source: root,
             destination: tarURL,
             writerConfiguration: writerCfg
         ) { url in
-            guard let rel = try? url.relativeChildPath(to: contextDir) else {
+            guard let rel = try? url.relativeChildPath(to: root) else {
                 return nil
             }
 
-            guard let parent = try? url.deletingLastPathComponent().relativeChildPath(to: self.contextDir) else {
+            guard let parent = try? url.deletingLastPathComponent().relativeChildPath(to: root) else {
                 return nil
             }
 
@@ -296,6 +315,16 @@ actor BuildFSSync: BuildPipelineHandler {
             try globber.match(p)
         }
         return Array(globber.results)
+    }
+
+    private func contextRoot(for packet: BuildTransfer) throws -> URL {
+        guard let dirName = packet.dirName(), !dirName.isEmpty, dirName != "context" else {
+            return contextDir
+        }
+        guard let root = namedContexts[dirName] else {
+            throw Error.unknownNamedContext(dirName)
+        }
+        return root
     }
 
     private func processDirectory(
@@ -389,6 +418,8 @@ extension BuildFSSync {
         case couldNotDetermineUID(String)
         case couldNotDetermineGID(String)
         case pathIsNotChild(String, String)
+        case invalidNamedContextName
+        case unknownNamedContext(String)
 
         var description: String {
             switch self {
@@ -416,12 +447,21 @@ extension BuildFSSync {
                 return "could not determine GID of file at path: \(path)"
             case .pathIsNotChild(let path, let parent):
                 return "\(path) is not a child of \(parent)"
+            case .invalidNamedContextName:
+                return "build context name must not be empty"
+            case .unknownNamedContext(let name):
+                return "build context \(name) not found"
             }
         }
     }
 }
 
 extension BuildTransfer {
+    fileprivate func dirName() -> String? {
+        let value = metadata["dir-name"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value == "" ? nil : value
+    }
+
     fileprivate init(id: String, source: String, complete: Bool, isDir: Bool, metadata: [String: String], data: Data? = nil) {
         self.init()
         self.id = id

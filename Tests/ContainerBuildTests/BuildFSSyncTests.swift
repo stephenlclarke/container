@@ -1,0 +1,69 @@
+//===----------------------------------------------------------------------===//
+// Copyright © 2026 Apple Inc. and the container project authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//===----------------------------------------------------------------------===//
+
+import Foundation
+import Testing
+
+@testable import ContainerBuild
+
+struct BuildFSSyncTests {
+    @Test
+    func readUsesNamedContextDirectory() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        let main = root.appendingPathComponent("main", isDirectory: true)
+        let shared = root.appendingPathComponent("shared", isDirectory: true)
+        try fileManager.createDirectory(at: main, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: shared, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data("main".utf8).write(to: main.appendingPathComponent("payload.txt"))
+        try Data("shared".utf8).write(to: shared.appendingPathComponent("payload.txt"))
+
+        let fssync = try BuildFSSync(main, namedContexts: ["shared": shared.path])
+        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
+
+        var transfer = BuildTransfer()
+        transfer.id = "request-id"
+        transfer.source = "payload.txt"
+        transfer.metadata = [
+            "stage": "fssync",
+            "method": "Read",
+            "dir-name": "shared",
+            "offset": "0",
+            "length": "6",
+        ]
+        var request = ServerStream()
+        request.buildID = "build-id"
+        request.buildTransfer = transfer
+        request.packetType = .buildTransfer(transfer)
+
+        try await fssync.handle(continuation, request)
+        continuation.finish()
+
+        var responses: [ClientStream] = []
+        for await response in stream {
+            responses.append(response)
+        }
+
+        let response = try #require(responses.first)
+        #expect(String(data: response.buildTransfer.data, encoding: .utf8) == "shared")
+        #expect(response.buildTransfer.source == "payload.txt")
+    }
+}

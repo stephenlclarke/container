@@ -323,9 +323,17 @@ public struct Builder: Sendable {
         public let buildID: String
         public let contentStore: ContentStore
         public let buildArgs: [String]
+        public let buildContexts: [String: String]
+        public let localBuildContexts: [String: String]
         public let secrets: [String: Data]
         public let ssh: [String]
+        public let entitlements: [String]
         public let attestations: [String: String]
+        public let addHosts: [String]
+        public let network: String?
+        public let privileged: Bool
+        public let shmSize: String?
+        public let ulimits: [String]
         public let contextDir: String
         public let dockerfile: Data
         public let dockerignore: Data?
@@ -347,9 +355,17 @@ public struct Builder: Sendable {
             buildID: String,
             contentStore: ContentStore,
             buildArgs: [String],
+            buildContexts: [String: String] = [:],
+            localBuildContexts: [String: String] = [:],
             secrets: [String: Data],
             ssh: [String] = [],
+            entitlements: [String] = [],
             attestations: [String: String] = [:],
+            addHosts: [String] = [],
+            network: String? = nil,
+            privileged: Bool = false,
+            shmSize: String? = nil,
+            ulimits: [String] = [],
             contextDir: String,
             dockerfile: Data,
             dockerignore: Data?,
@@ -370,9 +386,17 @@ public struct Builder: Sendable {
             self.buildID = buildID
             self.contentStore = contentStore
             self.buildArgs = buildArgs
+            self.buildContexts = buildContexts
+            self.localBuildContexts = localBuildContexts
             self.secrets = secrets
             self.ssh = ssh
+            self.entitlements = entitlements
             self.attestations = attestations
+            self.addHosts = addHosts
+            self.network = network
+            self.privileged = privileged
+            self.shmSize = shmSize
+            self.ulimits = ulimits
             self.contextDir = contextDir
             self.dockerfile = dockerfile
             self.dockerignore = dockerignore
@@ -421,11 +445,32 @@ public struct Builder: Sendable {
         for buildArg in config.buildArgs {
             metadata.addString(buildArg, forKey: "build-args")
         }
+        for (name, source) in config.buildContexts.sorted(by: { $0.key < $1.key }) {
+            metadata.addString("\(name)=\(source)", forKey: "build-contexts")
+        }
         for (id, data) in config.secrets {
             metadata.addString(id + "=" + data.base64EncodedString(), forKey: "secrets")
         }
         for ssh in config.ssh {
             metadata.addString(ssh, forKey: "ssh")
+        }
+        for entitlement in config.entitlements {
+            metadata.addString(entitlement, forKey: "entitlements")
+        }
+        for addHost in config.addHosts {
+            metadata.addString(addHost, forKey: "add-hosts")
+        }
+        if let network = config.network, !network.isEmpty {
+            metadata.addString(network, forKey: "network")
+        }
+        if config.privileged {
+            metadata.addString("", forKey: "privileged")
+        }
+        if let shmSize = config.shmSize, !shmSize.isEmpty {
+            metadata.addString(shmSize, forKey: "shm-size")
+        }
+        for ulimit in config.ulimits {
+            metadata.addString(ulimit, forKey: "ulimit")
         }
         for (key, value) in config.attestations.sorted(by: { $0.key < $1.key }) {
             metadata.addString(value, forKey: key)
