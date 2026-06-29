@@ -24,12 +24,23 @@ class Container < Formula
 
   def post_install
     system libexec/"ensure-container-stopped.sh", "-a"
+    compose_plugin = HOMEBREW_PREFIX/"opt/container-compose/libexec/container-plugins/compose"
+    plugin_dir = opt_prefix/"libexec/container-plugins"
+    if compose_plugin.exist?
+      plugin_dir.mkpath
+      rm_rf plugin_dir/"compose"
+      ln_s compose_plugin, plugin_dir/"compose"
+    end
   end
 
   def caveats
     <<~EOS
       This formula installs the main lane prebuilt package asset:
         container-homebrew-main-release-arm64.tar.gz
+
+      If stephenlclarke/tap/container-compose is installed, this formula links
+      the Compose plugin into:
+        #{opt_prefix}/libexec/container-plugins/compose
     EOS
   end
 

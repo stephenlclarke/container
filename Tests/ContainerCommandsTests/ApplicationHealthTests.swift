@@ -64,6 +64,23 @@ struct ApplicationHealthTests {
     }
 
     @Test
+    func defaultCommandPluginHintsUseConfiguredInstallRoot() throws {
+        let installRoot = try Self.makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: installRoot) }
+        let installRootPath = installRoot.path(percentEncoded: false)
+
+        let hints = DefaultCommand.pluginHintPaths(
+            command: "compose",
+            environment: [InstallRoot.environmentName: installRootPath],
+            currentDirectory: "/tmp"
+        )
+
+        #expect(hints.contains("\(installRootPath)/libexec/container-plugins/compose"))
+        #expect(hints.contains("\(installRootPath)/libexec/container/plugins/compose"))
+        #expect(!hints.contains("libexec/libexec"))
+    }
+
+    @Test
     func pluginLoaderForHelpReturnsLoaderWhenHealthCheckSucceeds() async throws {
         let appRoot = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: appRoot) }

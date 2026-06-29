@@ -47,23 +47,7 @@ struct DefaultCommand: AsyncLoggableCommand {
             throw ValidationError("unknown option '\(command)'")
         }
 
-        // Compute canonical plugin directories to show in helpful errors (avoid hard-coded paths)
-        let installRoot = CommandLine.executablePath
-            .removingLastComponent()
-            .removingLastComponent()
-
-        // TODO: Remove when we convert PluginLoader to FilePath
-        let installRootURL = URL(fileURLWithPath: installRoot.string)
-        let userPluginsURL = PluginLoader.userPluginsDir(installRoot: installRootURL)
-        let installRootPluginsPath =
-            installRoot
-            .appending(FilePath.Component("libexec"))
-            .appending(FilePath.Component("container"))
-            .appending(FilePath.Component("plugins"))
-        let installRootPluginsURL = URL(fileURLWithPath: installRootPluginsPath.string)
-        let hintPaths = [userPluginsURL, installRootPluginsURL]
-            .map { $0.appendingPathComponent(command).path(percentEncoded: false) }
-            .joined(separator: "\n  - ")
+        let hintPaths = Self.pluginHintPaths(command: command)
 
         if let pluginLoader = try? Application.createPluginLoaderFromCurrentRoots(),
             let plugin = pluginLoader.findPlugin(name: command),
@@ -100,6 +84,31 @@ struct DefaultCommand: AsyncLoggableCommand {
 }
 
 extension DefaultCommand {
+    static func pluginHintPaths(
+        command: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        currentDirectory: String = FileManager.default.currentDirectoryPath
+    ) -> String {
+        let installRoot = Application.currentInstallRootPath(
+            environment: environment,
+            currentDirectory: currentDirectory
+        )
+
+        // TODO: Remove when we convert PluginLoader to FilePath
+        let installRootURL = URL(fileURLWithPath: installRoot.string)
+        let userPluginsURL = PluginLoader.userPluginsDir(installRoot: installRootURL)
+        let installRootPluginsPath =
+            installRoot
+            .appending(FilePath.Component("libexec"))
+            .appending(FilePath.Component("container"))
+            .appending(FilePath.Component("plugins"))
+        let installRootPluginsURL = URL(fileURLWithPath: installRootPluginsPath.string)
+
+        return [userPluginsURL, installRootPluginsURL]
+            .map { $0.appendingPathComponent(command).path(percentEncoded: false) }
+            .joined(separator: "\n  - ")
+    }
+
     // Exposed for tests to verify signal reset semantics.
     static func resetSignalsForPluginExec() {
         signal(SIGINT, SIG_DFL)
