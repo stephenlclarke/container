@@ -46,23 +46,25 @@ final class TestCLIVersion: CLITest {
         #endif
     }
 
-    @Test func defaultDisplaysTable() throws {
-        let (data, out, err, status) = try run(arguments: ["system", "version"])  // default is table
+    @Test func defaultDisplaysSummary() throws {
+        let (data, out, err, status) = try run(arguments: ["system", "version"])
         #expect(status == 0, "system version should succeed, stderr: \(err)")
         #expect(!out.isEmpty)
 
-        // Validate table structure
         let lines = out.trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: .newlines)
-        #expect(lines.count >= 2)  // header + at least CLI row
-        #expect(lines[0].contains("COMPONENT") && lines[0].contains("VERSION") && lines[0].contains("BUILD") && lines[0].contains("COMMIT"))
-        #expect(lines[0].contains("BUILDER-SHIM"))
-        #expect(lines[1].hasPrefix("container"))
-        #expect(lines[1].contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
+        #expect(lines.count >= 7)
+        #expect(lines[0] == "container:")
+        #expect(lines.contains(where: { $0.contains("version") }))
+        #expect(lines.contains(where: { $0.contains("build") }))
+        #expect(lines.contains(where: { $0.contains("commit") }))
+        #expect(lines.contains(where: { $0.contains("builder-shim") }))
+        #expect(!lines[0].contains("COMPONENT"))
+        #expect(out.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
 
         // Build should reflect the binary we are running (debug/release)
         let expected = expectedBuildType()
-        #expect(lines.joined(separator: "\n").contains(" \(expected) "))
+        #expect(lines.contains(where: { $0.contains("build") && $0.contains(expected) }))
         _ = data  // silence unused warning if assertions short-circuit
     }
 
@@ -103,10 +105,10 @@ final class TestCLIVersion: CLITest {
 
         let lines = out.trimmingCharacters(in: .whitespacesAndNewlines)
             .components(separatedBy: .newlines)
-        #expect(lines.count >= 2)
-        #expect(lines[0].contains("COMPONENT") && lines[0].contains("VERSION") && lines[0].contains("BUILD") && lines[0].contains("COMMIT"))
-        #expect(lines[0].contains("BUILDER-SHIM"))
-        #expect(lines[1].contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
+        #expect(lines.count >= 7)
+        #expect(lines[0] == "container:")
+        #expect(lines.contains(where: { $0.contains("builder-shim") }))
+        #expect(out.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
     }
 
     @Test func buildTypeMatchesBinary() throws {

@@ -66,27 +66,13 @@ extension Application {
             let versions = [cliInfo, serverInfo].compactMap { $0 }
 
             try Output.render(payload: versions, format: format) {
-                Self.versionTable(versions)
+                Self.versionSummary(versions)
             }
         }
 
-        private static func versionTable(_ versions: [VersionInfo]) -> String {
-            let header = ["COMPONENT", "VERSION", "BUILD", "COMMIT", "DISTRIBUTION", "SOURCE", "CONTAINERIZATION", "BUILDER-SHIM"]
-            let rows =
-                [header]
-                + versions.map {
-                    [
-                        $0.appName,
-                        $0.version,
-                        $0.buildType,
-                        $0.commit,
-                        $0.distribution ?? "-",
-                        $0.source ?? "-",
-                        $0.containerization ?? "-",
-                        $0.builderShimImage ?? "-",
-                    ]
-                }
-            return TableOutput(rows: rows).format()
+        private static func versionSummary(_ versions: [VersionInfo]) -> String {
+            versions.map { $0.displayLines.joined(separator: "\n") }
+                .joined(separator: "\n\n")
         }
     }
 
@@ -107,6 +93,49 @@ extension Application {
                 return nil
             }
             return "\(builderShimRepository):\(builderShimVersion)"
+        }
+
+        var displayLines: [String] {
+            let fields = [
+                ("version", displayVersion),
+                ("build", buildType),
+                ("commit", commit),
+                ("distribution", distribution),
+                ("source", source),
+                ("containerization", containerization),
+                ("builder-shim", builderShimImage),
+            ].compactMap { label, value -> (label: String, value: String)? in
+                guard let value else {
+                    return nil
+                }
+                return (label, value)
+            }
+
+            let labelWidth = fields.map(\.label.count).max() ?? 0
+            return [appName + ":"]
+                + fields.map { field in
+                    let label = "\(field.label):".padding(toLength: labelWidth + 1, withPad: " ", startingAt: 0)
+                    return "  \(label) \(field.value)"
+                }
+        }
+
+        private var displayVersion: String {
+            Self.conciseVersion(version, appName: appName)
+        }
+
+        private static func conciseVersion(_ version: String, appName: String) -> String {
+            var value = version
+            let appPrefix = "\(appName) version "
+            if value.hasPrefix(appPrefix) {
+                value.removeFirst(appPrefix.count)
+            } else if let range = value.range(of: " version ") {
+                value = String(value[range.upperBound...])
+            }
+
+            if let parenthesis = value.firstIndex(of: "(") {
+                value = String(value[..<parenthesis])
+            }
+            return value.trimmingCharacters(in: .whitespaces)
         }
 
         init(
