@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           brew install --formula stephenlclarke/container/container
-          brew test --formula stephenlclarke/container/container
+          brew test stephenlclarke/container/container
 
       - name: Inspect formula
         run: |
