@@ -28,8 +28,8 @@ class Container < Formula
     plugin_dir = opt_prefix/"libexec/container-plugins"
     if compose_plugin.exist?
       plugin_dir.mkpath
-      rm_rf plugin_dir/"compose"
-      ln_s compose_plugin, plugin_dir/"compose"
+      FileUtils.rm_rf plugin_dir/"compose"
+      FileUtils.ln_s compose_plugin, plugin_dir/"compose"
     end
   end
 
