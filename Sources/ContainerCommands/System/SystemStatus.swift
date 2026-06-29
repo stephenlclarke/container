@@ -48,6 +48,8 @@ extension Application {
             let apiServerCommit: String
             let apiServerBuild: String
             let apiServerAppName: String
+            let apiServerBuilderShimRepository: String?
+            let apiServerBuilderShimVersion: String?
 
             init(
                 status: String,
@@ -57,7 +59,9 @@ extension Application {
                 apiServerVersion: String = "",
                 apiServerCommit: String = "",
                 apiServerBuild: String = "",
-                apiServerAppName: String = ""
+                apiServerAppName: String = "",
+                apiServerBuilderShimRepository: String? = nil,
+                apiServerBuilderShimVersion: String? = nil
             ) {
                 self.status = status
                 self.appRoot = appRoot
@@ -67,6 +71,15 @@ extension Application {
                 self.apiServerCommit = apiServerCommit
                 self.apiServerBuild = apiServerBuild
                 self.apiServerAppName = apiServerAppName
+                self.apiServerBuilderShimRepository = apiServerBuilderShimRepository
+                self.apiServerBuilderShimVersion = apiServerBuilderShimVersion
+            }
+
+            var apiServerBuilderShimImage: String? {
+                guard let apiServerBuilderShimRepository, let apiServerBuilderShimVersion else {
+                    return nil
+                }
+                return "\(apiServerBuilderShimRepository):\(apiServerBuilderShimVersion)"
             }
         }
 
@@ -90,7 +103,9 @@ extension Application {
                     apiServerVersion: systemHealth.apiServerVersion,
                     apiServerCommit: systemHealth.apiServerCommit,
                     apiServerBuild: systemHealth.apiServerBuild,
-                    apiServerAppName: systemHealth.apiServerAppName
+                    apiServerAppName: systemHealth.apiServerAppName,
+                    apiServerBuilderShimRepository: systemHealth.apiServerBuilderShimRepository,
+                    apiServerBuilderShimVersion: systemHealth.apiServerBuilderShimVersion
                 )
                 try Output.render(payload: status, format: format) {
                     Self.statusTable(status)
@@ -114,6 +129,7 @@ extension Application {
                 ["apiserver.commit", status.apiServerCommit],
                 ["apiserver.build", status.apiServerBuild],
                 ["apiserver.appName", status.apiServerAppName],
+                ["apiserver.builderShim", status.apiServerBuilderShimImage ?? ""],
             ]
             return TableOutput(rows: rows).format()
         }

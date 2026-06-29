@@ -27,6 +27,7 @@ struct ReleaseVersionTests {
         #expect(line.contains("distribution: custom"))
         #expect(line.contains("source: stephenlclarke/container"))
         #expect(line.contains("containerization: \(containerization)"))
+        #expect(line.contains("builder-shim: \(ReleaseVersion.builderShimImage())"))
     }
 
     @Test
@@ -37,6 +38,7 @@ struct ReleaseVersionTests {
         #expect(lines.contains("distribution: custom"))
         #expect(lines.contains("source: stephenlclarke/container"))
         #expect(lines.contains("containerization: \(containerization)"))
+        #expect(lines.contains("container-builder-shim: \(ReleaseVersion.builderShimImage())"))
     }
 
     private static func expectedContainerizationProvenance() throws -> String {

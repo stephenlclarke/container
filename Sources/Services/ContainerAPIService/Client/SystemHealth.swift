@@ -39,4 +39,10 @@ public struct SystemHealth: Sendable, Codable {
 
     /// The app name label returned by the server.
     public let apiServerAppName: String
+
+    /// The container-builder-shim image repository compiled into the API server.
+    public let apiServerBuilderShimRepository: String?
+
+    /// The container-builder-shim image version compiled into the API server.
+    public let apiServerBuilderShimVersion: String?
 }

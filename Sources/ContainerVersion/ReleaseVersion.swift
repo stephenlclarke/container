@@ -24,6 +24,7 @@ public struct ReleaseVersion {
         versionDetails["containerization"] = "\(containerizationSource())@\(containerizationRef())"
         versionDetails["distribution"] = distribution()
         versionDetails["source"] = containerSource()
+        versionDetails["builder-shim"] = builderShimImage()
         let extras: String = versionDetails.map { "\($0): \($1)" }.sorted().joined(separator: ", ")
 
         return "\(appName) version \(version()) (\(extras))"
@@ -34,6 +35,7 @@ public struct ReleaseVersion {
             "\(indent)distribution: \(distribution())",
             "\(indent)source: \(containerSource())",
             "\(indent)containerization: \(containerizationSource())@\(containerizationRef())",
+            "\(indent)container-builder-shim: \(builderShimImage())",
         ]
     }
 
@@ -74,5 +76,17 @@ public struct ReleaseVersion {
 
     public static func containerizationRef() -> String {
         get_containerization_ref().map { String(cString: $0) } ?? version()
+    }
+
+    public static func builderShimRepository() -> String {
+        get_container_builder_shim_repository().map { String(cString: $0) } ?? "ghcr.io/apple/container-builder-shim/builder"
+    }
+
+    public static func builderShimVersion() -> String {
+        get_container_builder_shim_version().map { String(cString: $0) } ?? "0.0.0"
+    }
+
+    public static func builderShimImage() -> String {
+        "\(builderShimRepository()):\(builderShimVersion())"
     }
 }

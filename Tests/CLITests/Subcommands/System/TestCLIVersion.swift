@@ -33,6 +33,8 @@ final class TestCLIVersion: CLITest {
         let buildType: String
         let commit: String
         let appName: String
+        let builderShimRepository: String?
+        let builderShimVersion: String?
         let server: VersionInfo?
     }
 
@@ -54,7 +56,9 @@ final class TestCLIVersion: CLITest {
             .components(separatedBy: .newlines)
         #expect(lines.count >= 2)  // header + at least CLI row
         #expect(lines[0].contains("COMPONENT") && lines[0].contains("VERSION") && lines[0].contains("BUILD") && lines[0].contains("COMMIT"))
+        #expect(lines[0].contains("BUILDER-SHIM"))
         #expect(lines[1].hasPrefix("container"))
+        #expect(lines[1].contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
 
         // Build should reflect the binary we are running (debug/release)
         let expected = expectedBuildType()
@@ -71,6 +75,8 @@ final class TestCLIVersion: CLITest {
         #expect(decoded[0].appName == "container")
         #expect(!decoded[0].version.isEmpty)
         #expect(!decoded[0].commit.isEmpty)
+        #expect(decoded[0].builderShimRepository == "ghcr.io/stephenlclarke/container-builder-shim/builder")
+        #expect(decoded[0].builderShimVersion == "0.13.3")
 
         let expected = expectedBuildType()
         #expect(decoded[0].buildType == expected)
@@ -99,6 +105,8 @@ final class TestCLIVersion: CLITest {
             .components(separatedBy: .newlines)
         #expect(lines.count >= 2)
         #expect(lines[0].contains("COMPONENT") && lines[0].contains("VERSION") && lines[0].contains("BUILD") && lines[0].contains("COMMIT"))
+        #expect(lines[0].contains("BUILDER-SHIM"))
+        #expect(lines[1].contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
     }
 
     @Test func buildTypeMatchesBinary() throws {

@@ -74,6 +74,8 @@ public enum XPCKeys: String {
     case apiServerCommit
     case apiServerBuild
     case apiServerAppName
+    case apiServerBuilderShimRepository
+    case apiServerBuilderShimVersion
 
     /// Process request keys.
     case signal

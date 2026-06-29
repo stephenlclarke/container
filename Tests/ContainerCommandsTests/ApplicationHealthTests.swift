@@ -16,6 +16,7 @@
 
 import ContainerAPIClient
 import ContainerPlugin
+import ContainerVersion
 import ContainerizationError
 import Darwin
 import Foundation
@@ -120,6 +121,7 @@ struct ApplicationHealthTests {
         #expect(help.contains("distribution: custom"))
         #expect(help.contains("source: stephenlclarke/container"))
         #expect(help.contains("containerization: \(containerization)"))
+        #expect(help.contains("container-builder-shim: \(ReleaseVersion.builderShimImage())"))
         #expect(help.contains("PLUGINS:\n  compose"))
     }
 
@@ -139,6 +141,8 @@ struct ApplicationHealthTests {
         #expect(health.installRoot == expected.installRoot)
         #expect(health.logRoot == expected.logRoot)
         #expect(health.apiServerCommit == expected.apiServerCommit)
+        #expect(health.apiServerBuilderShimRepository == expected.apiServerBuilderShimRepository)
+        #expect(health.apiServerBuilderShimVersion == expected.apiServerBuilderShimVersion)
     }
 
     @Test
@@ -205,7 +209,9 @@ struct ApplicationHealthTests {
                 "apiServerVersion": "test-version",
                 "apiServerCommit": "test-commit",
                 "apiServerBuild": "debug",
-                "apiServerAppName": "container-apiserver"
+                "apiServerAppName": "container-apiserver",
+                "apiServerBuilderShimRepository": "ghcr.io/example/container-builder-shim/builder",
+                "apiServerBuilderShimVersion": "1.2.3"
             }
             """
         return try JSONDecoder().decode(SystemHealth.self, from: Data(json.utf8))

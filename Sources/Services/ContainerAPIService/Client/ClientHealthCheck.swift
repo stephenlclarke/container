@@ -51,6 +51,8 @@ extension ClientHealthCheck {
         guard let apiServerAppName = reply.string(key: .apiServerAppName) else {
             throw ContainerizationError(.internalError, message: "failed to decode apiServerAppName in health check")
         }
+        let apiServerBuilderShimRepository = reply.string(key: .apiServerBuilderShimRepository)
+        let apiServerBuilderShimVersion = reply.string(key: .apiServerBuilderShimVersion)
         return .init(
             appRoot: appRoot,
             installRoot: installRoot,
@@ -58,7 +60,9 @@ extension ClientHealthCheck {
             apiServerVersion: apiServerVersion,
             apiServerCommit: apiServerCommit,
             apiServerBuild: apiServerBuild,
-            apiServerAppName: apiServerAppName
+            apiServerAppName: apiServerAppName,
+            apiServerBuilderShimRepository: apiServerBuilderShimRepository,
+            apiServerBuilderShimVersion: apiServerBuilderShimVersion
         )
     }
 }

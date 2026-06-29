@@ -49,6 +49,8 @@ public actor HealthCheckHarness {
         // Extra optional fields for richer client display
         reply.set(key: .apiServerBuild, value: ReleaseVersion.buildType())
         reply.set(key: .apiServerAppName, value: "container-apiserver")
+        reply.set(key: .apiServerBuilderShimRepository, value: ReleaseVersion.builderShimRepository())
+        reply.set(key: .apiServerBuilderShimVersion, value: ReleaseVersion.builderShimVersion())
         return reply
     }
 }

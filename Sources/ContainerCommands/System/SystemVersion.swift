@@ -42,7 +42,9 @@ extension Application {
                 appName: "container",
                 distribution: ReleaseVersion.distribution(),
                 source: ReleaseVersion.containerSource(),
-                containerization: "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())"
+                containerization: "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())",
+                builderShimRepository: ReleaseVersion.builderShimRepository(),
+                builderShimVersion: ReleaseVersion.builderShimVersion()
             )
 
             // Try to get API server version info
@@ -53,7 +55,9 @@ extension Application {
                     version: health.apiServerVersion,
                     buildType: health.apiServerBuild,
                     commit: health.apiServerCommit,
-                    appName: health.apiServerAppName
+                    appName: health.apiServerAppName,
+                    builderShimRepository: health.apiServerBuilderShimRepository,
+                    builderShimVersion: health.apiServerBuilderShimVersion
                 )
             } catch {
                 serverInfo = nil
@@ -67,7 +71,7 @@ extension Application {
         }
 
         private static func versionTable(_ versions: [VersionInfo]) -> String {
-            let header = ["COMPONENT", "VERSION", "BUILD", "COMMIT", "DISTRIBUTION", "SOURCE", "CONTAINERIZATION"]
+            let header = ["COMPONENT", "VERSION", "BUILD", "COMMIT", "DISTRIBUTION", "SOURCE", "CONTAINERIZATION", "BUILDER-SHIM"]
             let rows =
                 [header]
                 + versions.map {
@@ -79,6 +83,7 @@ extension Application {
                         $0.distribution ?? "-",
                         $0.source ?? "-",
                         $0.containerization ?? "-",
+                        $0.builderShimImage ?? "-",
                     ]
                 }
             return TableOutput(rows: rows).format()
@@ -94,6 +99,15 @@ extension Application {
         let distribution: String?
         let source: String?
         let containerization: String?
+        let builderShimRepository: String?
+        let builderShimVersion: String?
+
+        var builderShimImage: String? {
+            guard let builderShimRepository, let builderShimVersion else {
+                return nil
+            }
+            return "\(builderShimRepository):\(builderShimVersion)"
+        }
 
         init(
             version: String,
@@ -102,7 +116,9 @@ extension Application {
             appName: String,
             distribution: String? = nil,
             source: String? = nil,
-            containerization: String? = nil
+            containerization: String? = nil,
+            builderShimRepository: String? = nil,
+            builderShimVersion: String? = nil
         ) {
             self.version = version
             self.buildType = buildType
@@ -111,6 +127,8 @@ extension Application {
             self.distribution = distribution
             self.source = source
             self.containerization = containerization
+            self.builderShimRepository = builderShimRepository
+            self.builderShimVersion = builderShimVersion
         }
     }
 }

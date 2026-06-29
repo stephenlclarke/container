@@ -29,6 +29,8 @@ final class TestCLIStatus: CLITest {
         let apiServerCommit: String
         let apiServerBuild: String
         let apiServerAppName: String
+        let apiServerBuilderShimRepository: String?
+        let apiServerBuilderShimVersion: String?
     }
 
     @Test func defaultDisplaysTable() throws {
@@ -57,6 +59,7 @@ final class TestCLIStatus: CLITest {
         #expect(fullOutput.contains("installRoot"))
         #expect(fullOutput.contains("apiserver.version"))
         #expect(fullOutput.contains("apiserver.commit"))
+        #expect(fullOutput.contains("apiserver.builderShim"))
 
         _ = data  // silence unused warning if assertions short-circuit
     }
@@ -126,6 +129,11 @@ final class TestCLIStatus: CLITest {
         #expect(tableOut.contains(decoded.apiServerCommit))
         #expect(tableOut.contains(decoded.apiServerBuild))
         #expect(tableOut.contains(decoded.apiServerAppName))
+        if let repository = decoded.apiServerBuilderShimRepository,
+            let version = decoded.apiServerBuilderShimVersion
+        {
+            #expect(tableOut.contains("\(repository):\(version)"))
+        }
     }
 
     @Test func jsonOutputValidStructure() throws {
