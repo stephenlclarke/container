@@ -111,11 +111,9 @@ extension Application {
                 return (label, value)
             }
 
-            let labelWidth = fields.map(\.label.count).max() ?? 0
             return [appName + ":"]
                 + fields.map { field in
-                    let label = "\(field.label):".padding(toLength: labelWidth + 1, withPad: " ", startingAt: 0)
-                    return "  \(label) \(field.value)"
+                    "  \(field.label): \(field.value)"
                 }
         }
 

@@ -60,6 +60,8 @@ final class TestCLIVersion: CLITest {
         #expect(lines.contains(where: { $0.contains("commit") }))
         #expect(lines.contains(where: { $0.contains("builder-shim") }))
         #expect(!lines[0].contains("COMPONENT"))
+        #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
+        #expect(!out.contains("version:  "))
         #expect(out.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
 
         // Build should reflect the binary we are running (debug/release)
@@ -107,6 +109,8 @@ final class TestCLIVersion: CLITest {
             .components(separatedBy: .newlines)
         #expect(lines.count >= 7)
         #expect(lines[0] == "container:")
+        #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
+        #expect(!out.contains("version:  "))
         #expect(lines.contains(where: { $0.contains("builder-shim") }))
         #expect(out.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.3"))
     }
