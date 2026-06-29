@@ -36,10 +36,10 @@ jobs:
         id: check-artifact
         run: |
           if [ -f pr-coverage-data/pr-number.txt ]; then
-            echo "found=true" >> $GITHUB_OUTPUT
+            echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "No coverage artifact found — coverage job may have failed."
-            echo "found=false" >> $GITHUB_OUTPUT
+            echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Validate and post comment

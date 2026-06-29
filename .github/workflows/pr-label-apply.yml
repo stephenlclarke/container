@@ -35,7 +35,7 @@ jobs:
         id: pr-number
         run: |
           PR_NUMBER=$(cat "pr-number.txt")
-          echo "number=${PR_NUMBER}" >> $GITHUB_OUTPUT
+          echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "PR Number: ${PR_NUMBER}"
       
       - name: Apply labels using labeler

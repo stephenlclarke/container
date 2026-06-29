@@ -20,6 +20,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: homebrew-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   formula:
     name: Formula Syntax
@@ -31,8 +35,29 @@ jobs:
       - name: Validate Ruby syntax
         run: ruby -c Formula/container.rb
 
-      - name: Validate tap formula
+      - name: Tap local formula
         run: |
+          set -euo pipefail
           brew tap stephenlclarke/container "${GITHUB_WORKSPACE}"
+          brew trust --tap stephenlclarke/container
+
+      - name: Audit formula
+        run: |
+          set -euo pipefail
+          brew audit --formula --strict --online stephenlclarke/container/container
+
+      - name: Fetch formula archive
+        run: |
+          set -euo pipefail
+          brew fetch --formula --force stephenlclarke/container/container
+
+      - name: Install and test formula
+        run: |
+          set -euo pipefail
+          brew install --formula stephenlclarke/container/container
+          brew test --formula stephenlclarke/container/container
+
+      - name: Inspect formula
+        run: |
+          set -euo pipefail
           brew info --formula stephenlclarke/container/container
-          brew untap stephenlclarke/container

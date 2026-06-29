@@ -2,12 +2,49 @@ name: container project - PR build
 
 permissions:
   contents: read
+  pull-requests: read
 
 on:
   pull_request:
     types: [opened, reopened, synchronize]
 
+concurrency:
+  group: pr-build-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    name: Detect Relevant Changes
+    runs-on: ubuntu-latest
+    outputs:
+      heavy: ${{ steps.filter.outputs.heavy }}
+    steps:
+      - name: Classify changed files
+        id: filter
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed_files="${RUNNER_TEMP}/changed-files.txt"
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.pull_request.number }}/files" \
+            --paginate \
+            --jq '.[].filename' > "$changed_files"
+
+          heavy=false
+          while IFS= read -r path; do
+            case "$path" in
+              *.md|docs/*|Formula/*)
+                ;;
+              *)
+                heavy=true
+                break
+                ;;
+            esac
+          done < "$changed_files"
+
+          printf 'heavy=%s\n' "$heavy" >> "$GITHUB_OUTPUT"
+
   verify-signatures:
     name: Verify commit signatures
     runs-on: ubuntu-latest
@@ -41,6 +78,8 @@ jobs:
 
   build:
     name: Invoke build
+    needs: changes
+    if: needs.changes.outputs.heavy == 'true'
     uses: ./.github/workflows/common.yml
     with:
       release: false
