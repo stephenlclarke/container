@@ -17,6 +17,22 @@
 import ContainerizationOCI
 import Foundation
 
+/// Docker-style Linux device mapping resolved by the Linux runtime service.
+///
+/// The `source` path names a runtime-supported Linux VM device, not an
+/// arbitrary macOS host device.
+public struct LinuxDeviceMapping: Codable, Equatable, Sendable {
+    public let source: String
+    public let target: String
+    public let permissions: String
+
+    public init(source: String, target: String, permissions: String) {
+        self.source = source
+        self.target = target
+        self.permissions = permissions
+    }
+}
+
 /// Linux-specific runtime data passed through the opaque runtimeData field
 /// in RuntimeConfiguration. Encoded by the CLI, decoded by the Linux runtime.
 public struct LinuxRuntimeData: Codable, Sendable {
@@ -27,21 +43,26 @@ public struct LinuxRuntimeData: Codable, Sendable {
     /// Device cgroup rules carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
+    /// Linux VM device mappings resolved by the runtime service.
+    public let devices: [LinuxDeviceMapping]
 
     public init(
         variant: String? = nil,
         blockIO: ContainerizationOCI.LinuxBlockIO? = nil,
-        deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = []
+        deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = [],
+        devices: [LinuxDeviceMapping] = []
     ) {
         self.variant = variant
         self.blockIO = blockIO
         self.deviceCgroupRules = deviceCgroupRules
+        self.devices = devices
     }
 
     enum CodingKeys: String, CodingKey {
         case variant
         case blockIO
         case deviceCgroupRules
+        case devices
     }
 
     public init(from decoder: Decoder) throws {
@@ -49,5 +70,6 @@ public struct LinuxRuntimeData: Codable, Sendable {
         variant = try container.decodeIfPresent(String.self, forKey: .variant)
         blockIO = try container.decodeIfPresent(ContainerizationOCI.LinuxBlockIO.self, forKey: .blockIO)
         deviceCgroupRules = try container.decodeIfPresent([ContainerizationOCI.LinuxDeviceCgroup].self, forKey: .deviceCgroupRules) ?? []
+        devices = try container.decodeIfPresent([LinuxDeviceMapping].self, forKey: .devices) ?? []
     }
 }

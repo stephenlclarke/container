@@ -535,6 +535,23 @@ container run --privileged alpine sh -c "ip link set lo down && echo ok"
 
 `--privileged` affects the process capability set. Use the explicit mount, network, security, and device flags for other isolation boundaries.
 
+## Add supported Linux VM devices
+
+Use `--device` with `container run` or `container create` to add a Linux device path supported by the Apple runtime VM bridge:
+
+```bash
+container run --device /dev/null:/dev/xnull:rw alpine sh -c "test -c /dev/xnull"
+container run --device /dev/zero:rw alpine sh -c "test -c /dev/zero"
+```
+
+The accepted format is `HOST[:CONTAINER[:PERMISSIONS]]`. When the second field is only an access string such as `rw`, it is treated as permissions and the container path defaults to the host path. `HOST` names a supported Linux VM device path such as `/dev/null` or `/dev/zero`; it does not provide USB, SD-card, PCI, GPU, or arbitrary macOS hardware passthrough.
+
+Use `--device-cgroup-rule` when you only need to adjust Linux device cgroup permissions without creating an additional device node:
+
+```bash
+container run --device-cgroup-rule "c 1:3 mr" alpine true
+```
+
 To drop all capabilities and selectively re-add only what you need:
 
 ```bash

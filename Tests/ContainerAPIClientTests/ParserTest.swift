@@ -1659,6 +1659,46 @@ struct ParserTest {
         }
     }
 
+    @Test func testDevicesParseDockerPathForms() throws {
+        let devices = try Parser.devices([
+            "/dev/null",
+            "/dev/null:/dev/xnull",
+            "/dev/null:/dev/xnull:rw",
+            "/dev/null:mr",
+        ])
+
+        #expect(devices == [
+            ParsedDeviceMapping(source: "/dev/null", target: "/dev/null", permissions: "rwm"),
+            ParsedDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rwm"),
+            ParsedDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw"),
+            ParsedDeviceMapping(source: "/dev/null", target: "/dev/null", permissions: "mr"),
+        ])
+    }
+
+    @Test func testDevicesRejectRelativeHostPath() throws {
+        #expect {
+            _ = try Parser.devices(["dev/null:/dev/xnull"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testDevicesRejectRelativeContainerPath() throws {
+        #expect {
+            _ = try Parser.devices(["/dev/null:xnull:rwm"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testDevicesRejectInvalidPermissions() throws {
+        #expect {
+            _ = try Parser.devices(["/dev/null:/dev/xnull:z"])
+        } throws: { _ in
+            true
+        }
+    }
+
     @Test func testResourcesBuildPropertyLookup() async throws {
         let content = """
             [build]

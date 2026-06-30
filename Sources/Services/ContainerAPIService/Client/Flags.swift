@@ -212,6 +212,7 @@ public struct Flags {
             shmSize: String?,
             blkio: [String] = [],
             deviceCgroupRules: [String] = [],
+            devices: [String] = [],
             sysctls: [String] = [],
             noHealthCheck: Bool = false,
             tmpFs: [String],
@@ -260,6 +261,7 @@ public struct Flags {
             self.shmSize = shmSize
             self.blkio = blkio
             self.deviceCgroupRules = deviceCgroupRules
+            self.devices = devices
             self.sysctls = sysctls
             self.noHealthCheck = noHealthCheck
             self.tmpFs = tmpFs
@@ -442,6 +444,15 @@ public struct Flags {
             )
         )
         public var deviceCgroupRules: [String] = []
+
+        @Option(
+            name: .customLong("device"),
+            help: .init(
+                "Add a supported Linux VM device to the container (format: host[:container[:permissions]])",
+                valueName: "host[:container[:permissions]]"
+            )
+        )
+        public var devices: [String] = []
 
         @Option(name: .customLong("sysctl"), help: .init("Set a namespaced kernel parameter (format: name=value)", valueName: "name=value"))
         public var sysctls: [String] = []

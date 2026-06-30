@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerRuntimeLinuxClient
 import Containerization
 import Testing
 
@@ -178,6 +179,42 @@ struct RuntimeServiceHostsTests {
 
         #expect(RuntimeService.shouldStartSocketForwarders(config: config, hasInterfaces: true))
         #expect(!RuntimeService.shouldStartSocketForwarders(config: config, hasInterfaces: false))
+    }
+
+    @Test
+    func resolveLinuxDeviceUsesLinuxMajorMinorValues() throws {
+        let metadata = try RuntimeService.resolveLinuxDevice(source: "/dev/null")
+
+        #expect(metadata.type == "c")
+        #expect(metadata.major == 1)
+        #expect(metadata.minor == 3)
+        #expect(metadata.fileMode == 0o666)
+    }
+
+    @Test
+    func resolveDeviceMappingsCreatesDeviceNodesAndCgroupRules() throws {
+        let resolved = try RuntimeService.resolveDeviceMappings([
+            LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw"),
+            LinuxDeviceMapping(source: "/dev/zero", target: "/dev/zero", permissions: "rwm"),
+        ])
+
+        #expect(resolved.devices.count == 2)
+        #expect(resolved.devices[0].path == "/dev/xnull")
+        #expect(resolved.devices[0].type == "c")
+        #expect(resolved.devices[0].major == 1)
+        #expect(resolved.devices[0].minor == 3)
+        #expect(resolved.cgroupRules[0].access == "rw")
+        #expect(resolved.devices[1].path == "/dev/zero")
+        #expect(resolved.devices[1].major == 1)
+        #expect(resolved.devices[1].minor == 5)
+        #expect(resolved.cgroupRules[1].access == "rwm")
+    }
+
+    @Test
+    func resolveLinuxDeviceRejectsUnknownDeviceSources() {
+        #expect(throws: (any Error).self) {
+            _ = try RuntimeService.resolveLinuxDevice(source: "/dev/not-a-known-device")
+        }
     }
 
     @Test

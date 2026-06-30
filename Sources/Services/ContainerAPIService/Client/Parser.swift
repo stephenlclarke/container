@@ -53,6 +53,19 @@ public enum VolumeOrFilesystem {
     case volume(ParsedVolume)
 }
 
+/// A parsed Docker-compatible Linux device mapping.
+public struct ParsedDeviceMapping: Equatable, Sendable {
+    public let source: String
+    public let target: String
+    public let permissions: String
+
+    public init(source: String, target: String, permissions: String) {
+        self.source = source
+        self.target = target
+        self.permissions = permissions
+    }
+}
+
 public struct Parser {
     public static func memoryStringAsMiB(_ memory: String) throws -> Int64 {
         let ram = try Measurement.parse(parsing: memory)
@@ -401,6 +414,72 @@ public struct Parser {
             )
         }
         return parsed
+    }
+
+    /// Parses repeatable Docker-compatible `--device` values.
+    ///
+    /// The accepted format is `HOST[:CONTAINER[:PERMISSIONS]]`. `HOST` and
+    /// `CONTAINER` must be absolute device paths. When the second field is only
+    /// an access string such as `rw`, Docker treats it as permissions and keeps
+    /// the container path equal to the host path.
+    public static func devices(_ specs: [String]) throws -> [ParsedDeviceMapping] {
+        try specs.map(parseDeviceMapping)
+    }
+
+    private static func parseDeviceMapping(_ spec: String) throws -> ParsedDeviceMapping {
+        let parts = spec.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        guard !parts.isEmpty, parts.count <= 3 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device must be formatted as HOST[:CONTAINER[:PERMISSIONS]]"
+            )
+        }
+
+        let source = parts[0]
+        guard isAbsoluteDevicePath(source) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device host path must be absolute (got '\(source)')"
+            )
+        }
+
+        var target = source
+        var permissions = "rwm"
+
+        if parts.count == 2 {
+            if isDeviceAccess(parts[1]) {
+                permissions = parts[1]
+            } else {
+                target = parts[1]
+            }
+        } else if parts.count == 3 {
+            target = parts[1]
+            permissions = parts[2]
+        }
+
+        guard isAbsoluteDevicePath(target) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device container path must be absolute (got '\(target)')"
+            )
+        }
+        guard isDeviceAccess(permissions) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device permissions must contain only 'r', 'w', and 'm'"
+            )
+        }
+
+        return ParsedDeviceMapping(source: source, target: target, permissions: permissions)
+    }
+
+    private static func isAbsoluteDevicePath(_ value: String) -> Bool {
+        value.hasPrefix("/") && !value.isEmpty
+    }
+
+    private static func isDeviceAccess(_ value: String) -> Bool {
+        let allowedAccess = Set("rwm")
+        return !value.isEmpty && value.allSatisfy { allowedAccess.contains($0) }
     }
 
     /// Parses Docker-compatible local logging flags into the runtime log policy.

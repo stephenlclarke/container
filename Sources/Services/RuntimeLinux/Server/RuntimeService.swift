@@ -1121,6 +1121,70 @@ public actor RuntimeService {
         hasInterfaces && !config.hostNetwork
     }
 
+    struct LinuxDeviceMetadata: Sendable {
+        let type: String
+        let major: Int64
+        let minor: Int64
+        let fileMode: UInt32
+        let uid: UInt32
+        let gid: UInt32
+    }
+
+    static let knownLinuxDevices: [String: LinuxDeviceMetadata] = [
+        "/dev/null": LinuxDeviceMetadata(type: "c", major: 1, minor: 3, fileMode: 0o666, uid: 0, gid: 0),
+        "/dev/zero": LinuxDeviceMetadata(type: "c", major: 1, minor: 5, fileMode: 0o666, uid: 0, gid: 0),
+        "/dev/full": LinuxDeviceMetadata(type: "c", major: 1, minor: 7, fileMode: 0o666, uid: 0, gid: 0),
+        "/dev/random": LinuxDeviceMetadata(type: "c", major: 1, minor: 8, fileMode: 0o666, uid: 0, gid: 0),
+        "/dev/urandom": LinuxDeviceMetadata(type: "c", major: 1, minor: 9, fileMode: 0o666, uid: 0, gid: 0),
+        "/dev/tty": LinuxDeviceMetadata(type: "c", major: 5, minor: 0, fileMode: 0o666, uid: 0, gid: 0),
+        "/dev/console": LinuxDeviceMetadata(type: "c", major: 5, minor: 1, fileMode: 0o600, uid: 0, gid: 0),
+        "/dev/ptmx": LinuxDeviceMetadata(type: "c", major: 5, minor: 2, fileMode: 0o666, uid: 0, gid: 0),
+    ]
+
+    static func resolveDeviceMappings(_ mappings: [LinuxDeviceMapping]) throws -> (
+        devices: [ContainerizationOCI.LinuxDevice],
+        cgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
+    ) {
+        var devices: [ContainerizationOCI.LinuxDevice] = []
+        var cgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = []
+        devices.reserveCapacity(mappings.count)
+        cgroupRules.reserveCapacity(mappings.count)
+
+        for mapping in mappings {
+            let metadata = try resolveLinuxDevice(source: mapping.source)
+
+            devices.append(ContainerizationOCI.LinuxDevice(
+                path: mapping.target,
+                type: metadata.type,
+                major: metadata.major,
+                minor: metadata.minor,
+                fileMode: metadata.fileMode,
+                uid: metadata.uid,
+                gid: metadata.gid
+            ))
+            cgroupRules.append(ContainerizationOCI.LinuxDeviceCgroup(
+                allow: true,
+                type: metadata.type,
+                major: metadata.major,
+                minor: metadata.minor,
+                access: mapping.permissions
+            ))
+        }
+
+        return (devices, cgroupRules)
+    }
+
+    static func resolveLinuxDevice(source: String) throws -> LinuxDeviceMetadata {
+        if let metadata = knownLinuxDevices[source] {
+            return metadata
+        }
+        let supportedDevices = knownLinuxDevices.keys.sorted().joined(separator: ", ")
+        throw ContainerizationError(
+            .unsupported,
+            message: "device source '\(source)' cannot be resolved by the current runtime; supported VM device paths are: \(supportedDevices)"
+        )
+    }
+
     private static func configureContainer(
         czConfig: inout LinuxContainer.Configuration,
         config: ContainerConfiguration,
@@ -1133,8 +1197,10 @@ public actor RuntimeService {
         czConfig.memoryInBytes = config.resources.memoryInBytes
         if let runtimeData {
             let linuxData = try JSONDecoder().decode(LinuxRuntimeData.self, from: runtimeData)
+            let deviceMapping = try resolveDeviceMappings(linuxData.devices)
             czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
-            czConfig.deviceCgroupRules = linuxData.deviceCgroupRules
+            czConfig.devices.append(contentsOf: deviceMapping.devices)
+            czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules)
         }
         czConfig.sysctl = try Self.resolvedSysctls(config: config)
         // If the host doesn't support this, we'll throw on container creation.

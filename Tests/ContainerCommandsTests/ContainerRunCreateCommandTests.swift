@@ -15,6 +15,8 @@
 //===----------------------------------------------------------------------===//
 
 import Testing
+import ContainerRuntimeLinuxClient
+import Foundation
 
 @testable import ContainerCommands
 
@@ -89,5 +91,35 @@ struct ContainerRunCreateCommandTests {
         #expect(command.managementFlags.deviceCgroupRules == ["a *:* rwm"])
         #expect(command.image == "alpine")
         #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func runParsesDeviceFlag() throws {
+        let command = try Application.ContainerRun.parse(["--device", "/dev/null:/dev/xnull:rw", "alpine", "true"])
+
+        #expect(command.managementFlags.devices == ["/dev/null:/dev/xnull:rw"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func createParsesDeviceFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--device", "/dev/null:rw", "alpine", "true"])
+
+        #expect(command.managementFlags.devices == ["/dev/null:rw"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func runtimeDataEncodesDeviceFlag() throws {
+        let command = try Application.ContainerRun.parse(["--device", "/dev/null:/dev/xnull:rw", "alpine", "true"])
+
+        let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.devices == [
+            LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw"),
+        ])
     }
 }
