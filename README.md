@@ -76,8 +76,9 @@ brew tap stephenlclarke/tap
 brew install stephenlclarke/tap/container
 ```
 
-The `release` branch publishes `container-release`, and tagged release branch
-copies publish branch-derived formula names such as `container-release-v0-1-0`.
+The `release` branch publishes `container-release`. Matching tagged runtime
+release branch copies can publish branch-derived formula names such as
+`container-release-v0-2-0` when that stack release has its own runtime lane.
 
 Start the system service with:
 
