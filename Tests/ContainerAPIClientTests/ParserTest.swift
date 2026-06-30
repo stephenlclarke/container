@@ -1882,6 +1882,28 @@ struct ParserTest {
     }
 
     @Test
+    func testManagementFlagsAcceptsPIDHost() throws {
+        let flags = try Flags.Management.parse([
+            "--pid", "host",
+        ])
+
+        #expect(flags.pid == "host")
+    }
+
+    @Test
+    func testHostPIDNamespaceParserAcceptsHost() throws {
+        #expect(try Parser.hostPIDNamespace("host"))
+        #expect(try !Parser.hostPIDNamespace(nil))
+    }
+
+    @Test
+    func testHostPIDNamespaceParserRejectsUnsupportedValue() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostPIDNamespace("container:db")
+        }
+    }
+
+    @Test
     func testManagementFlagsAcceptsLogDriver() throws {
         let flags = try Flags.Management.parse(["--log-driver", "none"])
 

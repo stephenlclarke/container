@@ -66,6 +66,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
+*   `--pid <pid>`: Set the PID namespace mode (`host`)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
 *   `--platform <platform>`: Platform for the image if it's multi-platform. This takes precedence over --os and --arch
 *   `--publish-socket <spec>`: Publish a socket from container to host (format: host_path:container_path)
@@ -259,6 +260,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
+*   `--pid <pid>`: Set the PID namespace mode (`host`)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
 *   `--platform <platform>`: Platform for the image if it's multi-platform. This takes precedence over --os and --arch
 *   `--publish-socket <spec>`: Publish a socket from container to host (format: host_path:container_path)

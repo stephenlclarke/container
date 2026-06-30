@@ -36,4 +36,22 @@ struct ContainerRunCreateCommandTests {
         #expect(command.image == "alpine")
         #expect(command.arguments == ["id"])
     }
+
+    @Test
+    func runParsesPIDHostFlag() throws {
+        let command = try Application.ContainerRun.parse(["--pid", "host", "alpine", "ps"])
+
+        #expect(command.managementFlags.pid == "host")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["ps"])
+    }
+
+    @Test
+    func createParsesPIDHostFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--pid", "host", "alpine", "ps"])
+
+        #expect(command.managementFlags.pid == "host")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["ps"])
+    }
 }

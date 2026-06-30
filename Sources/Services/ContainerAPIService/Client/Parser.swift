@@ -523,6 +523,17 @@ public struct Parser {
         return ContainerCreateOptions(autoRemove: autoRemove, restartPolicy: restartPolicy)
     }
 
+    /// Parses Docker-compatible PID namespace modes supported by this runtime.
+    public static func hostPIDNamespace(_ value: String?) throws -> Bool {
+        guard let value else {
+            return false
+        }
+        guard value == "host" else {
+            throw ContainerizationError(.invalidArgument, message: "unsupported --pid value '\(value)' (supported: host)")
+        }
+        return true
+    }
+
     /// Parses Docker-compatible restart policy values.
     public static func restartPolicy(_ value: String?) throws -> ContainerRestartPolicy {
         guard let value else {

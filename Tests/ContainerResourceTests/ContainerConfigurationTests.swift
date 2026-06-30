@@ -73,6 +73,28 @@ struct ContainerConfigurationResourcesTests {
     }
 }
 
+struct ContainerConfigurationPIDNamespaceTests {
+    @Test func roundTripsHostPIDNamespace() throws {
+        var config = makeTestConfiguration()
+        config.hostPIDNamespace = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.hostPIDNamespace)
+    }
+
+    @Test func decodesMissingHostPIDNamespaceAsFalse() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj.removeValue(forKey: "hostPIDNamespace")
+        let stripped = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(!decoded.hostPIDNamespace)
+    }
+}
+
 struct ProcessConfigurationPrivilegeTests {
     @Test func roundTripsPrivilegedProcessConfiguration() throws {
         let process = ProcessConfiguration(

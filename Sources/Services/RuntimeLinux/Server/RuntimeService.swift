@@ -1135,6 +1135,7 @@ public actor RuntimeService {
         // If the host doesn't support this, we'll throw on container creation.
         czConfig.virtualization = config.virtualization
         czConfig.useInit = config.useInit
+        czConfig.hostPIDNamespace = config.hostPIDNamespace
 
         if let shmSize = config.shmSize {
             for i in czConfig.mounts.indices {

@@ -197,6 +197,7 @@ public struct Flags {
             name: String?,
             networks: [String],
             os: String,
+            pid: String? = nil,
             platform: String?,
             publishPorts: [String],
             publishSockets: [String],
@@ -243,6 +244,7 @@ public struct Flags {
             self.name = name
             self.networks = networks
             self.os = os
+            self.pid = pid
             self.platform = platform
             self.publishPorts = publishPorts
             self.publishSockets = publishSockets
@@ -369,6 +371,9 @@ public struct Flags {
 
         @Option(name: .long, help: "Set OS if image can target multiple operating systems")
         public var os = "linux"
+
+        @Option(name: .customLong("pid"), help: "Set the PID namespace mode (host)")
+        public var pid: String?
 
         @Option(
             name: [.customShort("p"), .customLong("publish")],
