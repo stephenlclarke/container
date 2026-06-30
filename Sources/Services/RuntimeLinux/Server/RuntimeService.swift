@@ -1134,6 +1134,7 @@ public actor RuntimeService {
         if let runtimeData {
             let linuxData = try JSONDecoder().decode(LinuxRuntimeData.self, from: runtimeData)
             czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
+            czConfig.deviceCgroupRules = linuxData.deviceCgroupRules
         }
         czConfig.sysctl = try Self.resolvedSysctls(config: config)
         // If the host doesn't support this, we'll throw on container creation.

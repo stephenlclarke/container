@@ -24,9 +24,30 @@ public struct LinuxRuntimeData: Codable, Sendable {
     /// Block I/O cgroup tuning carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let blockIO: ContainerizationOCI.LinuxBlockIO?
+    /// Device cgroup rules carried opaquely through
+    /// `RuntimeConfiguration.runtimeData`.
+    public let deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
 
-    public init(variant: String? = nil, blockIO: ContainerizationOCI.LinuxBlockIO? = nil) {
+    public init(
+        variant: String? = nil,
+        blockIO: ContainerizationOCI.LinuxBlockIO? = nil,
+        deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = []
+    ) {
         self.variant = variant
         self.blockIO = blockIO
+        self.deviceCgroupRules = deviceCgroupRules
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case variant
+        case blockIO
+        case deviceCgroupRules
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        variant = try container.decodeIfPresent(String.self, forKey: .variant)
+        blockIO = try container.decodeIfPresent(ContainerizationOCI.LinuxBlockIO.self, forKey: .blockIO)
+        deviceCgroupRules = try container.decodeIfPresent([ContainerizationOCI.LinuxDeviceCgroup].self, forKey: .deviceCgroupRules) ?? []
     }
 }

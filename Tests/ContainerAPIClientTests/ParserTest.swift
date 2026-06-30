@@ -1616,6 +1616,49 @@ struct ParserTest {
         }
     }
 
+    @Test func testDeviceCgroupRulesParse() throws {
+        let rules = try Parser.deviceCgroupRules([
+            "c 1:3 mr",
+            "a *:* rwm",
+        ])
+
+        #expect(rules.count == 2)
+        #expect(rules[0].allow)
+        #expect(rules[0].type == "c")
+        #expect(rules[0].major == 1)
+        #expect(rules[0].minor == 3)
+        #expect(rules[0].access == "mr")
+        #expect(rules[1].allow)
+        #expect(rules[1].type == "a")
+        #expect(rules[1].major == nil)
+        #expect(rules[1].minor == nil)
+        #expect(rules[1].access == "rwm")
+    }
+
+    @Test func testDeviceCgroupRulesRejectInvalidType() throws {
+        #expect {
+            _ = try Parser.deviceCgroupRules(["x 1:3 rwm"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testDeviceCgroupRulesRejectInvalidDevice() throws {
+        #expect {
+            _ = try Parser.deviceCgroupRules(["c 1 rwm"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testDeviceCgroupRulesRejectInvalidAccess() throws {
+        #expect {
+            _ = try Parser.deviceCgroupRules(["c 1:3 z"])
+        } throws: { _ in
+            true
+        }
+    }
+
     @Test func testResourcesBuildPropertyLookup() async throws {
         let content = """
             [build]

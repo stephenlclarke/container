@@ -116,7 +116,12 @@ extension Application {
                 restartWindow: managementFlags.restartWindow
             )
             let blockIO = try Parser.blockIO(specs: managementFlags.blkio)
-            let runtimeData: Data? = try blockIO.map { try JSONEncoder().encode(LinuxRuntimeData(blockIO: $0)) }
+            let deviceCgroupRules = try Parser.deviceCgroupRules(managementFlags.deviceCgroupRules)
+            let runtimeData: Data? = if blockIO != nil || !deviceCgroupRules.isEmpty {
+                try JSONEncoder().encode(LinuxRuntimeData(blockIO: blockIO, deviceCgroupRules: deviceCgroupRules))
+            } else {
+                nil
+            }
             try await client.create(
                 configuration: ck.0,
                 options: options,

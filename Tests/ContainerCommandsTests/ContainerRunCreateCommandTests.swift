@@ -72,4 +72,22 @@ struct ContainerRunCreateCommandTests {
         #expect(command.image == "alpine")
         #expect(command.arguments == ["ps"])
     }
+
+    @Test
+    func runParsesDeviceCgroupRuleFlag() throws {
+        let command = try Application.ContainerRun.parse(["--device-cgroup-rule", "c 1:3 mr", "alpine", "true"])
+
+        #expect(command.managementFlags.deviceCgroupRules == ["c 1:3 mr"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func createParsesDeviceCgroupRuleFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--device-cgroup-rule", "a *:* rwm", "alpine", "true"])
+
+        #expect(command.managementFlags.deviceCgroupRules == ["a *:* rwm"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
 }

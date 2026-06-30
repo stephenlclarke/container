@@ -337,6 +337,72 @@ public struct Parser {
         }
     }
 
+    /// Parses repeatable Docker-compatible `--device-cgroup-rule` values.
+    ///
+    /// The accepted format is `<type> <major>:<minor> <access>`, for example
+    /// `c 1:3 mr` or `a *:* rwm`.
+    public static func deviceCgroupRules(_ specs: [String]) throws -> [ContainerizationOCI.LinuxDeviceCgroup] {
+        try specs.map(parseDeviceCgroupRule)
+    }
+
+    private static func parseDeviceCgroupRule(_ spec: String) throws -> ContainerizationOCI.LinuxDeviceCgroup {
+        let fields = spec.split(whereSeparator: { $0 == " " || $0 == "\t" })
+        guard fields.count == 3 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device-cgroup-rule must be formatted as '<type> <major>:<minor> <access>'"
+            )
+        }
+
+        let type = String(fields[0])
+        guard ["a", "b", "c"].contains(type) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device-cgroup-rule type must be one of 'a', 'b', or 'c'"
+            )
+        }
+
+        let device = fields[1].split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard device.count == 2 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device-cgroup-rule device must be formatted as '<major>:<minor>'"
+            )
+        }
+
+        let major = try parseDeviceCgroupRuleNumber(device[0], name: "major")
+        let minor = try parseDeviceCgroupRuleNumber(device[1], name: "minor")
+        let access = String(fields[2])
+        let allowedAccess = Set("rwm")
+        guard !access.isEmpty, access.allSatisfy({ allowedAccess.contains($0) }) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device-cgroup-rule access must contain only 'r', 'w', and 'm'"
+            )
+        }
+
+        return ContainerizationOCI.LinuxDeviceCgroup(
+            allow: true,
+            type: type,
+            major: major,
+            minor: minor,
+            access: access
+        )
+    }
+
+    private static func parseDeviceCgroupRuleNumber(_ value: Substring, name: String) throws -> Int64? {
+        if value == "*" {
+            return nil
+        }
+        guard let parsed = Int64(value), parsed >= 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--device-cgroup-rule \(name) must be '*' or a non-negative integer"
+            )
+        }
+        return parsed
+    }
+
     /// Parses Docker-compatible local logging flags into the runtime log policy.
     public static func logging(driver: String?, options: [String] = []) throws -> ContainerLogConfiguration {
         var logging: ContainerLogConfiguration

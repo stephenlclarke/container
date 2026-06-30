@@ -124,7 +124,10 @@ struct RuntimeConfigurationTests {
                 throttleWriteBpsDevice: [],
                 throttleReadIOPSDevice: [],
                 throttleWriteIOPSDevice: []
-            )
+            ),
+            deviceCgroupRules: [
+                ContainerizationOCI.LinuxDeviceCgroup(allow: true, type: "c", major: 1, minor: 3, access: "mr"),
+            ]
         )
         let encodedData = try JSONEncoder().encode(linuxData)
 
@@ -145,5 +148,17 @@ struct RuntimeConfigurationTests {
         #expect(decodedData.variant == "test-variant", "Variant should round-trip through RuntimeConfiguration")
         #expect(decodedData.blockIO?.weight == 500, "Block I/O weight should round-trip through RuntimeConfiguration")
         #expect(decodedData.blockIO?.throttleReadBpsDevice.first?.rate == 1_048_576, "Block I/O throttles should round-trip through RuntimeConfiguration")
+        #expect(decodedData.deviceCgroupRules.first?.major == 1, "Device cgroup rules should round-trip through RuntimeConfiguration")
+        #expect(decodedData.deviceCgroupRules.first?.access == "mr", "Device cgroup rule access should round-trip through RuntimeConfiguration")
+    }
+
+    @Test("LinuxRuntimeData decodes old payloads without device cgroup rules")
+    func linuxRuntimeDataDecodesMissingDeviceCgroupRules() throws {
+        let data = Data(#"{"variant":"legacy"}"#.utf8)
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.variant == "legacy")
+        #expect(decoded.blockIO == nil)
+        #expect(decoded.deviceCgroupRules.isEmpty)
     }
 }

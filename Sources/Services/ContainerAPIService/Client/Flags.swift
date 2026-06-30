@@ -211,6 +211,7 @@ public struct Flags {
             ssh: Bool,
             shmSize: String?,
             blkio: [String] = [],
+            deviceCgroupRules: [String] = [],
             sysctls: [String] = [],
             noHealthCheck: Bool = false,
             tmpFs: [String],
@@ -258,6 +259,7 @@ public struct Flags {
             self.ssh = ssh
             self.shmSize = shmSize
             self.blkio = blkio
+            self.deviceCgroupRules = deviceCgroupRules
             self.sysctls = sysctls
             self.noHealthCheck = noHealthCheck
             self.tmpFs = tmpFs
@@ -431,6 +433,15 @@ public struct Flags {
             )
         )
         public var blkio: [String] = []
+
+        @Option(
+            name: .customLong("device-cgroup-rule"),
+            help: .init(
+                "Add a Linux device cgroup rule (format: '<type> <major>:<minor> <access>')",
+                valueName: "rule"
+            )
+        )
+        public var deviceCgroupRules: [String] = []
 
         @Option(name: .customLong("sysctl"), help: .init("Set a namespaced kernel parameter (format: name=value)", valueName: "name=value"))
         public var sysctls: [String] = []
