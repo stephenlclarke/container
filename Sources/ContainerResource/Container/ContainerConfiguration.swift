@@ -62,6 +62,8 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var ssh: Bool = false
     /// Whether to mount the rootfs as read-only.
     public var readOnly: Bool = false
+    /// Whether the container was requested with host network mode.
+    public var hostNetwork: Bool = false
     /// Whether to use a minimal init process inside the container.
     public var useInit: Bool = false
     /// Whether to run the init process in the sandbox VM PID namespace.
@@ -100,6 +102,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         case virtualization
         case ssh
         case readOnly
+        case hostNetwork
         case useInit
         case hostPIDNamespace
         case capAdd
@@ -142,6 +145,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         virtualization = try container.decodeIfPresent(Bool.self, forKey: .virtualization) ?? false
         ssh = try container.decodeIfPresent(Bool.self, forKey: .ssh) ?? false
         readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
+        hostNetwork = try container.decodeIfPresent(Bool.self, forKey: .hostNetwork) ?? false
         useInit = try container.decodeIfPresent(Bool.self, forKey: .useInit) ?? false
         hostPIDNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostPIDNamespace) ?? false
         capAdd = try container.decodeIfPresent([String].self, forKey: .capAdd) ?? []

@@ -95,6 +95,28 @@ struct ContainerConfigurationPIDNamespaceTests {
     }
 }
 
+struct ContainerConfigurationHostNetworkTests {
+    @Test func roundTripsHostNetwork() throws {
+        var config = makeTestConfiguration()
+        config.hostNetwork = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.hostNetwork)
+    }
+
+    @Test func decodesMissingHostNetworkAsFalse() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj.removeValue(forKey: "hostNetwork")
+        let stripped = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(!decoded.hostNetwork)
+    }
+}
+
 struct ProcessConfigurationPrivilegeTests {
     @Test func roundTripsPrivilegedProcessConfiguration() throws {
         let process = ProcessConfiguration(

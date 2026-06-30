@@ -20,9 +20,11 @@
 import Foundation
 import PackageDescription
 
+let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+
 func resolvedPackagePin(identity: String) -> [String: Any]? {
     guard
-        let data = try? Data(contentsOf: URL(fileURLWithPath: "Package.resolved")),
+        let data = try? Data(contentsOf: packageRoot.appending(path: "Package.resolved")),
         let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
         let pins = object["pins"] as? [[String: Any]]
     else {

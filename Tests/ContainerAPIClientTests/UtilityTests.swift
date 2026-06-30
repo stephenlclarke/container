@@ -131,4 +131,57 @@ struct UtilityTests {
         #expect(ports[1].proto == .udp)
         #expect(ports[1].count == 100)
     }
+
+    @Test
+    func networkSelectionReturnsHostMode() throws {
+        switch try Utility.networkSelection(["host"]) {
+        case .host:
+            break
+        default:
+            Issue.record("expected host network selection")
+        }
+    }
+
+    @Test
+    func networkSelectionReturnsNoNetworkMode() throws {
+        switch try Utility.networkSelection(["none"]) {
+        case .none:
+            break
+        default:
+            Issue.record("expected none network selection")
+        }
+    }
+
+    @Test
+    func networkSelectionParsesAttachments() throws {
+        switch try Utility.networkSelection(["backend,alias=api"]) {
+        case .attachments(let networks):
+            #expect(networks.count == 1)
+            #expect(networks[0].name == "backend")
+            #expect(networks[0].aliases == ["api"])
+        default:
+            Issue.record("expected attachment network selection")
+        }
+    }
+
+    @Test
+    func networkSelectionRejectsHostMixedWithOtherNetworks() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Utility.networkSelection(["host", "backend"])
+        }
+    }
+
+    @Test
+    func networkSelectionRejectsNoneMixedWithOtherNetworks() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Utility.networkSelection(["none", "backend"])
+        }
+    }
+
+    @Test
+    func networkSelectionRejectsNoneWithAttachmentProperties() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Utility.networkSelection(["none,alias=api"])
+        }
+    }
 }

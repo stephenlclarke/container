@@ -143,8 +143,8 @@ public actor NetworksService {
             )
         }
 
-        //Ensure that the network is not named "none"
-        if configuration.id == NetworkClient.noNetworkName {
+        // Ensure reserved runtime network mode names cannot be created as user networks.
+        if Self.isReservedNetworkModeName(configuration.id) {
             throw ContainerizationError(.unsupported, message: "network \(configuration.id) is not a valid name")
         }
 
@@ -323,6 +323,10 @@ public actor NetworksService {
 
     private static func getClient(configuration: NetworkConfiguration) throws -> ContainerNetworkClient.NetworkClient {
         NetworkClient(id: configuration.id, plugin: configuration.plugin)
+    }
+
+    static func isReservedNetworkModeName(_ name: String) -> Bool {
+        name == NetworkClient.noNetworkName || name == NetworkClient.hostNetworkName
     }
 
     private func registerService(configuration: NetworkConfiguration) async throws {

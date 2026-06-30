@@ -869,6 +869,20 @@ struct ParserTest {
     }
 
     @Test
+    func testHostNetworkParserAcceptsHost() throws {
+        #expect(try Parser.hostNetwork(["host"]))
+        #expect(try !Parser.hostNetwork(["default"]))
+        #expect(try !Parser.hostNetwork([]))
+    }
+
+    @Test
+    func testHostNetworkParserRejectsAttachmentProperties() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostNetwork(["host,alias=api"])
+        }
+    }
+
+    @Test
     func testParseNetworkEmptyString() throws {
         #expect {
             _ = try Parser.network("")
@@ -1879,6 +1893,15 @@ struct ParserTest {
         ])
 
         #expect(flags.domainname == "example.test")
+    }
+
+    @Test
+    func testManagementFlagsAcceptsNetworkHost() throws {
+        let flags = try Flags.Management.parse([
+            "--network", "host",
+        ])
+
+        #expect(flags.networks == ["host"])
     }
 
     @Test

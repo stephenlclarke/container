@@ -32,6 +32,12 @@ import TerminalProgress
 public struct Utility {
     static let publishedPortCountLimit = 64
 
+    enum NetworkSelection {
+        case none
+        case host
+        case attachments([Parser.ParsedNetwork])
+    }
+
     public static func createContainerID(name: String?) -> String {
         guard let name else {
             return UUID().uuidString.lowercased()
@@ -215,14 +221,23 @@ public struct Utility {
         config.virtualization = management.virtualization
         config.sysctls = try Parser.sysctls(management.sysctls)
 
-        // Parse network specifications with properties
-        let parsedNetworks = try management.networks.map { try Parser.network($0) }
-        if management.networks.contains(NetworkClient.noNetworkName) {
-            guard management.networks.count == 1 else {
-                throw ContainerizationError(.unsupported, message: "no other networks may be created along with network \(NetworkClient.noNetworkName)")
-            }
+        switch try networkSelection(management.networks) {
+        case .none:
             config.networks = []
-        } else {
+        case .host:
+            let networkClient = NetworkClient()
+            let builtinNetworkId = try await networkClient.builtin?.id
+            config.hostNetwork = true
+            config.networks = try getAttachmentConfigurations(
+                containerId: config.id,
+                builtinNetworkId: builtinNetworkId,
+                networks: [],
+                dnsDomain: containerSystemConfig.dns.domain,
+            )
+            for attachmentConfiguration in config.networks {
+                _ = try await networkClient.get(id: attachmentConfiguration.network)
+            }
+        case .attachments(let parsedNetworks):
             let networkClient = NetworkClient()
             let builtinNetworkId = try await networkClient.builtin?.id
             config.networks = try getAttachmentConfigurations(
@@ -348,6 +363,31 @@ public struct Utility {
             throw ContainerizationError(.invalidState, message: "builtin network is not present")
         }
         return [AttachmentConfiguration(network: builtinNetworkId, options: AttachmentOptions(hostname: fqdn ?? containerId, macAddress: nil, mtu: 1280))]
+    }
+
+    static func networkSelection(_ networks: [String]) throws -> NetworkSelection {
+        let usesHostNetwork = try Parser.hostNetwork(networks)
+        let usesNoNetwork = networks.contains(NetworkClient.noNetworkName)
+        let usesQualifiedNoNetwork = networks.contains { $0.hasPrefix("\(NetworkClient.noNetworkName),") }
+        if usesQualifiedNoNetwork {
+            throw ContainerizationError(.invalidArgument, message: "--network none does not accept attachment properties")
+        }
+        if usesHostNetwork && usesNoNetwork {
+            throw ContainerizationError(.unsupported, message: "networks \(NetworkClient.hostNetworkName) and \(NetworkClient.noNetworkName) cannot be combined")
+        }
+        if usesHostNetwork && networks.count != 1 {
+            throw ContainerizationError(.unsupported, message: "no other networks may be created along with network \(NetworkClient.hostNetworkName)")
+        }
+        if usesNoNetwork && networks.count != 1 {
+            throw ContainerizationError(.unsupported, message: "no other networks may be created along with network \(NetworkClient.noNetworkName)")
+        }
+        if usesNoNetwork {
+            return .none
+        }
+        if usesHostNetwork {
+            return .host
+        }
+        return .attachments(try networks.map { try Parser.network($0) })
     }
 
     private static func getKernel(management: Flags.Management) async throws -> Kernel {

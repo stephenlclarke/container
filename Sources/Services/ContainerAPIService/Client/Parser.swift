@@ -534,6 +534,19 @@ public struct Parser {
         return true
     }
 
+    /// Parses Docker-compatible network host mode from the repeated `--network` option.
+    public static func hostNetwork(_ values: [String]) throws -> Bool {
+        var requested = false
+        for value in values {
+            if value == NetworkClient.hostNetworkName {
+                requested = true
+            } else if value.hasPrefix("\(NetworkClient.hostNetworkName),") {
+                throw ContainerizationError(.invalidArgument, message: "--network host does not accept attachment properties")
+            }
+        }
+        return requested
+    }
+
     /// Parses Docker-compatible restart policy values.
     public static func restartPolicy(_ value: String?) throws -> ContainerRestartPolicy {
         guard let value else {

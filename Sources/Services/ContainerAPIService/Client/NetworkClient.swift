@@ -46,6 +46,9 @@ public struct NetworkClient: Sendable {
     /// The reserved name that indicates a container should have no network attachment.
     public static let noNetworkName = "none"
 
+    /// The reserved name that indicates a container should use host network mode.
+    public static let hostNetworkName = "host"
+
     private let xpcClient: XPCClient
 
     /// Creates a new network client connected to the given service endpoint.

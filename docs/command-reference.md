@@ -63,7 +63,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
+*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`, or `none` / `host`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `--pid <pid>`: Set the PID namespace mode (`host`)
@@ -257,7 +257,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`)
+*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`, or `none` / `host`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `--pid <pid>`: Set the PID namespace mode (`host`)

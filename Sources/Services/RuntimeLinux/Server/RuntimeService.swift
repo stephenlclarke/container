@@ -322,7 +322,7 @@ public actor RuntimeService {
 
                 try await self.initializeWaiters(for: id)
                 try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
-                if !container.interfaces.isEmpty {
+                if Self.shouldStartSocketForwarders(config: config, hasInterfaces: !container.interfaces.isEmpty) {
                     try await self.startSocketForwarders(attachment: attachments[0], publishedPorts: config.publishedPorts)
                 }
                 await self.setState(.booted)
@@ -1115,6 +1115,10 @@ public actor RuntimeService {
             }
             await setState(.stopped)
         }
+    }
+
+    static func shouldStartSocketForwarders(config: ContainerConfiguration, hasInterfaces: Bool) -> Bool {
+        hasInterfaces && !config.hostNetwork
     }
 
     private static func configureContainer(

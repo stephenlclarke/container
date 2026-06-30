@@ -38,6 +38,24 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesNetworkHostFlag() throws {
+        let command = try Application.ContainerRun.parse(["--network", "host", "alpine", "ip", "addr"])
+
+        #expect(command.managementFlags.networks == ["host"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["ip", "addr"])
+    }
+
+    @Test
+    func createParsesNetworkHostFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--network", "host", "alpine", "ip", "addr"])
+
+        #expect(command.managementFlags.networks == ["host"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["ip", "addr"])
+    }
+
+    @Test
     func runParsesPIDHostFlag() throws {
         let command = try Application.ContainerRun.parse(["--pid", "host", "alpine", "ps"])
 

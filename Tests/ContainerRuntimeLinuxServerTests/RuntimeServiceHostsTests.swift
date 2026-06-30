@@ -165,6 +165,22 @@ struct RuntimeServiceHostsTests {
     }
 
     @Test
+    func hostNetworkSuppressesSocketForwarders() {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.hostNetwork = true
+
+        #expect(!RuntimeService.shouldStartSocketForwarders(config: config, hasInterfaces: true))
+    }
+
+    @Test
+    func attachedNetworkingStartsSocketForwardersWhenNeeded() {
+        let config = runtimeTestConfiguration(id: "demo-api-1")
+
+        #expect(RuntimeService.shouldStartSocketForwarders(config: config, hasInterfaces: true))
+        #expect(!RuntimeService.shouldStartSocketForwarders(config: config, hasInterfaces: false))
+    }
+
+    @Test
     func execCapabilitiesHonorContainerCapabilityDropsByDefault() throws {
         var config = runtimeTestConfiguration(id: "demo-api-1")
         config.capDrop = ["ALL"]
