@@ -220,22 +220,26 @@ endef
 # concurrent pass. WARMUP_FILTER, CONCURRENT_FILTER, and GLOBAL_FILTER select
 # the three phases. Expand the filter lists as suites are migrated from CLITests.
 PARALLEL_WIDTH ?= 2
-WARMUP_FILTER = ImageWarmup
+WARMUP_FILTER = ImageWarmup/
 
-CONCURRENT_TEST_SUITES ?= \
-	TestCLIExportCommand/ \
-	TestCLIMachineCommand/ \
-	TestCLIRmRaceCondition/ \
-	TestCLIStop/
+CONCURRENT_TEST_SUITES ?= $(sort $(addsuffix /,$(basename $(notdir \
+    $(shell find Tests/IntegrationTests -name 'TestCLI*.swift' \
+            ! -name '*Serial.swift' 2>/dev/null)))))
 CONCURRENT_FILTER = $(subst $(space),|,$(strip $(CONCURRENT_TEST_SUITES)))
 
 GLOBAL_TEST_SUITES ?= \
-	TestCLIBuilderLifecycleSerial/ \
-	TestCLIBuilderSerial/ \
 	TestCLIBuilderEnvOnlySerial/ \
+	TestCLIBuilderLifecycleSerial/ \
 	TestCLIBuilderLocalOutputSerial/ \
+	TestCLIBuilderSerial/ \
 	TestCLIBuilderTarExportSerial/ \
-	TestCLIMachineRuntimeSerial/
+	TestCLIKernelSetSerial/ \
+	TestCLIMachineRuntimeSerial/ \
+	TestCLIPruneCommandSerial/ \
+	TestCLIRemoveSerial/ \
+	TestCLIRunLifecycleSerial/ \
+	TestCLISystemDFSerial/ \
+	TestCLIVolumesSerial/
 GLOBAL_FILTER = $(subst $(space),|,$(strip $(GLOBAL_TEST_SUITES)))
 
 INTEGRATION_SWIFT_EXTRA ?=
@@ -291,32 +295,7 @@ coverage-integration-new: coverage-build all
 	@mkdir -p $(COVERAGE_OUTPUT_DIR)/integration
 	$(RUN_INTEGRATION)
 
-INTEGRATION_TEST_SUITES ?= \
-	TestCLIHelp \
-	TestCLIStatus \
-	TestCLIVersion \
-	TestCLINetwork \
-	TestCLIRunLifecycle \
-	TestCLIRunCapabilities \
-	TestCLIExecCommand \
-	TestCLICreateCommand \
-	TestCLIRunCommand1 \
-	TestCLIRunCommand2 \
-	TestCLIRunCommand3 \
-	TestCLIPruneCommand \
-	TestCLIRegistry \
-	TestCLIStatsCommand \
-	TestCLIImagesCommand \
-	TestCLIRunBase \
-	TestCLIRunInitImage \
-	TestCLIBuildBase \
-	TestCLIVolumes \
-	TestCLIKernelSet \
-	TestCLIAnonymousVolumes \
-	TestCLINotFound \
-	TestCLISystemDF \
-	TestCLINoParallelCases \
-	TestCLICopyCommand
+INTEGRATION_TEST_SUITES ?= NoTests/
 
 empty :=
 space := $(empty) $(empty)
