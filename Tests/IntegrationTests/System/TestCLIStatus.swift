@@ -29,6 +29,15 @@ struct TestCLIStatus {
         let apiServerCommit: String
         let apiServerBuild: String
         let apiServerAppName: String
+        let apiServerBuilderShimRepository: String?
+        let apiServerBuilderShimVersion: String?
+
+        var apiServerBuilderShimImage: String? {
+            guard let apiServerBuilderShimRepository, let apiServerBuilderShimVersion else {
+                return nil
+            }
+            return "\(apiServerBuilderShimRepository):\(apiServerBuilderShimVersion)"
+        }
     }
 
     @Test func defaultDisplaysTable() async throws {
@@ -50,6 +59,7 @@ struct TestCLIStatus {
             #expect(fullOutput.contains("installRoot"))
             #expect(fullOutput.contains("apiserver.version"))
             #expect(fullOutput.contains("apiserver.commit"))
+            #expect(fullOutput.contains("apiserver.builderShim"))
         }
     }
 
@@ -107,6 +117,9 @@ struct TestCLIStatus {
             #expect(tableResult.output.contains(decoded.apiServerCommit))
             #expect(tableResult.output.contains(decoded.apiServerBuild))
             #expect(tableResult.output.contains(decoded.apiServerAppName))
+            if let builderShimImage = decoded.apiServerBuilderShimImage {
+                #expect(tableResult.output.contains(builderShimImage))
+            }
         }
     }
 

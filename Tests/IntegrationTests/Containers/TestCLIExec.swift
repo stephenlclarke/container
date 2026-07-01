@@ -89,6 +89,29 @@ struct TestCLIExecCommand {
         }
     }
 
+    @Test func testExecCommandUlimitNofile() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let name = "\(f.testID)-c"
+            try f.doCreate(name: name, image: image)
+            f.addCleanup { try? f.doStop(name) }
+            try f.doStart(name)
+            try await f.waitForContainerRunning(name)
+
+            let softLimit = "1024"
+            let hardLimit = "2048"
+            let output = try f.run([
+                "exec",
+                "--ulimit", "nofile=\(softLimit):\(hardLimit)",
+                name,
+                "sh", "-c", "ulimit -n",
+            ]).check().output
+            #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == softLimit)
+
+            try f.doStop(name)
+        }
+    }
+
     @Test func testExecOnExitingContainer() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
