@@ -459,6 +459,26 @@ struct ParserTest {
     }
 
     @Test
+    func testVolumeBindPropagationOption() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-bind-propagation-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let result = try Parser.volume("\(tempDir.path):/host:ro,rslave")
+
+        switch result {
+        case .filesystem(let fs):
+            #expect(fs.source == tempDir.path)
+            #expect(fs.destination == "/host")
+            #expect(fs.options == ["ro", "rslave"])
+        case .volume:
+            #expect(Bool(false), "Expected filesystem mount, got volume")
+        }
+    }
+
+    @Test
     func testMountVolumeValidName() throws {
         let result = try Parser.mount("type=volume,src=myvolume,dst=/data")
 
