@@ -30,9 +30,8 @@ Stephen Clarke's fork is part of a four-repository preview stack:
 - [`container-compose`](https://github.com/stephenlclarke/container-compose):
   the Docker Compose style plugin installed beside the matching runtime lane.
 - [`containerization`](https://github.com/stephenlclarke/containerization): the
-  Swift runtime package consumed by this CLI and by `container-compose`; `main`
-  builds use `containerization` `main`, and release builds use
-  `containerization` `release`.
+  Swift runtime package consumed by this CLI and by `container-compose`; this
+  fork records the matching `containerization` pin for the current stack lane.
 - [`container-builder-shim`](https://github.com/stephenlclarke/container-builder-shim):
   the Go BuildKit bridge used by `container build`; this package pins the
   immutable builder image version, currently `0.13.6`, and release builds can
@@ -68,17 +67,20 @@ To install the tool, double-click the package file and follow the instructions.
 Enter your administrator password when prompted, to give the installer
 permission to place the installed files under `/usr/local`.
 
-Stephen Clarke's fork also publishes Homebrew-ready release archives through the
-aggregate tap without requiring Xcode or Swift on the target machine:
+Stephen Clarke's fork also publishes Homebrew-ready stable release archives
+through the aggregate tap without requiring Xcode or Swift on the target
+machine:
 
 ```bash
 brew tap stephenlclarke/tap
 brew install stephenlclarke/tap/container
 ```
 
-The `release` branch publishes `container-release`. Matching tagged runtime
-release branch copies can publish branch-derived formula names such as
-`container-release-v0-2-0` when that stack release has its own runtime lane.
+The current branch, tag, and Homebrew policy for this four-repository stack
+lives in
+[`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
+New work targets `main` or a short-lived `develop/VERSION` branch; retired
+`release`, `release-*`, and branch-derived formula lanes are historical only.
 
 Start the system service with:
 
