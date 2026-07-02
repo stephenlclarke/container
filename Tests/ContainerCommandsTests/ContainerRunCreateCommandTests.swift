@@ -14,9 +14,9 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import Testing
 import ContainerRuntimeLinuxClient
 import Foundation
+import Testing
 
 @testable import ContainerCommands
 
@@ -118,8 +118,9 @@ struct ContainerRunCreateCommandTests {
         let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
         let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
 
-        #expect(decoded.devices == [
-            LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw"),
-        ])
+        #expect(
+            decoded.devices == [
+                LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw")
+            ])
     }
 }

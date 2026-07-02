@@ -1687,12 +1687,13 @@ struct ParserTest {
             "/dev/null:mr",
         ])
 
-        #expect(devices == [
-            ParsedDeviceMapping(source: "/dev/null", target: "/dev/null", permissions: "rwm"),
-            ParsedDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rwm"),
-            ParsedDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw"),
-            ParsedDeviceMapping(source: "/dev/null", target: "/dev/null", permissions: "mr"),
-        ])
+        #expect(
+            devices == [
+                ParsedDeviceMapping(source: "/dev/null", target: "/dev/null", permissions: "rwm"),
+                ParsedDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rwm"),
+                ParsedDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw"),
+                ParsedDeviceMapping(source: "/dev/null", target: "/dev/null", permissions: "mr"),
+            ])
     }
 
     @Test func testDevicesRejectRelativeHostPath() throws {

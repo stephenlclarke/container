@@ -30,10 +30,11 @@ extension LinuxRuntimeData {
             return nil
         }
 
-        return try JSONEncoder().encode(LinuxRuntimeData(
-            blockIO: blockIO,
-            deviceCgroupRules: deviceCgroupRules,
-            devices: devices
-        ))
+        return try JSONEncoder().encode(
+            LinuxRuntimeData(
+                blockIO: blockIO,
+                deviceCgroupRules: deviceCgroupRules,
+                devices: devices
+            ))
     }
 }

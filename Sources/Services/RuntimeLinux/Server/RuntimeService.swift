@@ -1153,22 +1153,24 @@ public actor RuntimeService {
         for mapping in mappings {
             let metadata = try resolveLinuxDevice(source: mapping.source)
 
-            devices.append(ContainerizationOCI.LinuxDevice(
-                path: mapping.target,
-                type: metadata.type,
-                major: metadata.major,
-                minor: metadata.minor,
-                fileMode: metadata.fileMode,
-                uid: metadata.uid,
-                gid: metadata.gid
-            ))
-            cgroupRules.append(ContainerizationOCI.LinuxDeviceCgroup(
-                allow: true,
-                type: metadata.type,
-                major: metadata.major,
-                minor: metadata.minor,
-                access: mapping.permissions
-            ))
+            devices.append(
+                ContainerizationOCI.LinuxDevice(
+                    path: mapping.target,
+                    type: metadata.type,
+                    major: metadata.major,
+                    minor: metadata.minor,
+                    fileMode: metadata.fileMode,
+                    uid: metadata.uid,
+                    gid: metadata.gid
+                ))
+            cgroupRules.append(
+                ContainerizationOCI.LinuxDeviceCgroup(
+                    allow: true,
+                    type: metadata.type,
+                    major: metadata.major,
+                    minor: metadata.minor,
+                    access: mapping.permissions
+                ))
         }
 
         return (devices, cgroupRules)

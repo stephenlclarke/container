@@ -126,10 +126,10 @@ struct RuntimeConfigurationTests {
                 throttleWriteIOPSDevice: []
             ),
             deviceCgroupRules: [
-                ContainerizationOCI.LinuxDeviceCgroup(allow: true, type: "c", major: 1, minor: 3, access: "mr"),
+                ContainerizationOCI.LinuxDeviceCgroup(allow: true, type: "c", major: 1, minor: 3, access: "mr")
             ],
             devices: [
-                LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw"),
+                LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw")
             ]
         )
         let encodedData = try JSONEncoder().encode(linuxData)
