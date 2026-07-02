@@ -270,4 +270,5 @@ jobs:
           set -euo pipefail
           gh workflow run prebuilt-binaries.yml \
             --repo stephenlclarke/container-compose \
-            --ref main
+            --ref main \
+            -f ref=main
