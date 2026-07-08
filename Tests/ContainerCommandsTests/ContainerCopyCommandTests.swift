@@ -14,9 +14,9 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import Testing
 import Foundation
 import SystemPackage
+import Testing
 
 @testable import ContainerCommands
 

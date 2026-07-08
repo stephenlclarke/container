@@ -79,8 +79,7 @@ brew install stephenlclarke/tap/container
 The current branch, tag, and Homebrew policy for this four-repository stack
 lives in
 [`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
-New work targets `main` or a short-lived `develop/VERSION` branch; retired
-`release`, `release-*`, and branch-derived formula lanes are historical only.
+New work targets `main`; branch-derived formula lanes are historical only.
 
 Start the system service with:
 

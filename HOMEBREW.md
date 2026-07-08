@@ -6,9 +6,9 @@ This fork publishes prebuilt Homebrew assets through
 
 Homebrew formulae install prebuilt release-quality package assets. The stable
 formula is built from a validated bare semantic source tag on `main`, with the
-matching `containerization` fork pin recorded by this repository. Short-lived
-`develop/VERSION` branches can publish prerelease assets, but the stable formula
-does not point at those prereleases.
+matching `containerization` fork pin recorded by this repository. Main
+validation packages prove the branch can build but do not update the stable
+formula.
 
 The builder shim is not installed as a Homebrew formula. `container` pins the
 immutable `ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.6` image
@@ -28,17 +28,15 @@ container system version
 
 ## Branch and Release Policy
 
-Do not use the retired `release`, `release-*`, or branch-derived formula lanes
-for new work. The active stack policy is:
+Do not create branch-derived formula lanes for new work. The active stack
+policy is:
 
 - `main` is the current, releasable integration branch.
-- `develop/VERSION` is a short-lived development slice and is squashed back to
-  `main`.
 - Bare semantic tags on `main` publish stable assets and update
   `stephenlclarke/homebrew-tap` when the tap token is configured.
-- Prerelease assets from `develop/VERSION` are marked prerelease and are not the
-  stable Homebrew install lane.
+- Main validation packages are CI artifacts and are not the stable Homebrew
+  install formula.
 
-Keep detailed branch, tag, and Homebrew lane rules in
+Keep detailed branch, tag, and Homebrew formula rules in
 [`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md)
 so the four-repository stack has one source of truth.
