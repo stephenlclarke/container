@@ -41,6 +41,18 @@ extension Application {
             }
         }
 
+        static func localFilePath(_ path: String) -> FilePath {
+            let expanded = (path as NSString).expandingTildeInPath
+            let url: URL
+            if expanded.hasPrefix("/") {
+                url = URL(fileURLWithPath: expanded)
+            } else {
+                let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+                url = URL(fileURLWithPath: expanded, relativeTo: cwd)
+            }
+            return FilePath(url.standardizedFileURL.path)
+        }
+
         public init() {}
 
         public static let configuration = CommandConfiguration(
@@ -71,7 +83,7 @@ extension Application {
             switch (srcRef, dstRef) {
             case (.container(let id, let path), .local(let localPath)):
                 let srcPath = FilePath(path)
-                let destPath = FilePath((localPath as NSString).standardizingPath)
+                let destPath = Self.localFilePath(localPath)
                 var isDirectory: ObjCBool = false
                 let exists = FileManager.default.fileExists(atPath: destPath.string, isDirectory: &isDirectory)
 
@@ -96,7 +108,7 @@ extension Application {
                     try await client.copyOut(id: id, source: path, destination: destPath.string, followSymlink: followLink, preserveOwnership: archive)
                 }
             case (.local(let localPath), .container(let id, let path)):
-                let srcPath = FilePath((localPath as NSString).standardizingPath)
+                let srcPath = Self.localFilePath(localPath)
                 var isDirectory: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: srcPath.string, isDirectory: &isDirectory) else {
                     throw ContainerizationError(.notFound, message: "source path does not exist: \(localPath)")

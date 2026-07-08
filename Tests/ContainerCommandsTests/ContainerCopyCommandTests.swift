@@ -15,6 +15,8 @@
 //===----------------------------------------------------------------------===//
 
 import Testing
+import Foundation
+import SystemPackage
 
 @testable import ContainerCommands
 
@@ -75,5 +77,29 @@ struct ContainerCopyCommandTests {
         ])
 
         #expect(!command.followLink)
+    }
+
+    @Test func localFilePathResolvesRelativePathsAgainstWorkingDirectory() {
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let expected = cwd.appendingPathComponent("copy-output").standardizedFileURL.path
+
+        #expect(Application.ContainerCopy.localFilePath("copy-output") == FilePath(expected))
+    }
+
+    @Test func localFilePathStandardizesParentComponents() {
+        let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+        let expected = cwd.appendingPathComponent("copy-output").standardizedFileURL.path
+
+        #expect(Application.ContainerCopy.localFilePath("./scratch/../copy-output") == FilePath(expected))
+    }
+
+    @Test func localFilePathPreservesAbsolutePaths() {
+        #expect(Application.ContainerCopy.localFilePath("/tmp/../tmp/copy-output") == FilePath("/tmp/copy-output"))
+    }
+
+    @Test func localFilePathExpandsTilde() {
+        let expected = FilePath(FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("copy-output").path)
+
+        #expect(Application.ContainerCopy.localFilePath("~/copy-output") == expected)
     }
 }

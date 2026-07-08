@@ -96,6 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           asset_slug="${GITHUB_REF_NAME//\//-}"
+          short_sha="${GITHUB_SHA:0:12}"
           formula_slug="$(
             printf '%s' "$asset_slug" \
               | tr '[:upper:]' '[:lower:]' \
@@ -135,8 +136,8 @@ jobs:
           esac
           {
             printf 'asset_slug=%s\n' "$asset_slug"
-            printf 'tag=homebrew-%s\n' "$asset_slug"
-            printf 'version=%s-release-%s\n' "$asset_slug" "${GITHUB_SHA:0:12}"
+            printf 'tag=homebrew-%s-%s-%s\n' "$asset_slug" "${GITHUB_RUN_NUMBER}" "$short_sha"
+            printf 'version=%s-release.%s.%s\n' "$asset_slug" "${GITHUB_RUN_NUMBER}" "$short_sha"
           } >> "$GITHUB_OUTPUT"
 
       - name: Build package
@@ -160,8 +161,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git tag --force "$RELEASE_TAG" "$GITHUB_SHA"
-          git push --force origin "refs/tags/${RELEASE_TAG}"
+          tag_target="$(
+            git ls-remote --tags --refs origin "refs/tags/${RELEASE_TAG}" \
+              | awk '{print $1}' \
+              | tail -n 1
+          )"
+          if [[ -n "$tag_target" && "$tag_target" != "$GITHUB_SHA" ]]; then
+            printf 'release tag %s already points at %s, refusing to retarget it to %s\n' \
+              "$RELEASE_TAG" "$tag_target" "$GITHUB_SHA" >&2
+            exit 1
+          fi
 
           notes="$(mktemp)"
           generated_notes="$(mktemp)"
@@ -186,7 +195,6 @@ jobs:
               --prerelease
           else
             gh release edit "$RELEASE_TAG" \
-              --target "$GITHUB_SHA" \
               --title "${RELEASE_NAME}" \
               --notes-file "$notes" \
               --prerelease

@@ -46,7 +46,7 @@ struct TestCLIVersion {
         #endif
     }
 
-    @Test func defaultDisplaysTable() async throws {
+    @Test func defaultDisplaysSummary() async throws {
         try await ContainerFixture.with { f in
             let result = try f.run(["system", "version"])
             #expect(result.status == 0, "system version should succeed, stderr: \(result.error)")
@@ -54,15 +54,19 @@ struct TestCLIVersion {
 
             let lines = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 .components(separatedBy: .newlines)
-            #expect(lines.count >= 2)
-            #expect(
-                lines[0].contains("COMPONENT") && lines[0].contains("VERSION")
-                    && lines[0].contains("BUILD") && lines[0].contains("COMMIT"))
-            #expect(lines[1].hasPrefix("container"))
+            #expect(lines.count >= 7)
+            #expect(lines[0] == "container:")
+            #expect(lines.contains(where: { $0.contains("version") }))
+            #expect(lines.contains(where: { $0.contains("build") }))
+            #expect(lines.contains(where: { $0.contains("commit") }))
+            #expect(lines.contains(where: { $0.contains("builder-shim") }))
+            #expect(!lines[0].contains("COMPONENT"))
+            #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
+            #expect(!result.output.contains("version:  "))
             #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.6"))
 
             let expected = expectedBuildType()
-            #expect(lines.joined(separator: "\n").contains(" \(expected) "))
+            #expect(lines.contains(where: { $0.contains("build") && $0.contains(expected) }))
         }
     }
 
@@ -104,10 +108,11 @@ struct TestCLIVersion {
 
             let lines = result.output.trimmingCharacters(in: .whitespacesAndNewlines)
                 .components(separatedBy: .newlines)
-            #expect(lines.count >= 2)
-            #expect(
-                lines[0].contains("COMPONENT") && lines[0].contains("VERSION")
-                    && lines[0].contains("BUILD") && lines[0].contains("COMMIT"))
+            #expect(lines.count >= 7)
+            #expect(lines[0] == "container:")
+            #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
+            #expect(!result.output.contains("version:  "))
+            #expect(lines.contains(where: { $0.contains("builder-shim") }))
             #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.6"))
         }
     }
