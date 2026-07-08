@@ -268,15 +268,3 @@ jobs:
           git add "Formula/${{ steps.lane.outputs.formula }}"
           git commit -m "chore(homebrew): update ${{ github.ref_name }} container formula"
           git push
-
-      - name: Trigger matching container-compose package
-        if: steps.tap-token.outputs.available == 'true' && github.ref_name == 'main'
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh workflow run prebuilt-binaries.yml \
-            --repo stephenlclarke/container-compose \
-            --ref main \
-            -f ref=main
