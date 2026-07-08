@@ -63,7 +63,7 @@ let gitCommit = ProcessInfo.processInfo.environment["GIT_COMMIT"] ?? "unspecifie
 let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ?? "stephenlclarke/container"
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "0.13.6"
-let scVersion = "0.35.0"
+let scVersion = "0.36.0"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -111,7 +111,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.36.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.3.0"),
-        .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.4.4"),
+        .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.9.0"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.2.0"),
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.20.1"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin.git", from: "1.1.0"),
