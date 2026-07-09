@@ -256,7 +256,11 @@ final class ContainerFixture: Sendable {
         let tag = parts.count > 1 ? String(parts[1]) : "latest"
         let localRef = "\(testID)-\(name):\(tag)"
 
-        try run(["image", "tag", canonical, localRef]).check()
+        let tagResult = try run(["image", "tag", canonical, localRef])
+        if tagResult.status != 0 {
+            try doPull(canonical)
+            try run(["image", "tag", canonical, localRef]).check()
+        }
         addCleanup {
             _ = try? self.run(["image", "rm", localRef])
         }
