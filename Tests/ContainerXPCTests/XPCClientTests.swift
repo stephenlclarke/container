@@ -15,10 +15,12 @@
 //===----------------------------------------------------------------------===//
 
 #if os(macOS)
-import ContainerXPC
 import ContainerizationError
 @preconcurrency import Foundation
+import Logging
 import Testing
+
+@testable import ContainerXPC
 
 @Suite(.timeLimit(.minutes(1)), .serialized)
 struct XPCClientTests {
@@ -84,6 +86,79 @@ struct XPCClientTests {
 
         let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
         #expect(response.string(key: "result") == "ok")
+    }
+
+    @Test
+    func serverRouteSessionDisconnectHandlersFire() async throws {
+        let probe = DisconnectProbe()
+        let listener = xpc_connection_create(nil, nil)
+        let server = XPCServer(
+            connection: listener,
+            routes: [
+                "register-disconnect": { message, session in
+                    await session.onDisconnect {
+                        await probe.fire()
+                    }
+                    let response = message.reply()
+                    response.set(key: "result", value: "registered")
+                    return response
+                }
+            ],
+            log: Logger(label: "test.container.xpc.server-session")
+        )
+        let serverTask = Task {
+            try await server.listen()
+        }
+        defer {
+            serverTask.cancel()
+            xpc_connection_cancel(listener)
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        let endpoint = xpc_endpoint_create(listener)
+        let client = XPCClient(connection: xpc_connection_create_from_endpoint(endpoint), label: "test.container.xpc")
+        let response = try await client.send(XPCMessage(route: "register-disconnect"), responseTimeout: .seconds(1))
+        #expect(response.string(key: "result") == "registered")
+
+        client.close()
+        try await probe.wait(timeout: .seconds(1))
+    }
+}
+
+private actor DisconnectProbe {
+    private var fired = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func fire() {
+        fired = true
+        for waiter in waiters {
+            waiter.resume()
+        }
+        waiters.removeAll()
+    }
+
+    func wait(timeout: Duration) async throws {
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                await self.waitForFire()
+            }
+            group.addTask {
+                try await Task.sleep(for: timeout)
+                throw ContainerizationError(.timeout, message: "disconnect handler did not fire")
+            }
+
+            _ = try await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private func waitForFire() async {
+        if fired {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
     }
 }
 
