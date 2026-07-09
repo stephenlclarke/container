@@ -34,7 +34,7 @@ Stephen Clarke's fork is part of a four-repository preview stack:
   fork records the matching `containerization` pin for the current stack lane.
 - [`container-builder-shim`](https://github.com/stephenlclarke/container-builder-shim):
   the Go BuildKit bridge used by `container build`; this package pins the
-  immutable builder image version, currently `0.13.6`, and release builds can
+  immutable builder image version, currently `0.13.8`, and release builds can
   override the repository or version with `BUILDER_SHIM_REPOSITORY` and
   `BUILDER_SHIM_VERSION`.
 

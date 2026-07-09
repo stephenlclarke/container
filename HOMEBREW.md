@@ -11,7 +11,7 @@ validation packages prove the branch can build but do not update the stable
 formula.
 
 The builder shim is not installed as a Homebrew formula. `container` pins the
-immutable `ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.6` image
+immutable `ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8` image
 used by build workflows.
 
 Use the fully qualified formula name so Homebrew does not resolve
