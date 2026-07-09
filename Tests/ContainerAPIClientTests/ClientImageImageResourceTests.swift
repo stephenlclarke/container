@@ -42,6 +42,13 @@ struct ClientImageImageResourceTests {
               "architecture": "arm64",
               "os": "linux",
               "config": {
+                "Labels": {
+                  "com.docker.compose.bridge": "transformation"
+                },
+                "ExposedPorts": {
+                  "8080/tcp": {},
+                  "8443/udp": {}
+                },
                 "Healthcheck": {
                   "Test": ["CMD-SHELL", "curl -f http://localhost/health || exit 1"],
                   "Interval": 5000000000,
@@ -96,6 +103,8 @@ struct ClientImageImageResourceTests {
 
         #expect(resource.displayReference == "example:latest")
         #expect(variant.platform == platform)
+        #expect(variant.imageConfigLabels == ["com.docker.compose.bridge": "transformation"])
+        #expect(variant.exposedPorts == ["8080/tcp", "8443/udp"])
         #expect(healthCheck.test == ["CMD-SHELL", "curl -f http://localhost/health || exit 1"])
         #expect(healthCheck.intervalInNanoseconds == 5_000_000_000)
         #expect(healthCheck.timeoutInNanoseconds == 1_000_000_000)

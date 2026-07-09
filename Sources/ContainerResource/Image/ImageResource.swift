@@ -93,6 +93,16 @@ public struct ImageResource: ManagedResource {
             self.config = config
             self.healthCheck = healthCheck
         }
+
+        /// Docker image config labels for this platform variant.
+        public var imageConfigLabels: [String: String] {
+            config.config?.labels ?? [:]
+        }
+
+        /// Docker image config exposed ports for this platform variant.
+        public var exposedPorts: [String] {
+            Array((config.config?.exposedPorts ?? [:]).keys).sorted()
+        }
     }
 
     public struct ImageConfiguration: Sendable, Codable {
