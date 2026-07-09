@@ -76,6 +76,24 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesPidsLimitFlag() throws {
+        let command = try Application.ContainerRun.parse(["--pids-limit", "128", "alpine", "true"])
+
+        #expect(command.managementFlags.pidsLimit == 128)
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func createParsesPidsLimitFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--pids-limit", "-1", "alpine", "true"])
+
+        #expect(command.managementFlags.pidsLimit == -1)
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesDeviceCgroupRuleFlag() throws {
         let command = try Application.ContainerRun.parse(["--device-cgroup-rule", "c 1:3 mr", "alpine", "true"])
 
@@ -122,5 +140,26 @@ struct ContainerRunCreateCommandTests {
             decoded.devices == [
                 LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw")
             ])
+    }
+
+    @Test
+    func runtimeDataEncodesPidsLimitFlag() throws {
+        let command = try Application.ContainerRun.parse(["--pids-limit", "128", "alpine", "true"])
+
+        let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.pidsLimit == 128)
+    }
+
+    @Test
+    func runtimeDataRejectsInvalidPidsLimitFlag() throws {
+        let command = try Application.ContainerRun.parse(["--pids-limit", "0", "alpine", "true"])
+
+        #expect {
+            _ = try LinuxRuntimeData.encoded(from: command.managementFlags)
+        } throws: { _ in
+            true
+        }
     }
 }

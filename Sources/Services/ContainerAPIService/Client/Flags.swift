@@ -210,6 +210,7 @@ public struct Flags {
             runtime: String?,
             ssh: Bool,
             shmSize: String?,
+            pidsLimit: Int64? = nil,
             blkio: [String] = [],
             deviceCgroupRules: [String] = [],
             devices: [String] = [],
@@ -259,6 +260,7 @@ public struct Flags {
             self.runtime = runtime
             self.ssh = ssh
             self.shmSize = shmSize
+            self.pidsLimit = pidsLimit
             self.blkio = blkio
             self.deviceCgroupRules = deviceCgroupRules
             self.devices = devices
@@ -426,6 +428,13 @@ public struct Flags {
 
         @Option(name: .customLong("shm-size"), help: "Size of /dev/shm (e.g. 64M, 1G)")
         public var shmSize: String?
+
+        @Option(
+            name: .customLong("pids-limit"),
+            parsing: .unconditional,
+            help: "Tune container pids limit; use -1 for unlimited"
+        )
+        public var pidsLimit: Int64?
 
         @Option(
             name: .customLong("blkio"),

@@ -1201,6 +1201,7 @@ public actor RuntimeService {
             let linuxData = try JSONDecoder().decode(LinuxRuntimeData.self, from: runtimeData)
             let deviceMapping = try resolveDeviceMappings(linuxData.devices)
             czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
+            czConfig.pidsLimit = linuxData.pidsLimit
             czConfig.devices.append(contentsOf: deviceMapping.devices)
             czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules)
         }

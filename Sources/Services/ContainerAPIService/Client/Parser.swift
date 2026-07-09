@@ -136,6 +136,21 @@ public struct Parser {
         return resource
     }
 
+    /// Parses a Docker-compatible pids cgroup limit. Use `-1` for unlimited;
+    /// omit the flag to leave the runtime default unchanged.
+    public static func pidsLimit(_ limit: Int64?) throws -> Int64? {
+        guard let limit else {
+            return nil
+        }
+        guard limit == -1 || limit > 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--pids-limit must be -1 or a positive integer"
+            )
+        }
+        return limit
+    }
+
     /// Parses repeatable `--sysctl name=value` arguments into the container
     /// configuration model. The runtime decides whether each key is supported
     /// in the container's namespace.

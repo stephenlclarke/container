@@ -40,6 +40,9 @@ public struct LinuxRuntimeData: Codable, Sendable {
     /// Block I/O cgroup tuning carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let blockIO: ContainerizationOCI.LinuxBlockIO?
+    /// Process count limit carried opaquely through
+    /// `RuntimeConfiguration.runtimeData`.
+    public let pidsLimit: Int64?
     /// Device cgroup rules carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
@@ -49,11 +52,13 @@ public struct LinuxRuntimeData: Codable, Sendable {
     public init(
         variant: String? = nil,
         blockIO: ContainerizationOCI.LinuxBlockIO? = nil,
+        pidsLimit: Int64? = nil,
         deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = [],
         devices: [LinuxDeviceMapping] = []
     ) {
         self.variant = variant
         self.blockIO = blockIO
+        self.pidsLimit = pidsLimit
         self.deviceCgroupRules = deviceCgroupRules
         self.devices = devices
     }
@@ -61,6 +66,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case variant
         case blockIO
+        case pidsLimit
         case deviceCgroupRules
         case devices
     }
@@ -69,6 +75,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         variant = try container.decodeIfPresent(String.self, forKey: .variant)
         blockIO = try container.decodeIfPresent(ContainerizationOCI.LinuxBlockIO.self, forKey: .blockIO)
+        pidsLimit = try container.decodeIfPresent(Int64.self, forKey: .pidsLimit)
         deviceCgroupRules = try container.decodeIfPresent([ContainerizationOCI.LinuxDeviceCgroup].self, forKey: .deviceCgroupRules) ?? []
         devices = try container.decodeIfPresent([LinuxDeviceMapping].self, forKey: .devices) ?? []
     }

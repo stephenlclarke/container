@@ -1582,6 +1582,25 @@ struct ParserTest {
         }
     }
 
+    @Test func testPidsLimitAcceptsPositiveAndUnlimitedValues() throws {
+        #expect(try Parser.pidsLimit(128) == 128)
+        #expect(try Parser.pidsLimit(-1) == -1)
+        #expect(try Parser.pidsLimit(nil) == nil)
+    }
+
+    @Test func testPidsLimitRejectsZeroAndInvalidNegativeValues() throws {
+        #expect {
+            _ = try Parser.pidsLimit(0)
+        } throws: { _ in
+            true
+        }
+        #expect {
+            _ = try Parser.pidsLimit(-2)
+        } throws: { _ in
+            true
+        }
+    }
+
     @Test func testBlockIOSpecsCombined() throws {
         let parsed = try Parser.blockIO(specs: [
             "weight=500,leaf-weight=300",
