@@ -32,6 +32,21 @@ struct BuilderMetadataTests {
     }
 
     @Test
+    func buildExportStringValuePreservesDestination() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("container-builder-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: directory)
+        }
+
+        let export = try Builder.BuildExport(from: "type=tar,dest=\(directory.path)")
+
+        #expect(export.destination?.lastPathComponent == "out.tar")
+        #expect(try export.stringValue == "type=tar,dest=\(directory.appendingPathComponent("out.tar").path)")
+    }
+
+    @Test
     func buildExportRejectsMalformedFields() throws {
         #expect(throws: Builder.Error.self) {
             try Builder.BuildExport(from: "type=oci,malformed")

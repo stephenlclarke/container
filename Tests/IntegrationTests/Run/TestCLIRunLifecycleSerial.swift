@@ -22,13 +22,9 @@ import Testing
 struct TestCLIRunLifecycleSerial {
     @Test func testStartPortBindFails() async throws {
         try await ContainerFixture.with { f in
-            let port = UInt16.random(in: 50000..<60000)
+            let port = try f.availableTCPPort()
             let serverImage = "docker.io/library/python:alpine"
             try f.run(["image", "pull", serverImage]).check()
-
-            let name = "\(f.testID)-c"
-            try f.doCreate(name: name, ports: ["\(port)"])
-            f.addCleanup { try? f.doRemove(name) }
 
             let server = "\(f.testID)-server"
             try f.doLongRun(
@@ -37,6 +33,10 @@ struct TestCLIRunLifecycleSerial {
                 args: ["--publish", "\(port):\(port)"],
                 containerArgs: ["python3", "-m", "http.server", "\(port)"])
             f.addCleanup { try? f.doStop(server) }
+
+            let name = "\(f.testID)-c"
+            try f.doCreate(name: name, ports: ["\(port)"])
+            f.addCleanup { try? f.doRemove(name) }
 
             let startResult = try f.run(["start", name])
             #expect(startResult.status != 0, "expected start to fail when port is already bound")

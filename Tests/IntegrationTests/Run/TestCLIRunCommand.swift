@@ -636,7 +636,7 @@ struct TestCLIRunCommand {
     @Test func testForwardTCP() async throws {
         try await ContainerFixture.with { f in
             let c = "\(f.testID)-c"
-            let proxyPort = UInt16.random(in: 50000..<55000)
+            let proxyPort = try f.availableTCPPort()
             let serverPort = UInt16.random(in: 55000..<60000)
             try f.doLongRun(
                 name: c, image: "docker.io/library/python:alpine",
@@ -669,7 +669,7 @@ struct TestCLIRunCommand {
     @Test func testForwardTCPPortRange() async throws {
         try await ContainerFixture.with { f in
             let range = UInt16(10)
-            let proxyPortStart = UInt16.random(in: 50000..<55000)
+            let proxyPortStart = try f.availableTCPPortRange(count: range + 1)
             let serverPortStart = UInt16.random(in: 55000..<60000)
             let c = "\(f.testID)-c"
             try f.doLongRun(
@@ -704,7 +704,7 @@ struct TestCLIRunCommand {
     @Test func testForwardTCPv6() async throws {
         try await ContainerFixture.with { f in
             let c = "\(f.testID)-c"
-            let proxyPort = UInt16.random(in: 50000..<55000)
+            let proxyPort = try f.availableTCPPortV6()
             let serverPort = UInt16.random(in: 55000..<60000)
             try f.doLongRun(
                 name: c, image: "docker.io/library/node:alpine",

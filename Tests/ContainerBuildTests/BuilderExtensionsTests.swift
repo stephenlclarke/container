@@ -183,6 +183,13 @@ import Testing
         #expect(false == fileURL.parentOf(httpURL))
     }
 
+    @Test func testParentOfTreatsPrivateVarAsAlias() throws {
+        let parentDir = URL(fileURLWithPath: "/private/var/folders/container-tests/context")
+        let childFile = URL(fileURLWithPath: "/var/folders/container-tests/context/src/file.txt")
+
+        #expect(parentDir.parentOf(childFile))
+    }
+
     @Test func testRelativeChildPathDirectChild() throws {
         let parentDir = baseTempURL.appendingPathComponent("dir1")
         let childFile = parentDir.appendingPathComponent("dir2").appendingPathComponent("file")
@@ -273,6 +280,20 @@ import Testing
 
         #expect(try childEncoded.relativeChildPath(to: parentDir) == "dir2 X/file1")
         #expect(try childEncoded.relativeChildPath(to: parentEncoded) == "dir2 X/file1")
+    }
+
+    @Test func testRelativeChildPathTreatsPrivateVarAsAlias() throws {
+        let parentDir = URL(fileURLWithPath: "/private/var/folders/container-tests/context")
+        let childFile = URL(fileURLWithPath: "/var/folders/container-tests/context/src/file.txt")
+
+        #expect(try childFile.relativeChildPath(to: parentDir) == "src/file.txt")
+    }
+
+    @Test func testRelativePathFromTreatsPrivateVarAsAlias() {
+        let destination = URL(fileURLWithPath: "/private/var/folders/container-tests/context/target.txt")
+        let source = URL(fileURLWithPath: "/var/folders/container-tests/context/link.txt")
+
+        #expect(destination.relativePathFrom(from: source) == "../target.txt")
     }
 
     // MARK: - relativeChildPath Error Tests

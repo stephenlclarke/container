@@ -21,6 +21,26 @@ import Testing
 
 struct BuildFSSyncTests {
     @Test
+    func fileInfoUsesLiteralSymlinkTarget() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data("payload".utf8).write(to: root.appendingPathComponent("payload.txt"))
+        let link = root.appendingPathComponent("payload-link.txt")
+        try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: "payload.txt")
+
+        let info = try BuildFSSync.FileInfo(path: link, contextDir: root)
+
+        #expect(info.name == "payload-link.txt")
+        #expect(info.target == "payload.txt")
+    }
+
+    @Test
     func readUsesNamedContextDirectory() async throws {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
