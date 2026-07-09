@@ -31,6 +31,10 @@ public struct ContainersHarness: Sendable {
         self.service = service
     }
 
+    private static func processIsClientAttached(stdio: [FileHandle?]) -> Bool {
+        stdio.dropFirst().contains { $0 != nil }
+    }
+
     @Sendable
     public func list(_ message: XPCMessage) async throws -> XPCMessage {
         var filters = ContainerListFilters.all
@@ -229,7 +233,7 @@ public struct ContainersHarness: Sendable {
     }
 
     @Sendable
-    public func createProcess(_ message: XPCMessage) async throws -> XPCMessage {
+    public func createProcess(_ message: XPCMessage, _ session: XPCServerSession) async throws -> XPCMessage {
         let id = message.string(key: .id)
         guard let id else {
             throw ContainerizationError(
@@ -253,6 +257,23 @@ public struct ContainersHarness: Sendable {
             config: config,
             stdio: stdio
         )
+
+        if Self.processIsClientAttached(stdio: stdio) {
+            await session.onDisconnect { [service, log] in
+                do {
+                    try await service.kill(id: id, processID: processID, signal: "SIGKILL")
+                } catch {
+                    log.debug(
+                        "process cleanup after client disconnect failed",
+                        metadata: [
+                            "id": "\(id)",
+                            "processID": "\(processID)",
+                            "error": "\(error)",
+                        ]
+                    )
+                }
+            }
+        }
 
         return message.reply()
     }
