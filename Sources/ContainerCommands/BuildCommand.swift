@@ -289,7 +289,6 @@ extension Application {
                 activeBuilder = builder
 
                 let buildFileData: Data
-                var ignoreFileData: Data? = nil
                 // Dockerfile should be read from stdin
                 if dockerfile == "-" {
                     let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("Dockerfile-\(UUID().uuidString)")
@@ -314,10 +313,9 @@ extension Application {
                     try fileHandle.close()
                     buildFileData = try Data(contentsOf: URL(filePath: tempFile.path()))
                 } else {
-                    let ignoreFileURL = URL(filePath: dockerfile + ".dockerignore")
                     buildFileData = try Data(contentsOf: URL(filePath: dockerfile))
-                    ignoreFileData = try? Data(contentsOf: ignoreFileURL)
                 }
+                let ignoreFileData = try Self.dockerignoreData(dockerfile: dockerfile, contextDir: contextDir)
 
                 // BUG: See https://github.com/apple/container/issues/735.
                 // Reject dockerfiles larger than 16kb before attempting to build.
@@ -537,6 +535,21 @@ extension Application {
                 }
                 throw NSError(domain: "Build", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(error)"])
             }
+        }
+
+        static func dockerignoreData(dockerfile: String, contextDir: String) throws -> Data? {
+            if dockerfile != "-" {
+                let dockerfileIgnoreURL = URL(filePath: dockerfile + ".dockerignore")
+                if FileManager.default.fileExists(atPath: dockerfileIgnoreURL.path) {
+                    return try Data(contentsOf: dockerfileIgnoreURL)
+                }
+            }
+
+            let contextIgnoreURL = URL(filePath: contextDir).appending(path: ".dockerignore")
+            if FileManager.default.fileExists(atPath: contextIgnoreURL.path) {
+                return try Data(contentsOf: contextIgnoreURL)
+            }
+            return nil
         }
 
         public mutating func validate() throws {

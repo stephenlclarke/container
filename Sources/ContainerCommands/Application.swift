@@ -105,7 +105,7 @@ public struct Application: AsyncLoggableCommand {
         defaultSubcommand: DefaultCommand.self
     )
 
-    public static func main() async throws {
+    public static func main(arguments: [String] = Array(CommandLine.arguments.dropFirst())) async throws {
         restoreCursorAtExit()
 
         #if DEBUG
@@ -120,8 +120,7 @@ public struct Application: AsyncLoggableCommand {
         FileHandle.standardError.write(warningData)
         #endif
 
-        let fullArgs = CommandLine.arguments
-        let args = Array(fullArgs.dropFirst())
+        let args = Self.normalizeGlobalFlags(arguments)
 
         do {
             var command = try Application.parseAsRoot(args)
@@ -133,7 +132,7 @@ public struct Application: AsyncLoggableCommand {
         } catch {
             // --help/-h on the root command (e.g. `container --help`) is intercepted
             // by ArgumentParser and lands here.
-            if isRootHelpRequest(fullArgs) {
+            if isRootHelpRequest(args) {
                 let pluginLoader = await pluginLoaderForHelp()
                 await Self.printModifiedHelpText(pluginLoader: pluginLoader)
                 return
@@ -146,6 +145,37 @@ public struct Application: AsyncLoggableCommand {
                 Application.exit(withError: error)
             }
         }
+    }
+
+    // ArgumentParser expects global flags to appear before the subcommand they
+    // apply to. Users frequently pass `--debug` after the subcommand (for example
+    // `container run --debug ...`), which previously triggered the unhelpful
+    // "Unknown option" error. To provide the desired UX, collect any known
+    // global flags before that subcommand while respecting `--` passthrough so
+    // container process arguments remain untouched.
+    public static func normalizeGlobalFlags(_ arguments: [String]) -> [String] {
+        var collectedGlobals: [String] = []
+        var remaining: [String] = []
+        var passthrough = false
+
+        for argument in arguments {
+            if !passthrough {
+                if argument == "--" {
+                    passthrough = true
+                    remaining.append(argument)
+                    continue
+                }
+
+                if Self.globalFlags.contains(argument) {
+                    collectedGlobals.append(argument)
+                    continue
+                }
+            }
+
+            remaining.append(argument)
+        }
+
+        return collectedGlobals + remaining
     }
 
     public static func createPluginLoader() async throws -> PluginLoader {
@@ -176,7 +206,26 @@ public struct Application: AsyncLoggableCommand {
     }
 
     static func isRootHelpRequest(_ arguments: [String]) -> Bool {
-        arguments.count <= 2 && (arguments.contains("-h") || arguments.contains("--help"))
+        var rootArguments = arguments[...]
+
+        while let first = rootArguments.first, Self.globalFlags.contains(first) {
+            rootArguments = rootArguments.dropFirst()
+        }
+
+        if let first = rootArguments.first, Self.isCommandName(first) {
+            rootArguments = rootArguments.dropFirst()
+        }
+
+        return rootArguments.allSatisfy { $0 == "-h" || $0 == "--help" || Self.globalFlags.contains($0) }
+            && rootArguments.contains { $0 == "-h" || $0 == "--help" }
+    }
+
+    private static func isCommandName(_ argument: String) -> Bool {
+        URL(fileURLWithPath: argument).lastPathComponent == Self.configuration.commandName
+    }
+
+    private static var globalFlags: Set<String> {
+        ["--debug"]
     }
 
     private static func createPluginLoader(healthTimeout: Duration, wallTimeout: Duration, healthCheck: @escaping APIServerHealthCheck) async throws -> PluginLoader {

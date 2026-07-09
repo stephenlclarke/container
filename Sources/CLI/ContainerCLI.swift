@@ -32,7 +32,8 @@ public struct ContainerCLI: AsyncParsableCommand {
     }
 
     public func run() async throws {
-        var application = try Application.parse(arguments)
+        let normalizedArguments = Application.normalizeGlobalFlags(arguments)
+        var application = try Application.parse(normalizedArguments)
         try application.validate()
         try application.run()
     }

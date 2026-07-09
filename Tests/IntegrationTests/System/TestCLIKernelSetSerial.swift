@@ -56,10 +56,8 @@ struct TestCLIKernelSetSerial {
             .relativePath
 
         try await ContainerFixture.with { f in
-            f.addCleanup { resetKernelToRecommended(f) }
-            let tempDir = URL(filePath: f.testDir.string)
-            let localTarPath = tempDir.appending(path: remoteTar.lastPathComponent)
-            try await ContainerAPIClient.FileDownloader.downloadFile(url: remoteTar, to: localTarPath)
+            f.addCleanup { await resetKernelToRecommended(f) }
+            let localTarPath = try await cachedKernelTar()
             try f.run(["system", "kernel", "set", "--force", "--tar", localTarPath.path, "--binary", symlinkBinaryPath]).check()
             try await validateGuestKernel(f)
         }
@@ -72,7 +70,7 @@ struct TestCLIKernelSetSerial {
             .relativePath
 
         try await ContainerFixture.with { f in
-            f.addCleanup { resetKernelToRecommended(f) }
+            f.addCleanup { await resetKernelToRecommended(f) }
             try f.run(["system", "kernel", "set", "--force", "--tar", remoteTar.absoluteString, "--binary", symlinkBinaryPath]).check()
             try await validateGuestKernel(f)
         }
@@ -80,10 +78,9 @@ struct TestCLIKernelSetSerial {
 
     @Test func fromLocalDisk() async throws {
         try await ContainerFixture.with { f in
-            f.addCleanup { resetKernelToRecommended(f) }
+            f.addCleanup { await resetKernelToRecommended(f) }
             let tempDir = URL(filePath: f.testDir.string)
-            let localTarPath = tempDir.appending(path: remoteTar.lastPathComponent)
-            try await ContainerAPIClient.FileDownloader.downloadFile(url: remoteTar, to: localTarPath)
+            let localTarPath = try await cachedKernelTar()
 
             let targetPath = tempDir.appending(path: URL(string: defaultBinaryPath)!.lastPathComponent)
             let archiveReader = try ArchiveReader(file: localTarPath)
@@ -97,19 +94,27 @@ struct TestCLIKernelSetSerial {
 
     // MARK: - Private helpers
 
+    private func cachedKernelTar() async throws -> URL {
+        try await KernelArchiveCache.shared.tar(remoteTar: remoteTar, kernelFilePath: defaultBinaryPath)
+    }
+
     /// Resets the kernel back to the recommended default. Used as a cleanup at the
     /// end of every test so a failure here doesn't silently affect the next test —
     /// the suite is serialised and the kernel is global state. The fixture's
     /// cleanup runner swallows throws with `try?`, so we record an issue against
     /// the current test rather than rely on error propagation.
-    private func resetKernelToRecommended(_ f: ContainerFixture) {
+    private func resetKernelToRecommended(_ f: ContainerFixture) async {
         do {
-            let result = try f.run(["system", "kernel", "set", "--recommended", "--force"])
+            let kernel = try await KernelArchiveCache.shared.kernelBinary(
+                remoteTar: remoteTar,
+                kernelFilePath: defaultBinaryPath
+            )
+            let result = try f.run(["system", "kernel", "set", "--force", "--binary", kernel.path])
             if result.status != 0 {
-                Issue.record("kernel reset to --recommended failed (status \(result.status)): \(result.error)")
+                Issue.record("kernel reset failed (status \(result.status)): \(result.error)")
             }
         } catch {
-            Issue.record("kernel reset to --recommended could not run: \(error)")
+            Issue.record("kernel reset could not run: \(error)")
         }
     }
 
@@ -125,6 +130,78 @@ struct TestCLIKernelSetSerial {
             #expect(
                 release == expectedKernelRelease,
                 "expected guest kernel \(expectedKernelRelease), got \(release)")
+        }
+    }
+}
+
+private actor KernelArchiveCache {
+    static let shared = KernelArchiveCache()
+
+    private let fileManager = FileManager.default
+
+    func tar(remoteTar: URL, kernelFilePath: String) async throws -> URL {
+        let cacheDirectory = try cacheDirectory()
+        let destination = cacheDirectory.appending(path: remoteTar.lastPathComponent)
+        if isValidTar(destination, kernelFilePath: kernelFilePath) {
+            return destination
+        }
+
+        try? fileManager.removeItem(at: destination)
+        let tempURL = cacheDirectory.appending(path: "\(remoteTar.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: tempURL) }
+
+        try await ContainerAPIClient.FileDownloader.downloadFile(url: remoteTar, to: tempURL)
+        guard isValidTar(tempURL, kernelFilePath: kernelFilePath) else {
+            throw NSError(
+                domain: "TestCLIKernelSetSerial",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "downloaded kernel archive does not contain \(kernelFilePath)"]
+            )
+        }
+
+        try fileManager.moveItem(at: tempURL, to: destination)
+        return destination
+    }
+
+    func kernelBinary(remoteTar: URL, kernelFilePath: String) async throws -> URL {
+        let tarURL = try await tar(remoteTar: remoteTar, kernelFilePath: kernelFilePath)
+        let destination = try cacheDirectory().appending(path: URL(filePath: kernelFilePath).lastPathComponent)
+        if fileManager.fileExists(atPath: destination.path) {
+            return destination
+        }
+
+        let archiveReader = try ArchiveReader(file: tarURL)
+        let (_, data) = try archiveReader.extractFile(path: kernelFilePath)
+        let tempURL =
+            destination
+            .deletingLastPathComponent()
+            .appending(path: "\(destination.lastPathComponent).\(UUID().uuidString).tmp")
+        defer { try? fileManager.removeItem(at: tempURL) }
+
+        try data.write(to: tempURL, options: .atomic)
+        try fileManager.moveItem(at: tempURL, to: destination)
+        return destination
+    }
+
+    private func cacheDirectory() throws -> URL {
+        let scratchRoot =
+            ProcessInfo.processInfo.environment["CLITEST_SCRATCH_ROOT"]
+            ?? FileManager.default.temporaryDirectory.path
+        let directory = URL(filePath: scratchRoot).appending(path: "kernel-cache")
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    private func isValidTar(_ url: URL, kernelFilePath: String) -> Bool {
+        guard fileManager.fileExists(atPath: url.path) else {
+            return false
+        }
+        do {
+            let archiveReader = try ArchiveReader(file: url)
+            _ = try archiveReader.extractFile(path: kernelFilePath)
+            return true
+        } catch {
+            return false
         }
     }
 }

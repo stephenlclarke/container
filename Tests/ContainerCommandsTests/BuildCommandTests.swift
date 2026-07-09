@@ -22,6 +22,58 @@ import Testing
 
 struct BuildCommandTests {
     @Test
+    func dockerignoreFallsBackToContextFile() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let context = directory.appendingPathComponent("context", isDirectory: true)
+        try FileManager.default.createDirectory(at: context, withIntermediateDirectories: true)
+        try Data("FROM scratch\n".utf8).write(to: directory.appendingPathComponent("Dockerfile"))
+        try Data("ignored.txt\n".utf8).write(to: context.appendingPathComponent(".dockerignore"))
+
+        let data = try Application.BuildCommand.dockerignoreData(
+            dockerfile: directory.appendingPathComponent("Dockerfile").path,
+            contextDir: context.path
+        )
+
+        #expect(data == Data("ignored.txt\n".utf8))
+    }
+
+    @Test
+    func dockerignoreSpecificFileTakesPrecedence() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let context = directory.appendingPathComponent("context", isDirectory: true)
+        try FileManager.default.createDirectory(at: context, withIntermediateDirectories: true)
+        let dockerfile = directory.appendingPathComponent("Dockerfile")
+        try Data("FROM scratch\n".utf8).write(to: dockerfile)
+        try Data("specific.txt\n".utf8).write(to: directory.appendingPathComponent("Dockerfile.dockerignore"))
+        try Data("general.txt\n".utf8).write(to: context.appendingPathComponent(".dockerignore"))
+
+        let data = try Application.BuildCommand.dockerignoreData(
+            dockerfile: dockerfile.path,
+            contextDir: context.path
+        )
+
+        #expect(data == Data("specific.txt\n".utf8))
+    }
+
+    @Test
+    func dockerignoreForStdinUsesContextFile() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let context = directory.appendingPathComponent("context", isDirectory: true)
+        try FileManager.default.createDirectory(at: context, withIntermediateDirectories: true)
+        try Data("stdin-ignore.txt\n".utf8).write(to: context.appendingPathComponent(".dockerignore"))
+
+        let data = try Application.BuildCommand.dockerignoreData(
+            dockerfile: "-",
+            contextDir: context.path
+        )
+
+        #expect(data == Data("stdin-ignore.txt\n".utf8))
+    }
+
+    @Test
     func buildParsesRepeatedSSHOptions() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -59,6 +111,12 @@ struct BuildCommandTests {
         #expect(command.ssh == ["default", "git=/tmp/agent.sock"])
         #expect(command.contextDir == directory.path)
         #expect(command.targetImageNames == ["example/app:latest"])
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     @Test

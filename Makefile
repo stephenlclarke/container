@@ -197,7 +197,7 @@ test: build-tests
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
-install-kernel:
+install-kernel: container
 	@echo Stopping system before installing kernel
 	@bin/container system stop || true
 	@echo Starting system to install kernel
@@ -318,7 +318,14 @@ define RUN_INTEGRATION
 endef
 
 .PHONY: integration
-integration: init-block
+# integration uses bin/container from the project install path and then runs
+# init-block before RUN_INTEGRATION clears APP_ROOT. Keep the prerequisites
+# ordered even under make -j, and preserve the kernels installed by init-block by
+# default while allowing command-line PRESERVE_KERNELS=false when a full
+# app-root wipe is needed.
+.NOTPARALLEL: integration
+integration coverage-integration: PRESERVE_KERNELS = true
+integration: container init-block
 	$(RUN_INTEGRATION)
 
 .PHONY: coverage-integration

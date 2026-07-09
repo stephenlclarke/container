@@ -39,4 +39,15 @@ struct TestCLIHelp {
             )
         }
     }
+
+    @Test func testHelpDebug() async throws {
+        try await ContainerFixture.with { f in
+            let result = try f.run(["help", "--debug"])
+            #expect(result.status == 0, "help should succeed, stderr: \(result.error)")
+            #expect(
+                result.output.contains("OVERVIEW: A container platform for macOS"),
+                "output should contain overview section"
+            )
+        }
+    }
 }

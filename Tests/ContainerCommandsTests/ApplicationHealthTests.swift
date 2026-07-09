@@ -30,12 +30,27 @@ struct ApplicationHealthTests {
     @Test(arguments: [
         (["container", "--help"], true),
         (["container", "-h"], true),
+        (["container", "--help", "--debug"], true),
+        (["--debug", "container", "--help"], true),
+        (["/usr/local/bin/container", "--help"], true),
+        (["--help", "--debug"], true),
         (["container"], false),
+        (["run", "--help"], false),
+        (["container", "run", "--help"], false),
         (["container", "compose", "--help"], false),
         (["container", "--version"], false),
     ])
     func rootHelpRequestDetection(arguments: [String], expected: Bool) {
         #expect(Application.isRootHelpRequest(arguments) == expected)
+    }
+
+    @Test(arguments: [
+        (["run", "--debug", "alpine"], ["--debug", "run", "alpine"]),
+        (["--debug", "run", "alpine"], ["--debug", "run", "alpine"]),
+        (["run", "alpine", "--", "--debug"], ["run", "alpine", "--", "--debug"]),
+    ])
+    func normalizeGlobalFlags(arguments: [String], expected: [String]) {
+        #expect(Application.normalizeGlobalFlags(arguments) == expected)
     }
 
     @Test
