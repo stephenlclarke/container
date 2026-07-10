@@ -51,7 +51,6 @@ class Container < Formula
 
   service do
     run [opt_bin/"container", "system", "start"]
-    keep_alive true
     working_dir var
     log_path var/"log/container.log"
     error_log_path var/"log/container.log"
