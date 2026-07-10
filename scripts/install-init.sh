@@ -74,9 +74,13 @@ if [ "${CONTAINERIZATION_VERSION}" == "unspecified" ] ; then
 		echo "editable containerization directory at ${CONTAINERIZATION_PATH} does not exist"
 		exit 1
 	fi
+	if [ ! -w "${CONTAINERIZATION_PATH}/Package.swift" ] ; then
+		echo "containerization is a read-only source-control checkout; skipping editable init image build"
+		exit 0
+	fi
 	echo "Creating InitImage"
-	make -C ${CONTAINERIZATION_PATH} init
-	${CONTAINERIZATION_PATH}/bin/cctl images save -o /tmp/init.tar ${IMAGE_NAME}
+	make -C "${CONTAINERIZATION_PATH}" init
+	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o /tmp/init.tar ${IMAGE_NAME}
 
 	# Sleep because commands after stop and start are racy.
 	bin/container system stop
