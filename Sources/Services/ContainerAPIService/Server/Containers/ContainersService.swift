@@ -1677,12 +1677,19 @@ public actor ContainersService {
         let rootfs: URL
         if FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path) {
             rootfs = bundle.containerRootfsBlock
-        } else if let filesystem = try? bundle.containerRootfs {
-            rootfs = try Self.exportableRootfsURL(filesystem)
         } else {
-            let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: path)
-            guard let filesystem = runtimeConfig.options?.rootFsOverride ?? runtimeConfig.containerRootFilesystem else {
-                throw ContainerizationError(.notFound, message: "container root filesystem is not available")
+            let filesystem: Filesystem
+            do {
+                filesystem = try bundle.containerRootfs
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+                let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: path)
+                guard
+                    let configuredFilesystem = runtimeConfig.options?.rootFsOverride
+                        ?? runtimeConfig.containerRootFilesystem
+                else {
+                    throw ContainerizationError(.notFound, message: "container root filesystem is not available")
+                }
+                filesystem = configuredFilesystem
             }
             rootfs = try Self.exportableRootfsURL(filesystem)
         }
