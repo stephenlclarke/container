@@ -1674,7 +1674,24 @@ public actor ContainersService {
 
         let path = self.containerRoot.appendingPathComponent(id)
         let bundle = ContainerResource.Bundle(path: path)
-        let rootfs = bundle.containerRootfsBlock
+        let rootfs: URL
+        if FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path) {
+            rootfs = bundle.containerRootfsBlock
+        } else {
+            let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: path)
+            guard let filesystem = runtimeConfig.options?.rootFsOverride ?? runtimeConfig.containerRootFilesystem else {
+                throw ContainerizationError(.notFound, message: "container root filesystem is not available")
+            }
+            switch filesystem.type {
+            case .block(let format, _, _), .volume(_, let format, _, _):
+                guard format == "ext4" else {
+                    throw ContainerizationError(.unsupported, message: "cannot export " + format + " container root filesystem")
+                }
+                rootfs = URL(fileURLWithPath: filesystem.source)
+            default:
+                throw ContainerizationError(.unsupported, message: "container root filesystem is not an ext4 block device")
+            }
+        }
         try EXT4.EXT4Reader(blockDevice: FilePath(rootfs)).export(archive: FilePath(archive))
     }
 

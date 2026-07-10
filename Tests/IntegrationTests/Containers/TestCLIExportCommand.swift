@@ -20,6 +20,23 @@ import Testing
 
 @Suite
 struct TestCLIExportCommand {
+    @Test func testExportCreatedContainer() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let name = "\(f.testID)-created"
+            try f.doCreate(name: name, image: image)
+            f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
+
+            let exportPath = f.testDir.appending("created-export.tar")
+            try f.doExport(name, to: exportPath)
+
+            let reader = try ArchiveReader(file: URL(filePath: exportPath.string))
+            let (release, releaseData) = try reader.extractFile(path: "/etc/alpine-release")
+            #expect(release.fileType == .regular)
+            #expect(!releaseData.isEmpty)
+        }
+    }
+
     @Test func testExportCommand() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
