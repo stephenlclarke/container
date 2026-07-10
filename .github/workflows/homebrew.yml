@@ -41,6 +41,16 @@ jobs:
           brew tap stephenlclarke/container "${GITHUB_WORKSPACE}"
           brew trust --tap stephenlclarke/container
 
+      - name: Validate immutable one-shot service
+        run: |
+          brew ruby -e '
+            formula = Formulary.factory("stephenlclarke/container/container")
+            url = formula.stable.url
+            expected = %r{\Ahttps://github[.]com/stephenlclarke/container/releases/download/homebrew-main-[0-9]+-[0-9a-f]{12}/container-homebrew-main-release-arm64[.]tar[.]gz\z}
+            abort "container formula must use an immutable package URL: #{url}" unless expected.match?(url)
+            abort "container system start is a one-shot launcher and must not use KeepAlive" if formula.service.keep_alive?
+          '
+
       - name: Audit formula
         run: |
           set -euo pipefail

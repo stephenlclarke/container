@@ -243,7 +243,7 @@ jobs:
           sha256="$(awk '{print $1}' "${RUNNER_TEMP}/${ASSET}.sha256")"
           python3 scripts/update-homebrew-formula.py \
             --formula "homebrew-tap/Formula/${FORMULA}" \
-            --template "homebrew-tap/Formula/container.rb" \
+            --template "Formula/container.rb" \
             --formula-class "$FORMULA_CLASS" \
             --url "$url" \
             --sha256 "$sha256" \
