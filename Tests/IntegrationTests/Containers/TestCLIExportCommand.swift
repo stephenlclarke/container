@@ -20,6 +20,10 @@ import Testing
 
 @Suite
 struct TestCLIExportCommand {
+    private struct StatusJSON: Decodable {
+        let appRoot: String
+    }
+
     @Test func testExportCreatedContainer() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
@@ -34,6 +38,29 @@ struct TestCLIExportCommand {
             let (release, releaseData) = try reader.extractFile(path: "/etc/alpine-release")
             #expect(release.fileType == .regular)
             #expect(!releaseData.isEmpty)
+        }
+    }
+
+    @Test func testExportRejectsCorruptMaterializedRootfsMetadata() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let name = "\(f.testID)-corrupt-rootfs"
+            try f.doCreate(name: name, image: image)
+            f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
+
+            let status = try f.run(["system", "status", "--format", "json"]).check()
+            let appRoot = try JSONDecoder().decode(StatusJSON.self, from: status.outputData).appRoot
+            let rootfsMetadata = URL(filePath: appRoot, directoryHint: .isDirectory)
+                .appending(path: "containers", directoryHint: .isDirectory)
+                .appending(path: name, directoryHint: .isDirectory)
+                .appending(path: "rootfs.json")
+            try Data("{".utf8).write(to: rootfsMetadata)
+
+            let exportPath = f.testDir.appending("corrupt-export.tar")
+            let result = try f.run(["export", name, "-o", exportPath.string])
+
+            #expect(result.status != 0)
+            #expect(!FileManager.default.fileExists(atPath: exportPath.string))
         }
     }
 
