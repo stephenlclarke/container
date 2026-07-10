@@ -23,6 +23,7 @@ public struct ContainerHealthCheck: Sendable, Codable {
     public static let defaultIntervalInNanoseconds: UInt64 = 30_000_000_000
     public static let defaultTimeoutInNanoseconds: UInt64 = 30_000_000_000
     public static let defaultStartPeriodInNanoseconds: UInt64 = 0
+    public static let defaultStartIntervalInNanoseconds: UInt64 = 5_000_000_000
     public static let defaultRetries: UInt32 = 3
 
     /// Process to run inside the container for each health probe.

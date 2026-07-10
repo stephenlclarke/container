@@ -1792,6 +1792,7 @@ public actor ContainersService {
         var attributes = snapshot.configuration.labels
         attributes["image"] = snapshot.configuration.image.reference
         attributes["status"] = snapshot.status.rawValue
+        attributes["health"] = snapshot.health?.rawValue
         return ContainerEvent(
             type: "container",
             id: snapshot.id,
@@ -2105,25 +2106,33 @@ public actor ContainersService {
         let startedAt = clock.now
 
         while !Task.isCancelled {
-            let countsFailure =
-                startedAt.duration(to: clock.now)
-                >= Self.duration(
-                    fromNanoseconds: healthCheck.startPeriodInNanoseconds)
-            let exitCode = await runHealthProbe(id: id, healthCheck: healthCheck, client: client)
-            let status = tracker.record(exitCode: exitCode, countsFailure: countsFailure)
-            let isRunning = await updateHealthStatus(id: id, status: status)
-            guard isRunning else {
-                return
-            }
-
-            let delay =
-                countsFailure
-                ? healthCheck.intervalInNanoseconds
-                : (healthCheck.startIntervalInNanoseconds ?? healthCheck.intervalInNanoseconds)
+            let startPeriod = Self.duration(fromNanoseconds: healthCheck.startPeriodInNanoseconds)
+            let withinStartPeriod = startedAt.duration(to: clock.now) < startPeriod
+            let delay = tracker.nextProbeDelay(
+                healthCheck: healthCheck,
+                withinStartPeriod: withinStartPeriod
+            )
             do {
                 try await Task.sleep(for: Self.duration(fromNanoseconds: delay))
             } catch {
                 return
+            }
+
+            let probeWithinStartPeriod = startedAt.duration(to: clock.now) < startPeriod
+            let exitCode = await runHealthProbe(id: id, healthCheck: healthCheck, client: client)
+            let status = tracker.record(
+                exitCode: exitCode,
+                countsFailure: tracker.shouldCountFailure(withinStartPeriod: probeWithinStartPeriod)
+            )
+            let update = await updateHealthStatus(id: id, status: status)
+            guard update.isRunning else {
+                return
+            }
+            if let snapshot = update.transition {
+                await publishContainerEvent(
+                    action: "health_status: \(status.rawValue)",
+                    snapshot: snapshot
+                )
             }
         }
     }
@@ -2137,9 +2146,13 @@ public actor ContainersService {
         do {
             try await client.createProcess(processID, config: healthCheck.process, stdio: [])
             try await client.startProcess(processID)
+            let timeout =
+                healthCheck.timeoutInNanoseconds == 0
+                ? ContainerHealthCheck.defaultTimeoutInNanoseconds
+                : healthCheck.timeoutInNanoseconds
             return try await waitForHealthProbe(
                 processID: processID,
-                timeout: Self.duration(fromNanoseconds: healthCheck.timeoutInNanoseconds),
+                timeout: Self.duration(fromNanoseconds: timeout),
                 client: client
             )
         } catch {
@@ -2181,14 +2194,18 @@ public actor ContainersService {
         }
     }
 
-    private func updateHealthStatus(id: String, status: HealthStatus) async -> Bool {
+    private func updateHealthStatus(
+        id: String,
+        status: HealthStatus
+    ) async -> (isRunning: Bool, transition: ContainerSnapshot?) {
         await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
             guard var state = try? await self.getContainerState(id: id, context: context), state.snapshot.status == .running else {
-                return false
+                return (false, nil)
             }
+            let previousStatus = state.snapshot.health
             state.snapshot.health = status
             await self.setContainerState(id, state, context: context)
-            return true
+            return (true, previousStatus == status ? nil : state.snapshot)
         }
     }
 

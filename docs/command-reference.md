@@ -56,6 +56,12 @@ container run [<options>] <image> [<arguments> ...]
 *   `--dns-search <domain>`: DNS search domains
 *   `--domainname <domainname>`: Set the NIS domain name visible inside the container
 *   `--entrypoint <cmd>`: Override the entrypoint of the image
+*   `--health-cmd <command>`: Run a shell command to check container health
+*   `--health-interval <duration>`: Time between health probes (default: 30s)
+*   `--health-retries <count>`: Consecutive failures required before reporting unhealthy (default: 3)
+*   `--health-start-interval <duration>`: Time between probes during the start period (default: 5s)
+*   `--health-start-period <duration>`: Initial period in which probe failures do not count (default: 0s)
+*   `--health-timeout <duration>`: Maximum time allowed for one health probe (default: 30s)
 *   `-h, --hostname <hostname>`: Set the hostname visible inside the container
 *   `--init`: Run an init process inside the container that forwards signals and reaps processes
 *   `--init-image <image>`: Use a custom init image instead of the default. This allows customizing boot-time behavior before the OCI container starts, such as running VM-level daemons, configuring eBPF filters, or debugging the init process.
@@ -65,6 +71,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `--name <name>`: Use the specified name as the container ID
 *   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`, or `none` / `host`)
 *   `--no-dns`: Do not configure DNS in the container
+*   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `--pid <pid>`: Set the PID namespace mode (`host`)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
@@ -252,6 +259,12 @@ container create [<options>] <image> [<arguments> ...]
 *   `--dns-search <domain>`: DNS search domains
 *   `--domainname <domainname>`: Set the NIS domain name visible inside the container
 *   `--entrypoint <cmd>`: Override the entrypoint of the image
+*   `--health-cmd <command>`: Run a shell command to check container health
+*   `--health-interval <duration>`: Time between health probes (default: 30s)
+*   `--health-retries <count>`: Consecutive failures required before reporting unhealthy (default: 3)
+*   `--health-start-interval <duration>`: Time between probes during the start period (default: 5s)
+*   `--health-start-period <duration>`: Initial period in which probe failures do not count (default: 0s)
+*   `--health-timeout <duration>`: Maximum time allowed for one health probe (default: 30s)
 *   `-h, --hostname <hostname>`: Set the hostname visible inside the container
 *   `--init`: Run an init process inside the container that forwards signals and reaps processes
 *   `--init-image <image>`: Use a custom init image instead of the default. This allows customizing boot-time behavior before the OCI container starts, such as running VM-level daemons, configuring eBPF filters, or debugging the init process.
@@ -261,6 +274,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `--name <name>`: Use the specified name as the container ID
 *   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`, or `none` / `host`)
 *   `--no-dns`: Do not configure DNS in the container
+*   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `--pid <pid>`: Set the PID namespace mode (`host`)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
@@ -403,7 +417,7 @@ container delete [--all] [--force] [--debug] [<container-ids> ...]
 
 ### `container list (ls)`
 
-Lists containers. By default only running containers are shown. Output can be formatted as a table, JSON, YAML, or TOML.
+Lists containers. By default only running containers are shown. Output can be formatted as a table, JSON, YAML, or TOML. Table and structured output include the current health state when a healthcheck is configured.
 
 **Usage**
 
@@ -526,7 +540,7 @@ container logs --since 1781776800 --until 1781778600.25 mycontainer
 
 ### `container inspect`
 
-Displays detailed container information in JSON. Pass one or more container IDs to inspect multiple containers.
+Displays detailed container information in JSON, including the current health state when a healthcheck is configured. Pass one or more container IDs to inspect multiple containers.
 
 **Usage**
 

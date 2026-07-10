@@ -19,7 +19,7 @@ import Foundation
 
 extension ManagedContainer: ListDisplayable {
     public static var tableHeader: [String] {
-        ["ID", "IMAGE", "OS", "ARCH", "STATE", "IP", "CPUS", "MEMORY", "STARTED"]
+        ["ID", "IMAGE", "OS", "ARCH", "STATE", "HEALTH", "IP", "CPUS", "MEMORY", "STARTED"]
     }
 
     public var tableRow: [String] {
@@ -29,6 +29,7 @@ extension ManagedContainer: ListDisplayable {
             configuration.platform.os,
             configuration.platform.architecture,
             status.state.rawValue,
+            health?.rawValue ?? "",
             status.networks.map { $0.ipv4Address.description }.joined(separator: ","),
             "\(configuration.resources.cpus)",
             "\(configuration.resources.memoryInBytes / (1024 * 1024)) MB",

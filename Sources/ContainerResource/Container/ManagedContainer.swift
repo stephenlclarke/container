@@ -26,6 +26,8 @@ public struct ManagedContainer: ManagedResource {
     public let exitCode: Int32?
     /// Timestamp when the container init process exited, when observed.
     public let exitedDate: Date?
+    /// Most recently observed health status, when a health check is configured.
+    public let health: HealthStatus?
 
     // MARK: ManagedResource
     public var id: String { configuration.id }
@@ -56,12 +58,14 @@ public struct ManagedContainer: ManagedResource {
         configuration: ContainerConfiguration,
         status: ContainerStatus,
         exitCode: Int32? = nil,
-        exitedDate: Date? = nil
+        exitedDate: Date? = nil,
+        health: HealthStatus? = nil
     ) {
         self.configuration = configuration
         self.status = status
         self.exitCode = exitCode
         self.exitedDate = exitedDate
+        self.health = health
     }
 
     /// CLI-boundary factory: build from the snapshot the client returns today.
@@ -74,6 +78,7 @@ public struct ManagedContainer: ManagedResource {
         )
         self.exitCode = snapshot.exitCode
         self.exitedDate = snapshot.exitedDate
+        self.health = snapshot.health
     }
 }
 
@@ -84,6 +89,7 @@ extension ManagedContainer {
         case status
         case exitCode
         case exitedDate
+        case health
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -93,6 +99,7 @@ extension ManagedContainer {
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(exitCode, forKey: .exitCode)
         try c.encodeIfPresent(exitedDate, forKey: .exitedDate)
+        try c.encodeIfPresent(health, forKey: .health)
     }
 
     public init(from decoder: Decoder) throws {
@@ -101,5 +108,6 @@ extension ManagedContainer {
         self.status = try c.decode(ContainerStatus.self, forKey: .status)
         self.exitCode = try c.decodeIfPresent(Int32.self, forKey: .exitCode)
         self.exitedDate = try c.decodeIfPresent(Date.self, forKey: .exitedDate)
+        self.health = try c.decodeIfPresent(HealthStatus.self, forKey: .health)
     }
 }

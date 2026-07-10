@@ -26,7 +26,25 @@ struct ContainerHealthProbeTracker {
     private var lastStatus: HealthStatus = .starting
 
     init(retries: UInt32) {
-        self.retries = max(retries, 1)
+        self.retries = retries == 0 ? ContainerHealthCheck.defaultRetries : retries
+    }
+
+    var status: HealthStatus {
+        lastStatus
+    }
+
+    func shouldCountFailure(withinStartPeriod: Bool) -> Bool {
+        lastStatus != .starting || !withinStartPeriod
+    }
+
+    func nextProbeDelay(healthCheck: ContainerHealthCheck, withinStartPeriod: Bool) -> UInt64 {
+        if lastStatus == .starting, withinStartPeriod {
+            let startInterval = healthCheck.startIntervalInNanoseconds ?? ContainerHealthCheck.defaultStartIntervalInNanoseconds
+            return startInterval == 0 ? ContainerHealthCheck.defaultStartIntervalInNanoseconds : startInterval
+        }
+        return healthCheck.intervalInNanoseconds == 0
+            ? ContainerHealthCheck.defaultIntervalInNanoseconds
+            : healthCheck.intervalInNanoseconds
     }
 
     mutating func record(exitCode: Int32, countsFailure: Bool) -> HealthStatus {
@@ -40,7 +58,9 @@ struct ContainerHealthProbeTracker {
             return lastStatus
         }
 
-        consecutiveFailures += 1
+        if consecutiveFailures < retries {
+            consecutiveFailures += 1
+        }
         if consecutiveFailures >= retries {
             lastStatus = .unhealthy
         }

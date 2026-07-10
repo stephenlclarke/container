@@ -63,7 +63,8 @@ struct ManagedContainerTests {
             networks: [],
             startedDate: nil,
             exitCode: 42,
-            exitedDate: exitedDate
+            exitedDate: exitedDate,
+            health: .unhealthy
         )
         let mc = ManagedContainer(snapshot)
         #expect(mc.id == "abc")
@@ -71,6 +72,7 @@ struct ManagedContainerTests {
         #expect(mc.status.state == .stopped)
         #expect(mc.exitCode == 42)
         #expect(mc.exitedDate == exitedDate)
+        #expect(mc.health == .unhealthy)
     }
 
     @Test func encodesObservedExitMetadataWhenPresent() throws {
@@ -89,6 +91,19 @@ struct ManagedContainerTests {
 
         #expect(obj["exitCode"] as? Int == 7)
         #expect(obj["exitedDate"] as? Double == 2_000)
+    }
+
+    @Test func encodesObservedHealthWhenPresent() throws {
+        let mc = ManagedContainer(
+            configuration: makeTestConfiguration(id: "abc"),
+            status: ContainerStatus(state: .running, networks: [], startedDate: nil),
+            health: .healthy
+        )
+
+        let data = try JSONEncoder().encode(mc)
+        let obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+        #expect(obj["health"] as? String == "healthy")
     }
 
     @Test func nameValidAcceptsContainerNames() {
