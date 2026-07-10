@@ -1677,22 +1677,28 @@ public actor ContainersService {
         let rootfs: URL
         if FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path) {
             rootfs = bundle.containerRootfsBlock
+        } else if let filesystem = try? bundle.containerRootfs {
+            rootfs = try Self.exportableRootfsURL(filesystem)
         } else {
             let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: path)
             guard let filesystem = runtimeConfig.options?.rootFsOverride ?? runtimeConfig.containerRootFilesystem else {
                 throw ContainerizationError(.notFound, message: "container root filesystem is not available")
             }
-            switch filesystem.type {
-            case .block(let format, _, _), .volume(_, let format, _, _):
-                guard format == "ext4" else {
-                    throw ContainerizationError(.unsupported, message: "cannot export " + format + " container root filesystem")
-                }
-                rootfs = URL(fileURLWithPath: filesystem.source)
-            default:
-                throw ContainerizationError(.unsupported, message: "container root filesystem is not an ext4 block device")
-            }
+            rootfs = try Self.exportableRootfsURL(filesystem)
         }
         try EXT4.EXT4Reader(blockDevice: FilePath(rootfs)).export(archive: FilePath(archive))
+    }
+
+    private static func exportableRootfsURL(_ filesystem: Filesystem) throws -> URL {
+        switch filesystem.type {
+        case .block(let format, _, _), .volume(_, let format, _, _):
+            guard format == "ext4" else {
+                throw ContainerizationError(.unsupported, message: "cannot export " + format + " container root filesystem")
+            }
+            return URL(fileURLWithPath: filesystem.source)
+        default:
+            throw ContainerizationError(.unsupported, message: "container root filesystem is not an ext4 block device")
+        }
     }
 
     private func handleContainerExit(id: String, code: ExitStatus? = nil) async throws {
