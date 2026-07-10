@@ -8,6 +8,9 @@ on:
     paths:
       - "Formula/container.rb"
       - ".github/workflows/homebrew.yml"
+      - ".github/workflows/prebuilt-binaries.yml"
+      - "scripts/test_update_homebrew_formula.py"
+      - "scripts/update-homebrew-formula.py"
   push:
     branches:
       - main
@@ -16,6 +19,9 @@ on:
     paths:
       - "Formula/container.rb"
       - ".github/workflows/homebrew.yml"
+      - ".github/workflows/prebuilt-binaries.yml"
+      - "scripts/test_update_homebrew_formula.py"
+      - "scripts/update-homebrew-formula.py"
 
 permissions:
   contents: read
@@ -31,6 +37,9 @@ jobs:
     steps:
       - name: Checkout container
         uses: actions/checkout@v7
+
+      - name: Test formula updater
+        run: python3 -m unittest discover scripts -p 'test_update_homebrew_formula.py'
 
       - name: Validate Ruby syntax
         run: ruby -c Formula/container.rb

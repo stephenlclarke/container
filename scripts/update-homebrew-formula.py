@@ -30,7 +30,7 @@ def replace_once(pattern: str, replacement: str, text: str) -> str:
 
 def main() -> None:
     args = parse_args()
-    text = args.formula.read_text(encoding="utf-8") if args.formula.exists() else args.template.read_text(encoding="utf-8")
+    text = args.template.read_text(encoding="utf-8")
     text = replace_once(r"^class \w+ < Formula$", f"class {args.formula_class} < Formula", text)
     text = replace_once(r'^  url ".+"$', f'  url "{args.url}"', text)
     text = replace_once(r"^  sha256 .+$", f'  sha256 "{args.sha256}"', text)
