@@ -32,6 +32,10 @@ public struct PluginLoader: Sendable {
 
     private let log: Logger?
 
+    private let isServiceRegistered: @Sendable (String) throws -> Bool
+
+    private let registerService: @Sendable (String) throws -> Void
+
     public typealias PluginQualifier = ((Plugin) -> Bool)
 
     // A path on disk managed by the PluginLoader, where it stores
@@ -47,6 +51,28 @@ public struct PluginLoader: Sendable {
         pluginFactories: [PluginFactory],
         log: Logger? = nil
     ) throws {
+        try self.init(
+            appRoot: appRoot,
+            installRoot: installRoot,
+            logRoot: logRoot,
+            pluginDirectories: pluginDirectories,
+            pluginFactories: pluginFactories,
+            log: log,
+            isServiceRegistered: { try ServiceManager.isRegistered(fullServiceLabel: $0) },
+            registerService: { try ServiceManager.register(plistPath: $0) }
+        )
+    }
+
+    init(
+        appRoot: URL,
+        installRoot: URL,
+        logRoot: FilePath?,
+        pluginDirectories: [URL],
+        pluginFactories: [PluginFactory],
+        log: Logger? = nil,
+        isServiceRegistered: @escaping @Sendable (String) throws -> Bool,
+        registerService: @escaping @Sendable (String) throws -> Void
+    ) throws {
         let pluginResourceRoot = appRoot.appendingPathComponent("plugin-state")
         try FileManager.default.createDirectory(at: pluginResourceRoot, withIntermediateDirectories: true)
         self.pluginResourceRoot = pluginResourceRoot
@@ -56,6 +82,8 @@ public struct PluginLoader: Sendable {
         self.pluginDirectories = pluginDirectories
         self.pluginFactories = pluginFactories
         self.log = log
+        self.isServiceRegistered = isServiceRegistered
+        self.registerService = registerService
     }
 
     static public func userPluginsDir(installRoot: URL) -> URL {
@@ -258,7 +286,9 @@ extension PluginLoader {
         let plistUrl = rootURL.appendingPathComponent("service.plist")
         let data = try plist.encode()
         try data.write(to: plistUrl)
-        try ServiceManager.register(plistPath: plistUrl.path)
+        if try !isServiceRegistered(id) {
+            try registerService(plistUrl.path)
+        }
     }
 
     public func deregisterWithLaunchd(plugin: Plugin, instanceId: String? = nil) throws {

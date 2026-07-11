@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
+import Synchronization
 import Testing
 
 @testable import ContainerPlugin
@@ -194,12 +195,15 @@ struct PluginLoaderTest {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tempURL) }
         let factory = try setupMock(tempURL: tempURL)
+        let registered = Mutex(false)
         let loader = try PluginLoader(
             appRoot: tempURL,
             installRoot: URL(filePath: "/usr/local/"),
             logRoot: nil,
             pluginDirectories: [tempURL],
-            pluginFactories: [factory]
+            pluginFactories: [factory],
+            isServiceRegistered: { _ in false },
+            registerService: { _ in registered.withLock { $0 = true } }
         )
 
         let plugin = loader.findPlugin(name: "service")!
@@ -214,6 +218,7 @@ struct PluginLoaderTest {
         let programArguments = plist["ProgramArguments"] as! [String]
 
         #expect(programArguments.contains("--debug"))
+        #expect(registered.withLock { $0 })
     }
 
     @Test
@@ -226,7 +231,9 @@ struct PluginLoaderTest {
             installRoot: URL(filePath: "/usr/local/"),
             logRoot: nil,
             pluginDirectories: [tempURL],
-            pluginFactories: [factory]
+            pluginFactories: [factory],
+            isServiceRegistered: { _ in false },
+            registerService: { _ in }
         )
 
         let plugin = loader.findPlugin(name: "service")!
@@ -253,7 +260,9 @@ struct PluginLoaderTest {
             installRoot: URL(filePath: "/usr/local/"),
             logRoot: nil,
             pluginDirectories: [tempURL],
-            pluginFactories: [factory]
+            pluginFactories: [factory],
+            isServiceRegistered: { _ in false },
+            registerService: { _ in }
         )
 
         let plugin = loader.findPlugin(name: "service")!
@@ -268,6 +277,31 @@ struct PluginLoaderTest {
         let programArguments = plist["ProgramArguments"] as! [String]
 
         #expect(!programArguments.contains("--debug"))
+    }
+
+    @Test
+    func testRegisterSkipsAlreadyRegisteredService() async throws {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let factory = try setupMock(tempURL: tempURL)
+        let registeredAgain = Mutex(false)
+        let loader = try PluginLoader(
+            appRoot: tempURL,
+            installRoot: URL(filePath: "/usr/local/"),
+            logRoot: nil,
+            pluginDirectories: [tempURL],
+            pluginFactories: [factory],
+            isServiceRegistered: { _ in true },
+            registerService: { _ in registeredAgain.withLock { $0 = true } }
+        )
+
+        let plugin = try #require(loader.findPlugin(name: "service"))
+        try loader.registerWithLaunchd(
+            plugin: plugin,
+            pluginStateRoot: tempURL.appendingPathComponent("test-state")
+        )
+
+        #expect(!registeredAgain.withLock { $0 })
     }
 
     private func setupMock(tempURL: URL) throws -> MockPluginFactory {

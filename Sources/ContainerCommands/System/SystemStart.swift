@@ -126,19 +126,23 @@ extension Application {
             let data = try plist.encode()
             try data.write(to: plistURL)
 
-            log.info("Launching container-apiserver...")
-            try ServiceManager.register(plistPath: plistURL.path)
+            if try !ServiceManager.isRegistered(fullServiceLabel: "com.apple.container.apiserver") {
+                log.info("Launching container-apiserver...")
+                try ServiceManager.register(plistPath: plistURL.path)
+            }
 
             // Now ping our friendly daemon. Fail if we don't get a response.
+            let health: SystemHealth
             do {
                 log.info("Testing access to container-apiserver...")
-                _ = try await ClientHealthCheck.ping(timeout: timeout)
+                health = try await ClientHealthCheck.ping(timeout: timeout)
             } catch {
                 throw ContainerizationError(
                     .internalError,
                     message: "failed to get a response from apiserver: \(error)"
                 )
             }
+            try Self.validateAppRoot(requested: appRoot, actual: health.appRoot)
 
             do {
                 log.info("Verifying machine API server is running...")
@@ -158,6 +162,21 @@ extension Application {
                 return
             }
             try await installDefaultKernel(kernelURL: containerSystemConfig.kernel.url, kernelBinaryPath: containerSystemConfig.kernel.binaryPath)
+        }
+
+        static func validateAppRoot(requested: FilePath, actual: URL) throws {
+            let requestedURL = URL(fileURLWithPath: requested.string)
+                .standardizedFileURL
+                .resolvingSymlinksInPath()
+            let actualURL = actual.standardizedFileURL.resolvingSymlinksInPath()
+            guard requestedURL == actualURL else {
+                let actualPath = actualURL.path(percentEncoded: false)
+                let requestedPath = requestedURL.path(percentEncoded: false)
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container-apiserver is running with app root \(actualPath), not requested \(requestedPath); stop it before changing --app-root"
+                )
+            }
         }
 
         private func installInitialFilesystem(initImage: String) async throws {
