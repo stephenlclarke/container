@@ -23,7 +23,7 @@ any other OCI-compatible application.
 [Containerization](https://github.com/apple/containerization) Swift package for
 low-level container, image, and process management.
 
-Stephen Clarke's fork is part of a four-repository preview stack:
+stephenlclarke's fork is part of a four-repository preview stack:
 
 - [`container`](https://github.com/stephenlclarke/container): this fork-backed
   runtime and CLI.
@@ -67,7 +67,7 @@ To install the tool, double-click the package file and follow the instructions.
 Enter your administrator password when prompted, to give the installer
 permission to place the installed files under `/usr/local`.
 
-Stephen Clarke's fork also publishes Homebrew-ready stable release archives
+stephenlclarke's fork also publishes Homebrew-ready stable release archives
 through the aggregate tap without requiring Xcode or Swift on the target
 machine:
 
