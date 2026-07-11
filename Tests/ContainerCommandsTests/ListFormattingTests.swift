@@ -117,6 +117,24 @@ struct RenderTableTests {
     }
 }
 
+struct ContainerTopFormattingTests {
+    @Test func processTableDisplaysContainerPids() {
+        let processes = ContainerProcesses(id: "api", processIdentifiers: [42, 99])
+
+        let output = Application.ContainerTop.processTable(processes)
+
+        #expect(output == "Container ID  PID\napi           42\napi           99")
+    }
+
+    @Test func processTableDisplaysHeaderWhenEmpty() {
+        let processes = ContainerProcesses(id: "api", processIdentifiers: [])
+
+        let output = Application.ContainerTop.processTable(processes)
+
+        #expect(output == "Container ID  PID")
+    }
+}
+
 // MARK: - renderList tests
 
 struct RenderListTests {

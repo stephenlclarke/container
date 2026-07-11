@@ -366,6 +366,22 @@ public struct ContainersHarness: Sendable {
     }
 
     @Sendable
+    public func processes(_ message: XPCMessage) async throws -> XPCMessage {
+        let id = message.string(key: .id)
+        guard let id else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let processes = try await service.processes(id: id)
+        let data = try JSONEncoder().encode(processes)
+        let reply = message.reply()
+        reply.set(key: .processes, value: data)
+        return reply
+    }
+
+    @Sendable
     public func export(_ message: XPCMessage) async throws -> XPCMessage {
         let id = message.string(key: .id)
         guard let id else {

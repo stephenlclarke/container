@@ -303,6 +303,7 @@ extension APIServer {
             routes[XPCRoute.containerWait] = XPCServer.route(harness.wait)
             routes[XPCRoute.containerKill] = XPCServer.route(harness.kill)
             routes[XPCRoute.containerStats] = XPCServer.route(harness.stats)
+            routes[XPCRoute.containerProcesses] = XPCServer.route(harness.processes)
             routes[XPCRoute.containerDiskUsage] = XPCServer.route(harness.diskUsage)
             routes[XPCRoute.containerCopyIn] = XPCServer.route(harness.copyIn)
             routes[XPCRoute.containerCopyOut] = XPCServer.route(harness.copyOut)

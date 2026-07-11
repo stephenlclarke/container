@@ -33,6 +33,8 @@ public enum RuntimeRoutes: String {
     case state = "com.apple.container.runtime/state"
     /// Get resource usage statistics for the sandbox.
     case statistics = "com.apple.container.runtime/statistics"
+    /// Get process identifiers for the sandbox.
+    case processes = "com.apple.container.runtime/processes"
     /// Open a vsock connection to a port inside the sandbox.
     case dial = "com.apple.container.runtime/dial"
 

@@ -42,6 +42,8 @@ public enum RuntimeKeys: String {
 
     /// Container statistics
     case statistics
+    /// Container process identifiers
+    case processes
 
     /// Copy parameters
     case sourcePath

@@ -373,6 +373,29 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    /// Get process identifiers currently associated with a container.
+    public func processes(id: String) async throws -> ContainerProcesses {
+        let request = XPCMessage(route: .containerProcesses)
+        request.set(key: .id, value: id)
+
+        do {
+            let response = try await xpcClient.send(request)
+            guard let data = response.dataNoCopy(key: .processes) else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "no process data returned"
+                )
+            }
+            return try JSONDecoder().decode(ContainerProcesses.self, from: data)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to get processes for container \(id)",
+                cause: error
+            )
+        }
+    }
+
     public func export(id: String, archive: URL) async throws {
         let request = XPCMessage(route: .containerExport)
         request.set(key: .id, value: id)

@@ -810,6 +810,33 @@ public actor ContainersService {
         return try await client.statistics()
     }
 
+    /// Get process identifiers for the container.
+    public func processes(id: String) async throws -> ContainerProcesses {
+        log.debug(
+            "ContainersService: enter",
+            metadata: [
+                "func": "\(#function)",
+                "id": "\(id)",
+            ]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: [
+                    "func": "\(#function)",
+                    "id": "\(id)",
+                ]
+            )
+        }
+
+        let state = try self._getContainerState(id: id)
+        guard state.snapshot.status == .running else {
+            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        }
+        let client = try state.getClient()
+        return try await client.processes()
+    }
+
     /// Delete a container and its resources.
     public func delete(id: String, force: Bool) async throws {
         log.info(

@@ -342,6 +342,30 @@ extension RuntimeClient {
 
         return try JSONDecoder().decode(ContainerStats.self, from: data)
     }
+
+    public func processes() async throws -> ContainerProcesses {
+        let request = XPCMessage(route: RuntimeRoutes.processes.rawValue)
+
+        let response: XPCMessage
+        do {
+            response = try await self.client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to get processes for container \(self.id)",
+                cause: error
+            )
+        }
+
+        guard let data = response.dataNoCopy(key: RuntimeKeys.processes.rawValue) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "no process data returned"
+            )
+        }
+
+        return try JSONDecoder().decode(ContainerProcesses.self, from: data)
+    }
 }
 
 extension XPCMessage {

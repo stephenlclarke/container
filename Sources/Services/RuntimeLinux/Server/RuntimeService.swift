@@ -370,6 +370,33 @@ public actor RuntimeService {
         }
     }
 
+    /// Get process identifiers for the container.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with no parameters.
+    ///
+    /// - Returns: An XPC message with the following parameters:
+    ///   - processes: JSON serialization of the `ContainerProcesses`.
+    @Sendable
+    public func processes(_ message: XPCMessage) async throws -> XPCMessage {
+        self.log.debug("enter", metadata: ["func": "\(#function)"])
+        defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
+
+        return try await self.lock.withLock { _ in
+            let containerInfo = try await self.getContainer()
+            let processIdentifiers = try await containerInfo.container.processIdentifiers()
+            let processes = ContainerProcesses(
+                id: containerInfo.container.id,
+                processIdentifiers: processIdentifiers
+            )
+
+            let reply = message.reply()
+            let data = try JSONEncoder().encode(processes)
+            reply.set(key: RuntimeKeys.processes.rawValue, value: data)
+            return reply
+        }
+    }
+
     /// Shutdown the RuntimeService.
     ///
     /// - Parameters:
