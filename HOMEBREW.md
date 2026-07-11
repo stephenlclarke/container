@@ -1,41 +1,19 @@
-# Homebrew Formulae
+# Homebrew
 
-This fork publishes prebuilt Homebrew assets through
-`stephenlclarke/homebrew-tap`. The branch policy is documented in
-[`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
+The `stephenlclarke` package is distributed through
+[`stephenlclarke/homebrew-tap`](https://github.com/stephenlclarke/homebrew-tap)
+as the runtime dependency of the matched `container-compose` plugin. Homebrew
+installs prebuilt packages; it does not build this Swift source on the user's
+machine.
 
-Homebrew formulae install prebuilt release-quality package assets. The stable
-formula is built from a validated bare semantic source tag on `main`, with the
-matching `containerization` fork pin recorded by this repository. Main
-validation packages prove the branch can build but do not update the stable
-formula.
+Use the fully qualified formula names and follow the single supported install,
+upgrade, verification, and removal procedure in the
+[`container-compose` install guide](https://github.com/stephenlclarke/container-compose/blob/main/INSTALL.md).
+Branch, tag, package, and tap behavior is defined only in the
+[`container-compose` release guide](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
 
-The builder shim is not installed as a Homebrew formula. `container` pins the
-immutable `ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8` image
-used by build workflows.
-
-Use the fully qualified formula name so Homebrew does not resolve
-Homebrew/core's `container` formula first.
-
-## Stable Install
-
-```sh
-brew tap stephenlclarke/tap
-brew install stephenlclarke/tap/container
-brew services start container
-container system version
-```
-
-## Branch and Release Policy
-
-The active stack policy is:
-
-- `main` is the current, releasable integration branch.
-- Bare semantic tags on `main` publish stable assets and update
-  `stephenlclarke/homebrew-tap` when the tap token is configured.
-- Main validation packages are CI artifacts and are not the stable Homebrew
-  install formula.
-
-Keep detailed branch, tag, and Homebrew formula rules in
-[`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md)
-so the five-repository release stack has one source of truth.
+The builder shim is not a Homebrew formula. `container` selects an immutable
+builder image through `BUILDER_SHIM_REPOSITORY` and `BUILDER_SHIM_VERSION`; the
+current packaged value is reported by `container system version` and tracked in
+the canonical
+[`STATUS.md`](https://github.com/stephenlclarke/container-compose/blob/main/STATUS.md).

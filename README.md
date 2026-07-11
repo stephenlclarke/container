@@ -23,23 +23,14 @@ any other OCI-compatible application.
 [Containerization](https://github.com/apple/containerization) Swift package for
 low-level container, image, and process management.
 
-stephenlclarke's fork is part of the supported five-repository release stack:
-
-- [`container`](https://github.com/stephenlclarke/container): this fork-backed
-  runtime and CLI.
-- [`container-compose`](https://github.com/stephenlclarke/container-compose):
-  the Docker Compose style plugin installed beside the matching runtime lane.
-- [`containerization`](https://github.com/stephenlclarke/containerization): the
-  Swift runtime package consumed by this CLI and by `container-compose`; this
-  fork records the matching `containerization` pin for the current stack lane.
-- [`container-builder-shim`](https://github.com/stephenlclarke/container-builder-shim):
-  the Go BuildKit bridge used by `container build`; this package pins the
-  immutable builder image version, currently `0.13.8`, and release builds can
-  override the repository or version with `BUILDER_SHIM_REPOSITORY` and
-  `BUILDER_SHIM_VERSION`.
-- [`homebrew-tap`](https://github.com/stephenlclarke/homebrew-tap): tracks the
-  four source repositories on `main` and installs the stable prebuilt runtime
-  and plugin packages. Go artifacts across the stack are release code.
+The `stephenlclarke` fork supplies the runtime and CLI for the matched
+[`container-compose`](https://github.com/stephenlclarke/container-compose)
+release stack. That repository owns the canonical
+[stack map](https://github.com/stephenlclarke/container-compose#project-repositories),
+[current dependency pins](https://github.com/stephenlclarke/container-compose/blob/main/STATUS.md),
+and [release policy](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
+`container system version` reports the exact runtime, `containerization`, and
+builder-shim revisions in an installed package.
 
 ![introductory movie showing some basic commands](./docs/assets/landing-movie.gif)
 
@@ -64,20 +55,8 @@ To install the tool, double-click the package file and follow the instructions.
 Enter your administrator password when prompted, to give the installer
 permission to place the installed files under `/usr/local`.
 
-stephenlclarke's fork also publishes Homebrew-ready stable release archives
-through the aggregate tap without requiring Xcode or Swift on the target
-machine:
-
-```bash
-brew tap stephenlclarke/tap
-brew install stephenlclarke/tap/container
-```
-
-The current branch, tag, and Homebrew policy for this release stack
-lives in
-[`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
-All release-stack development targets `main`; bare semantic tags publish the
-stable Homebrew formulae.
+The `stephenlclarke` fork also publishes a prebuilt Homebrew package. Follow
+[HOMEBREW.md](HOMEBREW.md) for the supported matched-stack install path.
 
 Start the system service with:
 
