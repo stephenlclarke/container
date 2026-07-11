@@ -319,6 +319,25 @@ container start [--attach] [--interactive] [--debug] <container-id>
 *   `-a, --attach`: Attach stdout/stderr
 *   `-i, --interactive`: Attach stdin
 
+### `container top`
+
+Displays the process identifiers currently associated with a running or paused
+container. The default table includes the container ID and one row per PID.
+
+**Usage**
+
+```bash
+container top [--format <format>] [--debug] <container-id>
+```
+
+**Arguments**
+
+*   `<container-id>`: Container ID
+
+**Options**
+
+*   `--format <format>`: Output format (`table`, `json`, `yaml`, or `toml`; default: `table`)
+
 ### `container stop`
 
 Stops running containers gracefully by sending a signal. A timeout can be specified before a SIGKILL is issued. If no containers are specified, nothing is stopped unless `--all` is used.
