@@ -1,8 +1,5 @@
 # Technical Overview
 
-> [!IMPORTANT]
-> This file contains documentation for the CURRENT BRANCH. To find documentation for official releases, find the target release on the [Release Page](https://github.com/apple/container/releases) and click the tag corresponding to your release version. 
-
 A brief description and technical overview of `container`.
 
 ## What are containers?
