@@ -2,8 +2,6 @@
 
 > [!IMPORTANT]
 > This file contains documentation for the CURRENT BRANCH. To find documentation for official releases, find the target release on the [Release Page](https://github.com/apple/container/releases) and click the tag corresponding to your release version.
->
-> Example: [release 0.4.1 tag](https://github.com/apple/container/tree/0.4.1)
 
 Take a guided tour of setting configurations for `container` CLI commands and services.
 
@@ -65,7 +63,7 @@ Use `container system property list` (alias `ls`) to print the merged configurat
 cpus = 2
 memory = "2048mb"
 rosetta = true
-image = "ghcr.io/apple/container-builder-shim/builder:0.11.0"
+image = "ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8"
 
 [container]
 cpus = 8
@@ -84,7 +82,7 @@ url = "https://github.com/kata-containers/kata-containers/releases/download/3.28
 domain = "docker.io"
 
 [vminit]
-image = "ghcr.io/apple/containerization/vminit:0.34.0"
+image = "ghcr.io/apple/containerization/vminit:0.37.0"
 ```
 
 For machine-readable output, pass `--format json`:

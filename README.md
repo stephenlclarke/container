@@ -23,7 +23,7 @@ any other OCI-compatible application.
 [Containerization](https://github.com/apple/containerization) Swift package for
 low-level container, image, and process management.
 
-stephenlclarke's fork is part of a four-repository preview stack:
+stephenlclarke's fork is part of the supported five-repository release stack:
 
 - [`container`](https://github.com/stephenlclarke/container): this fork-backed
   runtime and CLI.
@@ -37,12 +37,9 @@ stephenlclarke's fork is part of a four-repository preview stack:
   immutable builder image version, currently `0.13.8`, and release builds can
   override the repository or version with `BUILDER_SHIM_REPOSITORY` and
   `BUILDER_SHIM_VERSION`.
-
-The aggregate Homebrew tap is
-[`homebrew-tap`](https://github.com/stephenlclarke/homebrew-tap). It tracks the
-four source repositories on `main` for maintenance and installs prebuilt
-release-quality package assets for users. Go artifacts across the stack are
-treated as release code, not debug helpers.
+- [`homebrew-tap`](https://github.com/stephenlclarke/homebrew-tap): tracks the
+  four source repositories on `main` and installs the stable prebuilt runtime
+  and plugin packages. Go artifacts across the stack are release code.
 
 ![introductory movie showing some basic commands](./docs/assets/landing-movie.gif)
 
@@ -76,10 +73,11 @@ brew tap stephenlclarke/tap
 brew install stephenlclarke/tap/container
 ```
 
-The current branch, tag, and Homebrew policy for this four-repository stack
+The current branch, tag, and Homebrew policy for this release stack
 lives in
 [`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
-New work targets `main`; branch-derived formula lanes are historical only.
+All release-stack development targets `main`; bare semantic tags publish the
+stable Homebrew formulae.
 
 Start the system service with:
 
@@ -111,7 +109,7 @@ your user data, while `-d` removes it):
 
 ```bash
 /usr/local/bin/uninstall-container.sh -k
-/usr/local/bin/update-container.sh -v 0.3.0
+/usr/local/bin/update-container.sh -v MAJOR.MINOR.PATCH
 ```
 
 Start the system service with:
@@ -155,7 +153,6 @@ for more information.
 
 ## Project Status
 
-The container project is currently under active development. Its stability, both
-for consuming the project as a Swift package and the `container` tool, is only
-guaranteed within patch versions, such as between 0.1.1 and 0.1.2. Minor version
-releases may include breaking changes until we reach a 1.0.0 release.
+The container project is under active development. Source and CLI stability is
+guaranteed within a patch release line; minor releases may contain breaking
+changes while the project remains pre-1.0.

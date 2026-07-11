@@ -28,8 +28,7 @@ container system version
 
 ## Branch and Release Policy
 
-Do not create branch-derived formula lanes for new work. The active stack
-policy is:
+The active stack policy is:
 
 - `main` is the current, releasable integration branch.
 - Bare semantic tags on `main` publish stable assets and update
@@ -39,4 +38,4 @@ policy is:
 
 Keep detailed branch, tag, and Homebrew formula rules in
 [`container-compose/BRANCHES.md`](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md)
-so the four-repository stack has one source of truth.
+so the five-repository release stack has one source of truth.

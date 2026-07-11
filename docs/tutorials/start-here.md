@@ -2,8 +2,6 @@
 
 > [!IMPORTANT]
 > This file contains documentation for the CURRENT BRANCH. To find documentation for official releases, find the target release on the [Release Page](https://github.com/apple/container/releases) and click the tag corresponding to your release version. 
->
-> Example: [release 0.4.1 tag](https://github.com/apple/container/tree/0.4.1)
 
 Take a guided tour of `container` by building, running, and publishing a simple web server image.
 
@@ -27,7 +25,7 @@ If you have not installed a Linux kernel yet, the command will prompt you to ins
 Verifying apiserver is running...
 Installing base container filesystem...
 No default kernel configured.
-Install the recommended default kernel from [https://github.com/kata-containers/kata-containers/releases/download/3.17.0/kata-static-3.17.0-arm64.tar.xz]? [Y/n]: y
+Install the recommended default kernel from [https://github.com/kata-containers/kata-containers/releases/download/3.28.0/kata-static-3.28.0-arm64.tar.zst]? [Y/n]: y
 Installing kernel...
 %
 </pre>
@@ -189,7 +187,7 @@ When you list containers now, `my-web-server` is present, along with the contain
 <pre>
 % container ls
 ID             IMAGE                                               OS     ARCH   STATE    IP
-buildkit       ghcr.io/apple/container-builder-shim/builder:0.0.3  linux  arm64  running  192.168.64.2
+buildkit       ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8  linux  arm64  running  192.168.64.2
 my-web-server  web-test:latest                                     linux  arm64  running  192.168.64.3
 %
 </pre>
@@ -341,7 +339,7 @@ If you list all running and stopped containers, you will see that the `--rm` fla
 <pre>
 % container list --all
 ID        IMAGE                                               OS     ARCH   STATE    IP
-buildkit  ghcr.io/apple/container-builder-shim/builder:0.0.3  linux  arm64  running  192.168.64.2
+buildkit  ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8  linux  arm64  running  192.168.64.2
 %
 </pre>
 

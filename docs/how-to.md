@@ -2,8 +2,6 @@
 
 > [!IMPORTANT]
 > This file contains documentation for the CURRENT BRANCH. To find documentation for official releases, find the target release on the [Release Page](https://github.com/apple/container/releases) and click the tag corresponding to your release version. 
->
-> Example: [release 0.4.1 tag](https://github.com/apple/container/tree/0.4.1)
 
 How to use the features of `container`.
 
@@ -577,7 +575,7 @@ chown: /tmp: Operation not permitted
 ## Expose virtualization capabilities to a container
 
 > [!NOTE]
-> This feature requires a M3 or newer Apple silicon machine and a Linux kernel that supports virtualization. For a kernel configuration that has all of the right features enabled, see https://github.com/apple/containerization/blob/0.5.0/kernel/config-arm64#L602.
+> This feature requires an M3 or newer Apple silicon machine and a Linux kernel that supports virtualization. For a kernel configuration with the required features, see <https://github.com/apple/containerization/blob/main/kernel/config-arm64>.
 
 You can enable virtualization capabilities in containers by using the `--virtualization` option of `container run` and `container create`.
 
@@ -667,9 +665,9 @@ Use the `vminit` image tag corresponding to the `scVersion` value in the project
 Or, use `vminit:latest` if you have a local `containerization` project in [edit mode](../BUILDING.md#develop-using-a-local-copy-of-containerization).
 
 ```dockerfile
-FROM ghcr.io/apple/containerization/vminit:0.34.0 AS base
+FROM ghcr.io/apple/containerization/vminit:0.37.0 AS base
 
-FROM ghcr.io/apple/containerization/vminit:0.34.0
+FROM ghcr.io/apple/containerization/vminit:0.37.0
 COPY --from=base /sbin/vminitd /sbin/vminitd.real
 COPY wrapper /sbin/vminitd
 ```
@@ -711,7 +709,7 @@ Use `container system property list` to show all properties that have set defaul
 cpus = 2
 memory = "2048mb"
 rosetta = true
-image = "ghcr.io/apple/container-builder-shim/builder:0.12.0"
+image = "ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8"
 
 [container]
 cpus = 4
@@ -722,7 +720,7 @@ domain = "test"
 
 [kernel]
 binaryPath = "opt/kata/share/kata-containers/vmlinux-6.18.5-177"
-url = "https://github.com/kata-containers/kata-containers/releases/download/3.26.0/kata-static-3.26.0-arm64.tar.zst"
+url = "https://github.com/kata-containers/kata-containers/releases/download/3.28.0/kata-static-3.28.0-arm64.tar.zst"
 
 [network]
 
@@ -730,7 +728,7 @@ url = "https://github.com/kata-containers/kata-containers/releases/download/3.26
 domain = "docker.io"
 
 [vminit]
-image = "ghcr.io/apple/containerization/vminit:0.34.0"
+image = "ghcr.io/apple/containerization/vminit:0.37.0"
 ```
 
 ### Example: Disable Rosetta for builds

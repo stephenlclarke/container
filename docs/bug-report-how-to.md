@@ -48,7 +48,6 @@ Provide a comprehensive description of your problem. Include what currently happ
 #### Expected behavior
 - The correct output or result you anticipated
 - Reference to documentation if available
-- How it works in previous versions (if applicable)
 - Logical expectations based on the command or action
 
 #### Relevant logs
@@ -79,21 +78,10 @@ Get your Xcode version with:
 xcodebuild -version
 ```
 
-Example output:
-```
-Xcode 15.0
-Build version 15A240d
-```
-
 ### Container CLI version
-Check your Container CLI version:
+Collect the current runtime, dependency, and build details:
 ```bash
-container --version
-```
-
-Example output:
-```
-container CLI version 0.10.0-27-g9fd15f0 (build: debug, commit: 9fd15f0)
+container system version --format json
 ```
 
 ## Log information
