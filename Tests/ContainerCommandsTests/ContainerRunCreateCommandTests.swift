@@ -143,6 +143,34 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesGPUsFlag() throws {
+        let command = try Application.ContainerRun.parse(["--gpus", "all", "alpine", "true"])
+
+        #expect(command.managementFlags.gpus == ["all"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func createParsesGPUsFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--gpus", "device=0", "alpine", "true"])
+
+        #expect(command.managementFlags.gpus == ["device=0"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func runtimeDataEncodesGPUsFlag() throws {
+        let command = try Application.ContainerRun.parse(["--gpus", "all", "alpine", "true"])
+
+        let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.gpuRequests == [LinuxGPURequest(count: -1)])
+    }
+
+    @Test
     func runtimeDataEncodesPidsLimitFlag() throws {
         let command = try Application.ContainerRun.parse(["--pids-limit", "128", "alpine", "true"])
 

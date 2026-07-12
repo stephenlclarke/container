@@ -1739,6 +1739,63 @@ struct ParserTest {
         }
     }
 
+    @Test func testGPUsParseDockerRequestForms() throws {
+        let requests = try Parser.gpus([
+            "all",
+            "count=1",
+            "device=0",
+            #"driver=nvidia,"capabilities=compute,utility","options=foo=bar,baz=qux""#,
+        ])
+
+        #expect(
+            requests[0]
+                == ParsedGPURequest(
+                    driver: "",
+                    count: -1,
+                    deviceIDs: [],
+                    capabilities: ["gpu"],
+                    options: [:]
+                ))
+        #expect(requests[1].count == 1)
+        #expect(requests[2].count == 0)
+        #expect(requests[2].deviceIDs == ["0"])
+        #expect(requests[3].driver == "nvidia")
+        #expect(requests[3].capabilities == ["compute", "utility", "gpu"])
+        #expect(requests[3].options == ["foo": "bar", "baz": "qux"])
+    }
+
+    @Test func testGPUsRejectInvalidCount() throws {
+        #expect {
+            _ = try Parser.gpus(["count=many"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testGPUsRejectDuplicateKeys() throws {
+        #expect {
+            _ = try Parser.gpus(["count=1,count=2"])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testGPUsRejectMalformedCSV() throws {
+        #expect {
+            _ = try Parser.gpus([#"driver=virtio,"capabilities=gpu"#])
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testGPUsRejectTextAfterQuotedCSVField() throws {
+        #expect {
+            _ = try Parser.gpus([#""capabilities=gpu"x"#])
+        } throws: { _ in
+            true
+        }
+    }
+
     @Test func testResourcesBuildPropertyLookup() async throws {
         let content = """
             [build]

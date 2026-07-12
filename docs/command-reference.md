@@ -81,6 +81,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `--blkio <option>`: Block I/O cgroup tuning options (format: `weight=500` or `device=<path|major:minor>,read-bps=1048576`)
 *   `--device <host[:container[:permissions]]>`: Add a supported Linux VM device to the container
 *   `--device-cgroup-rule <rule>`: Add a Linux device cgroup rule (format: `type major:minor permissions`)
+*   `--gpus <gpu-request>`: Add GPU devices to the container (for example: `all`, `count=1`, or `device=0`)
 *   `--sysctl <name=value>`: Set a namespaced kernel parameter
 *   `--tmpfs <tmpfs>`: Add a tmpfs mount to the container at the given path
 *   `-v, --volume <volume>`: Bind mount a volume into the container
@@ -284,6 +285,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `--blkio <option>`: Block I/O cgroup tuning options (format: `weight=500` or `device=<path|major:minor>,read-bps=1048576`)
 *   `--device <host[:container[:permissions]]>`: Add a supported Linux VM device to the container
 *   `--device-cgroup-rule <rule>`: Add a Linux device cgroup rule (format: `type major:minor permissions`)
+*   `--gpus <gpu-request>`: Add GPU devices to the container (for example: `all`, `count=1`, or `device=0`)
 *   `--sysctl <name=value>`: Set a namespaced kernel parameter
 *   `--tmpfs <tmpfs>`: Add a tmpfs mount to the container at the given path
 *   `-v, --volume <volume>`: Bind mount a volume into the container

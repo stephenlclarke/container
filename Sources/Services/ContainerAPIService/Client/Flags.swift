@@ -214,6 +214,7 @@ public struct Flags {
             blkio: [String] = [],
             deviceCgroupRules: [String] = [],
             devices: [String] = [],
+            gpus: [String] = [],
             sysctls: [String] = [],
             noHealthCheck: Bool = false,
             tmpFs: [String],
@@ -264,6 +265,7 @@ public struct Flags {
             self.blkio = blkio
             self.deviceCgroupRules = deviceCgroupRules
             self.devices = devices
+            self.gpus = gpus
             self.sysctls = sysctls
             self.noHealthCheck = noHealthCheck
             self.tmpFs = tmpFs
@@ -462,6 +464,15 @@ public struct Flags {
             )
         )
         public var devices: [String] = []
+
+        @Option(
+            name: .customLong("gpus"),
+            help: .init(
+                "Add GPU devices to the container (for example: all, count=1, or device=0)",
+                valueName: "gpu-request"
+            )
+        )
+        public var gpus: [String] = []
 
         @Option(name: .customLong("sysctl"), help: .init("Set a namespaced kernel parameter (format: name=value)", valueName: "name=value"))
         public var sysctls: [String] = []

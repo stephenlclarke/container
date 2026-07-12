@@ -539,13 +539,26 @@ container run --device /dev/null:/dev/xnull:rw alpine sh -c "test -c /dev/xnull"
 container run --device /dev/zero:rw alpine sh -c "test -c /dev/zero"
 ```
 
-The accepted format is `HOST[:CONTAINER[:PERMISSIONS]]`. When the second field is only an access string such as `rw`, it is treated as permissions and the container path defaults to the host path. `HOST` names a supported Linux VM device path such as `/dev/null` or `/dev/zero`; it does not provide USB, SD-card, PCI, GPU, or arbitrary macOS hardware passthrough.
+The accepted format is `HOST[:CONTAINER[:PERMISSIONS]]`. When the second field is only an access string such as `rw`, it is treated as permissions and the container path defaults to the host path. `HOST` names a supported Linux VM device path such as `/dev/null` or `/dev/zero`; it does not provide USB, SD-card, PCI, or arbitrary macOS hardware passthrough. GPU access uses the dedicated `--gpus` option.
 
 Use `--device-cgroup-rule` when you only need to adjust Linux device cgroup permissions without creating an additional device node:
 
 ```bash
 container run --device-cgroup-rule "c 1:3 mr" alpine true
 ```
+
+## Add the Apple virtio GPU
+
+Use `--gpus` with `container run` or `container create` to attach the single paravirtual GPU exposed by Virtualization.framework:
+
+```bash
+container run --gpus all alpine sh -c "test -c /dev/dri/card0 && test -c /dev/dri/renderD128"
+container create --gpus device=0 alpine true
+```
+
+The supported Docker-compatible request forms are `all`, `count=1`, `device=0`, and the explicit `driver=virtio` equivalent. The generic `gpu` capability is supported. Requests for multiple GPUs, other device IDs, vendor drivers such as `nvidia`, driver options, or extra capabilities are rejected before the container VM is created.
+
+This option enables Linux virtio-gpu and exposes `/dev/dri/card0` plus `/dev/dri/renderD128` inside the container. It is paravirtual graphics support, not direct Metal, CUDA, NVIDIA, PCI, or arbitrary macOS GPU passthrough. Workloads still need compatible Linux userspace graphics libraries.
 
 To drop all capabilities and selectively re-add only what you need:
 

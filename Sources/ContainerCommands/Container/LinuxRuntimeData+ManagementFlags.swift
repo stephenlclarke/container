@@ -26,8 +26,17 @@ extension LinuxRuntimeData {
         let devices = try Parser.devices(flags.devices).map {
             LinuxDeviceMapping(source: $0.source, target: $0.target, permissions: $0.permissions)
         }
+        let gpuRequests = try Parser.gpus(flags.gpus).map {
+            LinuxGPURequest(
+                driver: $0.driver,
+                count: $0.count,
+                deviceIDs: $0.deviceIDs,
+                capabilities: $0.capabilities,
+                options: $0.options
+            )
+        }
 
-        guard blockIO != nil || pidsLimit != nil || !deviceCgroupRules.isEmpty || !devices.isEmpty else {
+        guard blockIO != nil || pidsLimit != nil || !deviceCgroupRules.isEmpty || !devices.isEmpty || !gpuRequests.isEmpty else {
             return nil
         }
 
@@ -36,7 +45,8 @@ extension LinuxRuntimeData {
                 blockIO: blockIO,
                 pidsLimit: pidsLimit,
                 deviceCgroupRules: deviceCgroupRules,
-                devices: devices
+                devices: devices,
+                gpuRequests: gpuRequests
             ))
     }
 }

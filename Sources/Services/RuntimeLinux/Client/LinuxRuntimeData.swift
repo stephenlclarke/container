@@ -33,6 +33,29 @@ public struct LinuxDeviceMapping: Codable, Equatable, Sendable {
     }
 }
 
+/// Docker-compatible GPU device request carried to the Linux runtime.
+public struct LinuxGPURequest: Codable, Equatable, Sendable {
+    public let driver: String
+    public let count: Int
+    public let deviceIDs: [String]
+    public let capabilities: [String]
+    public let options: [String: String]
+
+    public init(
+        driver: String = "",
+        count: Int = 1,
+        deviceIDs: [String] = [],
+        capabilities: [String] = ["gpu"],
+        options: [String: String] = [:]
+    ) {
+        self.driver = driver
+        self.count = count
+        self.deviceIDs = deviceIDs
+        self.capabilities = capabilities
+        self.options = options
+    }
+}
+
 /// Linux-specific runtime data passed through the opaque runtimeData field
 /// in RuntimeConfiguration. Encoded by the CLI, decoded by the Linux runtime.
 public struct LinuxRuntimeData: Codable, Sendable {
@@ -48,19 +71,23 @@ public struct LinuxRuntimeData: Codable, Sendable {
     public let deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
     /// Linux VM device mappings resolved by the runtime service.
     public let devices: [LinuxDeviceMapping]
+    /// GPU device requests resolved by the runtime service.
+    public let gpuRequests: [LinuxGPURequest]
 
     public init(
         variant: String? = nil,
         blockIO: ContainerizationOCI.LinuxBlockIO? = nil,
         pidsLimit: Int64? = nil,
         deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = [],
-        devices: [LinuxDeviceMapping] = []
+        devices: [LinuxDeviceMapping] = [],
+        gpuRequests: [LinuxGPURequest] = []
     ) {
         self.variant = variant
         self.blockIO = blockIO
         self.pidsLimit = pidsLimit
         self.deviceCgroupRules = deviceCgroupRules
         self.devices = devices
+        self.gpuRequests = gpuRequests
     }
 
     enum CodingKeys: String, CodingKey {
@@ -69,6 +96,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         case pidsLimit
         case deviceCgroupRules
         case devices
+        case gpuRequests
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,5 +106,6 @@ public struct LinuxRuntimeData: Codable, Sendable {
         pidsLimit = try container.decodeIfPresent(Int64.self, forKey: .pidsLimit)
         deviceCgroupRules = try container.decodeIfPresent([ContainerizationOCI.LinuxDeviceCgroup].self, forKey: .deviceCgroupRules) ?? []
         devices = try container.decodeIfPresent([LinuxDeviceMapping].self, forKey: .devices) ?? []
+        gpuRequests = try container.decodeIfPresent([LinuxGPURequest].self, forKey: .gpuRequests) ?? []
     }
 }

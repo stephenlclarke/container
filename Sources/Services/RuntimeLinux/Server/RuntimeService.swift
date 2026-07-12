@@ -1143,6 +1143,12 @@ public actor RuntimeService {
         let gid: UInt32
     }
 
+    struct LinuxGPUResolution: Sendable {
+        let enabled: Bool
+        let devices: [ContainerizationOCI.LinuxDevice]
+        let cgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
+    }
+
     static let knownLinuxDevices: [String: LinuxDeviceMetadata] = [
         "/dev/null": LinuxDeviceMetadata(type: "c", major: 1, minor: 3, fileMode: 0o666, uid: 0, gid: 0),
         "/dev/zero": LinuxDeviceMetadata(type: "c", major: 1, minor: 5, fileMode: 0o666, uid: 0, gid: 0),
@@ -1200,6 +1206,68 @@ public actor RuntimeService {
         )
     }
 
+    static func resolveGPURequests(_ requests: [LinuxGPURequest]) throws -> LinuxGPUResolution {
+        guard !requests.isEmpty else {
+            return LinuxGPUResolution(enabled: false, devices: [], cgroupRules: [])
+        }
+        guard requests.count == 1 else {
+            throw ContainerizationError(.unsupported, message: "the Apple virtio-gpu backend exposes one GPU request")
+        }
+
+        let request = requests[0]
+        guard request.driver.isEmpty || request.driver == "virtio" else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "GPU driver '\(request.driver)' is not supported; the Apple backend supports only virtio-gpu"
+            )
+        }
+        guard request.options.isEmpty else {
+            throw ContainerizationError(.unsupported, message: "GPU driver options are not supported by the Apple virtio-gpu backend")
+        }
+        guard request.capabilities.allSatisfy({ $0 == "gpu" }) else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "GPU capabilities other than 'gpu' are not supported by the Apple virtio-gpu backend"
+            )
+        }
+
+        if request.deviceIDs.isEmpty {
+            guard request.count == -1 || request.count == 1 else {
+                throw ContainerizationError(.unsupported, message: "the Apple virtio-gpu backend exposes exactly one GPU")
+            }
+        } else {
+            guard request.count == 0, request.deviceIDs == ["0"] else {
+                throw ContainerizationError(.unsupported, message: "the Apple virtio-gpu backend supports only GPU device ID '0'")
+            }
+        }
+
+        let metadata = [
+            (path: "/dev/dri/card0", minor: Int64(0)),
+            (path: "/dev/dri/renderD128", minor: Int64(128)),
+        ]
+        let devices = metadata.map {
+            ContainerizationOCI.LinuxDevice(
+                path: $0.path,
+                type: "c",
+                major: 226,
+                minor: $0.minor,
+                fileMode: 0o666,
+                uid: 0,
+                gid: 0
+            )
+        }
+        let cgroupRules = metadata.map {
+            ContainerizationOCI.LinuxDeviceCgroup(
+                allow: true,
+                type: "c",
+                major: 226,
+                minor: $0.minor,
+                access: "rwm"
+            )
+        }
+        return LinuxGPUResolution(enabled: true, devices: devices, cgroupRules: cgroupRules)
+    }
+
     private static func configureContainer(
         czConfig: inout LinuxContainer.Configuration,
         config: ContainerConfiguration,
@@ -1213,10 +1281,12 @@ public actor RuntimeService {
         if let runtimeData {
             let linuxData = try JSONDecoder().decode(LinuxRuntimeData.self, from: runtimeData)
             let deviceMapping = try resolveDeviceMappings(linuxData.devices)
+            let gpu = try resolveGPURequests(linuxData.gpuRequests)
             czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
             czConfig.pidsLimit = linuxData.pidsLimit
-            czConfig.devices.append(contentsOf: deviceMapping.devices)
-            czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules)
+            czConfig.devices.append(contentsOf: deviceMapping.devices + gpu.devices)
+            czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules + gpu.cgroupRules)
+            czConfig.graphicsDevice = gpu.enabled
         }
         czConfig.sysctl = try Self.resolvedSysctls(config: config)
         // If the host doesn't support this, we'll throw on container creation.

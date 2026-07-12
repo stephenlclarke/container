@@ -131,6 +131,9 @@ struct RuntimeConfigurationTests {
             ],
             devices: [
                 LinuxDeviceMapping(source: "/dev/null", target: "/dev/xnull", permissions: "rw")
+            ],
+            gpuRequests: [
+                LinuxGPURequest(count: -1)
             ]
         )
         let encodedData = try JSONEncoder().encode(linuxData)
@@ -158,6 +161,7 @@ struct RuntimeConfigurationTests {
         #expect(decodedData.devices.first?.source == "/dev/null", "Device source should round-trip through RuntimeConfiguration")
         #expect(decodedData.devices.first?.target == "/dev/xnull", "Device target should round-trip through RuntimeConfiguration")
         #expect(decodedData.devices.first?.permissions == "rw", "Device permissions should round-trip through RuntimeConfiguration")
+        #expect(decodedData.gpuRequests.first?.count == -1, "GPU requests should round-trip through RuntimeConfiguration")
     }
 
     @Test("LinuxRuntimeData decodes old payloads without device fields")
@@ -170,5 +174,6 @@ struct RuntimeConfigurationTests {
         #expect(decoded.pidsLimit == nil)
         #expect(decoded.deviceCgroupRules.isEmpty)
         #expect(decoded.devices.isEmpty)
+        #expect(decoded.gpuRequests.isEmpty)
     }
 }

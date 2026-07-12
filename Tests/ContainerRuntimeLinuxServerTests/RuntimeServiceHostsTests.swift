@@ -218,6 +218,38 @@ struct RuntimeServiceHostsTests {
     }
 
     @Test
+    func resolveGPURequestsCreatesVirtioDRMDevices() throws {
+        let resolved = try RuntimeService.resolveGPURequests([LinuxGPURequest(count: -1)])
+
+        #expect(resolved.enabled)
+        #expect(resolved.devices.map(\.path) == ["/dev/dri/card0", "/dev/dri/renderD128"])
+        #expect(resolved.devices.allSatisfy { $0.major == 226 })
+        #expect(resolved.cgroupRules.map(\.minor) == [0, 128])
+    }
+
+    @Test
+    func resolveGPURequestsAcceptsDeviceZero() throws {
+        let resolved = try RuntimeService.resolveGPURequests([
+            LinuxGPURequest(count: 0, deviceIDs: ["0"])
+        ])
+
+        #expect(resolved.enabled)
+    }
+
+    @Test(arguments: [
+        LinuxGPURequest(driver: "nvidia"),
+        LinuxGPURequest(count: 2),
+        LinuxGPURequest(count: 0, deviceIDs: ["1"]),
+        LinuxGPURequest(capabilities: ["compute", "gpu"]),
+        LinuxGPURequest(options: ["mode": "fast"]),
+    ])
+    func resolveGPURequestsRejectsUnsupportedSemantics(request: LinuxGPURequest) {
+        #expect(throws: (any Error).self) {
+            _ = try RuntimeService.resolveGPURequests([request])
+        }
+    }
+
+    @Test
     func execCapabilitiesHonorContainerCapabilityDropsByDefault() throws {
         var config = runtimeTestConfiguration(id: "demo-api-1")
         config.capDrop = ["ALL"]

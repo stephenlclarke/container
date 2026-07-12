@@ -66,6 +66,29 @@ public struct ParsedDeviceMapping: Equatable, Sendable {
     }
 }
 
+/// A parsed Docker-compatible GPU device request.
+public struct ParsedGPURequest: Equatable, Sendable {
+    public let driver: String
+    public let count: Int
+    public let deviceIDs: [String]
+    public let capabilities: [String]
+    public let options: [String: String]
+
+    public init(
+        driver: String,
+        count: Int,
+        deviceIDs: [String],
+        capabilities: [String],
+        options: [String: String]
+    ) {
+        self.driver = driver
+        self.count = count
+        self.deviceIDs = deviceIDs
+        self.capabilities = capabilities
+        self.options = options
+    }
+}
+
 public struct Parser {
     public static func memoryStringAsMiB(_ memory: String) throws -> Int64 {
         let ram = try Measurement.parse(parsing: memory)
@@ -439,6 +462,151 @@ public struct Parser {
     /// the container path equal to the host path.
     public static func devices(_ specs: [String]) throws -> [ParsedDeviceMapping] {
         try specs.map(parseDeviceMapping)
+    }
+
+    /// Parses repeatable Docker-compatible `--gpus` values.
+    public static func gpus(_ specs: [String]) throws -> [ParsedGPURequest] {
+        try specs.map(parseGPURequest)
+    }
+
+    private static func parseGPURequest(_ spec: String) throws -> ParsedGPURequest {
+        let fields = try csvFields(spec, option: "--gpus")
+        guard !fields.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "--gpus request cannot be empty")
+        }
+
+        var driver = ""
+        var count = 0
+        var countWasSet = false
+        var deviceIDs: [String] = []
+        var capabilities: [String] = []
+        var options: [String: String] = [:]
+        var seen: Set<String> = []
+
+        for field in fields {
+            let parts = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = String(parts[0])
+            let value = parts.count == 2 ? String(parts[1]) : nil
+            let effectiveKey = value == nil ? "count" : key
+
+            guard seen.insert(effectiveKey).inserted else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--gpus request key '\(effectiveKey)' can be specified only once"
+                )
+            }
+
+            if value == nil {
+                count = try parseGPUCount(key)
+                countWasSet = true
+                continue
+            }
+
+            switch key {
+            case "driver":
+                driver = value!
+            case "count":
+                count = try parseGPUCount(value!)
+                countWasSet = true
+            case "device":
+                deviceIDs = value!.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            case "capabilities":
+                capabilities = value!.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+                capabilities.append("gpu")
+            case "options":
+                options = try parseGPUOptions(value!)
+            default:
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "unexpected --gpus request key '\(key)'"
+                )
+            }
+        }
+
+        if !countWasSet && deviceIDs.isEmpty {
+            count = 1
+        }
+        if capabilities.isEmpty {
+            capabilities = ["gpu"]
+        }
+
+        return ParsedGPURequest(
+            driver: driver,
+            count: count,
+            deviceIDs: deviceIDs,
+            capabilities: capabilities,
+            options: options
+        )
+    }
+
+    private static func parseGPUCount(_ value: String) throws -> Int {
+        if value == "all" {
+            return -1
+        }
+        guard let count = Int(value) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid GPU count '\(value)': value must be either 'all' or an integer"
+            )
+        }
+        return count
+    }
+
+    private static func parseGPUOptions(_ value: String) throws -> [String: String] {
+        var options: [String: String] = [:]
+        for field in try csvFields(value, option: "--gpus options") {
+            let parts = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            options[String(parts[0])] = parts.count == 2 ? String(parts[1]) : ""
+        }
+        return options
+    }
+
+    private static func csvFields(_ value: String, option: String) throws -> [String] {
+        var fields: [String] = []
+        var field = ""
+        var index = value.startIndex
+        var quoted = false
+        var closedQuote = false
+
+        while index < value.endIndex {
+            let character = value[index]
+            if quoted {
+                if character == "\"" {
+                    let next = value.index(after: index)
+                    if next < value.endIndex, value[next] == "\"" {
+                        field.append("\"")
+                        index = value.index(after: next)
+                        continue
+                    }
+                    quoted = false
+                    closedQuote = true
+                } else {
+                    field.append(character)
+                }
+            } else if character == "," {
+                fields.append(field)
+                field = ""
+                closedQuote = false
+            } else if character == "\"" {
+                guard field.isEmpty else {
+                    throw ContainerizationError(.invalidArgument, message: "\(option) contains an unexpected quote")
+                }
+                quoted = true
+                closedQuote = false
+            } else {
+                guard !closedQuote else {
+                    throw ContainerizationError(.invalidArgument, message: "\(option) contains unexpected text after a quoted field")
+                }
+                field.append(character)
+            }
+            index = value.index(after: index)
+        }
+
+        guard !quoted else {
+            throw ContainerizationError(.invalidArgument, message: "\(option) contains an unterminated quoted field")
+        }
+        fields.append(field)
+        return fields
     }
 
     private static func parseDeviceMapping(_ spec: String) throws -> ParsedDeviceMapping {
