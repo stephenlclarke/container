@@ -88,11 +88,10 @@ trap cleanup EXIT
 copy_containerization_checkout() {
 	local source_path="$1"
 	TEMP_CONTAINERIZATION_ROOT="$(mktemp -d)"
-	local build_path="${TEMP_CONTAINERIZATION_ROOT}/containerization"
-	mkdir -p "${build_path}"
-	cp -R "${source_path}/." "${build_path}/"
-	chmod -R u+w "${build_path}"
-	printf '%s\n' "${build_path}"
+	CONTAINERIZATION_PATH="${TEMP_CONTAINERIZATION_ROOT}/containerization"
+	mkdir -p "${CONTAINERIZATION_PATH}"
+	cp -R "${source_path}/." "${CONTAINERIZATION_PATH}/"
+	chmod -R u+w "${CONTAINERIZATION_PATH}"
 }
 
 CONTAINERIZATION_VERSION="$(${SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
@@ -107,7 +106,7 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 	fi
 	if [ ! -w "${CONTAINERIZATION_PATH}/Package.swift" ] ; then
 		echo "containerization is a read-only source-control checkout; copying to a writable init image build directory"
-		CONTAINERIZATION_PATH="$(copy_containerization_checkout "${CONTAINERIZATION_PATH}")"
+		copy_containerization_checkout "${CONTAINERIZATION_PATH}"
 	fi
 	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
 	make -C "${CONTAINERIZATION_PATH}" init
