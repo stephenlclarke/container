@@ -318,8 +318,7 @@ container start [--attach] [--interactive] [--debug] <container-id>
 
 ### `container top`
 
-Displays the process identifiers currently associated with a running or paused
-container. The default table includes the container ID and one row per PID.
+Displays processes currently associated with a running or paused container. The default table includes Docker-shaped process columns when runtime metadata is available and falls back to container ID plus PID rows for older runtimes.
 
 **Usage**
 

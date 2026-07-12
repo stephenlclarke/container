@@ -1536,7 +1536,7 @@ public actor ContainersService {
         return try await client.statistics()
     }
 
-    /// Get process identifiers for the container.
+    /// Get process information for the container.
     public func processes(id: String) async throws -> ContainerProcesses {
         log.debug(
             "ContainersService: enter",

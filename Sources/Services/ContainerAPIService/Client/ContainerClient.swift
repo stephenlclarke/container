@@ -610,7 +610,7 @@ public struct ContainerClient: Sendable {
         }
     }
 
-    /// Get process identifiers currently associated with a container.
+    /// Get process information currently associated with a container.
     public func processes(id: String) async throws -> ContainerProcesses {
         let request = XPCMessage(route: .containerProcesses)
         request.set(key: .id, value: id)

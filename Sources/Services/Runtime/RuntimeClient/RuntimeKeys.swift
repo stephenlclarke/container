@@ -42,7 +42,7 @@ public enum RuntimeKeys: String {
 
     /// Container statistics
     case statistics
-    /// Container process identifiers
+    /// Container process information
     case processes
 
     /// Copy parameters

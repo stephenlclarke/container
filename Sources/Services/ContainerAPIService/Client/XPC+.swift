@@ -135,7 +135,7 @@ public enum XPCKeys: String {
 
     /// Container statistics
     case statistics
-    /// Container process identifiers
+    /// Container process information
     case processes
     case containerSize
 

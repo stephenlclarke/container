@@ -22,7 +22,7 @@ extension Application {
     public struct ContainerTop: AsyncLoggableCommand {
         public static let configuration = CommandConfiguration(
             commandName: "top",
-            abstract: "Display running process identifiers for a container")
+            abstract: "Display running processes for a container")
 
         @Argument(help: "Container ID")
         var container: String
@@ -43,6 +43,24 @@ extension Application {
         }
 
         static func processTable(_ processes: ContainerProcesses) -> String {
+            if !processes.processes.isEmpty {
+                let rows =
+                    [["UID", "PID", "PPID", "C", "STIME", "TTY", "TIME", "CMD"]]
+                    + processes.processes.map { process in
+                        [
+                            process.uid,
+                            String(process.pid),
+                            String(process.ppid),
+                            String(process.cpu),
+                            process.startTime,
+                            process.tty,
+                            process.time,
+                            process.command,
+                        ]
+                    }
+                return TableOutput(rows: rows).format()
+            }
+
             var rows = [["Container ID", "PID"]]
             for pid in processes.processIdentifiers {
                 rows.append([processes.id, String(pid)])

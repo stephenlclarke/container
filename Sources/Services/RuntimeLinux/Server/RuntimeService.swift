@@ -403,7 +403,7 @@ public actor RuntimeService {
         }
     }
 
-    /// Get process identifiers for the container.
+    /// Get process information for the container.
     ///
     /// - Parameters:
     ///   - message: An XPC message with no parameters.
@@ -418,9 +418,22 @@ public actor RuntimeService {
         return try await self.lock.withLock { _ in
             let containerInfo = try await self.getContainer()
             let processIdentifiers = try await containerInfo.container.processIdentifiers()
+            let processInfo = try await containerInfo.container.processes()
             let processes = ContainerProcesses(
                 id: containerInfo.container.id,
-                processIdentifiers: processIdentifiers
+                processIdentifiers: processIdentifiers,
+                processes: processInfo.map { process in
+                    ContainerResource.ContainerProcessInfo(
+                        uid: process.uid,
+                        pid: process.pid,
+                        ppid: process.ppid,
+                        cpu: process.cpu,
+                        startTime: process.startTime,
+                        tty: process.tty,
+                        time: process.time,
+                        command: process.command
+                    )
+                }
             )
 
             let reply = message.reply()

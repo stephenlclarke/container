@@ -118,6 +118,29 @@ struct RenderTableTests {
 }
 
 struct ContainerTopFormattingTests {
+    @Test func processTableDisplaysProcessInfoRows() {
+        let processes = ContainerProcesses(
+            id: "api",
+            processIdentifiers: [42],
+            processes: [
+                ContainerProcessInfo(
+                    uid: "root",
+                    pid: 42,
+                    ppid: 7,
+                    cpu: 0,
+                    startTime: "15:33",
+                    tty: "?",
+                    time: "00:00:00",
+                    command: "sleep 60"
+                )
+            ]
+        )
+
+        let output = Application.ContainerTop.processTable(processes)
+
+        #expect(output == "UID   PID  PPID  C  STIME  TTY  TIME      CMD\nroot  42   7     0  15:33  ?    00:00:00  sleep 60")
+    }
+
     @Test func processTableDisplaysContainerPids() {
         let processes = ContainerProcesses(id: "api", processIdentifiers: [42, 99])
 
