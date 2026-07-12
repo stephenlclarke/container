@@ -1,8 +1,10 @@
+<!-- markdownlint-disable MD013 MD060 -->
+
 # `config.toml` reference
 
-For a guided walk-through on setting default values, see [Container system config tutorial](./tutorials/container-system-config-tutorial.md). 
+For a guided walk-through on setting default values, see [Container system config tutorial](./tutorials/container-system-config-tutorial.md).
 
-Source of truth: [`Sources/ContainerPersistence/ContainerSystemConfig.swift`](../Sources/ContainerPersistence/ContainerSystemConfig.swift). 
+Source of truth: [`Sources/ContainerPersistence/ContainerSystemConfig.swift`](../Sources/ContainerPersistence/ContainerSystemConfig.swift).
 
 ## Top-level schema
 
@@ -93,7 +95,7 @@ Plugins can ship their own configuration schemas under `[plugin.<id>]`, where `<
 
 | Key                | Type     | Notes                                                                                       |
 |--------------------|----------|---------------------------------------------------------------------------------------------|
-| `<plugin-defined>` | varies   | Schema is defined by the plugin. TODO: Add tutorial on setting plugin specific values. |
+| `<plugin-defined>` | varies   | Schema, defaults, and examples are defined by the plugin that owns the identifier. |
 
 ## Type formats
 
