@@ -468,7 +468,7 @@ public struct Flags {
         @Option(
             name: .customLong("gpus"),
             help: .init(
-                "Add GPU devices to the container (for example: all, count=1, or device=0)",
+                "Request the supported virtio-gpu device (for example: all, count=1, or device=0)",
                 valueName: "gpu-request"
             )
         )

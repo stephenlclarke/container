@@ -51,6 +51,7 @@ public actor HealthCheckHarness {
         reply.set(key: .apiServerAppName, value: "container-apiserver")
         reply.set(key: .apiServerBuilderShimRepository, value: ReleaseVersion.builderShimRepository())
         reply.set(key: .apiServerBuilderShimVersion, value: ReleaseVersion.builderShimVersion())
+        reply.set(key: .apiServerBuilderShimDigest, value: ReleaseVersion.builderShimDigest())
         return reply
     }
 }

@@ -175,6 +175,7 @@ struct ApplicationHealthTests {
         #expect(health.apiServerCommit == expected.apiServerCommit)
         #expect(health.apiServerBuilderShimRepository == expected.apiServerBuilderShimRepository)
         #expect(health.apiServerBuilderShimVersion == expected.apiServerBuilderShimVersion)
+        #expect(health.apiServerBuilderShimDigest == expected.apiServerBuilderShimDigest)
     }
 
     @Test
@@ -243,7 +244,8 @@ struct ApplicationHealthTests {
                 "apiServerBuild": "debug",
                 "apiServerAppName": "container-apiserver",
                 "apiServerBuilderShimRepository": "ghcr.io/example/container-builder-shim/builder",
-                "apiServerBuilderShimVersion": "1.2.3"
+                "apiServerBuilderShimVersion": "1.2.3",
+                "apiServerBuilderShimDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             }
             """
         return try JSONDecoder().decode(SystemHealth.self, from: Data(json.utf8))

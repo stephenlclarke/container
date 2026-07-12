@@ -44,7 +44,8 @@ extension Application {
                 source: ReleaseVersion.containerSource(),
                 containerization: "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())",
                 builderShimRepository: ReleaseVersion.builderShimRepository(),
-                builderShimVersion: ReleaseVersion.builderShimVersion()
+                builderShimVersion: ReleaseVersion.builderShimVersion(),
+                builderShimDigest: ReleaseVersion.builderShimDigest()
             )
 
             // Try to get API server version info
@@ -57,7 +58,8 @@ extension Application {
                     commit: health.apiServerCommit,
                     appName: health.apiServerAppName,
                     builderShimRepository: health.apiServerBuilderShimRepository,
-                    builderShimVersion: health.apiServerBuilderShimVersion
+                    builderShimVersion: health.apiServerBuilderShimVersion,
+                    builderShimDigest: health.apiServerBuilderShimDigest
                 )
             } catch {
                 serverInfo = nil
@@ -87,9 +89,16 @@ extension Application {
         let containerization: String?
         let builderShimRepository: String?
         let builderShimVersion: String?
+        let builderShimDigest: String?
 
         var builderShimImage: String? {
-            guard let builderShimRepository, let builderShimVersion else {
+            guard let builderShimRepository else {
+                return nil
+            }
+            if let builderShimDigest, !builderShimDigest.isEmpty {
+                return "\(builderShimRepository)@\(builderShimDigest)"
+            }
+            guard let builderShimVersion else {
                 return nil
             }
             return "\(builderShimRepository):\(builderShimVersion)"
@@ -145,7 +154,8 @@ extension Application {
             source: String? = nil,
             containerization: String? = nil,
             builderShimRepository: String? = nil,
-            builderShimVersion: String? = nil
+            builderShimVersion: String? = nil,
+            builderShimDigest: String? = nil
         ) {
             self.version = version
             self.buildType = buildType
@@ -156,6 +166,7 @@ extension Application {
             self.containerization = containerization
             self.builderShimRepository = builderShimRepository
             self.builderShimVersion = builderShimVersion
+            self.builderShimDigest = builderShimDigest
         }
     }
 }

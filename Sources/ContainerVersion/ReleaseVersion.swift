@@ -86,7 +86,15 @@ public struct ReleaseVersion {
         get_container_builder_shim_version().map { String(cString: $0) } ?? "0.0.0"
     }
 
+    public static func builderShimDigest() -> String {
+        get_container_builder_shim_digest().map { String(cString: $0) } ?? ""
+    }
+
     public static func builderShimImage() -> String {
-        "\(builderShimRepository()):\(builderShimVersion())"
+        let digest = builderShimDigest()
+        if !digest.isEmpty {
+            return "\(builderShimRepository())@\(digest)"
+        }
+        return "\(builderShimRepository()):\(builderShimVersion())"
     }
 }

@@ -53,6 +53,7 @@ extension ClientHealthCheck {
         }
         let apiServerBuilderShimRepository = reply.string(key: .apiServerBuilderShimRepository)
         let apiServerBuilderShimVersion = reply.string(key: .apiServerBuilderShimVersion)
+        let apiServerBuilderShimDigest = reply.string(key: .apiServerBuilderShimDigest)
         return .init(
             appRoot: appRoot,
             installRoot: installRoot,
@@ -62,7 +63,8 @@ extension ClientHealthCheck {
             apiServerBuild: apiServerBuild,
             apiServerAppName: apiServerAppName,
             apiServerBuilderShimRepository: apiServerBuilderShimRepository,
-            apiServerBuilderShimVersion: apiServerBuilderShimVersion
+            apiServerBuilderShimVersion: apiServerBuilderShimVersion,
+            apiServerBuilderShimDigest: apiServerBuilderShimDigest
         )
     }
 }

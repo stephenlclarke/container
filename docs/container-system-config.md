@@ -31,7 +31,7 @@ Resources and image used for the builder VM that runs `container build`.
 | `rosetta` | `Bool`      | `true`                                               | Whether the builder VM uses Rosetta translation for non-native architectures. |
 | `cpus`    | `Int`       | `2`                                                  | CPU count for the builder VM.                                              |
 | `memory`  | [MemorySize](#memorysize-format)  | `"2048mb"`                                           | RAM allocation for the builder VM. |
-| `image`   | `String`    | `ghcr.io/apple/container-builder-shim/builder:<tag>` | Reference for the builder image. The tag segment is taken from the project's bundled `container-builder-shim` version. |
+| `image`   | `String`    | `ghcr.io/apple/container-builder-shim/builder@sha256:<digest>` | Reference for the builder image. Release builds use the project's bundled `container-builder-shim` digest; custom builds without a digest fall back to the bundled tag. |
 
 ## `[container]`
 

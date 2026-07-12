@@ -1145,8 +1145,7 @@ public actor RuntimeService {
 
     struct LinuxGPUResolution: Sendable {
         let enabled: Bool
-        let devices: [ContainerizationOCI.LinuxDevice]
-        let cgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
+        let guestDevices: [LinuxGuestDeviceRequest]
     }
 
     static let knownLinuxDevices: [String: LinuxDeviceMetadata] = [
@@ -1208,7 +1207,7 @@ public actor RuntimeService {
 
     static func resolveGPURequests(_ requests: [LinuxGPURequest]) throws -> LinuxGPUResolution {
         guard !requests.isEmpty else {
-            return LinuxGPUResolution(enabled: false, devices: [], cgroupRules: [])
+            return LinuxGPUResolution(enabled: false, guestDevices: [])
         }
         guard requests.count == 1 else {
             throw ContainerizationError(.unsupported, message: "the Apple virtio-gpu backend exposes one GPU request")
@@ -1241,31 +1240,11 @@ public actor RuntimeService {
             }
         }
 
-        let metadata = [
-            (path: "/dev/dri/card0", minor: Int64(0)),
-            (path: "/dev/dri/renderD128", minor: Int64(128)),
+        let guestDevices = [
+            LinuxGuestDeviceRequest(path: "/dev/dri/card0", required: false),
+            LinuxGuestDeviceRequest(path: "/dev/dri/renderD128", required: false),
         ]
-        let devices = metadata.map {
-            ContainerizationOCI.LinuxDevice(
-                path: $0.path,
-                type: "c",
-                major: 226,
-                minor: $0.minor,
-                fileMode: 0o666,
-                uid: 0,
-                gid: 0
-            )
-        }
-        let cgroupRules = metadata.map {
-            ContainerizationOCI.LinuxDeviceCgroup(
-                allow: true,
-                type: "c",
-                major: 226,
-                minor: $0.minor,
-                access: "rwm"
-            )
-        }
-        return LinuxGPUResolution(enabled: true, devices: devices, cgroupRules: cgroupRules)
+        return LinuxGPUResolution(enabled: true, guestDevices: guestDevices)
     }
 
     private static func configureContainer(
@@ -1284,8 +1263,9 @@ public actor RuntimeService {
             let gpu = try resolveGPURequests(linuxData.gpuRequests)
             czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
             czConfig.pidsLimit = linuxData.pidsLimit
-            czConfig.devices.append(contentsOf: deviceMapping.devices + gpu.devices)
-            czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules + gpu.cgroupRules)
+            czConfig.devices.append(contentsOf: deviceMapping.devices)
+            czConfig.guestDevices.append(contentsOf: gpu.guestDevices)
+            czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules)
             czConfig.graphicsDevice = gpu.enabled
         }
         czConfig.sysctl = try Self.resolvedSysctls(config: config)

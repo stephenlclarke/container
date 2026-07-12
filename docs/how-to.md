@@ -547,18 +547,18 @@ Use `--device-cgroup-rule` when you only need to adjust Linux device cgroup perm
 container run --device-cgroup-rule "c 1:3 mr" alpine true
 ```
 
-## Add the Apple virtio GPU
+## Request the Apple virtio-gpu device
 
-Use `--gpus` with `container run` or `container create` to attach the single paravirtual GPU exposed by Virtualization.framework:
+Use `--gpus` with `container run` or `container create` to request the single paravirtual virtio-gpu device exposed by Virtualization.framework:
 
 ```bash
-container run --gpus all alpine sh -c "test -c /dev/dri/card0 && test -c /dev/dri/renderD128"
+container run --gpus all alpine sh -c "ls /sys/class/drm /dev/dri 2>/dev/null || true"
 container create --gpus device=0 alpine true
 ```
 
 The supported Docker-compatible request forms are `all`, `count=1`, `device=0`, and the explicit `driver=virtio` equivalent. The generic `gpu` capability is supported. Requests for multiple GPUs, other device IDs, vendor drivers such as `nvidia`, driver options, or extra capabilities are rejected before the container VM is created.
 
-This option enables Linux virtio-gpu and exposes `/dev/dri/card0` plus `/dev/dri/renderD128` inside the container. It is paravirtual graphics support, not direct Metal, CUDA, NVIDIA, PCI, or arbitrary macOS GPU passthrough. Workloads still need compatible Linux userspace graphics libraries.
+This option enables the lower-runtime virtio-gpu VM device, then projects supported Linux DRM character-device metadata discovered from the running guest before starting the container process. Some guest kernels expose `/dev/dri` nodes and some do not; verify the exact node set on the running guest kernel before relying on a specific render node. It is paravirtual graphics-device support, not proof of hardware-accelerated rendering and not direct Metal, CUDA, NVIDIA, PCI, or arbitrary macOS GPU passthrough. Workloads still need compatible Linux userspace graphics libraries.
 
 To drop all capabilities and selectively re-add only what you need:
 
@@ -719,7 +719,7 @@ Use `container system property list` to show all properties that have set defaul
 cpus = 2
 memory = "2048mb"
 rosetta = true
-image = "ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8"
+image = "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9"
 
 [container]
 cpus = 4

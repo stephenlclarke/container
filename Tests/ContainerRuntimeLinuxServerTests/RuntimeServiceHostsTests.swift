@@ -218,13 +218,13 @@ struct RuntimeServiceHostsTests {
     }
 
     @Test
-    func resolveGPURequestsCreatesVirtioDRMDevices() throws {
+    func resolveGPURequestsCreatesVirtioDRMGuestDeviceRequests() throws {
         let resolved = try RuntimeService.resolveGPURequests([LinuxGPURequest(count: -1)])
 
         #expect(resolved.enabled)
-        #expect(resolved.devices.map(\.path) == ["/dev/dri/card0", "/dev/dri/renderD128"])
-        #expect(resolved.devices.allSatisfy { $0.major == 226 })
-        #expect(resolved.cgroupRules.map(\.minor) == [0, 128])
+        #expect(resolved.guestDevices.map(\.path) == ["/dev/dri/card0", "/dev/dri/renderD128"])
+        #expect(resolved.guestDevices.map(\.permissions) == ["rwm", "rwm"])
+        #expect(resolved.guestDevices.map(\.required) == [false, false])
     }
 
     @Test

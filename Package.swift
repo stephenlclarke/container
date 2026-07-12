@@ -63,6 +63,7 @@ let gitCommit = ProcessInfo.processInfo.environment["GIT_COMMIT"] ?? "unspecifie
 let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ?? "stephenlclarke/container"
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "0.13.8"
+let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9"
 let scVersion = "0.37.0"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
@@ -630,6 +631,7 @@ let package = Package(
                 .define("CONTAINERIZATION_REF", to: "\"\(scRef)\""),
                 .define("BUILDER_SHIM_REPOSITORY", to: "\"\(builderShimRepository)\""),
                 .define("BUILDER_SHIM_VERSION", to: "\"\(builderShimVersion)\""),
+                .define("BUILDER_SHIM_DIGEST", to: "\"\(builderShimDigest)\""),
             ],
         ),
         .target(

@@ -35,6 +35,7 @@ struct TestCLIVersion {
         let appName: String
         let builderShimRepository: String?
         let builderShimVersion: String?
+        let builderShimDigest: String?
         let server: VersionInfo?
     }
 
@@ -63,7 +64,7 @@ struct TestCLIVersion {
             #expect(!lines[0].contains("COMPONENT"))
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9"))
 
             let expected = expectedBuildType()
             #expect(lines.contains(where: { $0.contains("build") && $0.contains(expected) }))
@@ -82,6 +83,7 @@ struct TestCLIVersion {
             #expect(!decoded[0].commit.isEmpty)
             #expect(decoded[0].builderShimRepository == "ghcr.io/stephenlclarke/container-builder-shim/builder")
             #expect(decoded[0].builderShimVersion == "0.13.8")
+            #expect(decoded[0].builderShimDigest == "sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9")
             #expect(decoded[0].buildType == expectedBuildType())
         }
     }
@@ -113,7 +115,7 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9"))
         }
     }
 

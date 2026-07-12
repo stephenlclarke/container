@@ -31,9 +31,16 @@ struct TestCLIStatus {
         let apiServerAppName: String
         let apiServerBuilderShimRepository: String?
         let apiServerBuilderShimVersion: String?
+        let apiServerBuilderShimDigest: String?
 
         var apiServerBuilderShimImage: String? {
-            guard let apiServerBuilderShimRepository, let apiServerBuilderShimVersion else {
+            guard let apiServerBuilderShimRepository else {
+                return nil
+            }
+            if let apiServerBuilderShimDigest, !apiServerBuilderShimDigest.isEmpty {
+                return "\(apiServerBuilderShimRepository)@\(apiServerBuilderShimDigest)"
+            }
+            guard let apiServerBuilderShimVersion else {
                 return nil
             }
             return "\(apiServerBuilderShimRepository):\(apiServerBuilderShimVersion)"

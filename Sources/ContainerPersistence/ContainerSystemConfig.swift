@@ -83,6 +83,10 @@ final public class BuildConfig: Codable, Sendable {
     public static let defaultMemory = try! MemorySize("2048MB")
     public static var defaultImage: String {
         let repository = String(cString: get_container_builder_shim_repository())
+        let digest = String(cString: get_container_builder_shim_digest())
+        if !digest.isEmpty {
+            return "\(repository)@\(digest)"
+        }
         let tag = String(cString: get_container_builder_shim_version())
         return "\(repository):\(tag)"
     }

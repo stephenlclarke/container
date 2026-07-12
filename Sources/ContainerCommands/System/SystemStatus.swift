@@ -50,6 +50,7 @@ extension Application {
             let apiServerAppName: String
             let apiServerBuilderShimRepository: String?
             let apiServerBuilderShimVersion: String?
+            let apiServerBuilderShimDigest: String?
 
             init(
                 status: String,
@@ -61,7 +62,8 @@ extension Application {
                 apiServerBuild: String = "",
                 apiServerAppName: String = "",
                 apiServerBuilderShimRepository: String? = nil,
-                apiServerBuilderShimVersion: String? = nil
+                apiServerBuilderShimVersion: String? = nil,
+                apiServerBuilderShimDigest: String? = nil
             ) {
                 self.status = status
                 self.appRoot = appRoot
@@ -73,10 +75,17 @@ extension Application {
                 self.apiServerAppName = apiServerAppName
                 self.apiServerBuilderShimRepository = apiServerBuilderShimRepository
                 self.apiServerBuilderShimVersion = apiServerBuilderShimVersion
+                self.apiServerBuilderShimDigest = apiServerBuilderShimDigest
             }
 
             var apiServerBuilderShimImage: String? {
-                guard let apiServerBuilderShimRepository, let apiServerBuilderShimVersion else {
+                guard let apiServerBuilderShimRepository else {
+                    return nil
+                }
+                if let apiServerBuilderShimDigest, !apiServerBuilderShimDigest.isEmpty {
+                    return "\(apiServerBuilderShimRepository)@\(apiServerBuilderShimDigest)"
+                }
+                guard let apiServerBuilderShimVersion else {
                     return nil
                 }
                 return "\(apiServerBuilderShimRepository):\(apiServerBuilderShimVersion)"
@@ -105,7 +114,8 @@ extension Application {
                     apiServerBuild: systemHealth.apiServerBuild,
                     apiServerAppName: systemHealth.apiServerAppName,
                     apiServerBuilderShimRepository: systemHealth.apiServerBuilderShimRepository,
-                    apiServerBuilderShimVersion: systemHealth.apiServerBuilderShimVersion
+                    apiServerBuilderShimVersion: systemHealth.apiServerBuilderShimVersion,
+                    apiServerBuilderShimDigest: systemHealth.apiServerBuilderShimDigest
                 )
                 try Output.render(payload: status, format: format) {
                     Self.statusTable(status)

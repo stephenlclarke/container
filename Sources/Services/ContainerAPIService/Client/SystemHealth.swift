@@ -45,4 +45,7 @@ public struct SystemHealth: Sendable, Codable {
 
     /// The container-builder-shim image version compiled into the API server.
     public let apiServerBuilderShimVersion: String?
+
+    /// The immutable container-builder-shim image digest compiled into the API server.
+    public let apiServerBuilderShimDigest: String?
 }

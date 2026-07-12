@@ -184,7 +184,7 @@ When you list containers now, `my-web-server` is present, along with the contain
 <pre>
 % container ls
 ID             IMAGE                                               OS     ARCH   STATE    IP
-buildkit       ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8  linux  arm64  running  192.168.64.2
+buildkit       ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9  linux  arm64  running  192.168.64.2
 my-web-server  web-test:latest                                     linux  arm64  running  192.168.64.3
 %
 </pre>
@@ -336,7 +336,7 @@ If you list all running and stopped containers, you will see that the `--rm` fla
 <pre>
 % container list --all
 ID        IMAGE                                               OS     ARCH   STATE    IP
-buildkit  ghcr.io/stephenlclarke/container-builder-shim/builder:0.13.8  linux  arm64  running  192.168.64.2
+buildkit  ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9  linux  arm64  running  192.168.64.2
 %
 </pre>
 
