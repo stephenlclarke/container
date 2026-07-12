@@ -26,6 +26,11 @@ Options:
     --disable-kernel-install   Do not install the default kernel if it is missing
     -h, --help                 Show this help message
 
+Environment:
+    CONTAINERIZATION_INIT_SOURCE_PATH
+                               Build the init image from this containerization
+                               checkout instead of the SwiftPM resolved path
+
 EOF
     exit 0
 }
@@ -66,27 +71,53 @@ done
 
 SWIFT="/usr/bin/swift"
 IMAGE_NAME="vminit:latest"
+INIT_IMAGE_TAR=""
+TEMP_CONTAINERIZATION_ROOT=""
+
+cleanup() {
+	if [[ -n "${INIT_IMAGE_TAR}" && -f "${INIT_IMAGE_TAR}" ]]; then
+		rm -f "${INIT_IMAGE_TAR}"
+	fi
+	if [[ -n "${TEMP_CONTAINERIZATION_ROOT}" && -d "${TEMP_CONTAINERIZATION_ROOT}" ]]; then
+		rm -rf "${TEMP_CONTAINERIZATION_ROOT}"
+	fi
+}
+
+trap cleanup EXIT
+
+copy_containerization_checkout() {
+	local source_path="$1"
+	TEMP_CONTAINERIZATION_ROOT="$(mktemp -d)"
+	local build_path="${TEMP_CONTAINERIZATION_ROOT}/containerization"
+	mkdir -p "${build_path}"
+	cp -R "${source_path}/." "${build_path}/"
+	chmod -R u+w "${build_path}"
+	printf '%s\n' "${build_path}"
+}
 
 CONTAINERIZATION_VERSION="$(${SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
-if [ "${CONTAINERIZATION_VERSION}" == "unspecified" ] ; then
-	CONTAINERIZATION_PATH="$(${SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
+CONTAINERIZATION_PATH="${CONTAINERIZATION_INIT_SOURCE_PATH:-}"
+if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspecified" ]] ; then
+	if [[ -z "${CONTAINERIZATION_PATH}" ]]; then
+		CONTAINERIZATION_PATH="$(${SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
+	fi
 	if [ ! -d "${CONTAINERIZATION_PATH}" ] ; then
-		echo "editable containerization directory at ${CONTAINERIZATION_PATH} does not exist"
+		echo "containerization directory at ${CONTAINERIZATION_PATH} does not exist"
 		exit 1
 	fi
 	if [ ! -w "${CONTAINERIZATION_PATH}/Package.swift" ] ; then
-		echo "containerization is a read-only source-control checkout; skipping editable init image build"
-		exit 0
+		echo "containerization is a read-only source-control checkout; copying to a writable init image build directory"
+		CONTAINERIZATION_PATH="$(copy_containerization_checkout "${CONTAINERIZATION_PATH}")"
 	fi
-	echo "Creating InitImage"
+	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
 	make -C "${CONTAINERIZATION_PATH}" init
-	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o /tmp/init.tar ${IMAGE_NAME}
+	INIT_IMAGE_TAR="$(mktemp -t container-init.XXXXXX.tar)"
+	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o "${INIT_IMAGE_TAR}" "${IMAGE_NAME}"
 
 	# Sleep because commands after stop and start are racy.
 	bin/container system stop
-    sleep 3
+	sleep 3
 	bin/container --debug system start "${START_ARGS[@]}"
 	sleep 3
-	bin/container i load -i /tmp/init.tar
-	rm /tmp/init.tar
+	bin/container i load -i "${INIT_IMAGE_TAR}"
 fi
