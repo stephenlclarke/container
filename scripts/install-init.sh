@@ -27,6 +27,9 @@ Options:
     -h, --help                 Show this help message
 
 Environment:
+    CONTAINER_INIT_IMAGE_NAME
+                               Image reference to build and install for the
+                               init image (default: vminit:latest)
     CONTAINERIZATION_INIT_SOURCE_PATH
                                Build the init image from this containerization
                                checkout instead of the SwiftPM resolved path
@@ -70,7 +73,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 SWIFT="/usr/bin/swift"
-IMAGE_NAME="vminit:latest"
+IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-vminit:latest}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
 
@@ -109,7 +112,7 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 		copy_containerization_checkout "${CONTAINERIZATION_PATH}"
 	fi
 	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
-	make -C "${CONTAINERIZATION_PATH}" init
+	make -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
 	INIT_IMAGE_TAR="$(mktemp -t container-init.XXXXXX.tar)"
 	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o "${INIT_IMAGE_TAR}" "${IMAGE_NAME}"
 
