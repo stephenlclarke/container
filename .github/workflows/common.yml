@@ -44,7 +44,7 @@ jobs:
             developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
           fi
           if [[ ! -d "${developer_dir}" ]]; then
-            printf 'Required Swift 6.3 toolchain is unavailable: %s\n' "${developer_dir}" >&2
+            printf 'Required Swift toolchain is unavailable: %s\n' "${developer_dir}" >&2
             exit 1
           fi
           export DEVELOPER_DIR="${developer_dir}"
@@ -119,16 +119,16 @@ jobs:
 
       - name: Test the container project
         if: ${{ !inputs.coverage }}
-        run: make APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" test
+        run: make BUILD_CONFIGURATION=debug APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" test
 
       - name: Test container integration
         if: >-
           ${{ !inputs.coverage && github.repository == 'apple/container' }}
-        run: make APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" install-kernel integration
+        run: make BUILD_CONFIGURATION=debug APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" install-kernel integration
 
       - name: Test the container project with coverage
         if: ${{ inputs.coverage }}
-        run: make APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" install-kernel coverage
+        run: make BUILD_CONFIGURATION=debug APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" install-kernel coverage
 
       - name: Extract coverage percentages
         if: ${{ inputs.coverage }}
