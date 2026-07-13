@@ -174,7 +174,7 @@ public actor VolumesService {
             )
         }
 
-        let volumePath = self.volumePath(for: name)
+        let volumePath = try self.volumePath(for: name)
         return FileManager.default.allocatedSize(of: URL(fileURLWithPath: volumePath))
     }
 
@@ -217,7 +217,10 @@ public actor VolumesService {
 
                 // Calculate sizes
                 for volume in allVolumes {
-                    let volumePath = self.volumePath(for: volume.name)
+                    guard let volumePath = try? self.volumePath(for: volume.name) else {
+                        self.log.warning("skipping disk usage for volume with invalid storage name", metadata: ["name": "\(volume.name)"])
+                        continue
+                    }
                     let volumeSize = FileManager.default.allocatedSize(of: URL(fileURLWithPath: volumePath))
                     totalSize += volumeSize
 
@@ -247,21 +250,27 @@ public actor VolumesService {
         return sizeInBytes
     }
 
-    // FIXME: These don't guarantee that name doesn't have component separators.
-    private nonisolated func volumePath(for name: String) -> String {
-        resourceRoot.appending(name).string
+    private nonisolated func volumePath(for name: String) throws -> String {
+        try Self.volumePath(root: URL(filePath: resourceRoot.string), name: name).path
     }
 
-    private nonisolated func entityPath(for name: String) -> String {
-        "\(volumePath(for: name))/\(Self.entityFile)"
+    static func volumePath(root: URL, name: String) throws -> URL {
+        guard VolumeStorage.isValidVolumeName(name), let component = FilePath.Component(name), case .regular = component.kind else {
+            throw VolumeError.invalidVolumeName("invalid volume name '\(name)': must match \(VolumeStorage.volumeNamePattern)")
+        }
+        return root.appendingPathComponent(component.string, isDirectory: true)
     }
 
-    private nonisolated func blockPath(for name: String) -> String {
-        "\(volumePath(for: name))/\(Self.blockFile)"
+    private nonisolated func entityPath(for name: String) throws -> String {
+        "\(try volumePath(for: name))/\(Self.entityFile)"
+    }
+
+    private nonisolated func blockPath(for name: String) throws -> String {
+        "\(try volumePath(for: name))/\(Self.blockFile)"
     }
 
     private func createVolumeDirectory(for name: String) throws {
-        let volumePath = volumePath(for: name)
+        let volumePath = try volumePath(for: name)
         let fm = FileManager.default
         try fm.createDirectory(atPath: volumePath, withIntermediateDirectories: true, attributes: nil)
     }
@@ -288,7 +297,7 @@ public actor VolumesService {
     }
 
     private func createVolumeImage(for name: String, sizeInBytes: UInt64 = VolumeStorage.defaultVolumeSizeBytes, journal: EXT4.JournalConfig? = nil) throws {
-        let blockPath = blockPath(for: name)
+        let blockPath = try blockPath(for: name)
 
         // Use the containerization library's EXT4 formatter
         let formatter = try EXT4.Formatter(
@@ -302,7 +311,7 @@ public actor VolumesService {
     }
 
     private nonisolated func removeVolumeDirectory(for name: String) throws {
-        let volumePath = volumePath(for: name)
+        let volumePath = try volumePath(for: name)
         let fm = FileManager.default
 
         if fm.fileExists(atPath: volumePath) {
@@ -344,7 +353,7 @@ public actor VolumesService {
             name: name,
             driver: driver,
             format: "ext4",
-            source: blockPath(for: name),
+            source: try blockPath(for: name),
             labels: labels,
             options: driverOpts,
             sizeInBytes: sizeInBytes

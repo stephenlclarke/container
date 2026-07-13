@@ -116,6 +116,7 @@ public actor ContainersService {
         for dir in directories {
             do {
                 let (config, options) = try Self.getContainerConfiguration(at: dir)
+                _ = try Self.containerPath(root: root, id: config.id)
                 if options?.autoRemove ?? false {
                     log.info(
                         "reap auto-remove container",
@@ -248,7 +249,10 @@ public actor ContainersService {
             var activeCount = 0
 
             for (id, state) in await self.containers {
-                let bundlePath = self.containerRoot.appendingPathComponent(id)
+                guard let bundlePath = try? Self.containerPath(root: self.containerRoot, id: id) else {
+                    self.log.warning("skipping disk usage for container with invalid storage identifier", metadata: ["id": "\(id)"])
+                    continue
+                }
                 let containerSize = FileManager.default.allocatedSize(of: bundlePath)
                 totalSize += containerSize
 
@@ -352,7 +356,7 @@ public actor ContainersService {
                 )
             }
 
-            let path = self.containerRoot.appendingPathComponent(configuration.id)
+            let path = try Self.containerPath(root: self.containerRoot, id: configuration.id)
             let systemPlatform = kernel.platform
 
             // Fetch init image (custom or default)
@@ -439,7 +443,7 @@ public actor ContainersService {
                 return
             }
 
-            let path = self.containerRoot.appendingPathComponent(id)
+            let path = try Self.containerPath(root: self.containerRoot, id: id)
             let (config, _) = try Self.getContainerConfiguration(at: path)
 
             var networkBootstrapInfos = [NetworkBootstrapInfo]()
@@ -899,7 +903,7 @@ public actor ContainersService {
         // (container foo not found) however.
         do {
             _ = try _getContainerState(id: id)
-            let path = self.containerRoot.appendingPathComponent(id)
+            let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             let handles = [
                 try Self.logHandle(for: bundle.containerLog, options: options, replay: replay),
@@ -945,7 +949,7 @@ public actor ContainersService {
 
         do {
             _ = try _getContainerState(id: id)
-            let path = self.containerRoot.appendingPathComponent(id)
+            let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             return try Self.followLogFile(for: bundle.containerLog, options: options)
         } catch {
@@ -981,7 +985,7 @@ public actor ContainersService {
 
         do {
             _ = try _getContainerState(id: id)
-            let path = self.containerRoot.appendingPathComponent(id)
+            let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             let data = try Self.logData(from: Self.logReplayURLs(for: bundle.containerLogRecords, includeRotated: replay.includeRotated))
             return try Self.filteredLogRecords(data, options: options)
@@ -1014,7 +1018,7 @@ public actor ContainersService {
 
         do {
             _ = try _getContainerState(id: id)
-            let path = self.containerRoot.appendingPathComponent(id)
+            let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             return try FileHandle(forReadingFrom: bundle.containerLogRecords)
         } catch {
@@ -1049,7 +1053,7 @@ public actor ContainersService {
 
         do {
             _ = try _getContainerState(id: id)
-            let path = self.containerRoot.appendingPathComponent(id)
+            let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             return try Self.followLogRecordFile(
                 for: bundle.containerLogRecords,
@@ -1659,7 +1663,7 @@ public actor ContainersService {
             )
         }
 
-        let containerPath = self.containerRoot.appendingPathComponent(id).path
+        let containerPath = try Self.containerPath(root: self.containerRoot, id: id).path
 
         return FileManager.default.allocatedSize(of: URL(fileURLWithPath: containerPath))
     }
@@ -1672,7 +1676,7 @@ public actor ContainersService {
             throw ContainerizationError(.invalidState, message: "container is not stopped")
         }
 
-        let path = self.containerRoot.appendingPathComponent(id)
+        let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
         let rootfs: URL
         if FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path) {
@@ -1744,7 +1748,7 @@ public actor ContainersService {
         // Shutdown and deregister the runtime service
         self.log.info("shutting down runtime service", metadata: ["id": "\(id)"])
 
-        let path = self.containerRoot.appendingPathComponent(id)
+        let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
         let config = try bundle.configuration
         let label = Self.fullLaunchdServiceLabel(
@@ -1862,7 +1866,7 @@ public actor ContainersService {
         // the init process" lifecycle fails before actually fork+exec'ing
         // the OCI runtime.
         await self.exitMonitor.stopTracking(id: id)
-        let path = self.containerRoot.appendingPathComponent(id)
+        let path = try Self.containerPath(root: self.containerRoot, id: id)
 
         // Try to get config for service deregistration
         // Don't fail if bundle is incomplete
@@ -1912,10 +1916,20 @@ public actor ContainersService {
     }
 
     private func getContainerCreationOptions(id: String) throws -> ContainerCreateOptions {
-        let path = self.containerRoot.appendingPathComponent(id)
+        let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
         let options: ContainerCreateOptions = try bundle.load(filename: "options.json")
         return options
+    }
+
+    static func containerPath(root: URL, id: String) throws -> URL {
+        guard let component = FilePath.Component(id), case .regular = component.kind else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "container ID \(id) is not a valid path component"
+            )
+        }
+        return root.appendingPathComponent(component.string, isDirectory: true)
     }
 
     private func getInitBlock(for platform: Platform, imageRef: String? = nil) async throws -> Filesystem {
