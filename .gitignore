@@ -16,6 +16,7 @@ installer/
 .claude/
 .clitests/
 test_results/
+.test-scratch/
 *.pid
 *.log
 *.zip
