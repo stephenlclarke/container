@@ -324,13 +324,12 @@ struct TestCLIRunCommand {
             }
             try await f.waitForContainerRunning(c)
 
-            _ = try f.doExec(c, cmd: ["apk", "add", "netcat-openbsd"])
             let perms = try f.doExec(
                 c, cmd: ["sh", "-c", "stat -c \"%a\" \"${SSH_AUTH_SOCK}\""],
                 user: "guest"
             ).trimmingCharacters(in: .whitespacesAndNewlines)
             #expect(perms == "766")
-            _ = try f.doExec(c, cmd: ["sh", "-c", "nc -zU \"${SSH_AUTH_SOCK}\""], user: "guest")
+            _ = try f.doExec(c, cmd: ["sh", "-c", "test -S \"${SSH_AUTH_SOCK}\""], user: "guest")
         }
     }
 

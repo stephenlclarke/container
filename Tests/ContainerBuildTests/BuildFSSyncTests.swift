@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import CryptoKit
 import Foundation
 import Testing
 
@@ -85,5 +86,89 @@ struct BuildFSSyncTests {
         let response = try #require(responses.first)
         #expect(String(data: response.buildTransfer.data, encoding: .utf8) == "shared")
         #expect(response.buildTransfer.source == "payload.txt")
+    }
+
+    @Test
+    func tarHeaderChecksumMatchesTransferredArchive() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data("FROM scratch\n".utf8).write(to: root.appendingPathComponent("Dockerfile"))
+        let fssync = try BuildFSSync(root)
+        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
+
+        var transfer = BuildTransfer()
+        transfer.id = "request-id"
+        transfer.source = "."
+        transfer.metadata = [
+            "stage": "fssync",
+            "method": "Walk",
+            "mode": "tar",
+            "followpaths": "Dockerfile",
+        ]
+        var request = ServerStream()
+        request.buildID = "build-id"
+        request.buildTransfer = transfer
+        request.packetType = .buildTransfer(transfer)
+
+        try await fssync.handle(continuation, request)
+        continuation.finish()
+
+        var responses: [ClientStream] = []
+        for await response in stream {
+            responses.append(response)
+        }
+
+        let header = try #require(responses.first)
+        let expected = try #require(header.buildTransfer.metadata["hash"])
+        let archive = responses.reduce(into: Data()) { data, response in
+            data.append(response.buildTransfer.data)
+        }
+        let actual = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
+        #expect(actual == expected)
+    }
+
+    @Test
+    func tarWalkHandlesPrivateTmpAlias() async throws {
+        let fileManager = FileManager.default
+        let root = URL(filePath: "/private/tmp")
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data().write(to: root.appendingPathComponent("emptyFile"))
+        let fssync = try BuildFSSync(root)
+        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
+
+        var transfer = BuildTransfer()
+        transfer.id = "request-id"
+        transfer.source = "."
+        transfer.metadata = [
+            "stage": "fssync",
+            "method": "Walk",
+            "mode": "tar",
+            "followpaths": "emptyFile",
+        ]
+        var request = ServerStream()
+        request.buildID = "build-id"
+        request.buildTransfer = transfer
+        request.packetType = .buildTransfer(transfer)
+
+        try await fssync.handle(continuation, request)
+        continuation.finish()
+
+        var responses: [ClientStream] = []
+        for await response in stream {
+            responses.append(response)
+        }
+
+        #expect(responses.first?.buildTransfer.metadata["hash"] != nil)
     }
 }

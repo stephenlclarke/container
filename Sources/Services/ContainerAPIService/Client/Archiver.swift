@@ -56,8 +56,6 @@ public final class Archiver: Sendable {
         let fileManager = FileManager.default
         try? fileManager.removeItem(at: destination)
 
-        var hasher = SHA256()
-
         do {
             let directory = destination.deletingLastPathComponent()
             try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -89,15 +87,11 @@ public final class Archiver: Sendable {
             )
             try archiver.open(file: destination)
 
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .sortedKeys
-
             for info in entryInfo {
                 guard let entry = try Self._createEntry(entryInfo: info) else {
                     throw Error.failedToCreateEntry
                 }
-                hasher.update(data: try encoder.encode(entry))
-                try Self._compressFile(item: info.pathOnHost, entry: entry, archiver: archiver, hasher: &hasher)
+                try Self._compressFile(item: info.pathOnHost, entry: entry, archiver: archiver)
             }
             try archiver.finishEncoding()
         } catch {
@@ -105,11 +99,11 @@ public final class Archiver: Sendable {
             throw error
         }
 
-        return hasher.finalize()
+        return try Self._checksum(file: destination)
     }
 
     // MARK: private functions
-    private static func _compressFile(item: URL, entry: WriteEntry, archiver: ArchiveWriter, hasher: inout SHA256) throws {
+    private static func _compressFile(item: URL, entry: WriteEntry, archiver: ArchiveWriter) throws {
         let writer = archiver.makeTransactionWriter()
         let bufferSize = Int(1.mib())
         let readBuffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
@@ -134,13 +128,35 @@ public final class Archiver: Sendable {
                     break
                 }
                 let data = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: readBuffer), count: byteRead, deallocator: .none)
-                hasher.update(data: data)
                 try data.withUnsafeBytes { pointer in
                     try writer.writeChunk(data: pointer)
                 }
             }
         }
         try writer.finish()
+    }
+
+    private static func _checksum(file: URL) throws -> SHA256.Digest {
+        guard let stream = InputStream(url: file) else {
+            throw Error.failedToCreateInputStream(file)
+        }
+        stream.open()
+        defer { stream.close() }
+
+        var hasher = SHA256()
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: Int(1.mib()))
+        defer { buffer.deallocate() }
+        while true {
+            let count = stream.read(buffer, maxLength: Int(1.mib()))
+            if count < 0 {
+                throw Error.failedToReadFile(file, stream.streamError)
+            }
+            if count == 0 {
+                break
+            }
+            hasher.update(data: Data(bytes: buffer, count: count))
+        }
+        return hasher.finalize()
     }
 
     private static func _createEntry(entryInfo: ArchiveEntryInfo, pathPrefix: String = "") throws -> WriteEntry? {

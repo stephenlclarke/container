@@ -64,7 +64,7 @@ struct TestCLIVersion {
             #expect(!lines[0].contains("COMPONENT"))
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:1add3f370d2024d005c62250bea285588390e0f04996297f88ee73f72a4050bb"))
 
             let expected = expectedBuildType()
             #expect(lines.contains(where: { $0.contains("build") && $0.contains(expected) }))
@@ -82,8 +82,8 @@ struct TestCLIVersion {
             #expect(!decoded[0].version.isEmpty)
             #expect(!decoded[0].commit.isEmpty)
             #expect(decoded[0].builderShimRepository == "ghcr.io/stephenlclarke/container-builder-shim/builder")
-            #expect(decoded[0].builderShimVersion == "0.13.8")
-            #expect(decoded[0].builderShimDigest == "sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9")
+            #expect(decoded[0].builderShimVersion == "current-29258644969-e521a27fa7ff")
+            #expect(decoded[0].builderShimDigest == "sha256:1add3f370d2024d005c62250bea285588390e0f04996297f88ee73f72a4050bb")
             #expect(decoded[0].buildType == expectedBuildType())
         }
     }
@@ -115,7 +115,7 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:e4a1294b27c9602c3b7b26b1af753cbe5b688d91f1880e5990ed45ce5c711cc9"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:1add3f370d2024d005c62250bea285588390e0f04996297f88ee73f72a4050bb"))
         }
     }
 

@@ -18,6 +18,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", required=True)
     parser.add_argument("--label", required=True)
     parser.add_argument("--asset", required=True)
+    parser.add_argument(
+        "--compose-formula",
+        default="container-compose",
+        help="Fully qualified tap formula name without the stephenlclarke/tap prefix.",
+    )
     return parser.parse_args()
 
 
@@ -30,11 +35,25 @@ def replace_once(pattern: str, replacement: str, text: str) -> str:
 
 def main() -> None:
     args = parse_args()
+    if re.fullmatch(r"container-compose(?:-current)?", args.compose_formula) is None:
+        raise SystemExit(
+            "compose formula must be one of: container-compose, container-compose-current"
+        )
     text = args.template.read_text(encoding="utf-8")
     text = replace_once(r"^class \w+ < Formula$", f"class {args.formula_class} < Formula", text)
     text = replace_once(r'^  url ".+"$', f'  url "{args.url}"', text)
     text = replace_once(r"^  sha256 .+$", f'  sha256 "{args.sha256}"', text)
     text = replace_once(r'^  version ".+"$', f'  version "{args.version}"', text)
+    text = re.sub(
+        r"stephenlclarke/tap/container-compose(?:-current)?",
+        f"stephenlclarke/tap/{args.compose_formula}",
+        text,
+    )
+    text = re.sub(
+        r"opt/container-compose(?:-current)?/",
+        f"opt/{args.compose_formula}/",
+        text,
+    )
     text = replace_once(
         r"This formula installs the .+ prebuilt (?:release|package) asset:\n        .+\.tar\.gz",
         f"This formula installs the {args.label} prebuilt package asset:\n        {args.asset}",

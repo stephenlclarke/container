@@ -12,140 +12,108 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Prebuilt Binaries
+name: Publish Current Runtime
 
 on:
-  push:
-    branches:
-      - main
-      - release
-      - "release-*"
-  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - container project - merge build
+    types:
+      - completed
 
 permissions:
+  actions: read
   attestations: write
   contents: write
   id-token: write
 
 concurrency:
-  group: prebuilt-binaries-${{ github.ref_name }}
-  cancel-in-progress: true
+  group: publish-current-runtime-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
 
 jobs:
-  changes:
-    name: Detect Relevant Changes
+  resolve-publish-context:
+    name: Resolve Publish Context
+    if: >
+      github.repository == 'stephenlclarke/container' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: ubuntu-latest
     outputs:
-      heavy: ${{ steps.filter.outputs.heavy }}
+      publish: ${{ steps.context.outputs.publish }}
+      sha: ${{ steps.context.outputs.sha }}
     steps:
-      - name: Checkout for push diff
-        if: github.event_name == 'push'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          fetch-depth: 0
-
-      - name: Classify changed files
-        id: filter
+      - name: Require the successful merge build
+        id: context
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${GITHUB_EVENT_NAME}" != "push" ]]; then
-            printf 'heavy=true\n' >> "$GITHUB_OUTPUT"
+
+          build_conclusion="$(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${WORKFLOW_RUN_ID}/jobs" \
+              --jq ".jobs[] | select(.name | startswith(\"Invoke build\")) | .conclusion" \
+              | tail -n 1
+          )"
+          if [[ "${build_conclusion}" != "success" ]]; then
+            printf 'Skipping current runtime publish: merge build concluded %s.\n' \
+              "${build_conclusion:-missing}"
+            printf 'publish=false\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          changed_files="${RUNNER_TEMP}/changed-files.txt"
-          before="${{ github.event.before }}"
-          after="${GITHUB_SHA}"
-          if [[ "$before" =~ ^0+$ ]]; then
-            git diff-tree --no-commit-id --name-only -r "$after" > "$changed_files"
-          else
-            git diff --name-only "$before" "$after" > "$changed_files"
+          if [[ ! "${WORKFLOW_RUN_HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'merge-build did not provide a full commit SHA: %s\n' \
+              "${WORKFLOW_RUN_HEAD_SHA}" >&2
+            exit 1
           fi
 
-          heavy=false
-          while IFS= read -r path; do
-            case "$path" in
-              *.md|docs/*|Formula/*)
-                ;;
-              *)
-                heavy=true
-                break
-                ;;
-            esac
-          done < "$changed_files"
+          current_main="$(git ls-remote --heads "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | awk "{ print \$1 }" | tail -n 1)"
+          if [[ "${current_main}" != "${WORKFLOW_RUN_HEAD_SHA}" ]]; then
+            printf 'Skipping superseded merge build at %s; main is now %s.\n' \
+              "${WORKFLOW_RUN_HEAD_SHA}" "${current_main:-missing}"
+            printf 'publish=false\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
-          printf 'heavy=%s\n' "$heavy" >> "$GITHUB_OUTPUT"
+          printf 'publish=true\n' >> "$GITHUB_OUTPUT"
+          printf 'sha=%s\n' "${WORKFLOW_RUN_HEAD_SHA}" >> "$GITHUB_OUTPUT"
 
   package:
-    name: Package ${{ github.ref_name }}
-    needs: changes
-    if: >
-      github.repository == 'stephenlclarke/container' &&
-      needs.changes.outputs.heavy == 'true' &&
-      (github.event_name != 'push' ||
-       !startsWith(github.event.head_commit.message, 'chore(homebrew): refresh prebuilt formula metadata'))
+    name: Package Current Runtime
+    needs: resolve-publish-context
+    if: needs.resolve-publish-context.outputs.publish == 'true'
     runs-on: macos-26
     steps:
-      - name: Checkout container
+      - name: Checkout the validated runtime commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
+          ref: ${{ needs.resolve-publish-context.outputs.sha }}
 
-      - name: Select package lane
+      - name: Select current release identity
         id: lane
+        env:
+          PUBLISH_SHA: ${{ needs.resolve-publish-context.outputs.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          asset_slug="${GITHUB_REF_NAME//\//-}"
-          short_sha="${GITHUB_SHA:0:12}"
-          formula_slug="$(
-            printf '%s' "$asset_slug" \
-              | tr '[:upper:]' '[:lower:]' \
-              | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
-          )"
-          case "${GITHUB_REF_NAME}" in
-            main)
-              printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
-              printf 'asset=container-homebrew-main-release-arm64.tar.gz\n' >> "$GITHUB_OUTPUT"
-              printf 'release_name=Homebrew main lane prebuilt\n' >> "$GITHUB_OUTPUT"
-              printf 'formula=container.rb\n' >> "$GITHUB_OUTPUT"
-              printf 'formula_class=Container\n' >> "$GITHUB_OUTPUT"
-              printf 'label=main lane\n' >> "$GITHUB_OUTPUT"
-              ;;
-            release)
-              formula_class="$(python3 -c 'import re, sys; print("Container" + "".join(part.capitalize() for part in re.split(r"[^a-zA-Z0-9]+", sys.argv[1]) if part))' "$formula_slug")"
-              printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
-              printf 'asset=container-homebrew-%s-release-arm64.tar.gz\n' "$asset_slug" >> "$GITHUB_OUTPUT"
-              printf 'release_name=Homebrew release lane prebuilt\n' >> "$GITHUB_OUTPUT"
-              printf 'formula=container-%s.rb\n' "$formula_slug" >> "$GITHUB_OUTPUT"
-              printf 'formula_class=%s\n' "$formula_class" >> "$GITHUB_OUTPUT"
-              printf 'label=release lane\n' >> "$GITHUB_OUTPUT"
-              ;;
-            release-*)
-              formula_class="$(python3 -c 'import re, sys; print("Container" + "".join(part.capitalize() for part in re.split(r"[^a-zA-Z0-9]+", sys.argv[1]) if part))' "$formula_slug")"
-              printf 'configuration=release\n' >> "$GITHUB_OUTPUT"
-              printf 'asset=container-homebrew-%s-release-arm64.tar.gz\n' "$asset_slug" >> "$GITHUB_OUTPUT"
-              printf 'release_name=Homebrew %s branch prebuilt\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-              printf 'formula=container-%s.rb\n' "$formula_slug" >> "$GITHUB_OUTPUT"
-              printf 'formula_class=%s\n' "$formula_class" >> "$GITHUB_OUTPUT"
-              printf 'label=%s branch\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              printf 'Unsupported branch for prebuilt packaging: %s\n' "${GITHUB_REF_NAME}" >&2
-              exit 1
-              ;;
-          esac
+          short_sha="${PUBLISH_SHA:0:12}"
           {
-            printf 'asset_slug=%s\n' "$asset_slug"
-            printf 'tag=homebrew-%s-%s-%s\n' "$asset_slug" "${GITHUB_RUN_NUMBER}" "$short_sha"
-            printf 'version=%s-release.%s.%s\n' "$asset_slug" "${GITHUB_RUN_NUMBER}" "$short_sha"
+            printf 'asset=container-current-arm64.tar.gz\n'
+            printf 'release_tag=current-%s-%s\n' "${GITHUB_RUN_NUMBER}" "${short_sha}"
+            printf 'release_title=Current build · %s\n' "${short_sha}"
+            printf 'version=current-release.%s.%s\n' "${GITHUB_RUN_NUMBER}" "${short_sha}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build package
-        run: make package BUILD_CONFIGURATION="${{ steps.lane.outputs.configuration }}" HOMEBREW_ARCHIVE="${RUNNER_TEMP}/${{ steps.lane.outputs.asset }}"
+      - name: Build current package
+        run: make package BUILD_CONFIGURATION=release HOMEBREW_ARCHIVE="${RUNNER_TEMP}/${{ steps.lane.outputs.asset }}"
 
-      - name: Attest package
+      - name: Attest current package
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
           subject-path: ${{ runner.temp }}/${{ steps.lane.outputs.asset }}
@@ -158,120 +126,50 @@ jobs:
             ${{ runner.temp }}/${{ steps.lane.outputs.asset }}
             ${{ runner.temp }}/${{ steps.lane.outputs.asset }}.sha256
 
-      - name: Publish branch release assets
+      - name: Publish immutable current release
         env:
           GH_TOKEN: ${{ github.token }}
           ASSET: ${{ steps.lane.outputs.asset }}
-          CONFIGURATION: ${{ steps.lane.outputs.configuration }}
-          RELEASE_NAME: ${{ steps.lane.outputs.release_name }}
-          RELEASE_TAG: ${{ steps.lane.outputs.tag }}
+          PUBLISH_SHA: ${{ needs.resolve-publish-context.outputs.sha }}
+          RELEASE_TAG: ${{ steps.lane.outputs.release_tag }}
+          RELEASE_TITLE: ${{ steps.lane.outputs.release_title }}
+          VERSION: ${{ steps.lane.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
           tag_target="$(
             git ls-remote --tags --refs origin "refs/tags/${RELEASE_TAG}" \
-              | awk '{print $1}' \
+              | awk "{print \$1}" \
               | tail -n 1
           )"
-          if [[ -n "$tag_target" && "$tag_target" != "$GITHUB_SHA" ]]; then
+          if [[ -n "${tag_target}" && "${tag_target}" != "${PUBLISH_SHA}" ]]; then
             printf 'release tag %s already points at %s, refusing to retarget it to %s\n' \
-              "$RELEASE_TAG" "$tag_target" "$GITHUB_SHA" >&2
+              "${RELEASE_TAG}" "${tag_target}" "${PUBLISH_SHA}" >&2
             exit 1
           fi
 
           notes="$(mktemp)"
-          generated_notes="$(mktemp)"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f tag_name="$RELEASE_TAG" \
-            -f target_commitish="$GITHUB_SHA" \
-            --jq '.body' > "$generated_notes"
-
           {
-            printf '%s\n\n' "${RELEASE_NAME}"
-            printf 'Branch: %s\n' "${GITHUB_REF_NAME}"
-            printf 'Commit: %s\n' "${GITHUB_SHA}"
-            printf 'Build configuration: %s\n\n' "${CONFIGURATION}"
-            cat "$generated_notes"
+            printf '## Current build\n\n'
+            # shellcheck disable=SC2016 # Markdown backticks are intentional.
+            printf 'Automated package for the validated `main` merge-build commit `%s`.\n\n' "${PUBLISH_SHA}"
+            printf 'This is an installable current-runtime artifact. It never updates the stable Homebrew formula; the matched current stack is promoted atomically by container-compose.\n\n'
+            printf '## Asset\n\n'
+            # shellcheck disable=SC2016 # Markdown backticks are intentional.
+            printf '- `%s` SHA-256: `%s`.\n' \
+              "${ASSET}" "$(awk "{print \$1}" "${RUNNER_TEMP}/${ASSET}.sha256")"
           } > "$notes"
 
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" \
-              --target "$GITHUB_SHA" \
-              --title "${RELEASE_NAME}" \
-              --notes-file "$notes" \
-              --prerelease
-          else
-            gh release edit "$RELEASE_TAG" \
-              --title "${RELEASE_NAME}" \
-              --notes-file "$notes" \
-              --prerelease
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            printf 'release %s already exists; published releases are immutable\n' \
+              "${RELEASE_TAG}" >&2
+            exit 1
           fi
 
-          gh release upload "$RELEASE_TAG" \
+          gh release create "${RELEASE_TAG}" \
             "${RUNNER_TEMP}/${ASSET}" \
             "${RUNNER_TEMP}/${ASSET}.sha256" \
-            --clobber
-
-      - name: Check Homebrew tap token
-        id: tap-token
-        env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ -z "${HOMEBREW_TAP_TOKEN}" ]]; then
-            printf 'available=false\n' >> "$GITHUB_OUTPUT"
-            printf 'HOMEBREW_TAP_TOKEN is not set; skipping stephenlclarke/homebrew-tap update.\n'
-            exit 0
-          fi
-          printf 'available=true\n' >> "$GITHUB_OUTPUT"
-
-      - name: Checkout Homebrew tap
-        if: steps.tap-token.outputs.available == 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          repository: stephenlclarke/homebrew-tap
-          path: homebrew-tap
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-
-      - name: Update Homebrew tap formula
-        if: steps.tap-token.outputs.available == 'true'
-        env:
-          ASSET: ${{ steps.lane.outputs.asset }}
-          FORMULA: ${{ steps.lane.outputs.formula }}
-          FORMULA_CLASS: ${{ steps.lane.outputs.formula_class }}
-          LABEL: ${{ steps.lane.outputs.label }}
-          RELEASE_TAG: ${{ steps.lane.outputs.tag }}
-          VERSION: ${{ steps.lane.outputs.version }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          url="https://github.com/stephenlclarke/container/releases/download/${RELEASE_TAG}/${ASSET}"
-          sha256="$(awk '{print $1}' "${RUNNER_TEMP}/${ASSET}.sha256")"
-          python3 scripts/update-homebrew-formula.py \
-            --formula "homebrew-tap/Formula/${FORMULA}" \
-            --template "Formula/container.rb" \
-            --formula-class "$FORMULA_CLASS" \
-            --url "$url" \
-            --sha256 "$sha256" \
-            --version "$VERSION" \
-            --label "$LABEL" \
-            --asset "$ASSET"
-          git -C homebrew-tap diff -- Formula
-
-      - name: Commit Homebrew tap update
-        if: steps.tap-token.outputs.available == 'true'
-        shell: bash
-        working-directory: homebrew-tap
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- Formula; then
-            printf 'Homebrew tap formula already points at %s\n' "${{ steps.lane.outputs.asset }}"
-            exit 0
-          fi
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "Formula/${{ steps.lane.outputs.formula }}"
-          git commit -m "chore(homebrew): update ${{ github.ref_name }} container formula"
-          git push
+            --target "${PUBLISH_SHA}" \
+            --title "${RELEASE_TITLE}" \
+            --notes-file "$notes" \
+            --prerelease

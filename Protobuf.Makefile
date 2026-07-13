@@ -18,8 +18,10 @@ LOCAL_BIN_DIR := $(LOCAL_DIR)/bin
 
 BUILDER_SHIM_REPO ?= https://github.com/stephenlclarke/container-builder-shim.git
 
-# Versions
-BUILDER_SHIM_VERSION ?= $(shell sed -n 's/let builderShimVersion *=.*"\([^"]*\)"$$/\1/p' Package.swift)
+# Protocol generation consumes source, whereas Package.swift records an OCI
+# image tag. Keep the source revision immutable and paired with that image;
+# current-* image tags are deliberately not Git refs.
+BUILDER_SHIM_SOURCE_REF ?= e521a27fa7ff8fe57d11c793ba607bbac921d5b2
 PROTOC_VERSION := 26.1
 
 # Protoc binary installation
@@ -44,8 +46,11 @@ protos: $(PROTOC) protoc-gen-swift
 	@echo Generating protocol buffers source code...
 	@mkdir -p $(LOCAL_DIR)
 	@if [ ! -d "$(LOCAL_DIR)/container-builder-shim" ]; then \
-		cd $(LOCAL_DIR) && git clone --branch $(BUILDER_SHIM_VERSION) --depth 1 $(BUILDER_SHIM_REPO); \
+		git clone --filter=blob:none $(BUILDER_SHIM_REPO) "$(LOCAL_DIR)/container-builder-shim"; \
 	fi
+	@git -C "$(LOCAL_DIR)/container-builder-shim" fetch --depth 1 origin $(BUILDER_SHIM_SOURCE_REF)
+	@git -C "$(LOCAL_DIR)/container-builder-shim" checkout --detach --quiet FETCH_HEAD
+	@test "$$(git -C "$(LOCAL_DIR)/container-builder-shim" rev-parse HEAD)" = "$(BUILDER_SHIM_SOURCE_REF)"
 	@$(PROTOC) $(LOCAL_DIR)/container-builder-shim/pkg/api/Builder.proto \
 		--plugin=protoc-gen-grpc-swift=$(BUILD_BIN_DIR)/protoc-gen-grpc-swift-2 \
 		--plugin=protoc-gen-swift=$(BUILD_BIN_DIR)/protoc-gen-swift \
