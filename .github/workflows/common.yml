@@ -35,10 +35,22 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Select Apple-managed toolchain
-        if: ${{ github.repository == 'apple/container' }}
-        run: >-
-          echo "DEVELOPER_DIR=/Applications/Xcode_swift_6.3.app/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Select compatible Swift toolchain
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REPOSITORY}" == "apple/container" ]]; then
+            developer_dir="/Applications/Xcode_swift_6.3.app/Contents/Developer"
+          else
+            developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
+          fi
+          if [[ ! -d "${developer_dir}" ]]; then
+            printf 'Required Swift 6.3 toolchain is unavailable: %s\n' "${developer_dir}" >&2
+            exit 1
+          fi
+          export DEVELOPER_DIR="${developer_dir}"
+          printf 'DEVELOPER_DIR=%s\n' "${DEVELOPER_DIR}" >> "${GITHUB_ENV}"
+          xcodebuild -version
+          swift --version
 
       - name: Check formatting
         env:
