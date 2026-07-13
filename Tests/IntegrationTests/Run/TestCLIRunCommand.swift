@@ -256,6 +256,46 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandNonRootHardlinkBindMount() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let hardlinkDirectory = f.testDir.appending("hardlinks")
+            let payload = String(repeating: "hard-link payload\\n", count: 4096)
+
+            // The guest user must be able to traverse the source directory.
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: f.testDir.string)
+            try FileManager.default.createDirectory(
+                atPath: hardlinkDirectory.string, withIntermediateDirectories: true, attributes: nil)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: hardlinkDirectory.string)
+
+            for index in 0..<16 {
+                let source = hardlinkDirectory.appending("source-\(index)")
+                let hardlink = hardlinkDirectory.appending("hardlink-\(index)")
+                try payload.write(toFile: source.string, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o444], ofItemAtPath: source.string)
+                try FileManager.default.linkItem(atPath: source.string, toPath: hardlink.string)
+            }
+
+            try f.run([
+                "run", "--rm", "--uid", "1024",
+                "--mount", "type=bind,source=\(hardlinkDirectory.string),target=/mnt/hardlinks,readonly",
+                image,
+                "sh", "-ceu",
+                """
+                for path in /mnt/hardlinks/*; do
+                    test -r "$path"
+                    cat "$path" >/dev/null
+                done
+                tar -cf /tmp/hardlinks.tar /mnt/hardlinks
+                test "$(tar -tf /tmp/hardlinks.tar | wc -l)" -ge 33
+                """,
+            ]).check()
+        }
+    }
+
     @Test func testRunCommandUnixSocketMount() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
