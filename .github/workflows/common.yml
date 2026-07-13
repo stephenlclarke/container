@@ -22,19 +22,23 @@ on:
 jobs:
   buildAndTest:
     name: Build and test the project
-    if: github.repository == 'apple/container'
     timeout-minutes: 75
-    runs-on: [self-hosted, macos, tahoe, ARM64]
+    runs-on: >-
+      ${{ github.repository == 'apple/container'
+      && fromJSON('["self-hosted", "macos", "tahoe", "ARM64"]') || 'macos-15' }}
     permissions:
       contents: read
       packages: read
-    env:
-      DEVELOPER_DIR: "/Applications/Xcode_swift_6.3.app/Contents/Developer"
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+
+      - name: Select Apple-managed toolchain
+        if: ${{ github.repository == 'apple/container' }}
+        run: >-
+          echo "DEVELOPER_DIR=/Applications/Xcode_swift_6.3.app/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Check formatting
         env:
@@ -103,7 +107,12 @@ jobs:
 
       - name: Test the container project
         if: ${{ !inputs.coverage }}
-        run: make APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" test install-kernel integration
+        run: make APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" test
+
+      - name: Test container integration
+        if: >-
+          ${{ !inputs.coverage && github.repository == 'apple/container' }}
+        run: make APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" install-kernel integration
 
       - name: Test the container project with coverage
         if: ${{ inputs.coverage }}

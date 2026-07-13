@@ -83,7 +83,7 @@ jobs:
     uses: ./.github/workflows/common.yml
     with:
       release: false
-      coverage: true
+      coverage: ${{ github.repository == 'apple/container' }}
       pr_number: ${{ github.event.pull_request.number }}
     secrets: inherit
     permissions:
