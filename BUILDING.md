@@ -65,10 +65,13 @@ To make changes to `container` that require changes to the Containerization proj
     ```
 
     > [!IMPORTANT]
-    > If you are using Xcode, do **not** run `swift package edit`. Instead, temporarily modify `Package.swift` to replace the versioned `containerization` dependency:
+    > If you are using Xcode, do **not** run `swift package edit`. Instead, temporarily modify `Package.swift` to replace the pinned `containerization` dependency:
     >
     > ```swift
-    > .package(url: "https://github.com/stephenlclarke/containerization.git", branch: "main"),
+    > .package(
+    >     url: "https://github.com/stephenlclarke/containerization.git",
+    >     revision: "41252f26870bc875ea0b3e97e1bb656456f02288"
+    > ),
     > ```
     >
     > with the local path dependency:

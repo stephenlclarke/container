@@ -103,7 +103,10 @@ let package = Package(
         .library(name: "MachineAPIService", targets: ["MachineAPIService"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/stephenlclarke/containerization.git", branch: "main"),
+        .package(
+            url: "https://github.com/stephenlclarke/containerization.git",
+            revision: "41252f26870bc875ea0b3e97e1bb656456f02288"
+        ),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
