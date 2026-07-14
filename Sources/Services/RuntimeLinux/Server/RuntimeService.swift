@@ -1242,7 +1242,10 @@ public actor RuntimeService {
 
         let guestDevices = [
             LinuxGuestDeviceRequest(path: "/dev/dri/card0", required: false),
-            LinuxGuestDeviceRequest(path: "/dev/dri/renderD128", required: false),
+            // A virtio modalias alone is not a usable GPU surface. The render
+            // node is required so a requested GPU cannot silently run without
+            // a DRM endpoint that a container process can open.
+            LinuxGuestDeviceRequest(path: "/dev/dri/renderD128"),
         ]
         return LinuxGPUResolution(enabled: true, guestDevices: guestDevices)
     }
@@ -1266,7 +1269,7 @@ public actor RuntimeService {
             czConfig.devices.append(contentsOf: deviceMapping.devices)
             czConfig.guestDevices.append(contentsOf: gpu.guestDevices)
             czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules)
-            czConfig.graphicsDevice = gpu.enabled
+            czConfig.graphics = gpu.enabled ? .virtioDevice : .disabled
         }
         czConfig.sysctl = try Self.resolvedSysctls(config: config)
         // If the host doesn't support this, we'll throw on container creation.

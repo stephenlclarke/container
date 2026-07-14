@@ -295,7 +295,9 @@ struct ContainerLogsTests {
             replay: ContainerLogReplayOptions(includeRotated: true)
         )
         defer {
-            handles.forEach { try? $0.close() }
+            for handle in handles {
+                try? handle.close()
+            }
         }
 
         let stdio = try #require(try handles[0].readToEnd())
@@ -326,7 +328,9 @@ struct ContainerLogsTests {
             replay: ContainerLogReplayOptions(includeRotated: true)
         )
         defer {
-            handles.forEach { try? $0.close() }
+            for handle in handles {
+                try? handle.close()
+            }
         }
         let data = try #require(try handles[0].readToEnd())
 
@@ -367,7 +371,9 @@ struct ContainerLogsTests {
         let service = try service(appRoot: tempURL, logLabel: "container-active-log-replay-test")
         let handles = try await service.logs(id: id, options: .default)
         defer {
-            handles.forEach { try? $0.close() }
+            for handle in handles {
+                try? handle.close()
+            }
         }
         let data = try #require(try handles[0].readToEnd())
 
@@ -828,7 +834,10 @@ struct ContainerLogsTests {
     private func date(_ value: String) -> Date {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: value)!
+        guard let date = formatter.date(from: value) else {
+            preconditionFailure("invalid test date: \(value)")
+        }
+        return date
     }
 }
 

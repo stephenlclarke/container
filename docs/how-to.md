@@ -558,7 +558,7 @@ container create --gpus device=0 alpine true
 
 The supported Docker-compatible request forms are `all`, `count=1`, `device=0`, and the explicit `driver=virtio` equivalent. The generic `gpu` capability is supported. Requests for multiple GPUs, other device IDs, vendor drivers such as `nvidia`, driver options, or extra capabilities are rejected before the container VM is created.
 
-This option enables the lower-runtime virtio-gpu VM device, then projects supported Linux DRM character-device metadata discovered from the running guest before starting the container process. Some guest kernels expose `/dev/dri` nodes and some do not; verify the exact node set on the running guest kernel before relying on a specific render node. It is paravirtual graphics-device support, not proof of hardware-accelerated rendering and not direct Metal, CUDA, NVIDIA, PCI, or arbitrary macOS GPU passthrough. Workloads still need compatible Linux userspace graphics libraries.
+This option enables the lower-runtime virtio-gpu VM device, then requires the guest to expose `/dev/dri/renderD128` before starting the container process. A request fails clearly if that mandatory render node is absent. For a non-root process, the runtime also maps the render-device group so the process can open the node. This is paravirtual graphics-device support, not proof of hardware-accelerated rendering and not direct Metal, CUDA, NVIDIA, PCI, or arbitrary macOS GPU passthrough. Workloads still need compatible Linux userspace graphics libraries.
 
 To drop all capabilities and selectively re-add only what you need:
 
