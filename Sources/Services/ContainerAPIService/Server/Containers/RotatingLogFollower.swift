@@ -111,6 +111,9 @@ final class RotatingLogCursor: @unchecked Sendable {
     func readAvailableData() throws -> Data {
         var data = try readCurrentHandle()
         if try activeFileMovedOrTruncated() {
+            // A writer can append to the old file after the first read but
+            // before this rotation check. Drain it before closing the handle.
+            data.append(try readCurrentHandle())
             try reopenActiveFile()
             data.append(try readCurrentHandle())
         }

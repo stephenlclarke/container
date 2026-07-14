@@ -18,6 +18,10 @@ on:
         type: string
         description: "PR number for coverage artifact naming (required when coverage is true)"
         default: ""
+      publish_pages:
+        type: boolean
+        description: "Upload the generated documentation as a GitHub Pages artifact"
+        default: false
 
 jobs:
   buildAndTest:
@@ -25,7 +29,7 @@ jobs:
     timeout-minutes: 75
     runs-on: >-
       ${{ github.repository == 'apple/container'
-      && fromJSON('["self-hosted", "macos", "tahoe", "ARM64"]') || 'macos-15' }}
+      && fromJSON('["self-hosted", "macos", "tahoe", "ARM64"]') || 'macos-26' }}
     permissions:
       contents: read
       packages: read
@@ -41,7 +45,7 @@ jobs:
           if [[ "${GITHUB_REPOSITORY}" == "apple/container" ]]; then
             developer_dir="/Applications/Xcode_swift_6.3.app/Contents/Developer"
           else
-            developer_dir="/Applications/Xcode_26.3.app/Contents/Developer"
+            developer_dir="/Applications/Xcode_26.6.app/Contents/Developer"
           fi
           if [[ ! -d "${developer_dir}" ]]; then
             printf 'Required Swift toolchain is unavailable: %s\n' "${developer_dir}" >&2
@@ -119,6 +123,8 @@ jobs:
 
       - name: Test the container project
         if: ${{ !inputs.coverage }}
+        env:
+          SWIFT_TEST_FLAGS: --no-parallel
         run: make BUILD_CONFIGURATION=debug APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" test
 
       - name: Test container integration
@@ -128,6 +134,8 @@ jobs:
 
       - name: Test the container project with coverage
         if: ${{ inputs.coverage }}
+        env:
+          SWIFT_TEST_FLAGS: --no-parallel
         run: make BUILD_CONFIGURATION=debug APP_ROOT="${APP_ROOT}" LOG_ROOT="${LOG_ROOT}" install-kernel coverage
 
       - name: Extract coverage percentages
@@ -207,8 +215,10 @@ jobs:
 
   uploadPages:
     # Separate upload step required because upload-pages-artifact needs
-    # gtar which is not on the macOS runner.
+    # gtar which is not on the macOS runner. Only the explicit docs workflow
+    # publishes this artifact; normal CI must not require GitHub Pages.
     name: Upload artifact for GitHub Pages
+    if: ${{ inputs.publish_pages }}
     needs: buildAndTest
     timeout-minutes: 5
     runs-on: ubuntu-latest

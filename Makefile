@@ -16,6 +16,9 @@
 BUILD_CONFIGURATION ?= debug
 WARNINGS_AS_ERRORS ?= true
 SWIFT_CONFIGURATION := $(if $(filter-out false,$(WARNINGS_AS_ERRORS)),-Xswiftc -warnings-as-errors)
+# Optional runner arguments for `swift test`. CI passes `--no-parallel`
+# explicitly so the runner configuration remains stable across SwiftPM defaults.
+SWIFT_TEST_FLAGS ?=
 # Code-coverage instrumentation, layered onto the shared build stages. Empty for
 # ordinary builds; the coverage-* targets opt in via a target-specific value so
 # only those goals compile instrumented binaries.
@@ -196,7 +199,7 @@ dsym:
 
 .PHONY: test
 test: build-tests
-	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) --skip TestCLI --skip IntegrationTests
+	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
 install-kernel: container
@@ -371,7 +374,7 @@ coverage-unit: build-tests
 	@echo Running unit test coverage...
 	@rm -f $(COV_DATA_DIR)/*.profraw
 	@mkdir -p $(COVERAGE_OUTPUT_DIR)/unit
-	@$(SWIFT) test --skip-build --enable-code-coverage -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) --skip TestCLI --skip IntegrationTests
+	@$(SWIFT) test --skip-build --enable-code-coverage -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 	@echo Merging unit coverage profdata...
 	@xcrun llvm-profdata merge -sparse $(COV_DATA_DIR)/*.profraw -o $(COVERAGE_OUTPUT_DIR)/unit/default.profdata
 	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/unit/default.profdata,unit)

@@ -224,7 +224,7 @@ struct RuntimeServiceHostsTests {
         #expect(resolved.enabled)
         #expect(resolved.guestDevices.map(\.path) == ["/dev/dri/card0", "/dev/dri/renderD128"])
         #expect(resolved.guestDevices.map(\.permissions) == ["rwm", "rwm"])
-        #expect(resolved.guestDevices.map(\.required) == [false, false])
+        #expect(resolved.guestDevices.map(\.required) == [false, true])
     }
 
     @Test
