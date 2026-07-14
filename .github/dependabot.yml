@@ -10,3 +10,15 @@ updates:
           - "*"
     commit-message:
       prefix: "ci"
+
+  - package-ecosystem: "swift"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      swift-packages:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "chore(swift)"
+    open-pull-requests-limit: 5
