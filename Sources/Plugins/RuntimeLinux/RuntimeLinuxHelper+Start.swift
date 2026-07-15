@@ -109,6 +109,7 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.processes.rawValue: XPCServer.route(server.processes),
                         RuntimeRoutes.copyIn.rawValue: XPCServer.route(server.copyIn),
                         RuntimeRoutes.copyOut.rawValue: XPCServer.route(server.copyOut),
+                        RuntimeRoutes.snapshotDisk.rawValue: XPCServer.route(server.snapshotDisk),
                     ],
                     log: log
                 )

@@ -52,6 +52,8 @@ public enum RuntimeKeys: String {
     case createParents
     case followSymlink
     case preserveOwnership
+    /// Image path for snapshot operations
+    case imagePath
 
     /// Special-case environment variables recomputed on each container start
     case dynamicEnv
