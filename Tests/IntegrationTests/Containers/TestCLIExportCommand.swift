@@ -116,6 +116,11 @@ struct TestCLIExportCommand {
                 let (fooLive, fooLiveData) = try reader.extractFile(path: "/foo-live")
                 #expect(fooLive.fileType == .regular)
                 #expect(String(data: fooLiveData, encoding: .utf8)?.starts(with: mustBeInImage) ?? false)
+
+                let mustRemainWritable = "must-remain-writable-live"
+                try f.doExec(name, cmd: ["sh", "-c", "echo \(mustRemainWritable) > /foo-after-live-export"])
+                let verify = try f.doExec(name, cmd: ["cat", "/foo-after-live-export"])
+                #expect(verify.trimmingCharacters(in: .whitespacesAndNewlines) == mustRemainWritable)
             }
         }
     }
