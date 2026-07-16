@@ -136,6 +136,26 @@ container run --init ubuntu:latest my-app
 container run --init-image local/custom-init:latest ubuntu:latest
 ```
 
+### `container attach`
+
+Attaches standard streams to the init process of a running container. The
+runtime keeps the process streams open after the attaching client exits, so a
+later client can attach again without restarting the container.
+
+**Usage**
+
+```bash
+container attach [--no-stdin] [--debug] <container-id>
+```
+
+**Arguments**
+
+*   `<container-id>`: Container ID
+
+**Options**
+
+*   `--no-stdin`: Attach output only and leave standard input detached
+
 ### `container build`
 
 Builds an OCI image from a local build context. It reads a Dockerfile (default `Dockerfile`) or Containerfile and produces an image tagged with `-t` option. The build runs in isolation using BuildKit, and resource limits may be set for the build process itself.

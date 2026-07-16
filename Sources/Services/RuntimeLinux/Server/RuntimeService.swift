@@ -264,24 +264,21 @@ public actor RuntimeService {
 
             let stdio = message.stdio()
             let containerLogWriter = try Self.containerLogWriter(bundle: bundle, logging: config.logging)
-            let stdout = Self.outputWriter(
-                stdio: stdio[1],
-                logWriter: containerLogWriter?.writer(for: .stdout)
+            let stdin = stdio[0].map(AttachableInput.init)
+            let stdout = AttachableOutput(
+                initial: stdio[1],
+                persistent: containerLogWriter?.writer(for: .stdout)
             )
 
-            let stderr: MultiWriter? =
+            let stderr: AttachableOutput? =
                 if !config.initProcess.terminal {
-                    Self.outputWriter(
-                        stdio: stdio[2],
-                        logWriter: containerLogWriter?.writer(for: .stderr)
+                    AttachableOutput(
+                        initial: stdio[2],
+                        persistent: containerLogWriter?.writer(for: .stderr)
                     )
                 } else {
                     nil
                 }
-
-            let stdin = {
-                stdio[0] ?? nil
-            }()
 
             let id = config.id
             let rootfs = try bundle.containerRootfs.asMount
@@ -312,7 +309,7 @@ public actor RuntimeService {
                 config: config,
                 attachments: attachments,
                 bundle: bundle,
-                io: (in: stdin, out: stdout, err: stderr)
+                io: ContainerStdio(input: stdin, stdout: stdout, stderr: stderr)
             )
             await self.setContainer(ctrInfo)
             await self.setNetworkSessions(sessions)
@@ -361,6 +358,58 @@ public actor RuntimeService {
                 await self.setState(.running)
             } else {
                 try await self.startExecProcess(processId: id, lock: lock)
+            }
+            return message.reply()
+        }
+    }
+
+    /// Adds client-owned standard streams to the already-running init process.
+    /// The process itself keeps stable server-owned relays, so ending one
+    /// client session does not close the process's standard input or output.
+    @Sendable
+    public func attach(_ message: XPCMessage) async throws -> XPCMessage {
+        self.log.debug("enter", metadata: ["func": "\(#function)"])
+        defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
+
+        return try await self.lock.withLock { [self] _ in
+            let runtimeState = await self.state
+            guard runtimeState == .running || runtimeState == .paused else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot attach: container is not running"
+                )
+            }
+
+            let stdio = message.stdio()
+            guard stdio.contains(where: { $0 != nil }) else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "attach requires at least one standard stream"
+                )
+            }
+
+            let container = try await self.getContainer()
+            if stdio[0] != nil, container.io.input == nil {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot attach stdin: container was not created with stdin open"
+                )
+            }
+            if stdio[2] != nil, container.io.stderr == nil {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "cannot attach stderr: container has a terminal"
+                )
+            }
+
+            if let stdin = stdio[0] {
+                container.io.input?.add(stdin)
+            }
+            if let stdout = stdio[1] {
+                container.io.stdout.add(stdout)
+            }
+            if let stderr = stdio[2] {
+                container.io.stderr?.add(stderr)
             }
             return message.reply()
         }
@@ -1040,12 +1089,7 @@ public actor RuntimeService {
             try await container.start()
             let waitFunc: ExitMonitor.WaitHandler = {
                 let code = try await container.wait()
-                if let out = io.out {
-                    try out.close()
-                }
-                if let err = io.err {
-                    try err.close()
-                }
+                try io.close()
                 return code
             }
             try await self.monitor.track(id: id, waitingOn: waitFunc)
@@ -1626,6 +1670,8 @@ public actor RuntimeService {
         let container = containerInfo.container
         let id = container.id
 
+        try? containerInfo.io.close()
+
         do {
             try await container.stop()
         } catch {
@@ -1959,7 +2005,19 @@ extension RuntimeService {
         let config: ContainerConfiguration
         let attachments: [Attachment]
         let bundle: ContainerResource.Bundle
-        let io: (in: FileHandle?, out: MultiWriter?, err: MultiWriter?)
+        let io: ContainerStdio
+    }
+
+    private struct ContainerStdio {
+        let input: AttachableInput?
+        let stdout: AttachableOutput
+        let stderr: AttachableOutput?
+
+        func close() throws {
+            input?.close()
+            try stdout.close()
+            try stderr?.close()
+        }
     }
 
     /// States the underlying sandbox can be in.

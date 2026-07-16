@@ -302,6 +302,7 @@ extension APIServer {
             routes[XPCRoute.containerFollowLogRecords] = XPCServer.route(harness.followLogRecords)
             routes[XPCRoute.containerEvent] = XPCServer.route(harness.events)
             routes[XPCRoute.containerBootstrap] = XPCServer.route(harness.bootstrap)
+            routes[XPCRoute.containerAttach] = XPCServer.route(harness.attach)
             routes[XPCRoute.containerDial] = XPCServer.route(harness.dial)
             routes[XPCRoute.containerStop] = XPCServer.route(harness.stop)
             routes[XPCRoute.containerPause] = XPCServer.route(harness.pause)

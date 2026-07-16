@@ -56,6 +56,8 @@ public enum RuntimeRoutes: String {
     case wait = "com.apple.container.runtime/wait"
     /// Execute a new process in the sandbox.
     case exec = "com.apple.container.runtime/exec"
+    /// Attach standard streams to the already-running init process.
+    case attach = "com.apple.container.runtime/attach"
 
     // MARK: - File Management
     /// Copy a file or directory into the container.

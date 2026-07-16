@@ -147,9 +147,21 @@ public struct ProcessIO: Sendable {
     }
 
     public func handleProcess(process: ClientProcess, log: Logger) async throws -> Int32 {
+        try await handle(process: process, log: log, start: true)
+    }
+
+    /// Handles streams, terminal resize, and signal forwarding for a process
+    /// that has already been started by another client.
+    public func handleAttachedProcess(process: ClientProcess, log: Logger) async throws -> Int32 {
+        try await handle(process: process, log: log, start: false)
+    }
+
+    private func handle(process: ClientProcess, log: Logger, start: Bool) async throws -> Int32 {
         let signals = AsyncSignalHandler.create(notify: Self.signalSet)
         return try await withThrowingTaskGroup(of: Int32?.self, returning: Int32.self) { group in
-            try await process.start()
+            if start {
+                try await process.start()
+            }
             try closeAfterStart()
 
             let waitAdded = group.addTaskUnlessCancelled {

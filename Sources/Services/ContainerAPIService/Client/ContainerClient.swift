@@ -157,6 +157,41 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    /// Attach standard streams to the init process of a running container.
+    ///
+    /// The provided descriptors belong to this client session. Closing them
+    /// detaches the client without closing the container process's stdio.
+    public func attach(id: String, stdio: [FileHandle?]) async throws -> ClientProcess {
+        let request = XPCMessage(route: .containerAttach)
+        request.set(key: .id, value: id)
+
+        for (i, handle) in stdio.enumerated() {
+            let key: XPCKeys = try {
+                switch i {
+                case 0: .stdin
+                case 1: .stdout
+                case 2: .stderr
+                default:
+                    throw ContainerizationError(.invalidArgument, message: "invalid fd \(i)")
+                }
+            }()
+            if let handle {
+                request.set(key: key, value: handle)
+            }
+        }
+
+        do {
+            try await xpcClient.send(request)
+            return ClientProcessImpl(containerId: id, xpcClient: xpcClient)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to attach to container \(id)",
+                cause: error
+            )
+        }
+    }
+
     /// Send a signal to the container.
     public func kill(id: String, signal: String) async throws {
         do {
