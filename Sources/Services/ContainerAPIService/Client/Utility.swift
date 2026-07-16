@@ -353,7 +353,8 @@ public struct Utility {
                             aliases: item.element.aliases,
                             macAddress: macAddress,
                             mtu: mtu,
-                            guestInterfaceName: item.element.guestInterfaceName
+                            guestInterfaceName: item.element.guestInterfaceName,
+                            additionalIPAddresses: item.element.additionalIPAddresses
                         )
                     )
                 }
@@ -364,7 +365,8 @@ public struct Utility {
                         aliases: item.element.aliases,
                         macAddress: macAddress,
                         mtu: mtu,
-                        guestInterfaceName: item.element.guestInterfaceName
+                        guestInterfaceName: item.element.guestInterfaceName,
+                        additionalIPAddresses: item.element.additionalIPAddresses
                     )
                 )
             }

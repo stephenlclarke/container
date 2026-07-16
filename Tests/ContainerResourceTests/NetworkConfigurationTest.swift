@@ -27,7 +27,8 @@ struct AttachmentConfigurationTest {
             hostname: "api",
             aliases: ["web", "api.internal"],
             mtu: 1500,
-            guestInterfaceName: "backend0"
+            guestInterfaceName: "backend0",
+            additionalIPAddresses: [try CIDR("198.51.100.8/32")]
         )
 
         let data = try JSONEncoder().encode(options)
@@ -37,6 +38,7 @@ struct AttachmentConfigurationTest {
         #expect(decoded.aliases == ["web", "api.internal"])
         #expect(decoded.mtu == 1500)
         #expect(decoded.guestInterfaceName == "backend0")
+        #expect(decoded.additionalIPAddresses == [try CIDR("198.51.100.8/32")])
     }
 
     @Test func attachmentOptionsDecodeMissingAliasesAsEmpty() throws {
@@ -47,6 +49,7 @@ struct AttachmentConfigurationTest {
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == [])
         #expect(decoded.guestInterfaceName == nil)
+        #expect(decoded.additionalIPAddresses == [])
     }
 
     @Test func attachmentRoundTripsAliases() throws {

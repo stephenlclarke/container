@@ -897,6 +897,17 @@ struct ParserTest {
     }
 
     @Test
+    func testParseNetworkWithAdditionalIPAddresses() throws {
+        let result = try Parser.network("backend,address=198.51.100.8,address=2001:db8::8/64")
+
+        #expect(
+            result.additionalIPAddresses == [
+                try CIDR("198.51.100.8/16"),
+                try CIDR("2001:db8::8/64"),
+            ])
+    }
+
+    @Test
     func testHostNetworkParserAcceptsHost() throws {
         #expect(try Parser.hostNetwork(["host"]))
         #expect(try !Parser.hostNetwork(["default"]))
@@ -955,6 +966,30 @@ struct ParserTest {
                 return false
             }
             return error.description.contains("interface name value cannot be empty")
+        }
+    }
+
+    @Test
+    func testParseNetworkEmptyAdditionalIPAddress() throws {
+        #expect {
+            _ = try Parser.network("backend,address=")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("network address value cannot be empty")
+        }
+    }
+
+    @Test
+    func testParseNetworkRejectsInvalidAdditionalIPAddress() throws {
+        #expect {
+            _ = try Parser.network("backend,address=not-an-address")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("invalid network address 'not-an-address'")
         }
     }
 

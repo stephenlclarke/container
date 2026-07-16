@@ -1689,25 +1689,28 @@ public struct Parser {
         public let macAddress: String?
         public let mtu: UInt32?
         public let guestInterfaceName: String?
+        public let additionalIPAddresses: [CIDR]
 
         public init(
             name: String,
             aliases: [String] = [],
             macAddress: String? = nil,
             mtu: UInt32? = nil,
-            guestInterfaceName: String? = nil
+            guestInterfaceName: String? = nil,
+            additionalIPAddresses: [CIDR] = []
         ) {
             self.name = name
             self.aliases = aliases
             self.macAddress = macAddress
             self.mtu = mtu
             self.guestInterfaceName = guestInterfaceName
+            self.additionalIPAddresses = additionalIPAddresses
         }
     }
 
     /// Parse network attachment with optional properties
-    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME]
-    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0"
+    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]]
+    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0,address=198.51.100.8"
     public static func network(_ networkSpec: String) throws -> ParsedNetwork {
         guard !networkSpec.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "network specification cannot be empty")
@@ -1728,6 +1731,7 @@ public struct Parser {
         var macAddress: String?
         var mtu: UInt32?
         var guestInterfaceName: String?
+        var additionalIPAddresses: [CIDR] = []
 
         // Parse properties if any
         for part in parts.dropFirst() {
@@ -1777,10 +1781,12 @@ public struct Parser {
                     throw ContainerizationError(.invalidArgument, message: "interface name value cannot be empty")
                 }
                 guestInterfaceName = value
+            case "address":
+                additionalIPAddresses.append(try networkAddress(value))
             default:
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "unknown network property '\(key)'. Available properties: alias, mac, mtu, interface"
+                    message: "unknown network property '\(key)'. Available properties: address, alias, mac, mtu, interface"
                 )
             }
         }
@@ -1790,8 +1796,33 @@ public struct Parser {
             aliases: aliases,
             macAddress: macAddress,
             mtu: mtu,
-            guestInterfaceName: guestInterfaceName
+            guestInterfaceName: guestInterfaceName,
+            additionalIPAddresses: additionalIPAddresses
         )
+    }
+
+    private static func networkAddress(_ value: String) throws -> CIDR {
+        guard !value.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "network address value cannot be empty")
+        }
+
+        do {
+            if value.contains("/") {
+                return try CIDR(value)
+            }
+
+            switch try IPAddress(value) {
+            case .v4:
+                return try CIDR("\(value)/16")
+            case .v6:
+                return try CIDR("\(value)/64")
+            }
+        } catch {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid network address '\(value)': expected an IPv4 or IPv6 address with an optional CIDR prefix"
+            )
+        }
     }
 
     // MARK: DNS
