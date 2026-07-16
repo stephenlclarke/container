@@ -164,6 +164,35 @@ extension RuntimeClient {
         }
     }
 
+    /// Attach client standard streams to the already-running init process.
+    public func attach(stdio: [FileHandle?]) async throws {
+        let request = XPCMessage(route: RuntimeRoutes.attach.rawValue)
+        for (i, handle) in stdio.enumerated() {
+            let key: RuntimeKeys = try {
+                switch i {
+                case 0: .stdin
+                case 1: .stdout
+                case 2: .stderr
+                default:
+                    throw ContainerizationError(.invalidArgument, message: "invalid fd \(i)")
+                }
+            }()
+            if let handle {
+                request.set(key: key.rawValue, value: handle)
+            }
+        }
+
+        do {
+            try await self.client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to attach to container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
     public func startProcess(_ id: String) async throws {
         let request = XPCMessage(route: RuntimeRoutes.start.rawValue)
         request.set(key: RuntimeKeys.id.rawValue, value: id)

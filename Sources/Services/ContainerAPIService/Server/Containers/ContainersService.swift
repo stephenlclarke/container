@@ -492,6 +492,24 @@ public actor ContainersService {
         }
     }
 
+    /// Attach client standard streams to a running container's init process.
+    public func attach(id: String, stdio: [FileHandle?]) async throws {
+        log.debug(
+            "ContainersService: enter",
+            metadata: ["func": "\(#function)", "id": "\(id)"]
+        )
+        defer {
+            log.debug(
+                "ContainersService: exit",
+                metadata: ["func": "\(#function)", "id": "\(id)"]
+            )
+        }
+
+        let state = try self._getContainerState(id: id)
+        let client = try state.getClient()
+        try await client.attach(stdio: stdio)
+    }
+
     /// Create a new process in the container.
     public func createProcess(
         id: String,

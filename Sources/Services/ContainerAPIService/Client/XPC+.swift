@@ -175,6 +175,7 @@ public enum XPCRoute: String {
     case containerList
     case containerCreate
     case containerBootstrap
+    case containerAttach
     case containerCreateProcess
     case containerStartProcess
     case containerWait

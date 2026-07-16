@@ -68,6 +68,18 @@ public struct ContainersHarness: Sendable {
     }
 
     @Sendable
+    public func attach(_ message: XPCMessage) async throws -> XPCMessage {
+        guard let id = message.string(key: .id) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        try await service.attach(id: id, stdio: message.stdio())
+        return message.reply()
+    }
+
+    @Sendable
     public func stop(_ message: XPCMessage) async throws -> XPCMessage {
         let stopOptions = try message.stopOptions()
         let id = message.string(key: .id)
