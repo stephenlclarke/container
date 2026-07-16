@@ -105,7 +105,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/stephenlclarke/containerization.git",
-            revision: "256dfe4cc8f5a5c6c6c27bb0f4611272665a7a1b"
+            revision: "9f63d1890ebbb999f552e88124cbcc6e7813e631"
         ),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
@@ -308,6 +308,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerAPIClient",
                 "ContainerPersistence",
+                "ContainerResource",
                 "ContainerTestSupport",
             ]
         ),
