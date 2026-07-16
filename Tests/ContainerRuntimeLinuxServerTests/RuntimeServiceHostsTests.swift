@@ -17,11 +17,33 @@
 import ContainerResource
 import ContainerRuntimeLinuxClient
 import Containerization
+import ContainerizationExtras
 import Testing
 
 @testable import ContainerRuntimeLinuxServer
 
 struct RuntimeServiceHostsTests {
+    @Test
+    func isolatedInterfaceStrategyPassesGuestInterfaceNameToContainerization() throws {
+        let attachment = Attachment(
+            network: "default",
+            hostname: "demo-api-1",
+            ipv4Address: try CIDRv4("192.168.64.2/24"),
+            ipv4Gateway: try IPv4Address("192.168.64.1"),
+            ipv6Address: nil,
+            macAddress: nil
+        )
+
+        let interface = IsolatedInterfaceStrategy().toInterface(
+            attachment: attachment,
+            interfaceIndex: 0,
+            guestInterfaceName: "frontend",
+            additionalData: nil
+        )
+
+        #expect(interface.guestInterfaceName == "frontend")
+    }
+
     @Test
     func resolvedHostnamePrefersConfiguredHostname() {
         var config = runtimeTestConfiguration(id: "demo-api-1")

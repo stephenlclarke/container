@@ -889,6 +889,14 @@ struct ParserTest {
     }
 
     @Test
+    func testParseNetworkWithGuestInterfaceName() throws {
+        let result = try Parser.network("backend,interface=backend0")
+
+        #expect(result.name == "backend")
+        #expect(result.guestInterfaceName == "backend0")
+    }
+
+    @Test
     func testHostNetworkParserAcceptsHost() throws {
         #expect(try Parser.hostNetwork(["host"]))
         #expect(try !Parser.hostNetwork(["default"]))
@@ -935,6 +943,18 @@ struct ParserTest {
                 return false
             }
             return error.description.contains("mac address value cannot be empty")
+        }
+    }
+
+    @Test
+    func testParseNetworkEmptyGuestInterfaceName() throws {
+        #expect {
+            _ = try Parser.network("backend,interface=")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("interface name value cannot be empty")
         }
     }
 

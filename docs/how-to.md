@@ -244,6 +244,12 @@ The MAC address must be in the format `XX:XX:XX:XX:XX:XX` (with colons or hyphen
 container run --network default,mac=02:42:ac:11:00:02 ubuntu:latest
 ```
 
+To use a stable interface name inside the guest, append `interface=NAME` to the network attachment:
+
+```bash
+container run --network default,interface=frontend ubuntu:latest ip link show frontend
+```
+
 To verify the MAC address is set correctly, read the interface MAC directly from sysfs inside the container:
 
 ```console

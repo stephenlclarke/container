@@ -64,7 +64,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`, or `none` / `host`)
+*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME]`, or `none` / `host`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
@@ -128,6 +128,9 @@ container run --network default,mac=02:42:ac:11:00:02 ubuntu:latest
 
 # run a container with a network alias
 container run --network default,alias=api.internal ubuntu:latest
+
+# run a container with a stable guest interface name
+container run --network default,interface=frontend ubuntu:latest ip link show frontend
 
 # run a container with an init process to reap zombies and forward signals
 container run --init ubuntu:latest my-app
@@ -289,7 +292,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]`, or `none` / `host`)
+*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME]`, or `none` / `host`)
 *   `--no-dns`: Do not configure DNS in the container
 *   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)

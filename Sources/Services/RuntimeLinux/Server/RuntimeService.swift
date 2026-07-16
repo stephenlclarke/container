@@ -240,6 +240,7 @@ public actor RuntimeService {
                     let interface = try iStrategy.toInterface(
                         attachment: attachment,
                         interfaceIndex: index,
+                        guestInterfaceName: attachmentConfig.options.guestInterfaceName,
                         additionalData: additionalData
                     )
                     attachments.append(attachment)
