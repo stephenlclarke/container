@@ -145,7 +145,7 @@ later client can attach again without restarting the container.
 **Usage**
 
 ```bash
-container attach [--no-stdin] [--debug] <container-id>
+container attach [--no-stdin] [--sig-proxy true|false] [--debug] <container-id>
 ```
 
 **Arguments**
@@ -155,6 +155,7 @@ container attach [--no-stdin] [--debug] <container-id>
 **Options**
 
 *   `--no-stdin`: Attach output only and leave standard input detached
+*   `--sig-proxy`: Proxy received signals to the attached process (default `true`)
 
 ### `container build`
 

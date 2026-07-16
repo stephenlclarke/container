@@ -35,6 +35,12 @@ extension Application {
         )
         var noStdin = false
 
+        @Option(
+            name: .customLong("sig-proxy"),
+            help: "Proxy received signals to the attached process (default true)"
+        )
+        var sigProxy = "true"
+
         @OptionGroup
         public var logOptions: Flags.Logging
 
@@ -42,6 +48,7 @@ extension Application {
         var containerId: String
 
         public func run() async throws {
+            let proxySignals = try Self.signalProxyEnabled(sigProxy)
             let client = ContainerClient()
             let container = try await client.get(id: containerId)
             guard container.status == .running || container.status == .paused else {
@@ -61,8 +68,23 @@ extension Application {
             }
 
             let process = try await client.attach(id: container.id, stdio: io.stdio)
-            let exitCode = try await io.handleAttachedProcess(process: process, log: log)
+            let exitCode = try await io.handleAttachedProcess(
+                process: process,
+                log: log,
+                proxySignals: proxySignals
+            )
             throw ArgumentParser.ExitCode(exitCode)
+        }
+
+        static func signalProxyEnabled(_ value: String) throws -> Bool {
+            switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "1", "yes":
+                true
+            case "false", "0", "no":
+                false
+            default:
+                throw ContainerizationError(.invalidArgument, message: "--sig-proxy must be true or false")
+            }
         }
     }
 }
