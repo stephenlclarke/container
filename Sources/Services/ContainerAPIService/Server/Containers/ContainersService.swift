@@ -1689,7 +1689,11 @@ public actor ContainersService {
         return FileManager.default.allocatedSize(of: URL(fileURLWithPath: containerPath))
     }
 
-    public func exportRootfs(id: String, archive: URL, live: Bool = false) async throws {
+    /// Exports a root filesystem, optionally taking a running-container snapshot.
+    ///
+    /// `noFreeze` is meaningful only with `live`: it requests a best-effort
+    /// APFS copy-on-write snapshot without freezing guest writes.
+    public func exportRootfs(id: String, archive: URL, live: Bool = false, noFreeze: Bool = false) async throws {
         self.log.debug("\(#function)")
 
         try Utility.validEntityName(id)
@@ -1726,7 +1730,7 @@ public actor ContainersService {
             defer {
                 try? FileManager.default.removeItem(at: snapshot)
             }
-            try await client.snapshotDisk(imagePath: rootfs.path, destinationPath: snapshot.path)
+            try await client.snapshotDisk(imagePath: rootfs.path, destinationPath: snapshot.path, noFreeze: noFreeze)
             try EXT4.EXT4Reader(blockDevice: FilePath(snapshot)).export(archive: FilePath(archive))
             return
         }

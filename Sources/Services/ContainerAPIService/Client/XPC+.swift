@@ -64,6 +64,8 @@ public enum XPCKeys: String {
     case archive
     /// Whether to allow export from a running container
     case live
+    /// Whether a running-container export should avoid freezing its filesystem.
+    case noFreeze
     /// Special-case environment variables recomputed on each container start
     case dynamicEnv
 

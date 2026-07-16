@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerAPIClient
 import ContainerizationArchive
 import Foundation
 import Testing
@@ -120,6 +121,34 @@ struct TestCLIExportCommand {
                 let mustRemainWritable = "must-remain-writable-live"
                 try f.doExec(name, cmd: ["sh", "-c", "echo \(mustRemainWritable) > /foo-after-live-export"])
                 let verify = try f.doExec(name, cmd: ["cat", "/foo-after-live-export"])
+                #expect(verify.trimmingCharacters(in: .whitespacesAndNewlines) == mustRemainWritable)
+            }
+        }
+    }
+
+    @Test func testExportCommandLiveWithoutFreeze() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            try await f.withContainer(image: image, autoRemove: false) { name in
+                let mustBeInImage = "must-be-in-image-live-no-freeze"
+                try f.doExec(name, cmd: ["sh", "-c", "echo \(mustBeInImage) > /foo-live-no-freeze && sync"])
+
+                let exportPath = f.testDir.appending("export-live-no-freeze.tar")
+                try await ContainerClient().export(
+                    id: name,
+                    archive: URL(filePath: exportPath.string),
+                    live: true,
+                    noFreeze: true,
+                )
+
+                let reader = try ArchiveReader(file: URL(filePath: exportPath.string))
+                let (exported, exportedData) = try reader.extractFile(path: "/foo-live-no-freeze")
+                #expect(exported.fileType == .regular)
+                #expect(String(data: exportedData, encoding: .utf8)?.starts(with: mustBeInImage) ?? false)
+
+                let mustRemainWritable = "must-remain-writable-live-no-freeze"
+                try f.doExec(name, cmd: ["sh", "-c", "echo \(mustRemainWritable) > /foo-after-live-no-freeze-export"])
+                let verify = try f.doExec(name, cmd: ["cat", "/foo-after-live-no-freeze-export"])
                 #expect(verify.trimmingCharacters(in: .whitespacesAndNewlines) == mustRemainWritable)
             }
         }

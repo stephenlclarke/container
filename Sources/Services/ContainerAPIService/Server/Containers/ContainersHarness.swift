@@ -563,9 +563,10 @@ public struct ContainersHarness: Sendable {
             )
         }
         let live = message.bool(key: .live)
+        let noFreeze = message.bool(key: .noFreeze)
         let archiveUrl = URL(fileURLWithPath: archive)
 
-        try await service.exportRootfs(id: id, archive: archiveUrl, live: live)
+        try await service.exportRootfs(id: id, archive: archiveUrl, live: live, noFreeze: noFreeze)
         return message.reply()
     }
 }

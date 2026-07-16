@@ -380,10 +380,16 @@ extension RuntimeClient {
         }
     }
 
-    public func snapshotDisk(imagePath: String, destinationPath: String) async throws {
+    /// Takes a live root filesystem snapshot.
+    ///
+    /// The default freezes the guest filesystem before copying it. `noFreeze`
+    /// uses an APFS copy-on-write clone and intentionally accepts the same
+    /// consistency risk as Docker's `commit --pause=false`.
+    public func snapshotDisk(imagePath: String, destinationPath: String, noFreeze: Bool = false) async throws {
         let request = XPCMessage(route: RuntimeRoutes.snapshotDisk.rawValue)
         request.set(key: RuntimeKeys.imagePath.rawValue, value: imagePath)
         request.set(key: RuntimeKeys.destinationPath.rawValue, value: destinationPath)
+        request.set(key: RuntimeKeys.noFreeze.rawValue, value: noFreeze)
 
         do {
             try await self.client.send(request, responseTimeout: .seconds(300))
