@@ -43,7 +43,14 @@ public struct ProcessIO: Sendable {
 
     public let console: Terminal?
 
-    public static func create(tty: Bool, interactive: Bool, detach: Bool) throws -> ProcessIO {
+    private let detachKeyMatcher: DetachKeyMatcher?
+
+    public static func create(
+        tty: Bool,
+        interactive: Bool,
+        detach: Bool,
+        detachKeys: DetachKeySequence? = nil,
+    ) throws -> ProcessIO {
         let current: Terminal? = try {
             if !tty || !interactive {
                 return nil
@@ -54,6 +61,7 @@ public struct ProcessIO: Sendable {
         }()
 
         var stdio = [FileHandle?](repeating: nil, count: 3)
+        let detachKeyMatcher = tty && interactive ? detachKeys.map { DetachKeyMatcher(sequence: $0) } : nil
 
         let stdin: Pipe? = {
             if !interactive {
@@ -61,27 +69,6 @@ public struct ProcessIO: Sendable {
             }
             return Pipe()
         }()
-
-        if let stdin {
-            let pin = FileHandle.standardInput
-            let stdinOSFile = OSFile(fd: pin.fileDescriptor)
-            let pipeOSFile = OSFile(fd: stdin.fileHandleForWriting.fileDescriptor)
-            try stdinOSFile.makeNonBlocking()
-            nonisolated(unsafe) let buf = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: Int(getpagesize()))
-
-            pin.readabilityHandler = { _ in
-                Self.streamStdin(
-                    from: stdinOSFile,
-                    to: pipeOSFile,
-                    buffer: buf,
-                ) {
-                    pin.readabilityHandler = nil
-                    buf.deallocate()
-                    try? stdin.fileHandleForWriting.close()
-                }
-            }
-            stdio[0] = stdin.fileHandleForReading
-        }
 
         let stdout: Pipe? = {
             if detach {
@@ -131,6 +118,37 @@ public struct ProcessIO: Sendable {
             stdio[2] = stderr.fileHandleForWriting
         }
 
+        if let stdin {
+            let pin = FileHandle.standardInput
+            let stdinOSFile = OSFile(fd: pin.fileDescriptor)
+            let pipeOSFile = OSFile(fd: stdin.fileHandleForWriting.fileDescriptor)
+            try stdinOSFile.makeNonBlocking()
+            nonisolated(unsafe) let buf = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: Int(getpagesize()))
+
+            pin.readabilityHandler = { _ in
+                Self.streamStdin(
+                    from: stdinOSFile,
+                    to: pipeOSFile,
+                    buffer: buf,
+                    detachKeyMatcher: detachKeyMatcher,
+                ) {
+                    pin.readabilityHandler = nil
+                    buf.deallocate()
+                    try? stdin.fileHandleForWriting.close()
+                } onDetach: {
+                    pin.readabilityHandler = nil
+                    buf.deallocate()
+                    try? stdin.fileHandleForWriting.close()
+                    for pipe in [stdout, stderr].compactMap({ $0 }) {
+                        let reader = pipe.fileHandleForReading
+                        reader.readabilityHandler = nil
+                        try? reader.close()
+                    }
+                }
+            }
+            stdio[0] = stdin.fileHandleForReading
+        }
+
         var ioTracker: IoTracker? = nil
         if configuredStreams > 0 {
             ioTracker = .init(stream: stream, cont: cc, configuredStreams: configuredStreams)
@@ -142,7 +160,8 @@ public struct ProcessIO: Sendable {
             stderr: stderr,
             ioTracker: ioTracker,
             stdio: stdio,
-            console: current
+            console: current,
+            detachKeyMatcher: detachKeyMatcher
         )
     }
 
@@ -167,6 +186,7 @@ public struct ProcessIO: Sendable {
         proxySignals: Bool = true,
     ) async throws -> Int32 {
         let signals = proxySignals ? AsyncSignalHandler.create(notify: Self.signalSet) : nil
+        defer { detachKeyMatcher?.finish() }
         return try await withThrowingTaskGroup(of: Int32?.self, returning: Int32.self) { group in
             if start {
                 try await process.start()
@@ -174,7 +194,15 @@ public struct ProcessIO: Sendable {
             try closeAfterStart()
 
             let waitAdded = group.addTaskUnlessCancelled {
-                let code = try await process.wait()
+                let code: Int32
+                do {
+                    code = try await process.wait()
+                } catch {
+                    if detachKeyMatcher?.isDetached == true {
+                        return 0
+                    }
+                    throw error
+                }
                 try await wait()
                 return code
             }
@@ -182,6 +210,16 @@ public struct ProcessIO: Sendable {
             guard waitAdded else {
                 group.cancelAll()
                 return -1
+            }
+
+            if let detachKeyMatcher {
+                _ = group.addTaskUnlessCancelled {
+                    for await _ in detachKeyMatcher.stream {
+                        process.disconnect()
+                        return 0
+                    }
+                    return nil
+                }
             }
 
             if let current = console {
@@ -273,7 +311,9 @@ public struct ProcessIO: Sendable {
         from: OSFile,
         to: OSFile,
         buffer: UnsafeMutableBufferPointer<UInt8>,
+        detachKeyMatcher: DetachKeyMatcher? = nil,
         onErrorOrEOF: () -> Void,
+        onDetach: () -> Void,
     ) {
         while true {
             let (bytesRead, action) = from.read(buffer)
@@ -282,6 +322,25 @@ public struct ProcessIO: Sendable {
                     start: buffer.baseAddress,
                     count: bytesRead
                 )
+
+                if let detachKeyMatcher {
+                    let result = detachKeyMatcher.filter(view)
+                    if !result.forwarded.isEmpty {
+                        var forwarded = result.forwarded
+                        let (bytesWritten, _) = forwarded.withUnsafeMutableBufferPointer { output in
+                            to.write(output)
+                        }
+                        if bytesWritten != result.forwarded.count {
+                            onErrorOrEOF()
+                            return
+                        }
+                    }
+                    if result.detached {
+                        onDetach()
+                        return
+                    }
+                    continue
+                }
 
                 let (bytesWritten, _) = to.write(view)
                 if bytesWritten != bytesRead {
@@ -300,6 +359,62 @@ public struct ProcessIO: Sendable {
                 break
             }
         }
+    }
+}
+
+final class DetachKeyMatcher: @unchecked Sendable {
+    struct Result: Equatable {
+        let forwarded: [UInt8]
+        let detached: Bool
+    }
+
+    let stream: AsyncStream<Void>
+
+    private let continuation: AsyncStream<Void>.Continuation
+    private let sequence: [UInt8]
+    private let lock = NSLock()
+    private var pending = [UInt8]()
+    private var detached = false
+
+    init(sequence: DetachKeySequence) {
+        let (stream, continuation) = AsyncStream<Void>.makeStream()
+        self.stream = stream
+        self.continuation = continuation
+        self.sequence = sequence.bytes
+    }
+
+    func filter<S: Sequence>(_ input: S) -> Result where S.Element == UInt8 {
+        lock.lock()
+        if detached {
+            lock.unlock()
+            return .init(forwarded: [], detached: true)
+        }
+        var forwarded = [UInt8]()
+        var completed = false
+        for byte in input {
+            pending.append(byte)
+            while !sequence.starts(with: pending) {
+                forwarded.append(pending.removeFirst())
+            }
+            if pending == sequence {
+                pending.removeAll(keepingCapacity: true)
+                detached = true
+                completed = true
+                break
+            }
+        }
+        lock.unlock()
+
+        if completed {
+            continuation.yield()
+        }
+        return .init(forwarded: forwarded, detached: completed)
+    }
+
+    var isDetached: Bool { lock.withLock { detached } }
+
+    func finish() {
+        continuation.finish()
     }
 }
 

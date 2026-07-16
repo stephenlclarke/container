@@ -40,6 +40,8 @@ public protocol ClientProcess: Sendable {
     ///  Wait for the process `id` to complete and return its exit code.
     /// This method blocks until the process exits and the code is obtained.
     func wait() async throws -> Int32
+    /// Ends the client session without signaling or stopping the process.
+    func disconnect()
 }
 
 struct ClientProcessImpl: ClientProcess, Sendable {
@@ -105,5 +107,10 @@ struct ClientProcessImpl: ClientProcess, Sendable {
         let response = try await xpcClient.send(request)
         let code = response.int64(key: .exitCode)
         return Int32(code)
+    }
+
+    /// Ends the request connection used by this client process.
+    func disconnect() {
+        xpcClient.close()
     }
 }

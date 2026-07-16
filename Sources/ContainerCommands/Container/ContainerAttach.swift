@@ -41,6 +41,12 @@ extension Application {
         )
         var sigProxy = "true"
 
+        @Option(
+            name: .customLong("detach-keys"),
+            help: "Override the key sequence for detaching from a container"
+        )
+        var detachKeys: String?
+
         @OptionGroup
         public var logOptions: Flags.Logging
 
@@ -58,10 +64,17 @@ extension Application {
                 )
             }
 
+            let detachKeySequence: DetachKeySequence?
+            if noStdin {
+                detachKeySequence = nil
+            } else {
+                detachKeySequence = try detachKeys.map(DetachKeySequence.init) ?? .standard
+            }
             let io = try ProcessIO.create(
                 tty: container.configuration.initProcess.terminal,
                 interactive: !noStdin,
-                detach: false
+                detach: false,
+                detachKeys: detachKeySequence,
             )
             defer {
                 try? io.close()

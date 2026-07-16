@@ -34,4 +34,11 @@ struct ContainerAttachCommandTests {
         #expect(command.sigProxy == "true")
         #expect(try Application.ContainerAttach.signalProxyEnabled(command.sigProxy))
     }
+
+    @Test
+    func attachParsesDetachKeyOverride() throws {
+        let command = try Application.ContainerAttach.parse(["--detach-keys", "ctrl-x,x", "demo-api-1"])
+
+        #expect(command.detachKeys == "ctrl-x,x")
+    }
 }

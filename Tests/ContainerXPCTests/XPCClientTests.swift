@@ -89,6 +89,26 @@ struct XPCClientTests {
     }
 
     @Test
+    func closingClientInterruptsPendingRequest() async throws {
+        let server = AnonymousXPCServer()
+        defer { server.close() }
+
+        let client = server.makeClient()
+        let request = Task {
+            try await client.send(XPCMessage(route: "hang"), responseTimeout: .seconds(1))
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        client.close()
+
+        do {
+            _ = try await request.value
+            Issue.record("expected closed client to interrupt the pending request")
+        } catch let error as ContainerizationError {
+            #expect(error.code == .interrupted)
+        }
+    }
+
+    @Test
     func serverRouteSessionDisconnectHandlersFire() async throws {
         let probe = DisconnectProbe()
         let listener = xpc_connection_create(nil, nil)
