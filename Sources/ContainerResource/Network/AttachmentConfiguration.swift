@@ -44,11 +44,21 @@ public struct AttachmentOptions: Codable, Sendable {
     /// The MTU for the network interface.
     public let mtu: UInt32?
 
-    public init(hostname: String, aliases: [String] = [], macAddress: MACAddress? = nil, mtu: UInt32? = nil) {
+    /// Optional name for the interface inside the guest.
+    public let guestInterfaceName: String?
+
+    public init(
+        hostname: String,
+        aliases: [String] = [],
+        macAddress: MACAddress? = nil,
+        mtu: UInt32? = nil,
+        guestInterfaceName: String? = nil
+    ) {
         self.hostname = hostname
         self.aliases = aliases
         self.macAddress = macAddress
         self.mtu = mtu
+        self.guestInterfaceName = guestInterfaceName
     }
 
     enum CodingKeys: String, CodingKey {
@@ -56,6 +66,7 @@ public struct AttachmentOptions: Codable, Sendable {
         case aliases
         case macAddress
         case mtu
+        case guestInterfaceName
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,5 +75,6 @@ public struct AttachmentOptions: Codable, Sendable {
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
         macAddress = try container.decodeIfPresent(MACAddress.self, forKey: .macAddress)
         mtu = try container.decodeIfPresent(UInt32.self, forKey: .mtu)
+        guestInterfaceName = try container.decodeIfPresent(String.self, forKey: .guestInterfaceName)
     }
 }

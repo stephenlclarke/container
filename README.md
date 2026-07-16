@@ -64,6 +64,15 @@ Start the system service with:
 container system start
 ```
 
+### Network interface names
+
+When attaching a network, `interface=NAME` assigns a stable name to its
+interface inside the Linux guest. For example:
+
+```bash
+container run --network default,interface=frontend alpine:latest ip link show frontend
+```
+
 ### Upgrade or downgrade
 
 For both upgrading and downgrading, you can manually download and install the

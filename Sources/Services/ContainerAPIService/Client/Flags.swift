@@ -371,7 +371,10 @@ public struct Flags {
         @Option(name: .long, help: "Use the specified name as the container ID")
         public var name: String?
 
-        @Option(name: [.customLong("network")], help: "Attach the container to a network (format: <name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE], or none/host)")
+        @Option(
+            name: [.customLong("network")],
+            help: "Attach the container to a network (format: <name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME], or none/host)"
+        )
         public var networks: [String] = []
 
         @Flag(name: [.customLong("no-dns")], help: "Do not configure DNS in the container")

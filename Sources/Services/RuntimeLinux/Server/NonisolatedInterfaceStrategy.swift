@@ -32,7 +32,12 @@ public struct NonisolatedInterfaceStrategy: InterfaceStrategy {
         self.log = log
     }
 
-    public func toInterface(attachment: Attachment, interfaceIndex: Int, additionalData: XPCMessage?) throws -> Interface {
+    public func toInterface(
+        attachment: Attachment,
+        interfaceIndex: Int,
+        guestInterfaceName: String?,
+        additionalData: XPCMessage?
+    ) throws -> Interface {
         guard let additionalData else {
             throw ContainerizationError(.invalidState, message: "network state does not contain custom network reference")
         }
@@ -50,7 +55,8 @@ public struct NonisolatedInterfaceStrategy: InterfaceStrategy {
             reference: networkRef,
             macAddress: attachment.macAddress,
             // https://github.com/apple/containerization/pull/38
-            mtu: attachment.mtu ?? 1280
+            mtu: attachment.mtu ?? 1280,
+            guestInterfaceName: guestInterfaceName
         )
     }
 }

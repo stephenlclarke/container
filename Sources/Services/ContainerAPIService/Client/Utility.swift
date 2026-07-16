@@ -348,12 +348,24 @@ public struct Utility {
                 guard item.offset == 0 else {
                     return AttachmentConfiguration(
                         network: item.element.name,
-                        options: AttachmentOptions(hostname: containerId, aliases: item.element.aliases, macAddress: macAddress, mtu: mtu)
+                        options: AttachmentOptions(
+                            hostname: containerId,
+                            aliases: item.element.aliases,
+                            macAddress: macAddress,
+                            mtu: mtu,
+                            guestInterfaceName: item.element.guestInterfaceName
+                        )
                     )
                 }
                 return AttachmentConfiguration(
                     network: item.element.name,
-                    options: AttachmentOptions(hostname: fqdn ?? containerId, aliases: item.element.aliases, macAddress: macAddress, mtu: mtu)
+                    options: AttachmentOptions(
+                        hostname: fqdn ?? containerId,
+                        aliases: item.element.aliases,
+                        macAddress: macAddress,
+                        mtu: mtu,
+                        guestInterfaceName: item.element.guestInterfaceName
+                    )
                 )
             }
         }

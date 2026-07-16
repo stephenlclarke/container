@@ -23,7 +23,12 @@ import Testing
 
 struct AttachmentConfigurationTest {
     @Test func attachmentOptionsRoundTripAliases() throws {
-        let options = AttachmentOptions(hostname: "api", aliases: ["web", "api.internal"], mtu: 1500)
+        let options = AttachmentOptions(
+            hostname: "api",
+            aliases: ["web", "api.internal"],
+            mtu: 1500,
+            guestInterfaceName: "backend0"
+        )
 
         let data = try JSONEncoder().encode(options)
         let decoded = try JSONDecoder().decode(AttachmentOptions.self, from: data)
@@ -31,6 +36,7 @@ struct AttachmentConfigurationTest {
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == ["web", "api.internal"])
         #expect(decoded.mtu == 1500)
+        #expect(decoded.guestInterfaceName == "backend0")
     }
 
     @Test func attachmentOptionsDecodeMissingAliasesAsEmpty() throws {
@@ -40,6 +46,7 @@ struct AttachmentConfigurationTest {
 
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == [])
+        #expect(decoded.guestInterfaceName == nil)
     }
 
     @Test func attachmentRoundTripsAliases() throws {

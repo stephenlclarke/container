@@ -1688,18 +1688,26 @@ public struct Parser {
         public let aliases: [String]
         public let macAddress: String?
         public let mtu: UInt32?
+        public let guestInterfaceName: String?
 
-        public init(name: String, aliases: [String] = [], macAddress: String? = nil, mtu: UInt32? = nil) {
+        public init(
+            name: String,
+            aliases: [String] = [],
+            macAddress: String? = nil,
+            mtu: UInt32? = nil,
+            guestInterfaceName: String? = nil
+        ) {
             self.name = name
             self.aliases = aliases
             self.macAddress = macAddress
             self.mtu = mtu
+            self.guestInterfaceName = guestInterfaceName
         }
     }
 
     /// Parse network attachment with optional properties
-    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE]
-    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500"
+    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME]
+    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0"
     public static func network(_ networkSpec: String) throws -> ParsedNetwork {
         guard !networkSpec.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "network specification cannot be empty")
@@ -1719,6 +1727,7 @@ public struct Parser {
         var aliases: [String] = []
         var macAddress: String?
         var mtu: UInt32?
+        var guestInterfaceName: String?
 
         // Parse properties if any
         for part in parts.dropFirst() {
@@ -1763,15 +1772,26 @@ public struct Parser {
                     )
                 }
                 mtu = mtuValue
+            case "interface":
+                guard !value.isEmpty else {
+                    throw ContainerizationError(.invalidArgument, message: "interface name value cannot be empty")
+                }
+                guestInterfaceName = value
             default:
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "unknown network property '\(key)'. Available properties: alias, mac, mtu"
+                    message: "unknown network property '\(key)'. Available properties: alias, mac, mtu, interface"
                 )
             }
         }
 
-        return ParsedNetwork(name: networkName, aliases: aliases, macAddress: macAddress, mtu: mtu)
+        return ParsedNetwork(
+            name: networkName,
+            aliases: aliases,
+            macAddress: macAddress,
+            mtu: mtu,
+            guestInterfaceName: guestInterfaceName
+        )
     }
 
     // MARK: DNS
