@@ -73,6 +73,18 @@ interface inside the Linux guest. For example:
 container run --network default,interface=frontend alpine:latest ip link show frontend
 ```
 
+### Additional interface addresses
+
+Repeat `address=IP` in a network attachment to configure additional IPv4 or
+IPv6 addresses inside the guest. Addresses without an explicit prefix use
+Docker-compatible address masks (`/16` for IPv4 and `/64` for IPv6):
+
+```bash
+container run \
+  --network default,address=198.51.100.8,address=2001:db8::8/64 \
+  alpine:latest ip address show
+```
+
 ### Upgrade or downgrade
 
 For both upgrading and downgrading, you can manually download and install the

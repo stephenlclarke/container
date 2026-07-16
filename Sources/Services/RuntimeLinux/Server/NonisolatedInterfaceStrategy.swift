@@ -19,6 +19,7 @@ import ContainerRuntimeClient
 import ContainerXPC
 import Containerization
 import ContainerizationError
+import ContainerizationExtras
 import Logging
 import Virtualization
 import vmnet
@@ -36,6 +37,22 @@ public struct NonisolatedInterfaceStrategy: InterfaceStrategy {
         attachment: Attachment,
         interfaceIndex: Int,
         guestInterfaceName: String?,
+        additionalData: XPCMessage?
+    ) throws -> Interface {
+        try toInterface(
+            attachment: attachment,
+            interfaceIndex: interfaceIndex,
+            guestInterfaceName: guestInterfaceName,
+            additionalIPAddresses: [],
+            additionalData: additionalData
+        )
+    }
+
+    public func toInterface(
+        attachment: Attachment,
+        interfaceIndex: Int,
+        guestInterfaceName: String?,
+        additionalIPAddresses: [CIDR],
         additionalData: XPCMessage?
     ) throws -> Interface {
         guard let additionalData else {
@@ -56,7 +73,8 @@ public struct NonisolatedInterfaceStrategy: InterfaceStrategy {
             macAddress: attachment.macAddress,
             // https://github.com/apple/containerization/pull/38
             mtu: attachment.mtu ?? 1280,
-            guestInterfaceName: guestInterfaceName
+            guestInterfaceName: guestInterfaceName,
+            additionalIPAddresses: additionalIPAddresses
         )
     }
 }

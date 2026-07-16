@@ -45,6 +45,28 @@ struct RuntimeServiceHostsTests {
     }
 
     @Test
+    func isolatedInterfaceStrategyPassesAdditionalIPAddressesToContainerization() throws {
+        let attachment = Attachment(
+            network: "default",
+            hostname: "demo-api-1",
+            ipv4Address: try CIDRv4("192.168.64.2/24"),
+            ipv4Gateway: try IPv4Address("192.168.64.1"),
+            ipv6Address: nil,
+            macAddress: nil
+        )
+
+        let interface = IsolatedInterfaceStrategy().toInterface(
+            attachment: attachment,
+            interfaceIndex: 0,
+            guestInterfaceName: nil,
+            additionalIPAddresses: [try CIDR("198.51.100.8/32")],
+            additionalData: nil
+        )
+
+        #expect(interface.additionalIPAddresses == [try CIDR("198.51.100.8/32")])
+    }
+
+    @Test
     func resolvedHostnamePrefersConfiguredHostname() {
         var config = runtimeTestConfiguration(id: "demo-api-1")
         config.hostname = "custom-api"

@@ -64,7 +64,9 @@ container run [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME]`, or `none` / `host`)
+*   `--network <network>`: Attach the container to a network. Supports `alias`,
+    `mac`, `mtu`, `interface`, and repeated `address` options; also `none` /
+    `host`.
 *   `--no-dns`: Do not configure DNS in the container
 *   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
@@ -131,6 +133,11 @@ container run --network default,alias=api.internal ubuntu:latest
 
 # run a container with a stable guest interface name
 container run --network default,interface=frontend ubuntu:latest ip link show frontend
+
+# add an additional IPv4 or IPv6 guest address
+container run \
+  --network default,address=198.51.100.8,address=2001:db8::8/64 \
+  ubuntu:latest ip address show
 
 # run a container with an init process to reap zombies and forward signals
 container run --init ubuntu:latest my-app
@@ -292,7 +299,9 @@ container create [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
-*   `--network <network>`: Attach the container to a network (format: `<name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME]`, or `none` / `host`)
+*   `--network <network>`: Attach the container to a network. Supports `alias`,
+    `mac`, `mtu`, `interface`, and repeated `address` options; also `none` /
+    `host`.
 *   `--no-dns`: Do not configure DNS in the container
 *   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)

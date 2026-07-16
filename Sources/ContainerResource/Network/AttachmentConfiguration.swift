@@ -47,18 +47,23 @@ public struct AttachmentOptions: Codable, Sendable {
     /// Optional name for the interface inside the guest.
     public let guestInterfaceName: String?
 
+    /// Additional IPv4 or IPv6 addresses configured on the guest interface.
+    public let additionalIPAddresses: [CIDR]
+
     public init(
         hostname: String,
         aliases: [String] = [],
         macAddress: MACAddress? = nil,
         mtu: UInt32? = nil,
-        guestInterfaceName: String? = nil
+        guestInterfaceName: String? = nil,
+        additionalIPAddresses: [CIDR] = []
     ) {
         self.hostname = hostname
         self.aliases = aliases
         self.macAddress = macAddress
         self.mtu = mtu
         self.guestInterfaceName = guestInterfaceName
+        self.additionalIPAddresses = additionalIPAddresses
     }
 
     enum CodingKeys: String, CodingKey {
@@ -67,6 +72,7 @@ public struct AttachmentOptions: Codable, Sendable {
         case macAddress
         case mtu
         case guestInterfaceName
+        case additionalIPAddresses
     }
 
     public init(from decoder: Decoder) throws {
@@ -76,5 +82,6 @@ public struct AttachmentOptions: Codable, Sendable {
         macAddress = try container.decodeIfPresent(MACAddress.self, forKey: .macAddress)
         mtu = try container.decodeIfPresent(UInt32.self, forKey: .mtu)
         guestInterfaceName = try container.decodeIfPresent(String.self, forKey: .guestInterfaceName)
+        additionalIPAddresses = try container.decodeIfPresent([CIDR].self, forKey: .additionalIPAddresses) ?? []
     }
 }

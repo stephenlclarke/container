@@ -18,6 +18,7 @@ import ContainerResource
 import ContainerRuntimeClient
 import ContainerXPC
 import Containerization
+import ContainerizationExtras
 
 /// Isolated container network interface strategy. This strategy prohibits
 /// container to container networking, but it is the only approach that
@@ -31,6 +32,22 @@ public struct IsolatedInterfaceStrategy: InterfaceStrategy {
         guestInterfaceName: String?,
         additionalData: XPCMessage?
     ) -> Interface {
+        toInterface(
+            attachment: attachment,
+            interfaceIndex: interfaceIndex,
+            guestInterfaceName: guestInterfaceName,
+            additionalIPAddresses: [],
+            additionalData: additionalData
+        )
+    }
+
+    public func toInterface(
+        attachment: Attachment,
+        interfaceIndex: Int,
+        guestInterfaceName: String?,
+        additionalIPAddresses: [CIDR],
+        additionalData: XPCMessage?
+    ) -> Interface {
         let ipv4Gateway = interfaceIndex == 0 ? attachment.ipv4Gateway : nil
         return NATInterface(
             ipv4Address: attachment.ipv4Address,
@@ -38,7 +55,8 @@ public struct IsolatedInterfaceStrategy: InterfaceStrategy {
             macAddress: attachment.macAddress,
             // https://github.com/apple/containerization/pull/38
             mtu: attachment.mtu ?? 1280,
-            guestInterfaceName: guestInterfaceName
+            guestInterfaceName: guestInterfaceName,
+            additionalIPAddresses: additionalIPAddresses
         )
     }
 }

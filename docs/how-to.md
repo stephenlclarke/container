@@ -250,6 +250,16 @@ To use a stable interface name inside the guest, append `interface=NAME` to the 
 container run --network default,interface=frontend ubuntu:latest ip link show frontend
 ```
 
+To configure an additional IPv4 or IPv6 address, repeat `address=IP` in the
+network attachment. An address without a prefix uses Docker-compatible address
+masks (`/16` for IPv4 or `/64` for IPv6):
+
+```bash
+container run \
+  --network default,address=198.51.100.8,address=2001:db8::8/64 \
+  ubuntu:latest ip address show
+```
+
 To verify the MAC address is set correctly, read the interface MAC directly from sysfs inside the container:
 
 ```console

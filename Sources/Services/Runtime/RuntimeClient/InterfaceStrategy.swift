@@ -17,6 +17,7 @@
 import ContainerResource
 import ContainerXPC
 import Containerization
+import ContainerizationExtras
 
 /// Key identifying which interface strategy to use for a network attachment.
 public struct NetworkInterfaceKey: Hashable, Sendable {
@@ -38,6 +39,7 @@ public protocol InterfaceStrategy: Sendable {
     ///     for all networks.
     ///   - interfaceIndex: The zero-based index of the interface.
     ///   - guestInterfaceName: Optional requested name for the guest-side interface.
+    ///   - additionalIPAddresses: Additional IPv4 or IPv6 addresses for the guest-side interface.
     ///   - additionalData: If present, attachment information that is
     ///     specific for the network to which the container will attach.
     ///
@@ -48,4 +50,30 @@ public protocol InterfaceStrategy: Sendable {
         guestInterfaceName: String?,
         additionalData: XPCMessage?
     ) throws -> Interface
+
+    /// Map a client network attachment request to a network interface specification with additional addresses.
+    func toInterface(
+        attachment: Attachment,
+        interfaceIndex: Int,
+        guestInterfaceName: String?,
+        additionalIPAddresses: [CIDR],
+        additionalData: XPCMessage?
+    ) throws -> Interface
+}
+
+extension InterfaceStrategy {
+    public func toInterface(
+        attachment: Attachment,
+        interfaceIndex: Int,
+        guestInterfaceName: String?,
+        additionalIPAddresses: [CIDR],
+        additionalData: XPCMessage?
+    ) throws -> Interface {
+        try toInterface(
+            attachment: attachment,
+            interfaceIndex: interfaceIndex,
+            guestInterfaceName: guestInterfaceName,
+            additionalData: additionalData
+        )
+    }
 }

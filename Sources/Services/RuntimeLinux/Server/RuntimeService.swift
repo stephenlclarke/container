@@ -241,6 +241,7 @@ public actor RuntimeService {
                         attachment: attachment,
                         interfaceIndex: index,
                         guestInterfaceName: attachmentConfig.options.guestInterfaceName,
+                        additionalIPAddresses: attachmentConfig.options.additionalIPAddresses,
                         additionalData: additionalData
                     )
                     attachments.append(attachment)
