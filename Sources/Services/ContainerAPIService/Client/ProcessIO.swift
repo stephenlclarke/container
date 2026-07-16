@@ -152,12 +152,21 @@ public struct ProcessIO: Sendable {
 
     /// Handles streams, terminal resize, and signal forwarding for a process
     /// that has already been started by another client.
-    public func handleAttachedProcess(process: ClientProcess, log: Logger) async throws -> Int32 {
-        try await handle(process: process, log: log, start: false)
+    public func handleAttachedProcess(
+        process: ClientProcess,
+        log: Logger,
+        proxySignals: Bool = true,
+    ) async throws -> Int32 {
+        try await handle(process: process, log: log, start: false, proxySignals: proxySignals)
     }
 
-    private func handle(process: ClientProcess, log: Logger, start: Bool) async throws -> Int32 {
-        let signals = AsyncSignalHandler.create(notify: Self.signalSet)
+    private func handle(
+        process: ClientProcess,
+        log: Logger,
+        start: Bool,
+        proxySignals: Bool = true,
+    ) async throws -> Int32 {
+        let signals = proxySignals ? AsyncSignalHandler.create(notify: Self.signalSet) : nil
         return try await withThrowingTaskGroup(of: Int32?.self, returning: Int32.self) { group in
             if start {
                 try await process.start()
@@ -196,7 +205,7 @@ public struct ProcessIO: Sendable {
                     }
                     return nil
                 }
-            } else {
+            } else if let signals {
                 _ = group.addTaskUnlessCancelled {
                     for await sig in signals.signals {
                         do {
