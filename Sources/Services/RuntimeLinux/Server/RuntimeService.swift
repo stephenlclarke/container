@@ -175,7 +175,7 @@ public actor RuntimeService {
             try self.createBundle()
         }
 
-        return try await self.lock.withLock { _ in
+        return try await self.lock.withLock { [self] _ in
             guard await self.state == .created else {
                 throw ContainerizationError(
                     .invalidState,
@@ -921,6 +921,67 @@ public actor RuntimeService {
                 .invalidState,
                 message: "cannot copyOut: container is not running"
             )
+        }
+    }
+
+    /// Snapshot the container's root filesystem by freezing it, cloning it to a destination image,
+    /// and then thawing it. This ensures the filesystem is frozen for the minimal duration.
+    ///
+    /// - Parameters:
+    ///   - message: An XPC message with the following parameters:
+    ///     - imagePath: The path to the source filesystem image.
+    ///     - destinationPath: The path where the snapshot will be written.
+    ///
+    /// - Returns: An XPC message with no parameters.
+    @Sendable
+    public func snapshotDisk(_ message: XPCMessage) async throws -> XPCMessage {
+        self.log.info("`snapshotDisk` xpc handler")
+        return try await self.lock.withLock { _ in
+            switch await self.state {
+            case .running, .booted:
+                guard let imagePath = message.string(key: RuntimeKeys.imagePath.rawValue) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "no image path supplied for snapshotDisk"
+                    )
+                }
+                guard let destinationPath = message.string(key: RuntimeKeys.destinationPath.rawValue) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "no destination path supplied for snapshotDisk"
+                    )
+                }
+
+                let ctr = try await self.getContainer()
+
+                // Freeze the filesystem before copying its backing image.
+                try await ctr.container.filesystemOperation(operation: .freeze, path: "/")
+
+                do {
+                    // Copy the image while the guest filesystem is frozen.
+                    try FileManager.default.copyItem(atPath: imagePath, toPath: destinationPath)
+                    try await ctr.container.filesystemOperation(operation: .thaw, path: "/")
+                } catch {
+                    // Ensure we thaw even on error
+                    do {
+                        try await ctr.container.filesystemOperation(operation: .thaw, path: "/")
+                    } catch {
+                        self.log.error(
+                            "failed to thaw filesystem after snapshotDisk error",
+                            metadata: [
+                                "error": "\(error)"
+                            ])
+                    }
+                    throw error
+                }
+
+                return message.reply()
+            default:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot snapshot disk: container is not running"
+                )
+            }
         }
     }
 
