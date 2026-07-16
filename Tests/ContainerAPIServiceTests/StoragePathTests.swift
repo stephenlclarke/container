@@ -34,11 +34,20 @@ struct StoragePathTests {
         }
     }
 
+    @Test(arguments: ["", ".", "..", "../outside", "/tmp/outside", "nested/path"])
+    func configPathRejectsUnsafeNames(_ name: String) {
+        #expect(throws: Error.self) {
+            try ConfigsService.configPath(root: URL(filePath: "/tmp/configs"), name: name)
+        }
+    }
+
     @Test func storagePathsRemainInsideTheirManagedRoots() throws {
         let containerRoot = URL(filePath: "/tmp/containers")
         let volumeRoot = URL(filePath: "/tmp/volumes")
+        let configRoot = URL(filePath: "/tmp/configs")
 
         #expect(try ContainersService.containerPath(root: containerRoot, id: "api-1").path == containerRoot.appendingPathComponent("api-1").path)
         #expect(try VolumesService.volumePath(root: volumeRoot, name: "compose-data").path == volumeRoot.appendingPathComponent("compose-data").path)
+        #expect(try ConfigsService.configPath(root: configRoot, name: "app-config").path == configRoot.appendingPathComponent("app-config").path)
     }
 }
