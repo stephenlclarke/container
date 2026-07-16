@@ -54,6 +54,8 @@ public enum RuntimeKeys: String {
     case preserveOwnership
     /// Image path for snapshot operations
     case imagePath
+    /// Whether a live snapshot should avoid freezing the guest filesystem.
+    case noFreeze
 
     /// Special-case environment variables recomputed on each container start
     case dynamicEnv

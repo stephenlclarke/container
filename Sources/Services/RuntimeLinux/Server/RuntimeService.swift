@@ -26,6 +26,7 @@ import ContainerizationError
 import ContainerizationExtras
 import ContainerizationOCI
 import ContainerizationOS
+import Darwin
 import Foundation
 import Logging
 import NIO
@@ -973,13 +974,19 @@ public actor RuntimeService {
         }
     }
 
-    /// Snapshot the container's root filesystem by freezing it, cloning it to a destination image,
-    /// and then thawing it. This ensures the filesystem is frozen for the minimal duration.
+    /// Snapshot the container's root filesystem.
+    ///
+    /// The normal path freezes the guest filesystem before copying its backing
+    /// image. `noFreeze` instead makes an APFS copy-on-write clone while the
+    /// guest remains writable; this is deliberately best-effort, is not
+    /// guaranteed to produce a filesystem-consistent image, and is used only
+    /// for Docker-compatible `commit --pause=false` behavior.
     ///
     /// - Parameters:
     ///   - message: An XPC message with the following parameters:
     ///     - imagePath: The path to the source filesystem image.
     ///     - destinationPath: The path where the snapshot will be written.
+    ///     - noFreeze: Whether to avoid freezing the guest filesystem.
     ///
     /// - Returns: An XPC message with no parameters.
     @Sendable
@@ -999,6 +1006,11 @@ public actor RuntimeService {
                         .invalidArgument,
                         message: "no destination path supplied for snapshotDisk"
                     )
+                }
+
+                if message.bool(key: RuntimeKeys.noFreeze.rawValue) {
+                    try DiskSnapshot.clone(from: imagePath, to: destinationPath)
+                    return message.reply()
                 }
 
                 let ctr = try await self.getContainer()

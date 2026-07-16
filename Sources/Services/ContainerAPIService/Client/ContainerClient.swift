@@ -668,11 +668,19 @@ public struct ContainerClient: Sendable {
         }
     }
 
-    public func export(id: String, archive: URL, live: Bool = false) async throws {
+    /// Exports a container filesystem, optionally from a running container.
+    ///
+    /// A live export freezes the guest filesystem by default. `noFreeze` is
+    /// intentionally best-effort: it creates an APFS copy-on-write clone while
+    /// the guest keeps writing, so the resulting image is not guaranteed to be
+    /// filesystem or application consistent. This matches Docker's documented
+    /// `commit --pause=false` trade-off.
+    public func export(id: String, archive: URL, live: Bool = false, noFreeze: Bool = false) async throws {
         let request = XPCMessage(route: .containerExport)
         request.set(key: .id, value: id)
         request.set(key: .archive, value: archive.absolutePath())
         request.set(key: .live, value: live)
+        request.set(key: .noFreeze, value: noFreeze)
 
         do {
             try await xpcClient.send(request)
