@@ -62,6 +62,24 @@ public struct Utility {
         return String(hex.prefix(12))
     }
 
+    /// Projects an unpacked OCI image snapshot into a read-only container mount.
+    static func imageMountFilesystem(parsed: ParsedImageMount, snapshot: Filesystem) throws -> Filesystem {
+        guard snapshot.isBlock else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "image mount snapshot must be a block filesystem"
+            )
+        }
+        var filesystem = snapshot
+        filesystem.destination = parsed.destination
+        filesystem.options = parsed.options
+        if !filesystem.options.contains("ro") {
+            filesystem.options.append("ro")
+        }
+        filesystem.sourceSubpath = parsed.subpath
+        return filesystem
+    }
+
     public static func validEntityName(_ name: String) throws {
         let pattern = #"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$"#
         let regex = try Regex(pattern)
@@ -153,8 +171,6 @@ public struct Utility {
             platform: .current,
             progressUpdate: ProgressTaskCoordinator.handler(for: unpackInitTask, from: progressUpdate))
 
-        await taskManager.finish()
-
         let imageConfig = try await img.config(for: requestedPlatform).config
         let description = img.description
         let pc = try Parser.process(
@@ -208,8 +224,25 @@ public struct Utility {
                     subpath: parsed.subpath
                 )
                 resolvedMounts.append(volumeMount)
+            case .image(let parsed):
+                let mountedImage = try await ClientImage.get(
+                    reference: parsed.reference,
+                    containerSystemConfig: containerSystemConfig
+                )
+                await progressUpdate([
+                    .setDescription("Unpacking image mount"),
+                    .setItemsName("entries"),
+                ])
+                let mountTask = await taskManager.startTask()
+                let snapshot = try await mountedImage.getCreateSnapshot(
+                    platform: requestedPlatform,
+                    progressUpdate: ProgressTaskCoordinator.handler(for: mountTask, from: progressUpdate)
+                )
+                resolvedMounts.append(try imageMountFilesystem(parsed: parsed, snapshot: snapshot))
             }
         }
+
+        await taskManager.finish()
 
         config.mounts = resolvedMounts
 
