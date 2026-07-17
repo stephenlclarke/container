@@ -22,6 +22,7 @@ extension LinuxRuntimeData {
     static func encoded(from flags: Flags.Management) throws -> Data? {
         let blockIO = try Parser.blockIO(specs: flags.blkio)
         let pidsLimit = try Parser.pidsLimit(flags.pidsLimit)
+        let cpuShares = try Parser.cpuShares(flags.cpuShares)
         let deviceCgroupRules = try Parser.deviceCgroupRules(flags.deviceCgroupRules)
         let devices = try Parser.devices(flags.devices).map {
             LinuxDeviceMapping(source: $0.source, target: $0.target, permissions: $0.permissions)
@@ -36,7 +37,7 @@ extension LinuxRuntimeData {
             )
         }
 
-        guard blockIO != nil || pidsLimit != nil || !deviceCgroupRules.isEmpty || !devices.isEmpty || !gpuRequests.isEmpty else {
+        guard blockIO != nil || pidsLimit != nil || cpuShares != nil || !deviceCgroupRules.isEmpty || !devices.isEmpty || !gpuRequests.isEmpty else {
             return nil
         }
 
@@ -44,6 +45,7 @@ extension LinuxRuntimeData {
             LinuxRuntimeData(
                 blockIO: blockIO,
                 pidsLimit: pidsLimit,
+                cpuShares: cpuShares,
                 deviceCgroupRules: deviceCgroupRules,
                 devices: devices,
                 gpuRequests: gpuRequests

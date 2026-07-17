@@ -1882,6 +1882,20 @@ struct ParserTest {
         }
     }
 
+    @Test func testCPUSharesAcceptsValidValues() throws {
+        #expect(try Parser.cpuShares(2) == 2)
+        #expect(try Parser.cpuShares(512) == 512)
+        #expect(try Parser.cpuShares(nil) == nil)
+    }
+
+    @Test func testCPUSharesRejectsValuesBelowTwo() throws {
+        #expect {
+            _ = try Parser.cpuShares(1)
+        } throws: { _ in
+            true
+        }
+    }
+
     @Test func testBlockIOSpecsCombined() throws {
         let parsed = try Parser.blockIO(specs: [
             "weight=500,leaf-weight=300",

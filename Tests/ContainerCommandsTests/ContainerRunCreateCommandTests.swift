@@ -94,6 +94,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesCPUSharesFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cpu-shares", "512", "alpine", "true"])
+
+        #expect(command.managementFlags.cpuShares == 512)
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesDeviceCgroupRuleFlag() throws {
         let command = try Application.ContainerRun.parse(["--device-cgroup-rule", "c 1:3 mr", "alpine", "true"])
 
@@ -178,6 +187,27 @@ struct ContainerRunCreateCommandTests {
         let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
 
         #expect(decoded.pidsLimit == 128)
+    }
+
+    @Test
+    func runtimeDataEncodesCPUSharesFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cpu-shares", "512", "alpine", "true"])
+
+        let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.cpuShares == 512)
+    }
+
+    @Test
+    func runtimeDataRejectsInvalidCPUSharesFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cpu-shares", "1", "alpine", "true"])
+
+        #expect {
+            _ = try LinuxRuntimeData.encoded(from: command.managementFlags)
+        } throws: { _ in
+            true
+        }
     }
 
     @Test

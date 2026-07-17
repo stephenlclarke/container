@@ -126,6 +126,7 @@ struct RuntimeConfigurationTests {
                 throttleWriteIOPSDevice: []
             ),
             pidsLimit: 128,
+            cpuShares: 512,
             deviceCgroupRules: [
                 ContainerizationOCI.LinuxDeviceCgroup(allow: true, type: "c", major: 1, minor: 3, access: "mr")
             ],
@@ -156,6 +157,7 @@ struct RuntimeConfigurationTests {
         #expect(decodedData.blockIO?.weight == 500, "Block I/O weight should round-trip through RuntimeConfiguration")
         #expect(decodedData.blockIO?.throttleReadBpsDevice.first?.rate == 1_048_576, "Block I/O throttles should round-trip through RuntimeConfiguration")
         #expect(decodedData.pidsLimit == 128, "Pids limit should round-trip through RuntimeConfiguration")
+        #expect(decodedData.cpuShares == 512, "CPU shares should round-trip through RuntimeConfiguration")
         #expect(decodedData.deviceCgroupRules.first?.major == 1, "Device cgroup rules should round-trip through RuntimeConfiguration")
         #expect(decodedData.deviceCgroupRules.first?.access == "mr", "Device cgroup rule access should round-trip through RuntimeConfiguration")
         #expect(decodedData.devices.first?.source == "/dev/null", "Device source should round-trip through RuntimeConfiguration")
@@ -172,6 +174,7 @@ struct RuntimeConfigurationTests {
         #expect(decoded.variant == "legacy")
         #expect(decoded.blockIO == nil)
         #expect(decoded.pidsLimit == nil)
+        #expect(decoded.cpuShares == nil)
         #expect(decoded.deviceCgroupRules.isEmpty)
         #expect(decoded.devices.isEmpty)
         #expect(decoded.gpuRequests.isEmpty)
