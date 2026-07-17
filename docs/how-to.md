@@ -260,6 +260,16 @@ container run \
   ubuntu:latest ip address show
 ```
 
+To request the primary IPv4 or IPv6 address assigned by the network service,
+use `ip=IPv4` or `ip6=IPv6`. The value must be an address without a CIDR
+prefix and must be allocatable from the network's configured subnet. Requested
+addresses are reserved, so a later dynamic attachment cannot receive the same
+address:
+
+```bash
+container run --network appnet,ip=192.0.2.8,ip6=2001:db8::8 ubuntu:latest ip address show eth0
+```
+
 To verify the MAC address is set correctly, read the interface MAC directly from sysfs inside the container:
 
 ```console

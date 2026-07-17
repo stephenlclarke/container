@@ -31,11 +31,17 @@ actor AttachmentAllocator {
     }
 
     /// Allocate a network address for a host and its aliases.
-    func allocate(hostname: String, aliases: [String] = []) async throws -> UInt32 {
+    func allocate(hostname: String, aliases: [String] = [], requestedIndex: UInt32? = nil) async throws -> UInt32 {
         let names = Set([hostname] + aliases)
 
         // Client is responsible for ensuring two containers don't use same hostname, so provide existing IP if hostname exists
         if let index = primaryHostnames[hostname] {
+            if let requestedIndex, requestedIndex != index {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "requested IPv4 address does not match existing allocation for hostname '\(hostname)'"
+                )
+            }
             try reserveAliases(aliases, for: index)
             return index
         }
@@ -44,7 +50,13 @@ actor AttachmentAllocator {
             throw ContainerizationError(.exists, message: "hostname(s) already exist: \(conflictingNames)")
         }
 
-        let index = try allocator.allocate()
+        let index: UInt32
+        if let requestedIndex {
+            try allocator.reserve(requestedIndex)
+            index = requestedIndex
+        } else {
+            index = try allocator.allocate()
+        }
         for name in names {
             hostnames[name] = index
         }

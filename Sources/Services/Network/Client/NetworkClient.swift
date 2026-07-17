@@ -71,6 +71,8 @@ extension NetworkClient {
         hostname: String,
         aliases: [String] = [],
         macAddress: MACAddress? = nil,
+        requestedIPv4Address: IPv4Address? = nil,
+        requestedIPv6Address: IPv6Address? = nil,
         on session: XPCClientSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?) {
         let request = XPCMessage(route: NetworkRoutes.allocate.rawValue)
@@ -80,6 +82,12 @@ extension NetworkClient {
         }
         if let macAddress = macAddress {
             request.set(key: NetworkKeys.macAddress.rawValue, value: macAddress.description)
+        }
+        if let requestedIPv4Address {
+            request.set(key: NetworkKeys.requestedIPv4Address.rawValue, value: requestedIPv4Address.description)
+        }
+        if let requestedIPv6Address {
+            request.set(key: NetworkKeys.requestedIPv6Address.rawValue, value: requestedIPv6Address.description)
         }
         let response = try await session.send(request)
         let attachment = try response.attachment()
@@ -133,6 +141,24 @@ extension XPCMessage {
             return []
         }
         return try JSONDecoder().decode([String].self, from: data)
+    }
+
+    public func requestedIPv4Address() throws -> IPv4Address? {
+        guard let value = string(key: NetworkKeys.requestedIPv4Address.rawValue) else {
+            return nil
+        }
+        return try IPv4Address(value)
+    }
+
+    public func requestedIPv6Address() throws -> IPv6Address? {
+        guard let value = string(key: NetworkKeys.requestedIPv6Address.rawValue) else {
+            return nil
+        }
+        let address = try IPv6Address(value)
+        guard address.zone == nil else {
+            throw ContainerizationError(.invalidArgument, message: "requested network IPv6 address must not include a zone identifier")
+        }
+        return address
     }
 
     public func status() throws -> NetworkStatus {

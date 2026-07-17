@@ -50,13 +50,21 @@ public struct AttachmentOptions: Codable, Sendable {
     /// Additional IPv4 or IPv6 addresses configured on the guest interface.
     public let additionalIPAddresses: [CIDR]
 
+    /// Requested primary IPv4 address for this network attachment.
+    public let requestedIPv4Address: IPv4Address?
+
+    /// Requested primary IPv6 address for this network attachment.
+    public let requestedIPv6Address: IPv6Address?
+
     public init(
         hostname: String,
         aliases: [String] = [],
         macAddress: MACAddress? = nil,
         mtu: UInt32? = nil,
         guestInterfaceName: String? = nil,
-        additionalIPAddresses: [CIDR] = []
+        additionalIPAddresses: [CIDR] = [],
+        requestedIPv4Address: IPv4Address? = nil,
+        requestedIPv6Address: IPv6Address? = nil
     ) {
         self.hostname = hostname
         self.aliases = aliases
@@ -64,6 +72,8 @@ public struct AttachmentOptions: Codable, Sendable {
         self.mtu = mtu
         self.guestInterfaceName = guestInterfaceName
         self.additionalIPAddresses = additionalIPAddresses
+        self.requestedIPv4Address = requestedIPv4Address
+        self.requestedIPv6Address = requestedIPv6Address
     }
 
     enum CodingKeys: String, CodingKey {
@@ -73,6 +83,8 @@ public struct AttachmentOptions: Codable, Sendable {
         case mtu
         case guestInterfaceName
         case additionalIPAddresses
+        case requestedIPv4Address
+        case requestedIPv6Address
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,5 +95,7 @@ public struct AttachmentOptions: Codable, Sendable {
         mtu = try container.decodeIfPresent(UInt32.self, forKey: .mtu)
         guestInterfaceName = try container.decodeIfPresent(String.self, forKey: .guestInterfaceName)
         additionalIPAddresses = try container.decodeIfPresent([CIDR].self, forKey: .additionalIPAddresses) ?? []
+        requestedIPv4Address = try container.decodeIfPresent(IPv4Address.self, forKey: .requestedIPv4Address)
+        requestedIPv6Address = try container.decodeIfPresent(IPv6Address.self, forKey: .requestedIPv6Address)
     }
 }

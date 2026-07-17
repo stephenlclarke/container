@@ -1690,6 +1690,8 @@ public struct Parser {
         public let mtu: UInt32?
         public let guestInterfaceName: String?
         public let additionalIPAddresses: [CIDR]
+        public let requestedIPv4Address: IPv4Address?
+        public let requestedIPv6Address: IPv6Address?
 
         public init(
             name: String,
@@ -1697,7 +1699,9 @@ public struct Parser {
             macAddress: String? = nil,
             mtu: UInt32? = nil,
             guestInterfaceName: String? = nil,
-            additionalIPAddresses: [CIDR] = []
+            additionalIPAddresses: [CIDR] = [],
+            requestedIPv4Address: IPv4Address? = nil,
+            requestedIPv6Address: IPv6Address? = nil
         ) {
             self.name = name
             self.aliases = aliases
@@ -1705,12 +1709,14 @@ public struct Parser {
             self.mtu = mtu
             self.guestInterfaceName = guestInterfaceName
             self.additionalIPAddresses = additionalIPAddresses
+            self.requestedIPv4Address = requestedIPv4Address
+            self.requestedIPv6Address = requestedIPv6Address
         }
     }
 
     /// Parse network attachment with optional properties
-    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]]
-    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0,address=198.51.100.8"
+    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]][,ip=IPv4][,ip6=IPv6]
+    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0,ip=198.51.100.8,ip6=2001:db8::8"
     public static func network(_ networkSpec: String) throws -> ParsedNetwork {
         guard !networkSpec.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "network specification cannot be empty")
@@ -1732,6 +1738,8 @@ public struct Parser {
         var mtu: UInt32?
         var guestInterfaceName: String?
         var additionalIPAddresses: [CIDR] = []
+        var requestedIPv4Address: IPv4Address?
+        var requestedIPv6Address: IPv6Address?
 
         // Parse properties if any
         for part in parts.dropFirst() {
@@ -1783,10 +1791,14 @@ public struct Parser {
                 guestInterfaceName = value
             case "address":
                 additionalIPAddresses.append(try networkAddress(value))
+            case "ip":
+                requestedIPv4Address = try networkIPv4Address(value)
+            case "ip6":
+                requestedIPv6Address = try networkIPv6Address(value)
             default:
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "unknown network property '\(key)'. Available properties: address, alias, mac, mtu, interface"
+                    message: "unknown network property '\(key)'. Available properties: address, alias, ip, ip6, mac, mtu, interface"
                 )
             }
         }
@@ -1797,8 +1809,51 @@ public struct Parser {
             macAddress: macAddress,
             mtu: mtu,
             guestInterfaceName: guestInterfaceName,
-            additionalIPAddresses: additionalIPAddresses
+            additionalIPAddresses: additionalIPAddresses,
+            requestedIPv4Address: requestedIPv4Address,
+            requestedIPv6Address: requestedIPv6Address
         )
+    }
+
+    private static func networkIPv4Address(_ value: String) throws -> IPv4Address {
+        guard !value.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "network IPv4 address value cannot be empty")
+        }
+        do {
+            let address = try IPv4Address(value)
+            guard !address.isUnspecified else {
+                throw ContainerizationError(.invalidArgument, message: "network IPv4 address must not be unspecified")
+            }
+            return address
+        } catch {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid network IPv4 address '\(value)': expected an IPv4 address without a CIDR prefix"
+            )
+        }
+    }
+
+    private static func networkIPv6Address(_ value: String) throws -> IPv6Address {
+        guard !value.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "network IPv6 address value cannot be empty")
+        }
+        do {
+            let address = try IPv6Address(value)
+            guard address.zone == nil else {
+                throw ContainerizationError(.invalidArgument, message: "network IPv6 address must not include a zone identifier")
+            }
+            guard !address.isUnspecified else {
+                throw ContainerizationError(.invalidArgument, message: "network IPv6 address must not be unspecified")
+            }
+            return address
+        } catch let error as ContainerizationError {
+            throw error
+        } catch {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid network IPv6 address '\(value)': expected an IPv6 address without a CIDR prefix"
+            )
+        }
     }
 
     private static func networkAddress(_ value: String) throws -> CIDR {

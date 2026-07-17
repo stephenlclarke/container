@@ -109,6 +109,38 @@ struct TestCLINetwork {
         }
     }
 
+    @available(macOS 26, *)
+    @Test func testNetworkRequestedIPv4Address() async throws {
+        try await ContainerFixture.with { f in
+            let net = "\(f.testID)-net"
+            let c = "\(f.testID)-c"
+            f.addCleanup { f.doNetworkDeleteIfExists(net) }
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+
+            try f.doNetworkCreate(net)
+            let network = try f.inspectNetwork(net)
+            let subnetText = try #require(network.status.ipv4Subnet)
+            let subnet = try CIDRv4(subnetText)
+            let requestedAddress = IPv4Address(subnet.lower.value + 2)
+
+            try f.doLongRun(
+                name: c,
+                image: "docker.io/library/alpine",
+                args: ["--network", "\(net),ip=\(requestedAddress)"],
+                containerArgs: ["sleep", "infinity"],
+                autoRemove: false
+            )
+            try await f.waitForContainerRunning(c)
+
+            let container = try f.inspectContainer(c)
+            let attachment = try #require(container.networks.first { $0.network == net })
+            #expect(attachment.ipv4Address.address == requestedAddress)
+        }
+    }
+
     @Test func testNetworkMTU() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])

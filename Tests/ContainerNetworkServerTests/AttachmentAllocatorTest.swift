@@ -37,6 +37,26 @@ struct AttachmentAllocatorTest {
         #expect(address1 == address2)
     }
 
+    @Test func testAllocateRequestedAddressReservesItFromDynamicAllocation() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let requested = try await allocator.allocate(hostname: "api", requestedIndex: 105)
+        let dynamic = try await allocator.allocate(hostname: "worker")
+
+        #expect(requested == 105)
+        #expect(dynamic != requested)
+    }
+
+    @Test func testExistingHostnameRejectsDifferentRequestedAddress() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        _ = try await allocator.allocate(hostname: "api", requestedIndex: 105)
+
+        await #expect(throws: Error.self) {
+            _ = try await allocator.allocate(hostname: "api", requestedIndex: 106)
+        }
+    }
+
     @Test func testAllocateMultipleHostnames() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 

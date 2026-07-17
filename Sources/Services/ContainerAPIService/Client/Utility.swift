@@ -354,7 +354,9 @@ public struct Utility {
                             macAddress: macAddress,
                             mtu: mtu,
                             guestInterfaceName: item.element.guestInterfaceName,
-                            additionalIPAddresses: item.element.additionalIPAddresses
+                            additionalIPAddresses: item.element.additionalIPAddresses,
+                            requestedIPv4Address: item.element.requestedIPv4Address,
+                            requestedIPv6Address: item.element.requestedIPv6Address
                         )
                     )
                 }
@@ -366,7 +368,9 @@ public struct Utility {
                         macAddress: macAddress,
                         mtu: mtu,
                         guestInterfaceName: item.element.guestInterfaceName,
-                        additionalIPAddresses: item.element.additionalIPAddresses
+                        additionalIPAddresses: item.element.additionalIPAddresses,
+                        requestedIPv4Address: item.element.requestedIPv4Address,
+                        requestedIPv6Address: item.element.requestedIPv6Address
                     )
                 )
             }

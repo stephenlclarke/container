@@ -65,8 +65,8 @@ container run [<options>] <image> [<arguments> ...]
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
 *   `--network <network>`: Attach the container to a network. Supports `alias`,
-    `mac`, `mtu`, `interface`, and repeated `address` options; also `none` /
-    `host`.
+    `mac`, `mtu`, `interface`, repeated `address`, and requested primary `ip` /
+    `ip6` options; also `none` / `host`.
 *   `--no-dns`: Do not configure DNS in the container
 *   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
@@ -300,8 +300,8 @@ container create [<options>] <image> [<arguments> ...]
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
 *   `--name <name>`: Use the specified name as the container ID
 *   `--network <network>`: Attach the container to a network. Supports `alias`,
-    `mac`, `mtu`, `interface`, and repeated `address` options; also `none` /
-    `host`.
+    `mac`, `mtu`, `interface`, repeated `address`, and requested primary `ip` /
+    `ip6` options; also `none` / `host`.
 *   `--no-dns`: Do not configure DNS in the container
 *   `--no-healthcheck`: Disable the image healthcheck
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
