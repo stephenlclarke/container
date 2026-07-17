@@ -1213,12 +1213,15 @@ struct ParserTest {
     }
 
     @Test
-    func testProcessAddsSupplementalNumericGroups() throws {
+    func testProcessAddsSupplementalNumericAndNamedGroups() throws {
         let processFlags = try Flags.Process.parse([
             "--gid", "7",
             "--group-add", "1000",
+            "--group-add", "staff",
             "--group-add", "1001",
+            "--group-add", "docker",
             "--group-add", "1000",
+            "--group-add", "staff",
         ])
         let managementFlags = try Flags.Management.parse([])
 
@@ -1230,6 +1233,7 @@ struct ParserTest {
         )
 
         #expect(result.supplementalGroups == [7, 1000, 1001])
+        #expect(result.supplementalGroupNames == ["staff", "docker"])
     }
 
     @Test
@@ -1442,7 +1446,9 @@ struct ParserTest {
             arguments: [],
             environment: ["PATH=/usr/bin"],
             workingDirectory: "/srv",
-            user: .raw(userString: "app")
+            user: .raw(userString: "app"),
+            supplementalGroups: [1000],
+            supplementalGroupNames: ["staff"]
         )
 
         let healthCheck = try #require(
@@ -1462,6 +1468,8 @@ struct ParserTest {
         #expect(healthCheck.process.environment == ["PATH=/usr/bin"])
         #expect(healthCheck.process.workingDirectory == "/srv")
         #expect(healthCheck.process.user.description == "app")
+        #expect(healthCheck.process.supplementalGroups == [1000])
+        #expect(healthCheck.process.supplementalGroupNames == ["staff"])
         #expect(healthCheck.intervalInNanoseconds == 5_000_000_000)
         #expect(healthCheck.retries == 2)
         #expect(healthCheck.startIntervalInNanoseconds == 500_000_000)
@@ -1483,6 +1491,40 @@ struct ParserTest {
         )
 
         #expect(healthCheck == nil)
+    }
+
+    @Test
+    func testProcessRejectsEmptySupplementalGroup() throws {
+        let processFlags = try Flags.Process.parse(["--group-add", ""])
+        let managementFlags = try Flags.Management.parse([])
+
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.process(
+                arguments: ["id"],
+                processFlags: processFlags,
+                managementFlags: managementFlags,
+                config: nil
+            )
+        }
+
+        #expect(error?.message == "supplemental group cannot be empty")
+    }
+
+    @Test
+    func testProcessRejectsOutOfRangeSupplementalGroupID() throws {
+        let processFlags = try Flags.Process.parse(["--group-add", "4294967296"])
+        let managementFlags = try Flags.Management.parse([])
+
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.process(
+                arguments: ["id"],
+                processFlags: processFlags,
+                managementFlags: managementFlags,
+                config: nil
+            )
+        }
+
+        #expect(error?.message == "invalid supplemental group ID '4294967296'")
     }
 
     @Test

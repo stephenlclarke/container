@@ -38,7 +38,7 @@ public struct Flags {
             env: [String],
             envFile: [String],
             gid: UInt32?,
-            groupAdd: [UInt32] = [],
+            groupAdd: [String] = [],
             interactive: Bool,
             privileged: Bool = false,
             tty: Bool,
@@ -73,9 +73,9 @@ public struct Flags {
 
         @Option(
             name: .customLong("group-add"),
-            help: .init("Add a supplemental numeric group ID to the process", valueName: "gid")
+            help: .init("Add a supplemental group by name or numeric ID to the process", valueName: "group")
         )
-        public var groupAdd: [UInt32] = []
+        public var groupAdd: [String] = []
 
         @Flag(name: .shortAndLong, help: "Keep the standard input open even if not attached")
         public var interactive = false

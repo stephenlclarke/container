@@ -1502,6 +1502,7 @@ public actor RuntimeService {
                 gid: 0,
                 umask: nil,
                 additionalGids: process.supplementalGroups,
+                additionalGroupNames: process.supplementalGroupNames,
                 username: name
             )
         case .id(let uid, let gid):
@@ -1510,6 +1511,7 @@ public actor RuntimeService {
                 gid: gid,
                 umask: nil,
                 additionalGids: process.supplementalGroups,
+                additionalGroupNames: process.supplementalGroupNames,
                 username: ""
             )
         }
@@ -1549,6 +1551,7 @@ public actor RuntimeService {
                 gid: 0,
                 umask: nil,
                 additionalGids: config.supplementalGroups,
+                additionalGroupNames: config.supplementalGroupNames,
                 username: name
             )
         case .id(let uid, let gid):
@@ -1557,6 +1560,7 @@ public actor RuntimeService {
                 gid: gid,
                 umask: nil,
                 additionalGids: config.supplementalGroups,
+                additionalGroupNames: config.supplementalGroupNames,
                 username: ""
             )
         }

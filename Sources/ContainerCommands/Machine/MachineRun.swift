@@ -94,6 +94,7 @@ extension Application {
             let (user, additionalGroups) = Parser.user(
                 user: processFlags.user, uid: processFlags.uid,
                 gid: processFlags.gid, defaultUser: defaultUser)
+            let requestedGroups = try Parser.supplementalGroups(processFlags.groupAdd)
 
             let cwd = getWorkingDirectory(snapshot, user: user)
 
@@ -111,7 +112,8 @@ extension Application {
                 workingDirectory: cwd,
                 terminal: tty,
                 user: user,
-                supplementalGroups: additionalGroups
+                supplementalGroups: additionalGroups + requestedGroups.ids,
+                supplementalGroupNames: requestedGroups.names
             )
 
             let io = try ProcessIO.create(tty: tty, interactive: interactive, detach: detach)
@@ -168,7 +170,8 @@ extension Application {
             workingDirectory: String,
             terminal: Bool,
             user: ProcessConfiguration.User,
-            supplementalGroups: [UInt32]
+            supplementalGroups: [UInt32],
+            supplementalGroupNames: [String] = []
         ) throws -> ProcessConfiguration {
             ProcessConfiguration(
                 executable: executable,
@@ -178,6 +181,7 @@ extension Application {
                 terminal: terminal,
                 user: user,
                 supplementalGroups: supplementalGroups,
+                supplementalGroupNames: supplementalGroupNames,
                 rlimits: try Parser.rlimits(processFlags.ulimits),
                 privileged: processFlags.privileged
             )

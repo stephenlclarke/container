@@ -132,8 +132,10 @@ extension Application {
             let (user, additionalGroups) = Parser.user(
                 user: processFlags.user, uid: processFlags.uid,
                 gid: processFlags.gid, defaultUser: defaultUser)
+            let requestedGroups = try Parser.supplementalGroups(processFlags.groupAdd)
             config.user = user
-            config.supplementalGroups.append(contentsOf: additionalGroups)
+            config.supplementalGroups.append(contentsOf: additionalGroups + requestedGroups.ids)
+            config.supplementalGroupNames.append(contentsOf: requestedGroups.names)
             return config
         }
     }
