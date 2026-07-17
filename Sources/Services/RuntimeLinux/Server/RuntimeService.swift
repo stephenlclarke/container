@@ -1803,6 +1803,7 @@ extension Filesystem {
                     "\(Filesystem.CacheMode.vzRuntimeOptionKey)=\(cacheMode.asVZRuntimeOption)",
                     "\(Filesystem.SyncMode.vzRuntimeOptionKey)=\(syncMode.asVZRuntimeOption)",
                 ],
+                subpath: self.sourceSubpath
             )
         case .volume(_, let format, let cacheMode, let syncMode):
             return .block(
@@ -1814,6 +1815,7 @@ extension Filesystem {
                     "\(Filesystem.CacheMode.vzRuntimeOptionKey)=\(cacheMode.asVZRuntimeOption)",
                     "\(Filesystem.SyncMode.vzRuntimeOptionKey)=\(syncMode.asVZRuntimeOption)",
                 ],
+                subpath: self.sourceSubpath
             )
         }
     }

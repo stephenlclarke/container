@@ -38,6 +38,22 @@ struct RuntimeServiceHostsTests {
     }
 
     @Test
+    func volumeMountPassesSubpathToContainerization() {
+        let filesystem = Filesystem.volume(
+            name: "data",
+            format: "ext4",
+            source: "/tmp/data.img",
+            destination: "/data",
+            options: ["ro"],
+            subpath: "logs/app"
+        )
+
+        let mount = filesystem.asMount
+
+        #expect(mount.sourceSubpath == "logs/app")
+    }
+
+    @Test
     func isolatedInterfaceStrategyPassesGuestInterfaceNameToContainerization() throws {
         let attachment = Attachment(
             network: "default",

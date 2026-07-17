@@ -37,12 +37,20 @@ public struct ParsedVolume {
     public let name: String
     public let destination: String
     public let options: [String]
+    public let subpath: String?
     public let isAnonymous: Bool
 
-    public init(name: String, destination: String, options: [String] = [], isAnonymous: Bool = false) {
+    public init(
+        name: String,
+        destination: String,
+        options: [String] = [],
+        subpath: String? = nil,
+        isAnonymous: Bool = false
+    ) {
         self.name = name
         self.destination = destination
         self.options = options
+        self.subpath = subpath
         self.isAnonymous = isAnonymous
     }
 }
@@ -1245,7 +1253,7 @@ public struct Parser {
             var key = String(keyVal[0])
             var skipValue = false
             switch key {
-            case "type", "size", "mode", "uid", "gid":
+            case "type", "size", "mode", "uid", "gid", "volume-subpath":
                 break
             case "source", "src":
                 key = "source"
@@ -1270,6 +1278,7 @@ public struct Parser {
         var fs = Filesystem()
         var isVolume = false
         var volumeName = ""
+        var volumeSubpath: String?
         for (key, val) in directives {
             var val = val
             let type = directives["type"] ?? ""
@@ -1322,6 +1331,14 @@ public struct Parser {
                 } else {
                     fs.fileOwnership?.gid = value
                 }
+            case "volume-subpath":
+                guard type == "volume" else {
+                    throw ContainerizationError(.invalidArgument, message: "volume-subpath is only supported for volume mounts")
+                }
+                guard !val.isEmpty else {
+                    throw ContainerizationError(.invalidArgument, message: "volume-subpath cannot be empty")
+                }
+                volumeSubpath = val
             case "source":
                 switch type {
                 case "virtiofs", "bind":
@@ -1379,6 +1396,7 @@ public struct Parser {
                 name: volumeName,
                 destination: fs.destination,
                 options: fs.options,
+                subpath: volumeSubpath,
                 isAnonymous: isAnonymous
             ))
     }

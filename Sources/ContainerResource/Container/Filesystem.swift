@@ -84,6 +84,8 @@ public struct Filesystem: Sendable, Codable {
     public var destination: String
     /// Mount options applied when mounting the filesystem.
     public var options: MountOptions
+    /// Optional relative directory below a block-backed volume to mount.
+    public var sourceSubpath: String?
     /// Optional ownership for a private regular-file mount copy.
     public var fileOwnership: FileOwnership?
 
@@ -92,6 +94,7 @@ public struct Filesystem: Sendable, Codable {
         self.source = ""
         self.destination = ""
         self.options = []
+        self.sourceSubpath = nil
         self.fileOwnership = nil
     }
 
@@ -100,12 +103,14 @@ public struct Filesystem: Sendable, Codable {
         source: String,
         destination: String,
         options: MountOptions,
+        sourceSubpath: String? = nil,
         fileOwnership: FileOwnership? = nil
     ) {
         self.type = type
         self.source = source
         self.destination = destination
         self.options = options
+        self.sourceSubpath = sourceSubpath
         self.fileOwnership = fileOwnership
     }
 
@@ -129,13 +134,14 @@ public struct Filesystem: Sendable, Codable {
     /// A named volume filesystem.
     public static func volume(
         name: String, format: String, source: String, destination: String, options: MountOptions,
-        cache: CacheMode = .on, sync: SyncMode = .fsync
+        cache: CacheMode = .on, sync: SyncMode = .fsync, subpath: String? = nil
     ) -> Filesystem {
         .init(
             type: .volume(name: name, format: format, cache: cache, sync: sync),
             source: absoluteFilePath(for: source).string,
             destination: destination,
-            options: options
+            options: options,
+            sourceSubpath: subpath
         )
     }
 
@@ -211,6 +217,7 @@ public struct Filesystem: Sendable, Codable {
             source: to,
             destination: self.destination,
             options: self.options,
+            sourceSubpath: self.sourceSubpath,
             fileOwnership: self.fileOwnership
         )
     }
