@@ -77,6 +77,7 @@ public actor AllocationOnlyVmnetNetwork: Network {
             ipv4Subnet: ipv4Subnet,
             ipv4Gateway: gateway,
             ipv4AllocationRange: configuration.ipv4AllocationRange,
+            ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
             ipv6Subnet: nil
         )
         log.info(

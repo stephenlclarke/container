@@ -62,6 +62,9 @@ extension NetworkVmnetHelper {
         @Option(name: .customLong("ip-range"), help: "IPv4 allocation CIDR for the network")
         var ipv4AllocationRange: String?
 
+        @Option(name: .customLong("reserve-ip"), help: "IPv4 address reserved from attachment allocation")
+        var ipv4ReservedAddresses: [String] = []
+
         @Option(name: .customLong("subnet-v6"), help: "CIDR address for the IPv6 prefix")
         var ipv6Subnet: String?
 
@@ -89,6 +92,7 @@ extension NetworkVmnetHelper {
                 let ipv4Subnet = try self.ipv4Subnet.map { try CIDRv4($0) }
                 let ipv4Gateway = try self.ipv4Gateway.map { try IPv4Address($0) }
                 let ipv4AllocationRange = try self.ipv4AllocationRange.map { try CIDRv4($0) }
+                let ipv4ReservedAddresses = try self.ipv4ReservedAddresses.map { try IPv4Address($0) }
                 let ipv6Subnet = try self.ipv6Subnet.map { try CIDRv6($0) }
 
                 let configuration = try NetworkConfiguration(
@@ -97,6 +101,7 @@ extension NetworkVmnetHelper {
                     ipv4Subnet: ipv4Subnet,
                     ipv4Gateway: ipv4Gateway,
                     ipv4AllocationRange: ipv4AllocationRange,
+                    ipv4ReservedAddresses: ipv4ReservedAddresses,
                     ipv6Subnet: ipv6Subnet,
                     plugin: NetworkVmnetHelper._commandName,
                     options: ["variant": self.variant.rawValue]

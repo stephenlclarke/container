@@ -62,6 +62,13 @@ extension Application {
         var ipv4AllocationRange: CIDRv4? = nil
 
         @Option(
+            name: .customLong("reserve-ip"), help: "Reserve an IPv4 address from attachment allocation",
+            transform: {
+                try IPv4Address($0)
+            })
+        var ipv4ReservedAddresses: [IPv4Address] = []
+
+        @Option(
             name: .customLong("subnet-v6"), help: "Set the IPv6 prefix for a network",
             transform: {
                 try CIDRv6($0)
@@ -86,6 +93,7 @@ extension Application {
                 ipv4Subnet: ipv4Subnet,
                 ipv4Gateway: ipv4Gateway,
                 ipv4AllocationRange: ipv4AllocationRange,
+                ipv4ReservedAddresses: ipv4ReservedAddresses,
                 ipv6Subnet: ipv6Subnet,
                 labels: parsedLabels,
                 plugin: self.plugin,

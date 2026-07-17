@@ -61,8 +61,15 @@ public actor DefaultNetworkService: NetworkService {
         } else {
             allocator = try AttachmentAllocator(lower: allocationLower, size: size)
         }
+        var reservedIndexes: Set<UInt32> = []
         if status.ipv4Gateway.value >= allocationLower, status.ipv4Gateway.value <= allocationUpper {
-            try await allocator.reserve(index: status.ipv4Gateway.value)
+            reservedIndexes.insert(status.ipv4Gateway.value)
+        }
+        for address in status.ipv4ReservedAddresses where address.value >= allocationLower && address.value <= allocationUpper {
+            reservedIndexes.insert(address.value)
+        }
+        for index in reservedIndexes.sorted() {
+            try await allocator.reserve(index: index)
         }
         self.network = network
         self.log = log

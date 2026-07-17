@@ -80,6 +80,85 @@ struct AttachmentConfigurationTest {
 }
 
 struct NetworkConfigurationTest {
+    @Test func networkStatusDecodesLegacyStatusWithoutReservedAddresses() throws {
+        let status = NetworkStatus(
+            ipv4Subnet: try CIDRv4("192.0.2.0/24"),
+            ipv4Gateway: try IPv4Address("192.0.2.1"),
+            ipv6Subnet: nil
+        )
+        var encoded = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(status)) as? [String: Any])
+        encoded.removeValue(forKey: "ipv4ReservedAddresses")
+        let decoded = try JSONDecoder().decode(NetworkStatus.self, from: JSONSerialization.data(withJSONObject: encoded))
+
+        #expect(decoded.ipv4ReservedAddresses == [])
+    }
+
+    @Test func networkConfigurationRoundTripsIPv4ReservedAddresses() throws {
+        let subnet = try CIDRv4("192.0.2.0/24")
+        let reservedAddresses = [try IPv4Address("192.0.2.10"), try IPv4Address("192.0.2.20")]
+        let configuration = try NetworkConfiguration(
+            name: "reserved-address-network",
+            mode: .nat,
+            ipv4Subnet: subnet,
+            ipv4ReservedAddresses: reservedAddresses,
+            plugin: "container-network-vmnet"
+        )
+
+        let decoded = try JSONDecoder().decode(NetworkConfiguration.self, from: JSONEncoder().encode(configuration))
+
+        #expect(decoded.ipv4Subnet == subnet)
+        #expect(decoded.ipv4ReservedAddresses == reservedAddresses)
+    }
+
+    @Test func networkConfigurationRejectsInvalidIPv4ReservedAddresses() throws {
+        let subnet = try CIDRv4("192.0.2.0/24")
+        let invalidAddressLists = [
+            [try IPv4Address("192.0.2.1")],
+            [try IPv4Address("192.0.2.10"), try IPv4Address("192.0.2.10")],
+            [try IPv4Address("198.51.100.10")],
+        ]
+
+        for reservedAddresses in invalidAddressLists {
+            #expect {
+                _ = try NetworkConfiguration(
+                    name: "reserved-address-network",
+                    mode: .nat,
+                    ipv4Subnet: subnet,
+                    ipv4ReservedAddresses: reservedAddresses,
+                    plugin: "container-network-vmnet"
+                )
+            } throws: { error in
+                guard let error = error as? ContainerizationError else { return false }
+                return error.code == .invalidArgument
+            }
+        }
+
+        #expect {
+            _ = try NetworkConfiguration(
+                name: "reserved-address-network",
+                mode: .nat,
+                ipv4ReservedAddresses: [try IPv4Address("192.0.2.10")],
+                plugin: "container-network-vmnet"
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else { return false }
+            return error.code == .invalidArgument
+        }
+
+        #expect {
+            _ = try NetworkConfiguration(
+                name: "reserved-address-network",
+                mode: .nat,
+                ipv4Subnet: try CIDRv4("192.0.2.0/31"),
+                ipv4ReservedAddresses: [try IPv4Address("192.0.2.1")],
+                plugin: "container-network-vmnet"
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else { return false }
+            return error.code == .invalidArgument
+        }
+    }
+
     @Test func networkConfigurationRoundTripsIPv4AllocationRange() throws {
         let subnet = try CIDRv4("192.0.2.0/24")
         let allocationRange = try CIDRv4("192.0.2.128/25")

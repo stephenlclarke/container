@@ -41,6 +41,9 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
     /// The IPv4 CIDR range used for dynamic attachment allocation, if specified.
     public let ipv4AllocationRange: CIDRv4?
 
+    /// IPv4 addresses reserved from attachment allocation.
+    public let ipv4ReservedAddresses: [IPv4Address]
+
     /// The preferred CIDR address for the IPv6 subnet, if specified
     public let ipv6Subnet: CIDRv6?
 
@@ -61,6 +64,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         ipv4Subnet: CIDRv4? = nil,
         ipv4Gateway: IPv4Address? = nil,
         ipv4AllocationRange: CIDRv4? = nil,
+        ipv4ReservedAddresses: [IPv4Address] = [],
         ipv6Subnet: CIDRv6? = nil,
         labels: ResourceLabels = .init(),
         plugin: String,
@@ -72,6 +76,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         self.ipv4Subnet = ipv4Subnet
         self.ipv4Gateway = ipv4Gateway
         self.ipv4AllocationRange = ipv4AllocationRange
+        self.ipv4ReservedAddresses = ipv4ReservedAddresses
         self.ipv6Subnet = ipv6Subnet
         self.labels = labels
         self.plugin = plugin
@@ -89,6 +94,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         case ipv4Subnet
         case ipv4Gateway
         case ipv4AllocationRange
+        case ipv4ReservedAddresses
         case ipv6Subnet
         case labels
         case plugin
@@ -115,6 +121,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         ipv4Gateway = try container.decodeIfPresent(IPv4Address.self, forKey: .ipv4Gateway)
         ipv4AllocationRange = try container.decodeIfPresent(String.self, forKey: .ipv4AllocationRange)
             .map { try CIDRv4($0) }
+        ipv4ReservedAddresses = try container.decodeIfPresent([IPv4Address].self, forKey: .ipv4ReservedAddresses) ?? []
         ipv6Subnet = try container.decodeIfPresent(String.self, forKey: .ipv6Subnet)
             .map { try CIDRv6($0) }
         let decodedLabels = try container.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
@@ -148,6 +155,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         try container.encodeIfPresent(ipv4Subnet, forKey: .ipv4Subnet)
         try container.encodeIfPresent(ipv4Gateway, forKey: .ipv4Gateway)
         try container.encodeIfPresent(ipv4AllocationRange, forKey: .ipv4AllocationRange)
+        try container.encode(ipv4ReservedAddresses, forKey: .ipv4ReservedAddresses)
         try container.encodeIfPresent(ipv6Subnet, forKey: .ipv6Subnet)
         try container.encode(labels, forKey: .labels)
         try container.encode(plugin, forKey: .plugin)
@@ -193,6 +201,31 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
                     .invalidArgument,
                     message: "IPv4 allocation range '\(ipv4AllocationRange)' contains no allocatable host addresses in subnet '\(ipv4Subnet)'"
                 )
+            }
+        }
+
+        if !ipv4ReservedAddresses.isEmpty {
+            guard let ipv4Subnet else {
+                throw ContainerizationError(.invalidArgument, message: "IPv4 reserved addresses require an IPv4 subnet")
+            }
+            guard Set(ipv4ReservedAddresses).count == ipv4ReservedAddresses.count else {
+                throw ContainerizationError(.invalidArgument, message: "IPv4 reserved addresses must be unique")
+            }
+            guard ipv4Subnet.upper.value - ipv4Subnet.lower.value >= 4 else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "IPv4 subnet '\(ipv4Subnet)' has no allocatable host addresses"
+                )
+            }
+            let allocationLower = ipv4Subnet.lower.value + 2
+            let allocationUpper = ipv4Subnet.upper.value - 2
+            for address in ipv4ReservedAddresses {
+                guard address.value >= allocationLower, address.value <= allocationUpper else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "IPv4 reserved address '\(address)' must be an allocatable host address in subnet '\(ipv4Subnet)'"
+                    )
+                }
             }
         }
     }
