@@ -66,6 +66,9 @@ public struct LinuxRuntimeData: Codable, Sendable {
     /// Process count limit carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let pidsLimit: Int64?
+    /// Relative CPU scheduling weight carried opaquely through
+    /// `RuntimeConfiguration.runtimeData`.
+    public let cpuShares: UInt64?
     /// Device cgroup rules carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
@@ -78,6 +81,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         variant: String? = nil,
         blockIO: ContainerizationOCI.LinuxBlockIO? = nil,
         pidsLimit: Int64? = nil,
+        cpuShares: UInt64? = nil,
         deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = [],
         devices: [LinuxDeviceMapping] = [],
         gpuRequests: [LinuxGPURequest] = []
@@ -85,6 +89,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         self.variant = variant
         self.blockIO = blockIO
         self.pidsLimit = pidsLimit
+        self.cpuShares = cpuShares
         self.deviceCgroupRules = deviceCgroupRules
         self.devices = devices
         self.gpuRequests = gpuRequests
@@ -94,6 +99,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         case variant
         case blockIO
         case pidsLimit
+        case cpuShares
         case deviceCgroupRules
         case devices
         case gpuRequests
@@ -104,6 +110,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         variant = try container.decodeIfPresent(String.self, forKey: .variant)
         blockIO = try container.decodeIfPresent(ContainerizationOCI.LinuxBlockIO.self, forKey: .blockIO)
         pidsLimit = try container.decodeIfPresent(Int64.self, forKey: .pidsLimit)
+        cpuShares = try container.decodeIfPresent(UInt64.self, forKey: .cpuShares)
         deviceCgroupRules = try container.decodeIfPresent([ContainerizationOCI.LinuxDeviceCgroup].self, forKey: .deviceCgroupRules) ?? []
         devices = try container.decodeIfPresent([LinuxDeviceMapping].self, forKey: .devices) ?? []
         gpuRequests = try container.decodeIfPresent([LinuxGPURequest].self, forKey: .gpuRequests) ?? []

@@ -228,6 +228,7 @@ public struct Flags {
             ssh: Bool,
             shmSize: String?,
             pidsLimit: Int64? = nil,
+            cpuShares: UInt64? = nil,
             blkio: [String] = [],
             deviceCgroupRules: [String] = [],
             devices: [String] = [],
@@ -279,6 +280,7 @@ public struct Flags {
             self.ssh = ssh
             self.shmSize = shmSize
             self.pidsLimit = pidsLimit
+            self.cpuShares = cpuShares
             self.blkio = blkio
             self.deviceCgroupRules = deviceCgroupRules
             self.devices = devices
@@ -458,6 +460,12 @@ public struct Flags {
             help: "Tune container pids limit; use -1 for unlimited"
         )
         public var pidsLimit: Int64?
+
+        @Option(
+            name: .customLong("cpu-shares"),
+            help: "Relative CPU scheduling weight (must be at least 2)"
+        )
+        public var cpuShares: UInt64?
 
         @Option(
             name: .customLong("blkio"),

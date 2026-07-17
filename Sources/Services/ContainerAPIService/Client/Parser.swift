@@ -221,6 +221,21 @@ public struct Parser {
         return limit
     }
 
+    /// Parses a Docker-compatible relative CPU scheduling weight. Omit the
+    /// flag to retain the runtime default; explicit weights start at 2.
+    public static func cpuShares(_ shares: UInt64?) throws -> UInt64? {
+        guard let shares else {
+            return nil
+        }
+        guard shares >= 2 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--cpu-shares must be at least 2"
+            )
+        }
+        return shares
+    }
+
     /// Parses repeatable `--sysctl name=value` arguments into the container
     /// configuration model. The runtime decides whether each key is supported
     /// in the container's namespace.
