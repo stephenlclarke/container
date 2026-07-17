@@ -200,6 +200,13 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runtimeDataOmitsDefaultCPUSharesFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cpu-shares", "0", "alpine", "true"])
+
+        #expect(try LinuxRuntimeData.encoded(from: command.managementFlags) == nil)
+    }
+
+    @Test
     func runtimeDataRejectsInvalidCPUSharesFlag() throws {
         let command = try Application.ContainerRun.parse(["--cpu-shares", "1", "alpine", "true"])
 

@@ -1883,6 +1883,7 @@ struct ParserTest {
     }
 
     @Test func testCPUSharesAcceptsValidValues() throws {
+        #expect(try Parser.cpuShares(0) == nil)
         #expect(try Parser.cpuShares(2) == 2)
         #expect(try Parser.cpuShares(512) == 512)
         #expect(try Parser.cpuShares(nil) == nil)
