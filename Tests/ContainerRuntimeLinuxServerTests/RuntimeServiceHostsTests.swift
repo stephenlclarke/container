@@ -24,6 +24,20 @@ import Testing
 
 struct RuntimeServiceHostsTests {
     @Test
+    func ownedFileMountPassesOwnershipToContainerization() {
+        var filesystem = Filesystem.virtiofs(
+            source: "/tmp/config.txt",
+            destination: "/etc/config.txt",
+            options: ["ro"]
+        )
+        filesystem.fileOwnership = .init(uid: 1000, gid: 1001)
+
+        let mount = filesystem.asMount
+
+        #expect(mount.fileOwnership == .init(uid: 1000, gid: 1001))
+    }
+
+    @Test
     func isolatedInterfaceStrategyPassesGuestInterfaceNameToContainerization() throws {
         let attachment = Attachment(
             network: "default",

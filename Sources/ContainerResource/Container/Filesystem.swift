@@ -32,6 +32,20 @@ extension MountOptions {
 /// A filesystem will be mounted automatically when starting the sandbox
 /// or container.
 public struct Filesystem: Sendable, Codable {
+    /// Numeric ownership to apply to a private regular-file mount copy.
+    public struct FileOwnership: Sendable, Codable, Equatable {
+        /// The guest user ID to apply to the copied file.
+        public var uid: UInt32?
+        /// The guest group ID to apply to the copied file.
+        public var gid: UInt32?
+
+        /// Creates a file ownership override.
+        public init(uid: UInt32? = nil, gid: UInt32? = nil) {
+            self.uid = uid
+            self.gid = gid
+        }
+    }
+
     /// Type of caching to perform at the host level.
     public enum CacheMode: Sendable, Codable {
         case on
@@ -70,19 +84,29 @@ public struct Filesystem: Sendable, Codable {
     public var destination: String
     /// Mount options applied when mounting the filesystem.
     public var options: MountOptions
+    /// Optional ownership for a private regular-file mount copy.
+    public var fileOwnership: FileOwnership?
 
     public init() {
         self.type = .tmpfs
         self.source = ""
         self.destination = ""
         self.options = []
+        self.fileOwnership = nil
     }
 
-    public init(type: FSType, source: String, destination: String, options: MountOptions) {
+    public init(
+        type: FSType,
+        source: String,
+        destination: String,
+        options: MountOptions,
+        fileOwnership: FileOwnership? = nil
+    ) {
         self.type = type
         self.source = source
         self.destination = destination
         self.options = options
+        self.fileOwnership = fileOwnership
     }
 
     // Defaulting to CachedMode = .on (i.e., cached mode) to fix Linux FS issue when using Virtualization
@@ -182,7 +206,13 @@ public struct Filesystem: Sendable, Codable {
         let fm = FileManager.default
         let src = self.source
         try fm.copyItem(atPath: src, toPath: to)
-        return .init(type: self.type, source: to, destination: self.destination, options: self.options)
+        return .init(
+            type: self.type,
+            source: to,
+            destination: self.destination,
+            options: self.options,
+            fileOwnership: self.fileOwnership
+        )
     }
 }
 

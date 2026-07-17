@@ -1788,7 +1788,10 @@ extension Filesystem {
             return .share(
                 source: self.source,
                 destination: self.destination,
-                options: self.options
+                options: self.options,
+                fileOwnership: self.fileOwnership.map {
+                    .init(uid: $0.uid, gid: $0.gid)
+                }
             )
         case .block(let format, let cacheMode, let syncMode):
             return .block(
