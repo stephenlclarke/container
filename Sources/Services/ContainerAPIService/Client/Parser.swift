@@ -1245,7 +1245,7 @@ public struct Parser {
             var key = String(keyVal[0])
             var skipValue = false
             switch key {
-            case "type", "size", "mode":
+            case "type", "size", "mode", "uid", "gid":
                 break
             case "source", "src":
                 key = "source"
@@ -1310,6 +1310,18 @@ public struct Parser {
                 }
                 let s = "mode=\(val)"
                 fs.options.append(s)
+            case "uid", "gid":
+                guard let value = UInt32(val) else {
+                    throw ContainerizationError(.invalidArgument, message: "invalid \(key) value \(val) for \(type) mount")
+                }
+                if fs.fileOwnership == nil {
+                    fs.fileOwnership = .init()
+                }
+                if key == "uid" {
+                    fs.fileOwnership?.uid = value
+                } else {
+                    fs.fileOwnership?.gid = value
+                }
             case "source":
                 switch type {
                 case "virtiofs", "bind":
@@ -1317,12 +1329,8 @@ public struct Parser {
                     let url = basePath?.appending(path: val).standardizedFileURL ?? URL(filePath: val)
                     let absolutePath = url.absoluteURL.path
 
-                    var isDirectory: ObjCBool = false
-                    guard FileManager.default.fileExists(atPath: absolutePath, isDirectory: &isDirectory) else {
+                    guard FileManager.default.fileExists(atPath: absolutePath) else {
                         throw ContainerizationError(.invalidArgument, message: "path '\(val)' does not exist")
-                    }
-                    guard isDirectory.boolValue else {
-                        throw ContainerizationError(.invalidArgument, message: "path '\(val)' is not a directory")
                     }
                     fs.source = absolutePath
                 case "volume":
@@ -1343,6 +1351,16 @@ public struct Parser {
                 fs.destination = val
             default:
                 throw ContainerizationError(.invalidArgument, message: "unknown mount directive \(key)")
+            }
+        }
+
+        if fs.fileOwnership != nil {
+            guard directives["type"] == "bind" else {
+                throw ContainerizationError(.invalidArgument, message: "ownership is only supported for bind mounts")
+            }
+            let attributes = try FileManager.default.attributesOfItem(atPath: fs.source)
+            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw ContainerizationError(.invalidArgument, message: "ownership requires a regular-file bind source")
             }
         }
 

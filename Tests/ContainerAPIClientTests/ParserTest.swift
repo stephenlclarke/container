@@ -516,20 +516,41 @@ struct ParserTest {
     }
 
     @Test
-    func testMountBindFileInsteadOfDirectory() throws {
+    func testMountBindFileWithOwnership() throws {
         let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("test-file-\(UUID().uuidString)")
         try "test content".write(to: tempFile, atomically: true, encoding: .utf8)
         defer {
             try? FileManager.default.removeItem(at: tempFile)
         }
 
+        let result = try Parser.mount("type=bind,src=\(tempFile.path),dst=/foo,uid=1000,gid=1001,readonly")
+
+        switch result {
+        case .filesystem(let fs):
+            #expect(fs.source == tempFile.path)
+            #expect(fs.destination == "/foo")
+            #expect(fs.options == ["ro"])
+            #expect(fs.fileOwnership == .init(uid: 1000, gid: 1001))
+        case .volume:
+            #expect(Bool(false), "Expected filesystem mount, got volume")
+        }
+    }
+
+    @Test
+    func testMountOwnershipRejectsDirectorySource() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-owned-directory-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
         #expect {
-            _ = try Parser.mount("type=bind,src=\(tempFile.path),dst=/foo")
+            _ = try Parser.mount("type=bind,src=\(tempDir.path),dst=/foo,uid=1000")
         } throws: { error in
             guard let error = error as? ContainerizationError else {
                 return false
             }
-            return error.description.contains("path") && error.description.contains("is not a directory")
+            return error.description.contains("ownership requires a regular-file")
         }
     }
 
