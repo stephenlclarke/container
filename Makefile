@@ -15,7 +15,7 @@
 # Version and build configuration variables
 BUILD_CONFIGURATION ?= debug
 WARNINGS_AS_ERRORS ?= true
-SWIFT_CONFIGURATION := $(if $(filter-out false,$(WARNINGS_AS_ERRORS)),-Xswiftc -warnings-as-errors)
+SWIFT_CONFIGURATION := $(if $(filter-out false,$(WARNINGS_AS_ERRORS)),-Xswiftc -warnings-as-errors) -Xswiftc -enable-testing
 # Optional runner arguments for `swift test`. CI passes `--no-parallel`
 # explicitly so the runner configuration remains stable across SwiftPM defaults.
 SWIFT_TEST_FLAGS ?=
