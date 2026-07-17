@@ -229,6 +229,7 @@ public struct Flags {
             shmSize: String?,
             pidsLimit: Int64? = nil,
             memoryReservation: String? = nil,
+            memorySwap: String? = nil,
             cpuShares: UInt64? = nil,
             blkio: [String] = [],
             deviceCgroupRules: [String] = [],
@@ -282,6 +283,7 @@ public struct Flags {
             self.shmSize = shmSize
             self.pidsLimit = pidsLimit
             self.memoryReservation = memoryReservation
+            self.memorySwap = memorySwap
             self.cpuShares = cpuShares
             self.blkio = blkio
             self.deviceCgroupRules = deviceCgroupRules
@@ -468,6 +470,13 @@ public struct Flags {
             help: "Protected memory reservation (e.g. 512M, 1G)"
         )
         public var memoryReservation: String?
+
+        @Option(
+            name: .customLong("memory-swap"),
+            parsing: .unconditional,
+            help: "Total memory plus swap limit (e.g. 1G); use -1 for unlimited swap"
+        )
+        public var memorySwap: String?
 
         @Option(
             name: .customLong("cpu-shares"),

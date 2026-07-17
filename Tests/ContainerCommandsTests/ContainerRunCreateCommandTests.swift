@@ -103,6 +103,24 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesMemorySwapFlag() throws {
+        let command = try Application.ContainerRun.parse(["--memory-swap", "1g", "alpine", "true"])
+
+        #expect(command.managementFlags.memorySwap == "1g")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func createParsesUnlimitedMemorySwapFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--memory-swap", "-1", "alpine", "true"])
+
+        #expect(command.managementFlags.memorySwap == "-1")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesCPUSharesFlag() throws {
         let command = try Application.ContainerRun.parse(["--cpu-shares", "512", "alpine", "true"])
 
@@ -206,6 +224,16 @@ struct ContainerRunCreateCommandTests {
         let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
 
         #expect(decoded.memoryReservationInBytes == Int64(512.mib()))
+    }
+
+    @Test
+    func runtimeDataEncodesMemorySwapFlag() throws {
+        let command = try Application.ContainerRun.parse(["--memory-swap", "-1", "alpine", "true"])
+
+        let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.memorySwapLimitInBytes == -1)
     }
 
     @Test

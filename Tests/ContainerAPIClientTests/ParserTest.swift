@@ -1913,6 +1913,23 @@ struct ParserTest {
         }
     }
 
+    @Test func testMemorySwapParsesDockerSentinelAndDefaults() throws {
+        #expect(try Parser.memorySwap("1g") == Int64(1.gib()))
+        #expect(try Parser.memorySwap("-1") == -1)
+        #expect(try Parser.memorySwap("0") == nil)
+        #expect(try Parser.memorySwap(nil) == nil)
+    }
+
+    @Test func testMemorySwapRejectsInvalidAndOutOfRangeValues() throws {
+        for value in ["-2", "9223372036854775808b"] {
+            #expect {
+                _ = try Parser.memorySwap(value)
+            } throws: { _ in
+                true
+            }
+        }
+    }
+
     @Test func testBlockIOSpecsCombined() throws {
         let parsed = try Parser.blockIO(specs: [
             "weight=500,leaf-weight=300",

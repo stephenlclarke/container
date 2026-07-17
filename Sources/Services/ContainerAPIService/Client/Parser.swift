@@ -256,6 +256,28 @@ public struct Parser {
         return byteCount == 0 ? nil : byteCount
     }
 
+    /// Parses an optional Docker-compatible combined memory and swap limit.
+    /// Omit the flag, or pass zero, to leave the OCI swap limit unset; use
+    /// `-1` for the OCI unlimited-swap sentinel.
+    public static func memorySwap(_ limit: String?) throws -> Int64? {
+        guard let limit else {
+            return nil
+        }
+
+        if limit.trimmingCharacters(in: .whitespacesAndNewlines) == "-1" {
+            return -1
+        }
+
+        let bytes = try Measurement.parse(parsing: limit).converted(to: .bytes).value
+        guard let byteCount = Int64(exactly: bytes), byteCount == -1 || byteCount >= 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--memory-swap must be -1 or between 0 and \(Int64.max) bytes"
+            )
+        }
+        return byteCount == 0 ? nil : byteCount
+    }
+
     /// Parses repeatable `--sysctl name=value` arguments into the container
     /// configuration model. The runtime decides whether each key is supported
     /// in the container's namespace.

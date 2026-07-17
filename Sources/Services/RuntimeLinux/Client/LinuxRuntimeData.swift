@@ -69,6 +69,9 @@ public struct LinuxRuntimeData: Codable, Sendable {
     /// Protected memory reservation carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let memoryReservationInBytes: Int64?
+    /// Combined memory and swap limit carried opaquely through
+    /// `RuntimeConfiguration.runtimeData`.
+    public let memorySwapLimitInBytes: Int64?
     /// Relative CPU scheduling weight carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let cpuShares: UInt64?
@@ -85,6 +88,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         blockIO: ContainerizationOCI.LinuxBlockIO? = nil,
         pidsLimit: Int64? = nil,
         memoryReservationInBytes: Int64? = nil,
+        memorySwapLimitInBytes: Int64? = nil,
         cpuShares: UInt64? = nil,
         deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = [],
         devices: [LinuxDeviceMapping] = [],
@@ -94,6 +98,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         self.blockIO = blockIO
         self.pidsLimit = pidsLimit
         self.memoryReservationInBytes = memoryReservationInBytes
+        self.memorySwapLimitInBytes = memorySwapLimitInBytes
         self.cpuShares = cpuShares
         self.deviceCgroupRules = deviceCgroupRules
         self.devices = devices
@@ -105,6 +110,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         case blockIO
         case pidsLimit
         case memoryReservationInBytes
+        case memorySwapLimitInBytes
         case cpuShares
         case deviceCgroupRules
         case devices
@@ -117,6 +123,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         blockIO = try container.decodeIfPresent(ContainerizationOCI.LinuxBlockIO.self, forKey: .blockIO)
         pidsLimit = try container.decodeIfPresent(Int64.self, forKey: .pidsLimit)
         memoryReservationInBytes = try container.decodeIfPresent(Int64.self, forKey: .memoryReservationInBytes)
+        memorySwapLimitInBytes = try container.decodeIfPresent(Int64.self, forKey: .memorySwapLimitInBytes)
         cpuShares = try container.decodeIfPresent(UInt64.self, forKey: .cpuShares)
         deviceCgroupRules = try container.decodeIfPresent([ContainerizationOCI.LinuxDeviceCgroup].self, forKey: .deviceCgroupRules) ?? []
         devices = try container.decodeIfPresent([LinuxDeviceMapping].self, forKey: .devices) ?? []

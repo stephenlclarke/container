@@ -1388,6 +1388,7 @@ public actor RuntimeService {
             czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
             czConfig.pidsLimit = linuxData.pidsLimit
             czConfig.memoryReservationInBytes = linuxData.memoryReservationInBytes
+            czConfig.memorySwapLimitInBytes = linuxData.memorySwapLimitInBytes
             czConfig.cpuShares = linuxData.cpuShares
             czConfig.devices.append(contentsOf: deviceMapping.devices)
             czConfig.guestDevices.append(contentsOf: gpu.guestDevices)

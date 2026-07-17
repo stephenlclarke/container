@@ -23,6 +23,7 @@ extension LinuxRuntimeData {
         let blockIO = try Parser.blockIO(specs: flags.blkio)
         let pidsLimit = try Parser.pidsLimit(flags.pidsLimit)
         let memoryReservationInBytes = try Parser.memoryReservation(flags.memoryReservation)
+        let memorySwapLimitInBytes = try Parser.memorySwap(flags.memorySwap)
         let cpuShares = try Parser.cpuShares(flags.cpuShares)
         let deviceCgroupRules = try Parser.deviceCgroupRules(flags.deviceCgroupRules)
         let devices = try Parser.devices(flags.devices).map {
@@ -39,7 +40,8 @@ extension LinuxRuntimeData {
         }
 
         guard
-            blockIO != nil || pidsLimit != nil || memoryReservationInBytes != nil || cpuShares != nil || !deviceCgroupRules.isEmpty || !devices.isEmpty || !gpuRequests.isEmpty
+            blockIO != nil || pidsLimit != nil || memoryReservationInBytes != nil || memorySwapLimitInBytes != nil || cpuShares != nil || !deviceCgroupRules.isEmpty
+                || !devices.isEmpty || !gpuRequests.isEmpty
         else {
             return nil
         }
@@ -49,6 +51,7 @@ extension LinuxRuntimeData {
                 blockIO: blockIO,
                 pidsLimit: pidsLimit,
                 memoryReservationInBytes: memoryReservationInBytes,
+                memorySwapLimitInBytes: memorySwapLimitInBytes,
                 cpuShares: cpuShares,
                 deviceCgroupRules: deviceCgroupRules,
                 devices: devices,
