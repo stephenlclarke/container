@@ -1484,6 +1484,7 @@ public actor RuntimeService {
 
         czConfig.process.terminal = process.terminal
         czConfig.process.workingDirectory = process.workingDirectory
+        czConfig.process.oomScoreAdj = process.oomScoreAdj
         try czConfig.process.rlimits = process.rlimits.map {
             LinuxRLimit(
                 kind: try LinuxRLimit.Kind($0.limit),
@@ -1536,6 +1537,7 @@ public actor RuntimeService {
 
         proc.terminal = config.terminal
         proc.workingDirectory = config.workingDirectory
+        proc.oomScoreAdj = config.oomScoreAdj
         try proc.rlimits = config.rlimits.map {
             LinuxRLimit(
                 kind: try LinuxRLimit.Kind($0.limit),

@@ -183,6 +183,7 @@ extension Application {
                 supplementalGroups: supplementalGroups,
                 supplementalGroupNames: supplementalGroupNames,
                 rlimits: try Parser.rlimits(processFlags.ulimits),
+                oomScoreAdj: processFlags.oomScoreAdj,
                 privileged: processFlags.privileged
             )
         }

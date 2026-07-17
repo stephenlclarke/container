@@ -848,7 +848,8 @@ public struct Parser {
                 user: baseProcess.user,
                 supplementalGroups: baseProcess.supplementalGroups,
                 supplementalGroupNames: baseProcess.supplementalGroupNames,
-                rlimits: baseProcess.rlimits
+                rlimits: baseProcess.rlimits,
+                oomScoreAdj: baseProcess.oomScoreAdj
             ),
             intervalInNanoseconds: try healthDuration(interval, option: "--health-interval") ?? ContainerHealthCheck.defaultIntervalInNanoseconds,
             timeoutInNanoseconds: try healthDuration(timeout, option: "--health-timeout") ?? ContainerHealthCheck.defaultTimeoutInNanoseconds,
@@ -1246,6 +1247,7 @@ public struct Parser {
             supplementalGroups: (additionalGroups + requestedGroups.ids).dedupe(),
             supplementalGroupNames: requestedGroups.names,
             rlimits: rlimits,
+            oomScoreAdj: processFlags.oomScoreAdj,
             privileged: processFlags.privileged
         )
     }

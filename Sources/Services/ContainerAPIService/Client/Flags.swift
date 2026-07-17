@@ -40,6 +40,7 @@ public struct Flags {
             gid: UInt32?,
             groupAdd: [String] = [],
             interactive: Bool,
+            oomScoreAdj: Int? = nil,
             privileged: Bool = false,
             tty: Bool,
             uid: UInt32?,
@@ -52,6 +53,7 @@ public struct Flags {
             self.gid = gid
             self.groupAdd = groupAdd
             self.interactive = interactive
+            self.oomScoreAdj = oomScoreAdj
             self.privileged = privileged
             self.tty = tty
             self.uid = uid
@@ -79,6 +81,13 @@ public struct Flags {
 
         @Flag(name: .shortAndLong, help: "Keep the standard input open even if not attached")
         public var interactive = false
+
+        @Option(
+            name: .customLong("oom-score-adj"),
+            parsing: .unconditional,
+            help: .init("Adjust the Linux OOM killer score for the process", valueName: "score")
+        )
+        public var oomScoreAdj: Int?
 
         @Flag(name: .customLong("privileged"), help: "Give extended Linux capabilities to the process")
         public var privileged = false

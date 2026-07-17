@@ -118,6 +118,31 @@ struct ContainerConfigurationHostNetworkTests {
 }
 
 struct ProcessConfigurationPrivilegeTests {
+    @Test func roundTripsOOMScoreAdjustment() throws {
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: [],
+            oomScoreAdj: -250
+        )
+
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: JSONEncoder().encode(process))
+
+        #expect(decoded.oomScoreAdj == -250)
+    }
+
+    @Test func decodesMissingOOMScoreAdjustmentAsNil() throws {
+        let process = ProcessConfiguration(executable: "/bin/sh", arguments: [], environment: [])
+        let data = try JSONEncoder().encode(process)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "oomScoreAdj")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: stripped)
+
+        #expect(decoded.oomScoreAdj == nil)
+    }
+
     @Test func roundTripsNamedSupplementalGroups() throws {
         let process = ProcessConfiguration(
             executable: "/bin/sh",
