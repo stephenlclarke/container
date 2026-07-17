@@ -349,6 +349,8 @@ struct ParserTest {
                 #expect(!fs.isVolume)
             case .volume:
                 #expect(Bool(false), "Expected filesystem mount, got volume")
+            case .image:
+                #expect(Bool(false), "Expected filesystem mount, got image")
             }
         }
 
@@ -370,6 +372,8 @@ struct ParserTest {
                 #expect(fs.destination == "/foo")
             case .volume:
                 #expect(Bool(false), "Expected filesystem mount, got volume")
+            case .image:
+                #expect(Bool(false), "Expected filesystem mount, got image")
             }
         }
 
@@ -392,6 +396,8 @@ struct ParserTest {
                 #expect(fs.destination == "/foo")
             case .volume:
                 #expect(Bool(false), "Expected filesystem mount, got volume")
+            case .image:
+                #expect(Bool(false), "Expected filesystem mount, got image")
             }
         }
 
@@ -413,6 +419,8 @@ struct ParserTest {
                 #expect(fs.options.contains("ro"))
             case .volume:
                 #expect(Bool(false), "Expected filesystem mount, got volume")
+            case .image:
+                #expect(Bool(false), "Expected filesystem mount, got image")
             }
         }
 
@@ -434,6 +442,8 @@ struct ParserTest {
                 #expect(fs.destination == "/data")
             case .volume:
                 #expect(Bool(false), "Expected filesystem mount, got volume")
+            case .image:
+                #expect(Bool(false), "Expected filesystem mount, got image")
             }
         }
     }
@@ -455,6 +465,8 @@ struct ParserTest {
             #expect(!fs.isVolume)
         case .volume:
             #expect(Bool(false), "Expected filesystem mount, got volume")
+        case .image:
+            #expect(Bool(false), "Expected filesystem mount, got image")
         }
     }
 
@@ -475,6 +487,8 @@ struct ParserTest {
             #expect(fs.options == ["ro", "rslave"])
         case .volume:
             #expect(Bool(false), "Expected filesystem mount, got volume")
+        case .image:
+            #expect(Bool(false), "Expected filesystem mount, got image")
         }
     }
 
@@ -488,6 +502,8 @@ struct ParserTest {
         case .volume(let vol):
             #expect(vol.name == "myvolume")
             #expect(vol.destination == "/data")
+        case .image:
+            #expect(Bool(false), "Expected volume mount, got image")
         }
     }
 
@@ -502,6 +518,60 @@ struct ParserTest {
             #expect(vol.name == "myvolume")
             #expect(vol.destination == "/data")
             #expect(vol.subpath == "logs/app")
+        case .image:
+            #expect(Bool(false), "Expected volume mount, got image")
+        }
+    }
+
+    @Test
+    func testMountImageParsesReadOnlySubpath() throws {
+        let result = try Parser.mount("type=image,src=example/assets:latest,dst=/assets,image-subpath=public")
+
+        switch result {
+        case .filesystem:
+            #expect(Bool(false), "Expected image mount, got filesystem")
+        case .volume:
+            #expect(Bool(false), "Expected image mount, got volume")
+        case .image(let image):
+            #expect(image.reference == "example/assets:latest")
+            #expect(image.destination == "/assets")
+            #expect(image.options == ["ro"])
+            #expect(image.subpath == "public")
+        }
+    }
+
+    @Test
+    func testMountImageIsReadOnlyEvenWhenReadonlyIsOmitted() throws {
+        let result = try Parser.mount("type=image,source=example/assets,target=/assets")
+
+        guard case .image(let image) = result else {
+            Issue.record("Expected image mount")
+            return
+        }
+        #expect(image.options == ["ro"])
+    }
+
+    @Test
+    func testMountImageSubpathRejectsOtherMountTypes() {
+        #expect {
+            _ = try Parser.mount("type=volume,src=data,dst=/data,image-subpath=public")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("image-subpath is only supported for image mounts")
+        }
+    }
+
+    @Test
+    func testMountImageRequiresSource() {
+        #expect {
+            _ = try Parser.mount("type=image,dst=/assets")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("image mount requires a source image")
         }
     }
 
@@ -559,6 +629,8 @@ struct ParserTest {
             #expect(fs.fileOwnership == .init(uid: 1000, gid: 1001))
         case .volume:
             #expect(Bool(false), "Expected filesystem mount, got volume")
+        case .image:
+            #expect(Bool(false), "Expected filesystem mount, got image")
         }
     }
 

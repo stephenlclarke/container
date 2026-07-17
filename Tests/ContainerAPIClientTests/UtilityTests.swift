@@ -113,6 +113,48 @@ struct UtilityTests {
         #expect(Utility.trimDigest(digest: "sha256:abc") == "abc")
     }
 
+    @Test("Image mounts project a snapshot as a read-only subpath mount")
+    func imageMountFilesystemProjectsSnapshot() throws {
+        let snapshot = Filesystem.block(
+            format: "ext4",
+            source: "/tmp/image-snapshot",
+            destination: "/",
+            options: []
+        )
+        let mount = try Utility.imageMountFilesystem(
+            parsed: ParsedImageMount(
+                reference: "example/assets:latest",
+                destination: "/assets",
+                options: [],
+                subpath: "public"
+            ),
+            snapshot: snapshot
+        )
+
+        #expect(mount.type == snapshot.type)
+        #expect(mount.source == snapshot.source)
+        #expect(mount.destination == "/assets")
+        #expect(mount.options == ["ro"])
+        #expect(mount.sourceSubpath == "public")
+    }
+
+    @Test("Image mounts require a block-backed snapshot")
+    func imageMountFilesystemRejectsNonBlockSnapshot() {
+        let snapshot = Filesystem.virtiofs(source: "/tmp/image-snapshot", destination: "/", options: [])
+
+        #expect {
+            _ = try Utility.imageMountFilesystem(
+                parsed: ParsedImageMount(reference: "example/assets:latest", destination: "/assets"),
+                snapshot: snapshot
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("image mount snapshot must be a block filesystem")
+        }
+    }
+
     @Test
     func testValidEntityName() throws {
         try Utility.validEntityName("my-container")

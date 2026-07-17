@@ -55,10 +55,26 @@ public struct ParsedVolume {
     }
 }
 
+/// A parsed read-only filesystem mount sourced from a local OCI image.
+public struct ParsedImageMount {
+    public let reference: String
+    public let destination: String
+    public let options: [String]
+    public let subpath: String?
+
+    public init(reference: String, destination: String, options: [String] = ["ro"], subpath: String? = nil) {
+        self.reference = reference
+        self.destination = destination
+        self.options = options
+        self.subpath = subpath
+    }
+}
+
 /// Union type for parsed mount specifications
 public enum VolumeOrFilesystem {
     case filesystem(Filesystem)
     case volume(ParsedVolume)
+    case image(ParsedImageMount)
 }
 
 /// A parsed Docker-compatible Linux device mapping.
@@ -1214,6 +1230,8 @@ public struct Parser {
         "virtiofs",
         "bind",
         "tmpfs",
+        "volume",
+        "image",
     ]
 
     public static let defaultDirectives = ["type": "virtiofs"]
@@ -1253,7 +1271,7 @@ public struct Parser {
             var key = String(keyVal[0])
             var skipValue = false
             switch key {
-            case "type", "size", "mode", "uid", "gid", "volume-subpath":
+            case "type", "size", "mode", "uid", "gid", "volume-subpath", "image-subpath":
                 break
             case "source", "src":
                 key = "source"
@@ -1277,8 +1295,11 @@ public struct Parser {
 
         var fs = Filesystem()
         var isVolume = false
+        var isImage = false
         var volumeName = ""
         var volumeSubpath: String?
+        var imageReference = ""
+        var imageSubpath: String?
         for (key, val) in directives {
             var val = val
             let type = directives["type"] ?? ""
@@ -1295,6 +1316,8 @@ public struct Parser {
                     fs.type = Filesystem.FSType.tmpfs
                 case "volume":
                     isVolume = true
+                case "image":
+                    isImage = true
                 default:
                     throw ContainerizationError(.invalidArgument, message: "unsupported mount type \(val)")
                 }
@@ -1339,6 +1362,14 @@ public struct Parser {
                     throw ContainerizationError(.invalidArgument, message: "volume-subpath cannot be empty")
                 }
                 volumeSubpath = val
+            case "image-subpath":
+                guard type == "image" else {
+                    throw ContainerizationError(.invalidArgument, message: "image-subpath is only supported for image mounts")
+                }
+                guard !val.isEmpty else {
+                    throw ContainerizationError(.invalidArgument, message: "image-subpath cannot be empty")
+                }
+                imageSubpath = val
             case "source":
                 switch type {
                 case "virtiofs", "bind":
@@ -1359,6 +1390,11 @@ public struct Parser {
                     // This is a named volume
                     volumeName = val
                     fs.source = val
+                case "image":
+                    guard !val.isEmpty else {
+                        throw ContainerizationError(.invalidArgument, message: "image mount source cannot be empty")
+                    }
+                    imageReference = val
                 case "tmpfs":
                     throw ContainerizationError(.invalidArgument, message: "cannot specify source for tmpfs mount")
                 default:
@@ -1381,8 +1417,24 @@ public struct Parser {
             }
         }
 
-        guard isVolume else {
+        guard isVolume || isImage else {
             return .filesystem(fs)
+        }
+
+        if isImage {
+            guard !imageReference.isEmpty else {
+                throw ContainerizationError(.invalidArgument, message: "image mount requires a source image")
+            }
+            if !fs.options.contains("ro") {
+                fs.options.append("ro")
+            }
+            return .image(
+                ParsedImageMount(
+                    reference: imageReference,
+                    destination: fs.destination,
+                    options: fs.options,
+                    subpath: imageSubpath
+                ))
         }
 
         // If it's a volume type but no source was provided, create an anonymous volume
@@ -1498,6 +1550,13 @@ public struct Parser {
         case .volume(let vol):
             if vol.destination.isEmpty {
                 throw ContainerizationError(.invalidArgument, message: "volume destination cannot be empty")
+            }
+        case .image(let image):
+            if image.reference.isEmpty {
+                throw ContainerizationError(.invalidArgument, message: "image mount source cannot be empty")
+            }
+            if image.destination.isEmpty {
+                throw ContainerizationError(.invalidArgument, message: "image mount destination cannot be empty")
             }
         // Volume name validation already done during parsing
         }
