@@ -1897,6 +1897,22 @@ struct ParserTest {
         }
     }
 
+    @Test func testMemoryReservationParsesBytesAndDefaults() throws {
+        #expect(try Parser.memoryReservation("512m") == Int64(512.mib()))
+        #expect(try Parser.memoryReservation("0") == nil)
+        #expect(try Parser.memoryReservation(nil) == nil)
+    }
+
+    @Test func testMemoryReservationRejectsNegativeAndOutOfRangeValues() throws {
+        for value in ["-1", "9223372036854775808b"] {
+            #expect {
+                _ = try Parser.memoryReservation(value)
+            } throws: { _ in
+                true
+            }
+        }
+    }
+
     @Test func testBlockIOSpecsCombined() throws {
         let parsed = try Parser.blockIO(specs: [
             "weight=500,leaf-weight=300",

@@ -1387,6 +1387,7 @@ public actor RuntimeService {
             let gpu = try resolveGPURequests(linuxData.gpuRequests)
             czConfig.blockIO = linuxData.blockIO.map(Self.toContainerizationBlockIO)
             czConfig.pidsLimit = linuxData.pidsLimit
+            czConfig.memoryReservationInBytes = linuxData.memoryReservationInBytes
             czConfig.cpuShares = linuxData.cpuShares
             czConfig.devices.append(contentsOf: deviceMapping.devices)
             czConfig.guestDevices.append(contentsOf: gpu.guestDevices)

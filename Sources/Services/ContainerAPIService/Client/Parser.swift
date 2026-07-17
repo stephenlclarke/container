@@ -240,6 +240,22 @@ public struct Parser {
         return shares
     }
 
+    /// Parses an optional Docker-compatible protected memory reservation.
+    /// Omit the flag, or pass zero, to leave the OCI reservation unset.
+    public static func memoryReservation(_ reservation: String?) throws -> Int64? {
+        guard let reservation else {
+            return nil
+        }
+        let bytes = try Measurement.parse(parsing: reservation).converted(to: .bytes).value
+        guard let byteCount = Int64(exactly: bytes), byteCount >= 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--memory-reservation must be between 0 and \(Int64.max) bytes"
+            )
+        }
+        return byteCount == 0 ? nil : byteCount
+    }
+
     /// Parses repeatable `--sysctl name=value` arguments into the container
     /// configuration model. The runtime decides whether each key is supported
     /// in the container's namespace.

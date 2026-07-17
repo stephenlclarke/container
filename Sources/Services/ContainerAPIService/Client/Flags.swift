@@ -228,6 +228,7 @@ public struct Flags {
             ssh: Bool,
             shmSize: String?,
             pidsLimit: Int64? = nil,
+            memoryReservation: String? = nil,
             cpuShares: UInt64? = nil,
             blkio: [String] = [],
             deviceCgroupRules: [String] = [],
@@ -280,6 +281,7 @@ public struct Flags {
             self.ssh = ssh
             self.shmSize = shmSize
             self.pidsLimit = pidsLimit
+            self.memoryReservation = memoryReservation
             self.cpuShares = cpuShares
             self.blkio = blkio
             self.deviceCgroupRules = deviceCgroupRules
@@ -460,6 +462,12 @@ public struct Flags {
             help: "Tune container pids limit; use -1 for unlimited"
         )
         public var pidsLimit: Int64?
+
+        @Option(
+            name: .customLong("memory-reservation"),
+            help: "Protected memory reservation (e.g. 512M, 1G)"
+        )
+        public var memoryReservation: String?
 
         @Option(
             name: .customLong("cpu-shares"),

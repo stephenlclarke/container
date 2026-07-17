@@ -94,6 +94,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesMemoryReservationFlag() throws {
+        let command = try Application.ContainerRun.parse(["--memory-reservation", "512m", "alpine", "true"])
+
+        #expect(command.managementFlags.memoryReservation == "512m")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesCPUSharesFlag() throws {
         let command = try Application.ContainerRun.parse(["--cpu-shares", "512", "alpine", "true"])
 
@@ -187,6 +196,16 @@ struct ContainerRunCreateCommandTests {
         let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
 
         #expect(decoded.pidsLimit == 128)
+    }
+
+    @Test
+    func runtimeDataEncodesMemoryReservationFlag() throws {
+        let command = try Application.ContainerRun.parse(["--memory-reservation", "512m", "alpine", "true"])
+
+        let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.memoryReservationInBytes == Int64(512.mib()))
     }
 
     @Test
