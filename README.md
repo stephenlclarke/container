@@ -85,6 +85,17 @@ container run \
   alpine:latest ip address show
 ```
 
+### Requested primary interface addresses
+
+Use `ip=IPv4` or `ip6=IPv6` in a network attachment to request its primary
+address. The address must be an allocatable member of the network's configured
+subnet; the network service reserves it so later dynamic allocations cannot
+reuse it. Values are addresses, not CIDRs:
+
+```bash
+container run --network backend,ip=192.0.2.8,ip6=2001:db8::8 alpine:latest ip address show eth0
+```
+
 ### Upgrade or downgrade
 
 For both upgrading and downgrading, you can manually download and install the

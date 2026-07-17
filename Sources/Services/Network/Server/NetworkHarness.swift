@@ -42,11 +42,15 @@ public actor NetworkHarness: Sendable {
         let macAddress =
             try message.string(key: NetworkKeys.macAddress.rawValue)
             .map { try MACAddress($0) }
+        let requestedIPv4Address = try message.requestedIPv4Address()
+        let requestedIPv6Address = try message.requestedIPv6Address()
 
         let (attachment:attachment, additionalData:additionalData) = try await service.allocate(
             hostname: hostname,
             aliases: aliases,
             macAddress: macAddress,
+            requestedIPv4Address: requestedIPv4Address,
+            requestedIPv6Address: requestedIPv6Address,
             session: session
         )
 

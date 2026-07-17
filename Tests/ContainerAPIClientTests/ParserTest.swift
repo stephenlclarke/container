@@ -908,6 +908,36 @@ struct ParserTest {
     }
 
     @Test
+    func testParseNetworkWithRequestedPrimaryAddresses() throws {
+        let result = try Parser.network("backend,ip=198.51.100.8,ip6=2001:db8::8")
+        let expectedIPv4Address = try IPv4Address("198.51.100.8")
+        let expectedIPv6Address = try IPv6Address("2001:db8::8")
+
+        #expect(result.requestedIPv4Address == expectedIPv4Address)
+        #expect(result.requestedIPv6Address == expectedIPv6Address)
+    }
+
+    @Test
+    func testParseNetworkRejectsRequestedAddressCIDRPrefixes() throws {
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,ip=198.51.100.8/24")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,ip6=2001:db8::8/64")
+        }
+    }
+
+    @Test
+    func testParseNetworkRejectsUnspecifiedRequestedAddresses() throws {
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,ip=0.0.0.0")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,ip6=::")
+        }
+    }
+
+    @Test
     func testHostNetworkParserAcceptsHost() throws {
         #expect(try Parser.hostNetwork(["host"]))
         #expect(try !Parser.hostNetwork(["default"]))

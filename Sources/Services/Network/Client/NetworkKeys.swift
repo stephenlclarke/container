@@ -21,5 +21,7 @@ public enum NetworkKeys: String {
     case hostname
     case macAddress
     case network
+    case requestedIPv4Address
+    case requestedIPv6Address
     case status
 }

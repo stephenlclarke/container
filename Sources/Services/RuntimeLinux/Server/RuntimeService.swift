@@ -217,6 +217,8 @@ public actor RuntimeService {
                         hostname: attachmentConfig.options.hostname,
                         aliases: attachmentConfig.options.aliases,
                         macAddress: attachmentConfig.options.macAddress,
+                        requestedIPv4Address: attachmentConfig.options.requestedIPv4Address,
+                        requestedIPv6Address: attachmentConfig.options.requestedIPv6Address,
                         on: session
                     )
                     if let mtu = attachmentConfig.options.mtu {

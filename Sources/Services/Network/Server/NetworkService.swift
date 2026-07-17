@@ -28,6 +28,8 @@ public protocol NetworkService: Sendable {
         hostname: String,
         aliases: [String],
         macAddress: MACAddress?,
+        requestedIPv4Address: IPv4Address?,
+        requestedIPv6Address: IPv6Address?,
         session: XPCServerSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?)
 

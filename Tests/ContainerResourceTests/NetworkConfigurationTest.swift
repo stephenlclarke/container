@@ -28,17 +28,23 @@ struct AttachmentConfigurationTest {
             aliases: ["web", "api.internal"],
             mtu: 1500,
             guestInterfaceName: "backend0",
-            additionalIPAddresses: [try CIDR("198.51.100.8/32")]
+            additionalIPAddresses: [try CIDR("198.51.100.8/32")],
+            requestedIPv4Address: try IPv4Address("198.51.100.9"),
+            requestedIPv6Address: try IPv6Address("2001:db8::9")
         )
 
         let data = try JSONEncoder().encode(options)
         let decoded = try JSONDecoder().decode(AttachmentOptions.self, from: data)
+        let expectedIPv4Address = try IPv4Address("198.51.100.9")
+        let expectedIPv6Address = try IPv6Address("2001:db8::9")
 
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == ["web", "api.internal"])
         #expect(decoded.mtu == 1500)
         #expect(decoded.guestInterfaceName == "backend0")
         #expect(decoded.additionalIPAddresses == [try CIDR("198.51.100.8/32")])
+        #expect(decoded.requestedIPv4Address == expectedIPv4Address)
+        #expect(decoded.requestedIPv6Address == expectedIPv6Address)
     }
 
     @Test func attachmentOptionsDecodeMissingAliasesAsEmpty() throws {
@@ -50,6 +56,8 @@ struct AttachmentConfigurationTest {
         #expect(decoded.aliases == [])
         #expect(decoded.guestInterfaceName == nil)
         #expect(decoded.additionalIPAddresses == [])
+        #expect(decoded.requestedIPv4Address == nil)
+        #expect(decoded.requestedIPv6Address == nil)
     }
 
     @Test func attachmentRoundTripsAliases() throws {
