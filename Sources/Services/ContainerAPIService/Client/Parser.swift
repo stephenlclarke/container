@@ -1194,7 +1194,7 @@ public struct Parser {
             workingDirectory: workingDir,
             terminal: processFlags.tty,
             user: user,
-            supplementalGroups: additionalGroups,
+            supplementalGroups: (additionalGroups + processFlags.groupAdd).dedupe(),
             rlimits: rlimits,
             privileged: processFlags.privileged
         )
