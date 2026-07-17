@@ -175,6 +175,7 @@ public actor NetworksService {
                 ipv4Subnet: configuration.ipv4Subnet,
                 ipv4Gateway: configuration.ipv4Gateway,
                 ipv4AllocationRange: configuration.ipv4AllocationRange,
+                ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
                 ipv6Subnet: configuration.ipv6Subnet,
                 labels: configuration.labels,
                 plugin: configuration.plugin,
@@ -383,6 +384,10 @@ public actor NetworksService {
 
         if let ipv4AllocationRange = configuration.ipv4AllocationRange {
             args += ["--ip-range", ipv4AllocationRange.description]
+        }
+
+        for address in configuration.ipv4ReservedAddresses {
+            args += ["--reserve-ip", address.description]
         }
 
         if let ipv6Subnet = configuration.ipv6Subnet {

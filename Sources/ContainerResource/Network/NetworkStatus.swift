@@ -28,6 +28,9 @@ public struct NetworkStatus: Codable, Sendable {
     /// The IPv4 CIDR range used for dynamic attachment allocation, if configured.
     public let ipv4AllocationRange: CIDRv4?
 
+    /// IPv4 addresses reserved from attachment allocation.
+    public let ipv4ReservedAddresses: [IPv4Address]
+
     /// The IPv6 subnet assigned to the network, if IPv6 is enabled.
     public let ipv6Subnet: CIDRv6?
 
@@ -35,11 +38,42 @@ public struct NetworkStatus: Codable, Sendable {
         ipv4Subnet: CIDRv4,
         ipv4Gateway: IPv4Address,
         ipv4AllocationRange: CIDRv4? = nil,
+        ipv4ReservedAddresses: [IPv4Address] = [],
         ipv6Subnet: CIDRv6?
     ) {
         self.ipv4Subnet = ipv4Subnet
         self.ipv4Gateway = ipv4Gateway
         self.ipv4AllocationRange = ipv4AllocationRange
+        self.ipv4ReservedAddresses = ipv4ReservedAddresses
         self.ipv6Subnet = ipv6Subnet
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case ipv4Subnet
+        case ipv4Gateway
+        case ipv4AllocationRange
+        case ipv4ReservedAddresses
+        case ipv6Subnet
+    }
+
+    /// Decodes a network status, treating statuses written before reserved IPv4
+    /// addresses were introduced as having no additional reservations.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        ipv4Subnet = try container.decode(CIDRv4.self, forKey: .ipv4Subnet)
+        ipv4Gateway = try container.decode(IPv4Address.self, forKey: .ipv4Gateway)
+        ipv4AllocationRange = try container.decodeIfPresent(CIDRv4.self, forKey: .ipv4AllocationRange)
+        ipv4ReservedAddresses = try container.decodeIfPresent([IPv4Address].self, forKey: .ipv4ReservedAddresses) ?? []
+        ipv6Subnet = try container.decodeIfPresent(CIDRv6.self, forKey: .ipv6Subnet)
+    }
+
+    /// Encodes the active network status.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(ipv4Subnet, forKey: .ipv4Subnet)
+        try container.encode(ipv4Gateway, forKey: .ipv4Gateway)
+        try container.encodeIfPresent(ipv4AllocationRange, forKey: .ipv4AllocationRange)
+        try container.encode(ipv4ReservedAddresses, forKey: .ipv4ReservedAddresses)
+        try container.encodeIfPresent(ipv6Subnet, forKey: .ipv6Subnet)
     }
 }

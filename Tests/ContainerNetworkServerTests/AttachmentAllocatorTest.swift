@@ -32,6 +32,15 @@ struct AttachmentAllocatorTest {
         #expect(addresses == [100, 101, 103])
     }
 
+    @Test func testReservedAddressIsUnavailableForExplicitAllocation() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 4)
+        try await allocator.reserve(index: 102)
+
+        await #expect(throws: Error.self) {
+            _ = try await allocator.allocate(hostname: "api", requestedIndex: 102)
+        }
+    }
+
     @Test func testAllocateSingleHostname() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 

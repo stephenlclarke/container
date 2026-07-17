@@ -88,6 +88,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
                 ipv4Subnet: networkInfo.ipv4Subnet,
                 ipv4Gateway: networkInfo.ipv4Gateway,
                 ipv4AllocationRange: networkInfo.ipv4AllocationRange,
+                ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
                 ipv6Subnet: networkInfo.ipv6Subnet
             )
             state.network = networkInfo.network
