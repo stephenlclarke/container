@@ -31,6 +31,8 @@ public struct ProcessConfiguration: Sendable, Codable {
     public var user: User
     /// Supplemental groups for the Process.
     public var supplementalGroups: [UInt32]
+    /// Supplemental group names to resolve against the container image.
+    public var supplementalGroupNames: [String]
     /// Rlimits for the Process.
     public var rlimits: [Rlimit]
     /// Whether the process should run with all available Linux capabilities.
@@ -80,6 +82,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         terminal: Bool = false,
         user: User = .id(uid: 0, gid: 0),
         supplementalGroups: [UInt32] = [],
+        supplementalGroupNames: [String] = [],
         rlimits: [Rlimit] = [],
         privileged: Bool = false
     ) {
@@ -90,6 +93,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.terminal = terminal
         self.user = user
         self.supplementalGroups = supplementalGroups
+        self.supplementalGroupNames = supplementalGroupNames
         self.rlimits = rlimits
         self.privileged = privileged
     }
@@ -102,6 +106,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         case terminal
         case user
         case supplementalGroups
+        case supplementalGroupNames
         case rlimits
         case privileged
     }
@@ -115,6 +120,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.terminal = try container.decode(Bool.self, forKey: .terminal)
         self.user = try container.decode(User.self, forKey: .user)
         self.supplementalGroups = try container.decode([UInt32].self, forKey: .supplementalGroups)
+        self.supplementalGroupNames = try container.decodeIfPresent([String].self, forKey: .supplementalGroupNames) ?? []
         self.rlimits = try container.decode([Rlimit].self, forKey: .rlimits)
         self.privileged = try container.decodeIfPresent(Bool.self, forKey: .privileged) ?? false
     }
@@ -128,6 +134,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         try container.encode(terminal, forKey: .terminal)
         try container.encode(user, forKey: .user)
         try container.encode(supplementalGroups, forKey: .supplementalGroups)
+        try container.encode(supplementalGroupNames, forKey: .supplementalGroupNames)
         try container.encode(rlimits, forKey: .rlimits)
         try container.encode(privileged, forKey: .privileged)
     }

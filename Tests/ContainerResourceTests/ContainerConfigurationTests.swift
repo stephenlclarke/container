@@ -118,6 +118,33 @@ struct ContainerConfigurationHostNetworkTests {
 }
 
 struct ProcessConfigurationPrivilegeTests {
+    @Test func roundTripsNamedSupplementalGroups() throws {
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: [],
+            supplementalGroups: [1000],
+            supplementalGroupNames: ["staff", "docker"]
+        )
+
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: JSONEncoder().encode(process))
+
+        #expect(decoded.supplementalGroups == [1000])
+        #expect(decoded.supplementalGroupNames == ["staff", "docker"])
+    }
+
+    @Test func decodesMissingNamedSupplementalGroupsAsEmpty() throws {
+        let process = ProcessConfiguration(executable: "/bin/sh", arguments: [], environment: [])
+        let data = try JSONEncoder().encode(process)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "supplementalGroupNames")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: stripped)
+
+        #expect(decoded.supplementalGroupNames.isEmpty)
+    }
+
     @Test func roundTripsPrivilegedProcessConfiguration() throws {
         let process = ProcessConfiguration(
             executable: "/bin/sh",

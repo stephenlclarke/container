@@ -154,6 +154,29 @@ public struct Parser {
         return (user, supplementalGroups)
     }
 
+    /// Separates supplemental group IDs from names. Names are resolved by the
+    /// guest against the container image's group database before process start.
+    public static func supplementalGroups(_ groups: [String]) throws -> (ids: [UInt32], names: [String]) {
+        var ids: [UInt32] = []
+        var names: [String] = []
+        ids.reserveCapacity(groups.count)
+        names.reserveCapacity(groups.count)
+
+        for group in groups {
+            guard !group.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ContainerizationError(.invalidArgument, message: "supplemental group cannot be empty")
+            }
+            if let id = UInt32(group) {
+                ids.append(id)
+            } else if group.allSatisfy(\.isNumber) {
+                throw ContainerizationError(.invalidArgument, message: "invalid supplemental group ID '\(group)'")
+            } else {
+                names.append(group)
+            }
+        }
+        return (ids.dedupe(), names.dedupe())
+    }
+
     public static func platform(os: String, arch: String) -> ContainerizationOCI.Platform {
         .init(arch: arch, os: os)
     }
@@ -824,6 +847,7 @@ public struct Parser {
                 terminal: false,
                 user: baseProcess.user,
                 supplementalGroups: baseProcess.supplementalGroups,
+                supplementalGroupNames: baseProcess.supplementalGroupNames,
                 rlimits: baseProcess.rlimits
             ),
             intervalInNanoseconds: try healthDuration(interval, option: "--health-interval") ?? ContainerHealthCheck.defaultIntervalInNanoseconds,
@@ -1210,6 +1234,7 @@ public struct Parser {
             gid: processFlags.gid, defaultUser: defaultUser)
 
         let rlimits = try Parser.rlimits(processFlags.ulimits)
+        let requestedGroups = try Parser.supplementalGroups(processFlags.groupAdd)
 
         return .init(
             executable: commandToRun.first!,
@@ -1218,7 +1243,8 @@ public struct Parser {
             workingDirectory: workingDir,
             terminal: processFlags.tty,
             user: user,
-            supplementalGroups: (additionalGroups + processFlags.groupAdd).dedupe(),
+            supplementalGroups: (additionalGroups + requestedGroups.ids).dedupe(),
+            supplementalGroupNames: requestedGroups.names,
             rlimits: rlimits,
             privileged: processFlags.privileged
         )
