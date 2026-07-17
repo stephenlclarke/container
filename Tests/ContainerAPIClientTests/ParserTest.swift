@@ -492,6 +492,32 @@ struct ParserTest {
     }
 
     @Test
+    func testMountVolumeParsesSubpath() throws {
+        let result = try Parser.mount("type=volume,src=myvolume,dst=/data,volume-subpath=logs/app")
+
+        switch result {
+        case .filesystem:
+            #expect(Bool(false), "Expected volume mount, got filesystem")
+        case .volume(let vol):
+            #expect(vol.name == "myvolume")
+            #expect(vol.destination == "/data")
+            #expect(vol.subpath == "logs/app")
+        }
+    }
+
+    @Test
+    func testMountVolumeSubpathRejectsOtherMountTypes() {
+        #expect {
+            _ = try Parser.mount("type=bind,src=/tmp,dst=/data,volume-subpath=logs/app")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("volume-subpath is only supported for volume mounts")
+        }
+    }
+
+    @Test
     func testMountVolumeInvalidName() throws {
         #expect {
             _ = try Parser.mount("type=volume,src=.,dst=/data")

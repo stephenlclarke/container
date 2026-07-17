@@ -204,7 +204,8 @@ public struct Utility {
                     format: volume.format,
                     source: volume.source,
                     destination: parsed.destination,
-                    options: parsed.options
+                    options: parsed.options,
+                    subpath: parsed.subpath
                 )
                 resolvedMounts.append(volumeMount)
             }
