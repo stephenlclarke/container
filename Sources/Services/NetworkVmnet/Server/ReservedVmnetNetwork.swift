@@ -123,7 +123,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
 
         // set the IPv4 subnet
         if let ipv4Subnet {
-            let gateway = IPv4Address(ipv4Subnet.lower.value + 1)
+            let gateway = configuration.ipv4Gateway ?? IPv4Address(ipv4Subnet.lower.value + 1)
             var gatewayAddr = in_addr()
             inet_pton(AF_INET, gateway.description, &gatewayAddr)
             let mask = IPv4Address(ipv4Subnet.prefix.prefixMask32)
@@ -168,7 +168,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         let lower = IPv4Address(subnetValue & maskValue)
         let upper = IPv4Address(lower.value + ~maskValue)
         let runningSubnet = try CIDRv4(lower: lower, upper: upper)
-        let runningGateway = IPv4Address(runningSubnet.lower.value + 1)
+        let runningGateway = configuration.ipv4Gateway ?? IPv4Address(runningSubnet.lower.value + 1)
 
         var prefixAddr = in6_addr()
         var prefixLength = UInt8(0)

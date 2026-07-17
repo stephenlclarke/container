@@ -19,6 +19,19 @@ import Testing
 @testable import ContainerNetworkServer
 
 struct AttachmentAllocatorTest {
+    @Test func testReservedAddressIsSkippedByDynamicAllocation() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 4)
+        try await allocator.reserve(index: 102)
+
+        let addresses = try await [
+            allocator.allocate(hostname: "one"),
+            allocator.allocate(hostname: "two"),
+            allocator.allocate(hostname: "three"),
+        ]
+
+        #expect(addresses == [100, 101, 103])
+    }
+
     @Test func testAllocateSingleHostname() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 

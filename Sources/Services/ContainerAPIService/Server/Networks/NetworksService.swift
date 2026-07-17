@@ -173,6 +173,7 @@ public actor NetworksService {
                 name: configuration.name,
                 mode: configuration.mode,
                 ipv4Subnet: configuration.ipv4Subnet,
+                ipv4Gateway: configuration.ipv4Gateway,
                 ipv6Subnet: configuration.ipv6Subnet,
                 labels: configuration.labels,
                 plugin: configuration.plugin,
@@ -373,6 +374,10 @@ public actor NetworksService {
             }
 
             args += ["--subnet", ipv4Subnet.description]
+        }
+
+        if let ipv4Gateway = configuration.ipv4Gateway {
+            args += ["--gateway", ipv4Gateway.description]
         }
 
         if let ipv6Subnet = configuration.ipv6Subnet {
