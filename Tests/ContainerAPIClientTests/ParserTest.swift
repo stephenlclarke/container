@@ -1094,6 +1094,26 @@ struct ParserTest {
     }
 
     @Test
+    func testProcessAddsSupplementalNumericGroups() throws {
+        let processFlags = try Flags.Process.parse([
+            "--gid", "7",
+            "--group-add", "1000",
+            "--group-add", "1001",
+            "--group-add", "1000",
+        ])
+        let managementFlags = try Flags.Management.parse([])
+
+        let result = try Parser.process(
+            arguments: ["id"],
+            processFlags: processFlags,
+            managementFlags: managementFlags,
+            config: nil
+        )
+
+        #expect(result.supplementalGroups == [7, 1000, 1001])
+    }
+
+    @Test
     func testUlimitParserSoftAndHard() throws {
         let result = try Parser.rlimits(["nofile=1024:2048"])
         #expect(result.count == 1)
