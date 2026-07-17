@@ -80,6 +80,59 @@ struct AttachmentConfigurationTest {
 }
 
 struct NetworkConfigurationTest {
+    @Test func networkConfigurationRoundTripsCustomIPv4Gateway() throws {
+        let subnet = try CIDRv4("192.0.2.0/24")
+        let gateway = try IPv4Address("192.0.2.254")
+        let configuration = try NetworkConfiguration(
+            name: "gateway-network",
+            mode: .nat,
+            ipv4Subnet: subnet,
+            ipv4Gateway: gateway,
+            plugin: "container-network-vmnet"
+        )
+
+        let decoded = try JSONDecoder().decode(NetworkConfiguration.self, from: JSONEncoder().encode(configuration))
+
+        #expect(decoded.ipv4Subnet == subnet)
+        #expect(decoded.ipv4Gateway == gateway)
+    }
+
+    @Test func networkConfigurationRejectsInvalidIPv4Gateway() throws {
+        let subnet = try CIDRv4("192.0.2.0/24")
+        let invalidGateways = [
+            try IPv4Address("192.0.2.0"),
+            try IPv4Address("192.0.2.255"),
+            try IPv4Address("198.51.100.1"),
+        ]
+
+        for gateway in invalidGateways {
+            #expect {
+                _ = try NetworkConfiguration(
+                    name: "gateway-network",
+                    mode: .nat,
+                    ipv4Subnet: subnet,
+                    ipv4Gateway: gateway,
+                    plugin: "container-network-vmnet"
+                )
+            } throws: { error in
+                guard let error = error as? ContainerizationError else { return false }
+                return error.code == .invalidArgument
+            }
+        }
+
+        #expect {
+            _ = try NetworkConfiguration(
+                name: "gateway-network",
+                mode: .nat,
+                ipv4Gateway: try IPv4Address("192.0.2.1"),
+                plugin: "container-network-vmnet"
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else { return false }
+            return error.code == .invalidArgument
+        }
+    }
+
     @Test func testValidationOkDefaults() throws {
         let id = "foo"
         _ = try NetworkConfiguration(

@@ -30,6 +30,11 @@ actor AttachmentAllocator {
         )
     }
 
+    /// Prevent a network-owned address from being allocated to an attachment.
+    func reserve(index: UInt32) throws {
+        try allocator.reserve(index)
+    }
+
     /// Allocate a network address for a host and its aliases.
     func allocate(hostname: String, aliases: [String] = [], requestedIndex: UInt32? = nil) async throws -> UInt32 {
         let names = Set([hostname] + aliases)

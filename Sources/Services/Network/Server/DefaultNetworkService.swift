@@ -40,9 +40,15 @@ public actor DefaultNetworkService: NetworkService {
 
         let subnet = status.ipv4Subnet
         let size = Int(subnet.upper.value - subnet.lower.value - 3)
+        let allocationLower = subnet.lower.value + 2
+        let allocationUpper = subnet.upper.value - 2
+        let allocator = try AttachmentAllocator(lower: allocationLower, size: size)
+        if status.ipv4Gateway.value >= allocationLower, status.ipv4Gateway.value <= allocationUpper {
+            try await allocator.reserve(index: status.ipv4Gateway.value)
+        }
         self.network = network
         self.log = log
-        self.allocator = try AttachmentAllocator(lower: subnet.lower.value + 2, size: size)
+        self.allocator = allocator
         self.macAddresses = [:]
         self.ipv6Addresses = [:]
         self.ipv6AddressIndexes = [:]
@@ -74,7 +80,7 @@ public actor DefaultNetworkService: NetworkService {
         }
 
         let requestedIndex = try requestedIPv4Address.map {
-            try allocatableIPv4Index($0, subnet: status.ipv4Subnet)
+            try allocatableIPv4Index($0, subnet: status.ipv4Subnet, gateway: status.ipv4Gateway)
         }
         let existingIndex = try await allocator.lookup(hostname: hostname)
         let effectiveMACAddress: MACAddress
@@ -198,10 +204,10 @@ public actor DefaultNetworkService: NetworkService {
         return attachment
     }
 
-    private func allocatableIPv4Index(_ address: IPv4Address, subnet: CIDRv4) throws -> UInt32 {
+    private func allocatableIPv4Index(_ address: IPv4Address, subnet: CIDRv4, gateway: IPv4Address) throws -> UInt32 {
         let lower = subnet.lower.value + 2
         let upper = subnet.upper.value - 2
-        guard address.value >= lower, address.value <= upper else {
+        guard address.value >= lower, address.value <= upper, address != gateway else {
             throw ContainerizationError(
                 .invalidArgument,
                 message: "requested IPv4 address '\(address)' is not an allocatable host address in subnet '\(subnet)'"
