@@ -55,6 +55,13 @@ extension Application {
         var ipv4Gateway: IPv4Address? = nil
 
         @Option(
+            name: .customLong("ip-range"), help: "Set the IPv4 allocation range for a network",
+            transform: {
+                try CIDRv4($0)
+            })
+        var ipv4AllocationRange: CIDRv4? = nil
+
+        @Option(
             name: .customLong("subnet-v6"), help: "Set the IPv6 prefix for a network",
             transform: {
                 try CIDRv6($0)
@@ -78,6 +85,7 @@ extension Application {
                 mode: mode,
                 ipv4Subnet: ipv4Subnet,
                 ipv4Gateway: ipv4Gateway,
+                ipv4AllocationRange: ipv4AllocationRange,
                 ipv6Subnet: ipv6Subnet,
                 labels: parsedLabels,
                 plugin: self.plugin,

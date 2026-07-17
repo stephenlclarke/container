@@ -38,6 +38,9 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
     /// The IPv4 gateway address for the network, if specified.
     public let ipv4Gateway: IPv4Address?
 
+    /// The IPv4 CIDR range used for dynamic attachment allocation, if specified.
+    public let ipv4AllocationRange: CIDRv4?
+
     /// The preferred CIDR address for the IPv6 subnet, if specified
     public let ipv6Subnet: CIDRv6?
 
@@ -57,6 +60,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         mode: NetworkMode,
         ipv4Subnet: CIDRv4? = nil,
         ipv4Gateway: IPv4Address? = nil,
+        ipv4AllocationRange: CIDRv4? = nil,
         ipv6Subnet: CIDRv6? = nil,
         labels: ResourceLabels = .init(),
         plugin: String,
@@ -67,6 +71,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         self.mode = mode
         self.ipv4Subnet = ipv4Subnet
         self.ipv4Gateway = ipv4Gateway
+        self.ipv4AllocationRange = ipv4AllocationRange
         self.ipv6Subnet = ipv6Subnet
         self.labels = labels
         self.plugin = plugin
@@ -83,6 +88,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         case mode
         case ipv4Subnet
         case ipv4Gateway
+        case ipv4AllocationRange
         case ipv6Subnet
         case labels
         case plugin
@@ -107,6 +113,8 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
             ?? container.decodeIfPresent(String.self, forKey: .subnet)
         ipv4Subnet = try subnetText.map { try CIDRv4($0) }
         ipv4Gateway = try container.decodeIfPresent(IPv4Address.self, forKey: .ipv4Gateway)
+        ipv4AllocationRange = try container.decodeIfPresent(String.self, forKey: .ipv4AllocationRange)
+            .map { try CIDRv4($0) }
         ipv6Subnet = try container.decodeIfPresent(String.self, forKey: .ipv6Subnet)
             .map { try CIDRv6($0) }
         let decodedLabels = try container.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
@@ -139,6 +147,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         try container.encode(mode, forKey: .mode)
         try container.encodeIfPresent(ipv4Subnet, forKey: .ipv4Subnet)
         try container.encodeIfPresent(ipv4Gateway, forKey: .ipv4Gateway)
+        try container.encodeIfPresent(ipv4AllocationRange, forKey: .ipv4AllocationRange)
         try container.encodeIfPresent(ipv6Subnet, forKey: .ipv6Subnet)
         try container.encode(labels, forKey: .labels)
         try container.encode(plugin, forKey: .plugin)
@@ -149,17 +158,42 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         guard NetworkResource.nameValid(name) else {
             throw ContainerizationError(.invalidArgument, message: "invalid network name: \(name)")
         }
-        guard let ipv4Gateway else {
-            return
+        if let ipv4Gateway {
+            guard let ipv4Subnet else {
+                throw ContainerizationError(.invalidArgument, message: "an IPv4 gateway requires an IPv4 subnet")
+            }
+            guard ipv4Subnet.contains(ipv4Gateway), ipv4Gateway != ipv4Subnet.lower, ipv4Gateway != ipv4Subnet.upper else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "IPv4 gateway '\(ipv4Gateway)' must be an allocatable host address in subnet '\(ipv4Subnet)'"
+                )
+            }
         }
-        guard let ipv4Subnet else {
-            throw ContainerizationError(.invalidArgument, message: "an IPv4 gateway requires an IPv4 subnet")
-        }
-        guard ipv4Subnet.contains(ipv4Gateway), ipv4Gateway != ipv4Subnet.lower, ipv4Gateway != ipv4Subnet.upper else {
-            throw ContainerizationError(
-                .invalidArgument,
-                message: "IPv4 gateway '\(ipv4Gateway)' must be an allocatable host address in subnet '\(ipv4Subnet)'"
-            )
+
+        if let ipv4AllocationRange {
+            guard let ipv4Subnet else {
+                throw ContainerizationError(.invalidArgument, message: "an IPv4 allocation range requires an IPv4 subnet")
+            }
+            guard ipv4Subnet.contains(ipv4AllocationRange.lower), ipv4Subnet.contains(ipv4AllocationRange.upper) else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "IPv4 allocation range '\(ipv4AllocationRange)' must be contained in IPv4 subnet '\(ipv4Subnet)'"
+                )
+            }
+            guard ipv4Subnet.upper.value - ipv4Subnet.lower.value >= 4 else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "IPv4 subnet '\(ipv4Subnet)' has no allocatable host addresses"
+                )
+            }
+            let allocationLower = max(ipv4Subnet.lower.value + 2, ipv4AllocationRange.lower.value)
+            let allocationUpper = min(ipv4Subnet.upper.value - 2, ipv4AllocationRange.upper.value)
+            guard allocationLower <= allocationUpper else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "IPv4 allocation range '\(ipv4AllocationRange)' contains no allocatable host addresses in subnet '\(ipv4Subnet)'"
+                )
+            }
         }
     }
 }

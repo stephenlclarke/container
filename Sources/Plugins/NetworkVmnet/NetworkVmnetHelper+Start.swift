@@ -59,6 +59,9 @@ extension NetworkVmnetHelper {
         @Option(name: .customLong("gateway"), help: "IPv4 gateway address for the network")
         var ipv4Gateway: String?
 
+        @Option(name: .customLong("ip-range"), help: "IPv4 allocation CIDR for the network")
+        var ipv4AllocationRange: String?
+
         @Option(name: .customLong("subnet-v6"), help: "CIDR address for the IPv6 prefix")
         var ipv6Subnet: String?
 
@@ -85,6 +88,7 @@ extension NetworkVmnetHelper {
                 log.info("configuring XPC server")
                 let ipv4Subnet = try self.ipv4Subnet.map { try CIDRv4($0) }
                 let ipv4Gateway = try self.ipv4Gateway.map { try IPv4Address($0) }
+                let ipv4AllocationRange = try self.ipv4AllocationRange.map { try CIDRv4($0) }
                 let ipv6Subnet = try self.ipv6Subnet.map { try CIDRv6($0) }
 
                 let configuration = try NetworkConfiguration(
@@ -92,6 +96,7 @@ extension NetworkVmnetHelper {
                     mode: mode,
                     ipv4Subnet: ipv4Subnet,
                     ipv4Gateway: ipv4Gateway,
+                    ipv4AllocationRange: ipv4AllocationRange,
                     ipv6Subnet: ipv6Subnet,
                     plugin: NetworkVmnetHelper._commandName,
                     options: ["variant": self.variant.rawValue]

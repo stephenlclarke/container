@@ -76,6 +76,7 @@ public actor AllocationOnlyVmnetNetwork: Network {
         self._status = NetworkStatus(
             ipv4Subnet: ipv4Subnet,
             ipv4Gateway: gateway,
+            ipv4AllocationRange: configuration.ipv4AllocationRange,
             ipv6Subnet: nil
         )
         log.info(

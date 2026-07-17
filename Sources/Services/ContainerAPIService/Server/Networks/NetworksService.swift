@@ -174,6 +174,7 @@ public actor NetworksService {
                 mode: configuration.mode,
                 ipv4Subnet: configuration.ipv4Subnet,
                 ipv4Gateway: configuration.ipv4Gateway,
+                ipv4AllocationRange: configuration.ipv4AllocationRange,
                 ipv6Subnet: configuration.ipv6Subnet,
                 labels: configuration.labels,
                 plugin: configuration.plugin,
@@ -378,6 +379,10 @@ public actor NetworksService {
 
         if let ipv4Gateway = configuration.ipv4Gateway {
             args += ["--gateway", ipv4Gateway.description]
+        }
+
+        if let ipv4AllocationRange = configuration.ipv4AllocationRange {
+            args += ["--ip-range", ipv4AllocationRange.description]
         }
 
         if let ipv6Subnet = configuration.ipv6Subnet {

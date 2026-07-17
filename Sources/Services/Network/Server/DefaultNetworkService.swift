@@ -42,7 +42,25 @@ public actor DefaultNetworkService: NetworkService {
         let size = Int(subnet.upper.value - subnet.lower.value - 3)
         let allocationLower = subnet.lower.value + 2
         let allocationUpper = subnet.upper.value - 2
-        let allocator = try AttachmentAllocator(lower: allocationLower, size: size)
+        let allocator: AttachmentAllocator
+        if let allocationRange = status.ipv4AllocationRange {
+            let dynamicLower = max(allocationLower, allocationRange.lower.value)
+            let dynamicUpper = min(allocationUpper, allocationRange.upper.value)
+            guard dynamicLower <= dynamicUpper else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "IPv4 allocation range '\(allocationRange)' contains no allocatable host addresses in subnet '\(subnet)'"
+                )
+            }
+            allocator = try AttachmentAllocator(
+                lower: allocationLower,
+                size: size,
+                dynamicLower: dynamicLower,
+                dynamicSize: Int(dynamicUpper - dynamicLower + 1)
+            )
+        } else {
+            allocator = try AttachmentAllocator(lower: allocationLower, size: size)
+        }
         if status.ipv4Gateway.value >= allocationLower, status.ipv4Gateway.value <= allocationUpper {
             try await allocator.reserve(index: status.ipv4Gateway.value)
         }
