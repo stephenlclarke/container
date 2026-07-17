@@ -80,6 +80,58 @@ struct AttachmentConfigurationTest {
 }
 
 struct NetworkConfigurationTest {
+    @Test func networkConfigurationRoundTripsIPv4AllocationRange() throws {
+        let subnet = try CIDRv4("192.0.2.0/24")
+        let allocationRange = try CIDRv4("192.0.2.128/25")
+        let configuration = try NetworkConfiguration(
+            name: "allocation-range-network",
+            mode: .nat,
+            ipv4Subnet: subnet,
+            ipv4AllocationRange: allocationRange,
+            plugin: "container-network-vmnet"
+        )
+
+        let decoded = try JSONDecoder().decode(NetworkConfiguration.self, from: JSONEncoder().encode(configuration))
+
+        #expect(decoded.ipv4Subnet == subnet)
+        #expect(decoded.ipv4AllocationRange == allocationRange)
+    }
+
+    @Test func networkConfigurationRejectsInvalidIPv4AllocationRange() throws {
+        let subnet = try CIDRv4("192.0.2.0/24")
+        let invalidRanges = [
+            try CIDRv4("198.51.100.0/24"),
+            try CIDRv4("192.0.2.0/31"),
+        ]
+
+        for allocationRange in invalidRanges {
+            #expect {
+                _ = try NetworkConfiguration(
+                    name: "allocation-range-network",
+                    mode: .nat,
+                    ipv4Subnet: subnet,
+                    ipv4AllocationRange: allocationRange,
+                    plugin: "container-network-vmnet"
+                )
+            } throws: { error in
+                guard let error = error as? ContainerizationError else { return false }
+                return error.code == .invalidArgument
+            }
+        }
+
+        #expect {
+            _ = try NetworkConfiguration(
+                name: "allocation-range-network",
+                mode: .nat,
+                ipv4AllocationRange: try CIDRv4("192.0.2.0/24"),
+                plugin: "container-network-vmnet"
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else { return false }
+            return error.code == .invalidArgument
+        }
+    }
+
     @Test func networkConfigurationRoundTripsCustomIPv4Gateway() throws {
         let subnet = try CIDRv4("192.0.2.0/24")
         let gateway = try IPv4Address("192.0.2.254")

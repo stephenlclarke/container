@@ -25,16 +25,21 @@ public struct NetworkStatus: Codable, Sendable {
     /// The IPv4 gateway address.
     public let ipv4Gateway: IPv4Address
 
+    /// The IPv4 CIDR range used for dynamic attachment allocation, if configured.
+    public let ipv4AllocationRange: CIDRv4?
+
     /// The IPv6 subnet assigned to the network, if IPv6 is enabled.
     public let ipv6Subnet: CIDRv6?
 
     public init(
         ipv4Subnet: CIDRv4,
         ipv4Gateway: IPv4Address,
+        ipv4AllocationRange: CIDRv4? = nil,
         ipv6Subnet: CIDRv6?
     ) {
         self.ipv4Subnet = ipv4Subnet
         self.ipv4Gateway = ipv4Gateway
+        self.ipv4AllocationRange = ipv4AllocationRange
         self.ipv6Subnet = ipv6Subnet
     }
 }

@@ -19,20 +19,49 @@ import ContainerizationExtras
 
 actor AttachmentAllocator {
     private let allocator: any AddressAllocator<UInt32>
+    private let dynamicAllocator: (any AddressAllocator<UInt32>)?
+    private let dynamicRange: ClosedRange<UInt32>?
     private var hostnames: [String: UInt32] = [:]
     private var primaryHostnames: [String: UInt32] = [:]
     private var namesByIndex: [UInt32: Set<String>] = [:]
 
     init(lower: UInt32, size: Int) throws {
+        try self.init(lower: lower, size: size, dynamicLower: lower, dynamicSize: size)
+    }
+
+    /// Creates an allocator with a dynamic allocation subrange. Explicit address
+    /// requests may use the full range, while dynamic allocation stays inside
+    /// the configured subrange.
+    init(lower: UInt32, size: Int, dynamicLower: UInt32, dynamicSize: Int) throws {
+        guard size > 0, dynamicSize > 0 else {
+            throw ContainerizationError(.invalidArgument, message: "address allocator ranges must not be empty")
+        }
+        guard let sizeValue = UInt32(exactly: size), let dynamicSizeValue = UInt32(exactly: dynamicSize) else {
+            throw ContainerizationError(.invalidArgument, message: "address allocator range is too large")
+        }
+        let upper = try Self.upper(lower: lower, size: sizeValue)
+        let dynamicUpper = try Self.upper(lower: dynamicLower, size: dynamicSizeValue)
+        guard dynamicLower >= lower, dynamicUpper <= upper else {
+            throw ContainerizationError(.invalidArgument, message: "dynamic address allocator range must be contained in the address range")
+        }
+
         allocator = try UInt32.rotatingAllocator(
             lower: lower,
-            size: UInt32(size)
+            size: sizeValue
         )
+        if dynamicLower == lower, dynamicSize == size {
+            dynamicAllocator = nil
+            dynamicRange = nil
+        } else {
+            dynamicAllocator = try UInt32.rotatingAllocator(lower: dynamicLower, size: dynamicSizeValue)
+            dynamicRange = dynamicLower...dynamicUpper
+        }
     }
 
     /// Prevent a network-owned address from being allocated to an attachment.
     func reserve(index: UInt32) throws {
         try allocator.reserve(index)
+        try reserveDynamic(index)
     }
 
     /// Allocate a network address for a host and its aliases.
@@ -58,7 +87,11 @@ actor AttachmentAllocator {
         let index: UInt32
         if let requestedIndex {
             try allocator.reserve(requestedIndex)
+            try reserveDynamic(requestedIndex)
             index = requestedIndex
+        } else if let dynamicAllocator {
+            index = try dynamicAllocator.allocate()
+            try allocator.reserve(index)
         } else {
             index = try allocator.allocate()
         }
@@ -84,6 +117,7 @@ actor AttachmentAllocator {
             primaryHostnames.removeValue(forKey: name)
         }
         try allocator.release(index)
+        try releaseDynamic(index)
         return index
     }
 
@@ -102,5 +136,26 @@ actor AttachmentAllocator {
             names.insert(alias)
         }
         namesByIndex[index] = names
+    }
+
+    private static func upper(lower: UInt32, size: UInt32) throws -> UInt32 {
+        guard size > 0, size - 1 <= UInt32.max - lower else {
+            throw ContainerizationError(.invalidArgument, message: "address allocator range overflows IPv4 address space")
+        }
+        return lower + size - 1
+    }
+
+    private func reserveDynamic(_ index: UInt32) throws {
+        guard let dynamicAllocator, let dynamicRange, dynamicRange.contains(index) else {
+            return
+        }
+        try dynamicAllocator.reserve(index)
+    }
+
+    private func releaseDynamic(_ index: UInt32) throws {
+        guard let dynamicAllocator, let dynamicRange, dynamicRange.contains(index) else {
+            return
+        }
+        try dynamicAllocator.release(index)
     }
 }

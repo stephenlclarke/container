@@ -37,6 +37,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         let network: vmnet_network_ref
         let ipv4Subnet: CIDRv4
         let ipv4Gateway: IPv4Address
+        let ipv4AllocationRange: CIDRv4?
         let ipv6Subnet: CIDRv6
     }
 
@@ -86,6 +87,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
             state.status = NetworkStatus(
                 ipv4Subnet: networkInfo.ipv4Subnet,
                 ipv4Gateway: networkInfo.ipv4Gateway,
+                ipv4AllocationRange: networkInfo.ipv4AllocationRange,
                 ipv6Subnet: networkInfo.ipv6Subnet
             )
             state.network = networkInfo.network
@@ -196,6 +198,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
             network: network,
             ipv4Subnet: runningSubnet,
             ipv4Gateway: runningGateway,
+            ipv4AllocationRange: configuration.ipv4AllocationRange,
             ipv6Subnet: runningV6Subnet,
         )
     }
