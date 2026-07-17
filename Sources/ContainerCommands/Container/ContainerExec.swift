@@ -126,6 +126,9 @@ extension Application {
             if !self.processFlags.ulimits.isEmpty {
                 config.rlimits = try Parser.rlimits(self.processFlags.ulimits)
             }
+            if let oomScoreAdj = self.processFlags.oomScoreAdj {
+                config.oomScoreAdj = oomScoreAdj
+            }
             config.privileged = self.processFlags.privileged
 
             let defaultUser = config.user

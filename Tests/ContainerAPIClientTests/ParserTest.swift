@@ -1213,6 +1213,21 @@ struct ParserTest {
     }
 
     @Test
+    func testProcessOOMScoreAdjustmentFlag() throws {
+        let processFlags = try Flags.Process.parse(["--oom-score-adj", "-250"])
+        let managementFlags = try Flags.Management.parse([])
+
+        let result = try Parser.process(
+            arguments: ["id"],
+            processFlags: processFlags,
+            managementFlags: managementFlags,
+            config: nil
+        )
+
+        #expect(result.oomScoreAdj == -250)
+    }
+
+    @Test
     func testProcessAddsSupplementalNumericAndNamedGroups() throws {
         let processFlags = try Flags.Process.parse([
             "--gid", "7",

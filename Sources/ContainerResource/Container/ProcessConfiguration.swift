@@ -35,6 +35,9 @@ public struct ProcessConfiguration: Sendable, Codable {
     public var supplementalGroupNames: [String]
     /// Rlimits for the Process.
     public var rlimits: [Rlimit]
+    /// The adjustment applied to the Linux out-of-memory killer score. `nil`
+    /// leaves the runtime default unchanged.
+    public var oomScoreAdj: Int?
     /// Whether the process should run with all available Linux capabilities.
     public var privileged: Bool
 
@@ -84,6 +87,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         supplementalGroups: [UInt32] = [],
         supplementalGroupNames: [String] = [],
         rlimits: [Rlimit] = [],
+        oomScoreAdj: Int? = nil,
         privileged: Bool = false
     ) {
         self.executable = executable
@@ -95,6 +99,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.supplementalGroups = supplementalGroups
         self.supplementalGroupNames = supplementalGroupNames
         self.rlimits = rlimits
+        self.oomScoreAdj = oomScoreAdj
         self.privileged = privileged
     }
 
@@ -108,6 +113,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         case supplementalGroups
         case supplementalGroupNames
         case rlimits
+        case oomScoreAdj
         case privileged
     }
 
@@ -122,6 +128,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.supplementalGroups = try container.decode([UInt32].self, forKey: .supplementalGroups)
         self.supplementalGroupNames = try container.decodeIfPresent([String].self, forKey: .supplementalGroupNames) ?? []
         self.rlimits = try container.decode([Rlimit].self, forKey: .rlimits)
+        self.oomScoreAdj = try container.decodeIfPresent(Int.self, forKey: .oomScoreAdj)
         self.privileged = try container.decodeIfPresent(Bool.self, forKey: .privileged) ?? false
     }
 
@@ -136,6 +143,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         try container.encode(supplementalGroups, forKey: .supplementalGroups)
         try container.encode(supplementalGroupNames, forKey: .supplementalGroupNames)
         try container.encode(rlimits, forKey: .rlimits)
+        try container.encodeIfPresent(oomScoreAdj, forKey: .oomScoreAdj)
         try container.encode(privileged, forKey: .privileged)
     }
 }
