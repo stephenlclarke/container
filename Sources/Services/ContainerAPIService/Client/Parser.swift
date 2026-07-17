@@ -222,9 +222,13 @@ public struct Parser {
     }
 
     /// Parses a Docker-compatible relative CPU scheduling weight. Omit the
-    /// flag to retain the runtime default; explicit weights start at 2.
+    /// flag, or pass zero, to retain the runtime default; explicit weights
+    /// start at 2.
     public static func cpuShares(_ shares: UInt64?) throws -> UInt64? {
         guard let shares else {
+            return nil
+        }
+        guard shares != 0 else {
             return nil
         }
         guard shares >= 2 else {
