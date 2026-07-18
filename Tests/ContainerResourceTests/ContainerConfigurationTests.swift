@@ -198,6 +198,35 @@ struct ProcessConfigurationPrivilegeTests {
 
         #expect(!decoded.privileged)
     }
+
+    @Test func roundTripsNoNewPrivilegesProcessConfiguration() throws {
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: ["-c", "id"],
+            environment: ["PATH=/usr/bin"],
+            noNewPrivileges: true
+        )
+
+        let data = try JSONEncoder().encode(process)
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: data)
+
+        #expect(decoded.noNewPrivileges)
+    }
+
+    @Test func decodesMissingNoNewPrivilegesProcessConfigurationAsFalse() throws {
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: []
+        )
+        let data = try JSONEncoder().encode(process)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj.removeValue(forKey: "noNewPrivileges")
+        let stripped = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: stripped)
+
+        #expect(!decoded.noNewPrivileges)
+    }
 }
 
 struct ContainerConfigurationLoggingTests {

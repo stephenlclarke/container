@@ -236,6 +236,7 @@ public struct Flags {
             devices: [String] = [],
             gpus: [String] = [],
             sysctls: [String] = [],
+            securityOpts: [String] = [],
             noHealthCheck: Bool = false,
             tmpFs: [String],
             useInit: Bool,
@@ -290,6 +291,7 @@ public struct Flags {
             self.devices = devices
             self.gpus = gpus
             self.sysctls = sysctls
+            self.securityOpts = securityOpts
             self.noHealthCheck = noHealthCheck
             self.tmpFs = tmpFs
             self.useInit = useInit
@@ -522,6 +524,12 @@ public struct Flags {
 
         @Option(name: .customLong("sysctl"), help: .init("Set a namespaced kernel parameter (format: name=value)", valueName: "name=value"))
         public var sysctls: [String] = []
+
+        @Option(
+            name: .customLong("security-opt"),
+            help: .init("Set a supported Linux security option (no-new-privileges:true|false)", valueName: "option")
+        )
+        public var securityOpts: [String] = []
 
         @Flag(name: .customLong("no-healthcheck"), help: "Disable the image health check")
         public var noHealthCheck = false

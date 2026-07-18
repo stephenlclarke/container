@@ -84,6 +84,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `--device <host[:container[:permissions]]>`: Add a supported Linux VM device to the container
 *   `--device-cgroup-rule <rule>`: Add a Linux device cgroup rule (format: `type major:minor permissions`)
 *   `--gpus <gpu-request>`: Request the supported virtio-gpu device (for example: `all`, `count=1`, or `device=0`)
+*   `--security-opt <option>`: Set a supported Linux security option (`no-new-privileges:true` or `no-new-privileges=false`)
 *   `--sysctl <name=value>`: Set a namespaced kernel parameter
 *   `--tmpfs <tmpfs>`: Add a tmpfs mount to the container at the given path
 *   `-v, --volume <volume>`: Bind mount a volume into the container
@@ -319,6 +320,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `--device <host[:container[:permissions]]>`: Add a supported Linux VM device to the container
 *   `--device-cgroup-rule <rule>`: Add a Linux device cgroup rule (format: `type major:minor permissions`)
 *   `--gpus <gpu-request>`: Request the supported virtio-gpu device (for example: `all`, `count=1`, or `device=0`)
+*   `--security-opt <option>`: Set a supported Linux security option (`no-new-privileges:true` or `no-new-privileges=false`)
 *   `--sysctl <name=value>`: Set a namespaced kernel parameter
 *   `--tmpfs <tmpfs>`: Add a tmpfs mount to the container at the given path
 *   `-v, --volume <volume>`: Bind mount a volume into the container

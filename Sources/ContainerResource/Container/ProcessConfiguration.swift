@@ -40,6 +40,9 @@ public struct ProcessConfiguration: Sendable, Codable {
     public var oomScoreAdj: Int?
     /// Whether the process should run with all available Linux capabilities.
     public var privileged: Bool
+    /// Whether Linux must prevent this process and its descendants from gaining
+    /// privileges through execve.
+    public var noNewPrivileges: Bool
 
     /// Rlimits for Processes.
     public struct Rlimit: Sendable, Codable {
@@ -88,7 +91,8 @@ public struct ProcessConfiguration: Sendable, Codable {
         supplementalGroupNames: [String] = [],
         rlimits: [Rlimit] = [],
         oomScoreAdj: Int? = nil,
-        privileged: Bool = false
+        privileged: Bool = false,
+        noNewPrivileges: Bool = false
     ) {
         self.executable = executable
         self.arguments = arguments
@@ -101,6 +105,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.rlimits = rlimits
         self.oomScoreAdj = oomScoreAdj
         self.privileged = privileged
+        self.noNewPrivileges = noNewPrivileges
     }
 
     enum CodingKeys: String, CodingKey {
@@ -115,6 +120,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         case rlimits
         case oomScoreAdj
         case privileged
+        case noNewPrivileges
     }
 
     public init(from decoder: Decoder) throws {
@@ -130,6 +136,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.rlimits = try container.decode([Rlimit].self, forKey: .rlimits)
         self.oomScoreAdj = try container.decodeIfPresent(Int.self, forKey: .oomScoreAdj)
         self.privileged = try container.decodeIfPresent(Bool.self, forKey: .privileged) ?? false
+        self.noNewPrivileges = try container.decodeIfPresent(Bool.self, forKey: .noNewPrivileges) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -145,5 +152,6 @@ public struct ProcessConfiguration: Sendable, Codable {
         try container.encode(rlimits, forKey: .rlimits)
         try container.encodeIfPresent(oomScoreAdj, forKey: .oomScoreAdj)
         try container.encode(privileged, forKey: .privileged)
+        try container.encode(noNewPrivileges, forKey: .noNewPrivileges)
     }
 }

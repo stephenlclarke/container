@@ -371,6 +371,17 @@ struct RuntimeServiceHostsTests {
         #expect(Set(capabilities.ambient) == Set(allCapabilities.ambient))
     }
 
+    @Test
+    func initialProcessAppliesNoNewPrivileges() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.initProcess.noNewPrivileges = true
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureInitialProcess(czConfig: &runtimeConfiguration, config: config)
+
+        #expect(runtimeConfiguration.process.noNewPrivileges)
+    }
+
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",

@@ -40,6 +40,24 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesSecurityOptionFlag() throws {
+        let command = try Application.ContainerRun.parse(["--security-opt", "no-new-privileges:true", "alpine", "id"])
+
+        #expect(command.managementFlags.securityOpts == ["no-new-privileges:true"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["id"])
+    }
+
+    @Test
+    func createParsesSecurityOptionFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--security-opt", "no-new-privileges=false", "alpine", "id"])
+
+        #expect(command.managementFlags.securityOpts == ["no-new-privileges=false"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["id"])
+    }
+
+    @Test
     func runParsesNetworkHostFlag() throws {
         let command = try Application.ContainerRun.parse(["--network", "host", "alpine", "ip", "addr"])
 

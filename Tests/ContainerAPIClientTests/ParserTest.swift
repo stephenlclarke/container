@@ -1228,6 +1228,23 @@ struct ParserTest {
     }
 
     @Test
+    func testProcessMapsNoNewPrivilegesSecurityOption() throws {
+        let processFlags = try Flags.Process.parse([])
+        let managementFlags = try Flags.Management.parse([
+            "--security-opt", "no-new-privileges:true",
+        ])
+
+        let result = try Parser.process(
+            arguments: ["id"],
+            processFlags: processFlags,
+            managementFlags: managementFlags,
+            config: nil
+        )
+
+        #expect(result.noNewPrivileges)
+    }
+
+    @Test
     func testProcessAddsSupplementalNumericAndNamedGroups() throws {
         let processFlags = try Flags.Process.parse([
             "--gid", "7",
@@ -1713,6 +1730,23 @@ struct ParserTest {
     }
 
     // MARK: - Capabilities Parser Tests
+
+    @Test
+    func testNoNewPrivilegesSecurityOptionAcceptsComposeAndCLIForms() throws {
+        #expect(try Parser.noNewPrivileges(["no-new-privileges:true"]))
+        #expect(try Parser.noNewPrivileges(["no-new-privileges=true"]))
+        #expect(!(try Parser.noNewPrivileges(["no-new-privileges:false"])))
+    }
+
+    @Test
+    func testNoNewPrivilegesSecurityOptionRejectsUnsupportedOrInvalidValues() {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.noNewPrivileges(["label:disable"])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try Parser.noNewPrivileges(["no-new-privileges:enabled"])
+        }
+    }
 
     @Test
     func testCapabilitiesParserEmpty() throws {

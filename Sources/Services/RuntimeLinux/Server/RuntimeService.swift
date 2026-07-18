@@ -1470,7 +1470,7 @@ public actor RuntimeService {
         return []
     }
 
-    private static func configureInitialProcess(
+    static func configureInitialProcess(
         czConfig: inout LinuxContainer.Configuration,
         config: ContainerConfiguration,
     ) throws {
@@ -1488,6 +1488,7 @@ public actor RuntimeService {
         czConfig.process.terminal = process.terminal
         czConfig.process.workingDirectory = process.workingDirectory
         czConfig.process.oomScoreAdj = process.oomScoreAdj
+        czConfig.process.noNewPrivileges = process.noNewPrivileges
         try czConfig.process.rlimits = process.rlimits.map {
             LinuxRLimit(
                 kind: try LinuxRLimit.Kind($0.limit),

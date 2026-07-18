@@ -1305,7 +1305,8 @@ public struct Parser {
             supplementalGroupNames: requestedGroups.names,
             rlimits: rlimits,
             oomScoreAdj: processFlags.oomScoreAdj,
-            privileged: processFlags.privileged
+            privileged: processFlags.privileged,
+            noNewPrivileges: try noNewPrivileges(managementFlags.securityOpts)
         )
     }
 
@@ -2190,7 +2191,51 @@ public struct Parser {
         return parsed
     }
 
-    // MARK: Capabilities
+    // MARK: Security and capabilities
+
+    /// Parses the portable `no-new-privileges` security option accepted by
+    /// Docker-compatible container callers. Both the Compose spelling
+    /// `no-new-privileges:true` and the CLI spelling
+    /// `no-new-privileges=true` are accepted.
+    public static func noNewPrivileges(_ options: [String]) throws -> Bool {
+        var value = false
+
+        for option in options {
+            let separator: Character
+            if option.contains(":") {
+                separator = ":"
+            } else if option.contains("=") {
+                separator = "="
+            } else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "invalid --security-opt '\(option)'; expected no-new-privileges:true|false"
+                )
+            }
+
+            let parts = option.split(separator: separator, maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0] == "no-new-privileges" else {
+                throw ContainerizationError(
+                    .unsupported,
+                    message: "unsupported --security-opt '\(option)'; supported option is no-new-privileges:true|false"
+                )
+            }
+
+            switch parts[1] {
+            case "true":
+                value = true
+            case "false":
+                value = false
+            default:
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "invalid --security-opt '\(option)'; no-new-privileges value must be true or false"
+                )
+            }
+        }
+
+        return value
+    }
 
     /// Parse and validate --cap-add / --cap-drop arguments.
     /// Returns normalized uppercase CAP_* strings.
