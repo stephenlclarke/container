@@ -211,6 +211,8 @@ public struct ContainerConfiguration: Sendable, Codable {
         public var cpuQuotaInMicroseconds: Int64?
         /// Optional CFS CPU period in microseconds for the container cgroup.
         public var cpuPeriodInMicroseconds: UInt64?
+        /// Optional Linux CPU set applied to the container cgroup.
+        public var cpuSet: String?
         /// Memory in bytes allocated.
         public var memoryInBytes: UInt64 = 1024.mib()
         /// Storage quota/size in bytes.
@@ -225,6 +227,7 @@ public struct ContainerConfiguration: Sendable, Codable {
             self.cpus = try c.decodeIfPresent(Int.self, forKey: .cpus) ?? 4
             self.cpuQuotaInMicroseconds = try c.decodeIfPresent(Int64.self, forKey: .cpuQuotaInMicroseconds)
             self.cpuPeriodInMicroseconds = try c.decodeIfPresent(UInt64.self, forKey: .cpuPeriodInMicroseconds)
+            self.cpuSet = try c.decodeIfPresent(String.self, forKey: .cpuSet)
             self.memoryInBytes = try c.decodeIfPresent(UInt64.self, forKey: .memoryInBytes) ?? 1024.mib()
             self.storage = try c.decodeIfPresent(UInt64.self, forKey: .storage)
             self.cpuOverhead = try c.decodeIfPresent(Int.self, forKey: .cpuOverhead) ?? 1

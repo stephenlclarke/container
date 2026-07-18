@@ -188,6 +188,7 @@ public struct Utility {
             memory: resource.memory,
             cpuPeriod: resource.cpuPeriod,
             cpuQuota: resource.cpuQuota,
+            cpuSet: resource.cpuSet,
             defaultCPUs: containerSystemConfig.container.cpus,
             defaultMemory: containerSystemConfig.container.memory
         )

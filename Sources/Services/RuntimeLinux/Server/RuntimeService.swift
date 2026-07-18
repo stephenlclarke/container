@@ -1381,6 +1381,7 @@ public actor RuntimeService {
         czConfig.cpus = config.resources.cpus
         czConfig.cpuQuotaInMicroseconds = config.resources.cpuQuotaInMicroseconds
         czConfig.cpuPeriodInMicroseconds = config.resources.cpuPeriodInMicroseconds
+        czConfig.cpuSet = config.resources.cpuSet
         czConfig.cpuOverhead = config.resources.cpuOverhead
         czConfig.memoryInBytes = config.resources.memoryInBytes
         if let runtimeData {

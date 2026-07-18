@@ -190,6 +190,7 @@ public struct Parser {
         memory: String?,
         cpuPeriod: Int64? = nil,
         cpuQuota: Int64? = nil,
+        cpuSet: String? = nil,
         defaultCPUs: Int,
         defaultMemory: MemorySize,
     ) throws -> ContainerConfiguration.Resources {
@@ -259,11 +260,29 @@ public struct Parser {
             resource.cpuQuotaInMicroseconds = cpuQuota
         }
 
+        resource.cpuSet = try Parser.cpuSet(cpuSet)
+
         if let memory {
             resource.memoryInBytes = try Parser.memoryStringAsBytes(memory)
         }
 
         return resource
+    }
+
+    /// Parses an optional Linux CPU-set expression. The cgroup controller is
+    /// the authority for its grammar so future valid kernel syntax remains
+    /// available through the generic runtime surface.
+    public static func cpuSet(_ cpuSet: String?) throws -> String? {
+        guard let cpuSet else {
+            return nil
+        }
+        guard !cpuSet.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--cpuset-cpus must not be empty"
+            )
+        }
+        return cpuSet
     }
 
     /// Parses a Docker-compatible pids cgroup limit. Use `-1` for unlimited;

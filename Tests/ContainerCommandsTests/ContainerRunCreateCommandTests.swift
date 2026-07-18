@@ -204,6 +204,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesCPUSetFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cpuset-cpus", "0-1,3", "alpine", "true"])
+
+        #expect(command.resourceFlags.cpuSet == "0-1,3")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesDeviceCgroupRuleFlag() throws {
         let command = try Application.ContainerRun.parse(["--device-cgroup-rule", "c 1:3 mr", "alpine", "true"])
 

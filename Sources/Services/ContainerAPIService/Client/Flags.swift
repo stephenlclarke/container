@@ -127,12 +127,14 @@ public struct Flags {
             cpus: Double?,
             memory: String?,
             cpuPeriod: Int64? = nil,
-            cpuQuota: Int64? = nil
+            cpuQuota: Int64? = nil,
+            cpuSet: String? = nil
         ) {
             self.cpus = cpus
             self.memory = memory
             self.cpuPeriod = cpuPeriod
             self.cpuQuota = cpuQuota
+            self.cpuSet = cpuSet
         }
 
         @Option(name: .shortAndLong, help: "CPU limit (0 for unlimited; supports fractional values such as 0.25)")
@@ -149,6 +151,12 @@ public struct Flags {
             help: .init("CPU CFS quota in microseconds (-1 for unlimited)", valueName: "microseconds")
         )
         public var cpuQuota: Int64?
+
+        @Option(
+            name: .customLong("cpuset-cpus"),
+            help: .init("Constrain container processes to Linux guest CPUs (for example, 0-2,4)", valueName: "cpus")
+        )
+        public var cpuSet: String?
 
         @Option(
             name: .shortAndLong,

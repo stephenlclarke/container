@@ -195,6 +195,29 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandCPUSet() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--cpuset-cpus", "0-1"],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+            let output = try f.doExec(c, cmd: ["cat", "/sys/fs/cgroup/cpuset.cpus", "/sys/fs/cgroup/cpuset.mems"])
+                .split(separator: "\n")
+                .map(String.init)
+
+            #expect(output == ["0-1", "0"])
+        }
+    }
+
     @Test func testRunCommandCPUQuotaAndPeriod() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

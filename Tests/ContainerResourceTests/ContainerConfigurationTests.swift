@@ -76,6 +76,14 @@ struct ContainerConfigurationResourcesTests {
         #expect(decoded.resources.cpuPeriodInMicroseconds == 200_000)
     }
 
+    @Test func roundTripsCPUSet() throws {
+        var config = makeTestConfiguration()
+        config.resources.cpuSet = "0-1,3"
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+        #expect(decoded.resources.cpuSet == "0-1,3")
+    }
+
     @Test func decodesMissingCpuOverheadAsDefault() throws {
         let config = makeTestConfiguration()
         let data = try JSONEncoder().encode(config)
@@ -110,6 +118,18 @@ struct ContainerConfigurationResourcesTests {
         let stripped = try JSONSerialization.data(withJSONObject: obj)
         let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
         #expect(decoded.resources.cpuPeriodInMicroseconds == nil)
+    }
+
+    @Test func decodesMissingCPUSetAsNil() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var resources = try #require(obj["resources"] as? [String: Any])
+        resources.removeValue(forKey: "cpuSet")
+        obj["resources"] = resources
+        let stripped = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+        #expect(decoded.resources.cpuSet == nil)
     }
 }
 

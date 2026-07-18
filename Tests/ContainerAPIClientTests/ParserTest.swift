@@ -1915,6 +1915,18 @@ struct ParserTest {
         #expect(result.cpuQuotaInMicroseconds == -1)
     }
 
+    @Test func testResourcesAppliesCPUSet() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: nil,
+            cpuSet: "0-1,3",
+            defaultCPUs: 8,
+            defaultMemory: MemorySize("2g")
+        )
+
+        #expect(result.cpuSet == "0-1,3")
+    }
+
     @Test func testResourcesRejectsInvalidCPUPeriodAndQuota() {
         for (cpuPeriod, cpuQuota) in [(-1, 0), (0, -2)] {
             #expect(throws: (any Error).self) {
@@ -2042,6 +2054,14 @@ struct ParserTest {
     @Test func testCPUSharesRejectsValuesBelowTwo() throws {
         #expect {
             _ = try Parser.cpuShares(1)
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test func testCPUSetRejectsAnEmptyValue() throws {
+        #expect {
+            _ = try Parser.cpuSet("  \n")
         } throws: { _ in
             true
         }
