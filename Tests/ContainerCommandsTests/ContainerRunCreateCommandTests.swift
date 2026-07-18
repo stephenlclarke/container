@@ -91,6 +91,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesUnlimitedCPUFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cpus", "0", "alpine", "sleep", "infinity"])
+
+        #expect(command.resourceFlags.cpus == 0)
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["sleep", "infinity"])
+    }
+
+    @Test
     func createParsesCPUQuotaAndPeriodFlags() throws {
         let command = try Application.ContainerCreate.parse([
             "--cpu-period", "200000",

@@ -135,7 +135,7 @@ public struct Flags {
             self.cpuQuota = cpuQuota
         }
 
-        @Option(name: .shortAndLong, help: "CPU limit (supports fractional values such as 0.25)")
+        @Option(name: .shortAndLong, help: "CPU limit (0 for unlimited; supports fractional values such as 0.25)")
         public var cpus: Double?
 
         @Option(

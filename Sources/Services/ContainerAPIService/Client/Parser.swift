@@ -198,34 +198,45 @@ public struct Parser {
         resource.memoryInBytes = defaultMemory.toUInt64(unit: .bytes)
 
         if let cpus {
-            if let cpuPeriod, cpuPeriod > 0 {
+            if cpus > 0, let cpuPeriod, cpuPeriod > 0 {
                 throw ContainerizationError(
                     .invalidArgument,
                     message: "--cpus and --cpu-period cannot both be set"
                 )
             }
-            if let cpuQuota, cpuQuota > 0 {
+            if cpus > 0, let cpuQuota, cpuQuota > 0 {
                 throw ContainerizationError(
                     .invalidArgument,
                     message: "--cpus and --cpu-quota cannot both be set"
                 )
             }
-            let quota = cpus * 100_000
-            let vmCPUs = cpus.rounded(.up)
-            guard
-                cpus.isFinite,
-                cpus > 0,
-                quota >= 1,
-                quota <= Double(Int64.max),
-                vmCPUs <= Double(Int.max)
-            else {
+            guard cpus.isFinite, cpus >= 0 else {
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "--cpus must be a positive value representable as a CPU quota"
+                    message: "--cpus must be a nonnegative value representable as a CPU quota"
                 )
             }
-            resource.cpus = max(1, Int(vmCPUs))
-            resource.cpuQuotaInMicroseconds = Int64(quota.rounded(.down))
+            if cpus == 0 {
+                // Docker's zero NanoCPUs value means no CPU quota. Keep the
+                // VM allocation unchanged and write cgroup v2's unlimited
+                // `max` form through the existing generic CFS primitive.
+                resource.cpuQuotaInMicroseconds = -1
+            } else {
+                let quota = cpus * 100_000
+                let vmCPUs = cpus.rounded(.up)
+                guard
+                    quota >= 1,
+                    quota <= Double(Int64.max),
+                    vmCPUs <= Double(Int.max)
+                else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "--cpus must be a positive value representable as a CPU quota"
+                    )
+                }
+                resource.cpus = max(1, Int(vmCPUs))
+                resource.cpuQuotaInMicroseconds = Int64(quota.rounded(.down))
+            }
         }
 
         if let cpuPeriod, cpuPeriod != 0 {
