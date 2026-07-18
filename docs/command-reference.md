@@ -35,7 +35,7 @@ container run [<options>] <image> [<arguments> ...]
 **Resource Options**
 
 *   `-c, --cpus <cpus>`: Number of CPUs to allocate to the container
-*   `-m, --memory <memory>`: Amount of memory (1MiByte granularity), with optional K, M, G, T, or P suffix
+*   `-m, --memory <memory>`: Amount of memory (byte granularity), with optional K, M, G, T, or P suffix
 
 **Management Options**
 
@@ -271,7 +271,7 @@ container create [<options>] <image> [<arguments> ...]
 **Resource Options**
 
 *   `-c, --cpus <cpus>`: Number of CPUs to allocate to the container
-*   `-m, --memory <memory>`: Amount of memory (1MiByte granularity), with optional K, M, G, T, or P suffix
+*   `-m, --memory <memory>`: Amount of memory (byte granularity), with optional K, M, G, T, or P suffix
 
 **Management Options**
 

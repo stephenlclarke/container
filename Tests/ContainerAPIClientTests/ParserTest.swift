@@ -1859,6 +1859,28 @@ struct ParserTest {
         #expect(result.memoryInBytes == 256.mib())
     }
 
+    @Test func testResourcesRetainsBytePreciseMemoryFlag() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: "209715201b",
+            defaultCPUs: 2,
+            defaultMemory: MemorySize("2g")
+        )
+
+        #expect(result.memoryInBytes == 209_715_201)
+    }
+
+    @Test func testResourcesRetainsBytePreciseMemoryDefault() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: nil,
+            defaultCPUs: 2,
+            defaultMemory: MemorySize("209715201b")
+        )
+
+        #expect(result.memoryInBytes == 209_715_201)
+    }
+
     @Test func testSysctlsParsesNameValuePairs() throws {
         let result = try Parser.sysctls([
             "net.ipv4.ip_forward=1",

@@ -122,8 +122,8 @@ public struct Parser {
 
     public static func memoryStringAsBytes(_ memory: String) throws -> UInt64 {
         let ram = try Measurement.parse(parsing: memory)
-        let mb = ram.converted(to: .bytes)
-        return UInt64(mb.value)
+        let bytes = ram.converted(to: .bytes)
+        return UInt64(bytes.value)
     }
 
     public static func user(
@@ -193,14 +193,14 @@ public struct Parser {
     ) throws -> ContainerConfiguration.Resources {
         var resource = ContainerConfiguration.Resources()
         resource.cpus = defaultCPUs
-        resource.memoryInBytes = Int64(defaultMemory.measurement.converted(to: .mebibytes).value).mib()
+        resource.memoryInBytes = defaultMemory.toUInt64(unit: .bytes)
 
         if let cpus {
             resource.cpus = Int(cpus)
         }
 
         if let memory {
-            resource.memoryInBytes = try Parser.memoryStringAsMiB(memory).mib()
+            resource.memoryInBytes = try Parser.memoryStringAsBytes(memory)
         }
 
         return resource

@@ -133,7 +133,7 @@ public struct Flags {
 
         @Option(
             name: .shortAndLong,
-            help: "Amount of memory (1MiByte granularity), with optional K, M, G, T, or P suffix"
+            help: "Amount of memory (byte granularity), with optional K, M, G, T, or P suffix"
         )
         public var memory: String?
     }
