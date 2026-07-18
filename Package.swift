@@ -105,7 +105,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/stephenlclarke/containerization.git",
-            revision: "fb1dba44f8803b485dae2d1039da52a6b73fc0f2"
+            revision: "f842dcf7807dd88271d4279ec250301900490d70"
         ),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
