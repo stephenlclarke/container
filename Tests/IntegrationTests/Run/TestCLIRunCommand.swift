@@ -242,6 +242,33 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandHostIPCAndUTSNamespaces() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--ipc", "host", "--uts", "host"],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+
+            let inspect = try f.inspectContainer(c)
+            #expect(inspect.configuration.hostIPCNamespace)
+            #expect(inspect.configuration.hostUTSNamespace)
+            let hostname = try f.doExec(c, cmd: ["hostname"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(!hostname.isEmpty)
+            let ipcStatus = try f.doExec(c, cmd: ["sh", "-c", "test -r /proc/sysvipc/shm"])
+            #expect(ipcStatus.isEmpty)
+        }
+    }
+
     @Test func testRunCommandCPUQuotaAndPeriod() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

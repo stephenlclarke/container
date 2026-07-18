@@ -1404,6 +1404,8 @@ public actor RuntimeService {
         czConfig.useInit = config.useInit
         czConfig.hostPIDNamespace = config.hostPIDNamespace
         czConfig.hostCgroupNamespace = config.hostCgroupNamespace
+        czConfig.hostIPCNamespace = config.hostIPCNamespace
+        czConfig.hostUTSNamespace = config.hostUTSNamespace
 
         if let shmSize = config.shmSize {
             for i in czConfig.mounts.indices {

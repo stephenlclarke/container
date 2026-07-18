@@ -168,6 +168,24 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesHostIPCNamespaceFlag() throws {
+        let command = try Application.ContainerRun.parse(["--ipc", "host", "alpine", "true"])
+
+        #expect(command.managementFlags.ipc == "host")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func createParsesPrivateUTSNamespaceFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--uts", "private", "alpine", "true"])
+
+        #expect(command.managementFlags.uts == "private")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesPidsLimitFlag() throws {
         let command = try Application.ContainerRun.parse(["--pids-limit", "128", "alpine", "true"])
 

@@ -1062,6 +1062,30 @@ public struct Parser {
         }
     }
 
+    /// Parses Docker-compatible IPC namespace modes supported by this runtime.
+    public static func hostIPCNamespace(_ value: String?) throws -> Bool {
+        try hostNamespace(value, flag: "ipc")
+    }
+
+    /// Parses Docker-compatible UTS namespace modes supported by this runtime.
+    public static func hostUTSNamespace(_ value: String?) throws -> Bool {
+        try hostNamespace(value, flag: "uts")
+    }
+
+    private static func hostNamespace(_ value: String?, flag: String) throws -> Bool {
+        guard let value else {
+            return false
+        }
+        switch value {
+        case "host":
+            return true
+        case "private":
+            return false
+        default:
+            throw ContainerizationError(.invalidArgument, message: "unsupported --\(flag) value '\(value)' (supported: host, private)")
+        }
+    }
+
     /// Parses Docker-compatible network host mode from the repeated `--network` option.
     public static func hostNetwork(_ values: [String]) throws -> Bool {
         var requested = false

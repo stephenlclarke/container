@@ -243,6 +243,8 @@ public struct Flags {
             os: String,
             pid: String? = nil,
             cgroupNamespace: String? = nil,
+            ipc: String? = nil,
+            uts: String? = nil,
             platform: String?,
             publishPorts: [String],
             publishSockets: [String],
@@ -301,6 +303,8 @@ public struct Flags {
             self.os = os
             self.pid = pid
             self.cgroupNamespace = cgroupNamespace
+            self.ipc = ipc
+            self.uts = uts
             self.platform = platform
             self.publishPorts = publishPorts
             self.publishSockets = publishSockets
@@ -447,6 +451,12 @@ public struct Flags {
 
         @Option(name: .customLong("cgroupns"), help: "Set the cgroup namespace mode (host or private)")
         public var cgroupNamespace: String?
+
+        @Option(name: .customLong("ipc"), help: "Set the IPC namespace mode (host or private)")
+        public var ipc: String?
+
+        @Option(name: .customLong("uts"), help: "Set the UTS namespace mode (host or private)")
+        public var uts: String?
 
         @Option(
             name: [.customShort("p"), .customLong("publish")],

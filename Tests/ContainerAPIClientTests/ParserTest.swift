@@ -2629,6 +2629,37 @@ struct ParserTest {
     }
 
     @Test
+    func testManagementFlagsAcceptIPCAndUTSNamespaces() throws {
+        let flags = try Flags.Management.parse([
+            "--ipc", "host",
+            "--uts", "private",
+        ])
+
+        #expect(flags.ipc == "host")
+        #expect(flags.uts == "private")
+    }
+
+    @Test
+    func testHostIPCAndUTSNamespaceParsersAcceptHostAndPrivate() throws {
+        #expect(try Parser.hostIPCNamespace("host"))
+        #expect(try !Parser.hostIPCNamespace("private"))
+        #expect(try Parser.hostUTSNamespace("host"))
+        #expect(try !Parser.hostUTSNamespace("private"))
+        #expect(try !Parser.hostIPCNamespace(nil))
+        #expect(try !Parser.hostUTSNamespace(nil))
+    }
+
+    @Test
+    func testHostIPCAndUTSNamespaceParsersRejectUnsupportedValues() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostIPCNamespace("service:db")
+        }
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostUTSNamespace("container:db")
+        }
+    }
+
+    @Test
     func testManagementFlagsAcceptsLogDriver() throws {
         let flags = try Flags.Management.parse(["--log-driver", "none"])
 

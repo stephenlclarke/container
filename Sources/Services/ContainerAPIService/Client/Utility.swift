@@ -328,6 +328,8 @@ public struct Utility {
         config.useInit = management.useInit
         config.hostPIDNamespace = try Parser.hostPIDNamespace(management.pid)
         config.hostCgroupNamespace = try Parser.hostCgroupNamespace(management.cgroupNamespace)
+        config.hostIPCNamespace = try Parser.hostIPCNamespace(management.ipc)
+        config.hostUTSNamespace = try Parser.hostUTSNamespace(management.uts)
 
         let caps = try Parser.capabilities(capAdd: management.capAdd, capDrop: management.capDrop)
         config.capAdd = caps.capAdd

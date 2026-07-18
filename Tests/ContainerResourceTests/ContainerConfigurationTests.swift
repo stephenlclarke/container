@@ -177,6 +177,32 @@ struct ContainerConfigurationCgroupNamespaceTests {
     }
 }
 
+struct ContainerConfigurationIPCUTSNamespaceTests {
+    @Test func roundTripsHostIPCAndUTSNamespaces() throws {
+        var config = makeTestConfiguration()
+        config.hostIPCNamespace = true
+        config.hostUTSNamespace = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.hostIPCNamespace)
+        #expect(decoded.hostUTSNamespace)
+    }
+
+    @Test func decodesMissingHostIPCAndUTSNamespacesAsFalse() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "hostIPCNamespace")
+        object.removeValue(forKey: "hostUTSNamespace")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(!decoded.hostIPCNamespace)
+        #expect(!decoded.hostUTSNamespace)
+    }
+}
+
 struct ContainerConfigurationHostNetworkTests {
     @Test func roundTripsHostNetwork() throws {
         var config = makeTestConfiguration()

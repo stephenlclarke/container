@@ -70,6 +70,10 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var hostPIDNamespace: Bool = false
     /// Whether to run the container in the sandbox VM cgroup namespace.
     public var hostCgroupNamespace: Bool = false
+    /// Whether to run the container in the sandbox VM IPC namespace.
+    public var hostIPCNamespace: Bool = false
+    /// Whether to run the container in the sandbox VM UTS namespace.
+    public var hostUTSNamespace: Bool = false
     /// Linux capabilities to add (normalized CAP_* strings, or "ALL").
     public var capAdd: [String] = []
     /// Linux capabilities to drop (normalized CAP_* strings, or "ALL").
@@ -110,6 +114,8 @@ public struct ContainerConfiguration: Sendable, Codable {
         case useInit
         case hostPIDNamespace
         case hostCgroupNamespace
+        case hostIPCNamespace
+        case hostUTSNamespace
         case capAdd
         case capDrop
         case shmSize
@@ -155,6 +161,8 @@ public struct ContainerConfiguration: Sendable, Codable {
         useInit = try container.decodeIfPresent(Bool.self, forKey: .useInit) ?? false
         hostPIDNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostPIDNamespace) ?? false
         hostCgroupNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostCgroupNamespace) ?? false
+        hostIPCNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostIPCNamespace) ?? false
+        hostUTSNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostUTSNamespace) ?? false
         capAdd = try container.decodeIfPresent([String].self, forKey: .capAdd) ?? []
         capDrop = try container.decodeIfPresent([String].self, forKey: .capDrop) ?? []
         shmSize = try container.decodeIfPresent(UInt64.self, forKey: .shmSize)
