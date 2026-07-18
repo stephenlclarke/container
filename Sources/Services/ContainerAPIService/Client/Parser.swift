@@ -1047,6 +1047,21 @@ public struct Parser {
         return true
     }
 
+    /// Parses Docker-compatible cgroup namespace modes supported by this runtime.
+    public static func hostCgroupNamespace(_ value: String?) throws -> Bool {
+        guard let value else {
+            return false
+        }
+        switch value {
+        case "host":
+            return true
+        case "private":
+            return false
+        default:
+            throw ContainerizationError(.invalidArgument, message: "unsupported --cgroupns value '\(value)' (supported: host, private)")
+        }
+    }
+
     /// Parses Docker-compatible network host mode from the repeated `--network` option.
     public static func hostNetwork(_ values: [String]) throws -> Bool {
         var requested = false

@@ -327,6 +327,7 @@ public struct Utility {
         config.readOnly = management.readOnly
         config.useInit = management.useInit
         config.hostPIDNamespace = try Parser.hostPIDNamespace(management.pid)
+        config.hostCgroupNamespace = try Parser.hostCgroupNamespace(management.cgroupNamespace)
 
         let caps = try Parser.capabilities(capAdd: management.capAdd, capDrop: management.capDrop)
         config.capAdd = caps.capAdd

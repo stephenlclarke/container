@@ -155,6 +155,28 @@ struct ContainerConfigurationPIDNamespaceTests {
     }
 }
 
+struct ContainerConfigurationCgroupNamespaceTests {
+    @Test func roundTripsHostCgroupNamespace() throws {
+        var config = makeTestConfiguration()
+        config.hostCgroupNamespace = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.hostCgroupNamespace)
+    }
+
+    @Test func decodesMissingHostCgroupNamespaceAsFalse() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "hostCgroupNamespace")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(!decoded.hostCgroupNamespace)
+    }
+}
+
 struct ContainerConfigurationHostNetworkTests {
     @Test func roundTripsHostNetwork() throws {
         var config = makeTestConfiguration()

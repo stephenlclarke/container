@@ -218,6 +218,30 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandHostCgroupNamespace() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--cgroupns", "host"],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+
+            let inspect = try f.inspectContainer(c)
+            #expect(inspect.configuration.hostCgroupNamespace)
+            let cgroupPath = try f.doExec(c, cmd: ["cat", "/proc/self/cgroup"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(cgroupPath.hasPrefix("0::"))
+        }
+    }
+
     @Test func testRunCommandCPUQuotaAndPeriod() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

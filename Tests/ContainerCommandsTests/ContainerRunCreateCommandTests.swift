@@ -150,6 +150,24 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesHostCgroupNamespaceFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cgroupns", "host", "alpine", "true"])
+
+        #expect(command.managementFlags.cgroupNamespace == "host")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
+    func createParsesPrivateCgroupNamespaceFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--cgroupns", "private", "alpine", "true"])
+
+        #expect(command.managementFlags.cgroupNamespace == "private")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesPidsLimitFlag() throws {
         let command = try Application.ContainerRun.parse(["--pids-limit", "128", "alpine", "true"])
 

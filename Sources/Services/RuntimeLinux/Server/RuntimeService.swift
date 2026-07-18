@@ -1403,6 +1403,7 @@ public actor RuntimeService {
         czConfig.virtualization = config.virtualization
         czConfig.useInit = config.useInit
         czConfig.hostPIDNamespace = config.hostPIDNamespace
+        czConfig.hostCgroupNamespace = config.hostCgroupNamespace
 
         if let shmSize = config.shmSize {
             for i in czConfig.mounts.indices {

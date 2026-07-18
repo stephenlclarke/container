@@ -2606,6 +2606,29 @@ struct ParserTest {
     }
 
     @Test
+    func testManagementFlagsAcceptsCgroupNamespace() throws {
+        let flags = try Flags.Management.parse([
+            "--cgroupns", "host",
+        ])
+
+        #expect(flags.cgroupNamespace == "host")
+    }
+
+    @Test
+    func testHostCgroupNamespaceParserAcceptsHostAndPrivate() throws {
+        #expect(try Parser.hostCgroupNamespace("host"))
+        #expect(try !Parser.hostCgroupNamespace("private"))
+        #expect(try !Parser.hostCgroupNamespace(nil))
+    }
+
+    @Test
+    func testHostCgroupNamespaceParserRejectsUnsupportedValue() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.hostCgroupNamespace("container:db")
+        }
+    }
+
+    @Test
     func testManagementFlagsAcceptsLogDriver() throws {
         let flags = try Flags.Management.parse(["--log-driver", "none"])
 

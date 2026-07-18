@@ -242,6 +242,7 @@ public struct Flags {
             networks: [String],
             os: String,
             pid: String? = nil,
+            cgroupNamespace: String? = nil,
             platform: String?,
             publishPorts: [String],
             publishSockets: [String],
@@ -299,6 +300,7 @@ public struct Flags {
             self.networks = networks
             self.os = os
             self.pid = pid
+            self.cgroupNamespace = cgroupNamespace
             self.platform = platform
             self.publishPorts = publishPorts
             self.publishSockets = publishSockets
@@ -442,6 +444,9 @@ public struct Flags {
 
         @Option(name: .customLong("pid"), help: "Set the PID namespace mode (host)")
         public var pid: String?
+
+        @Option(name: .customLong("cgroupns"), help: "Set the cgroup namespace mode (host or private)")
+        public var cgroupNamespace: String?
 
         @Option(
             name: [.customShort("p"), .customLong("publish")],
