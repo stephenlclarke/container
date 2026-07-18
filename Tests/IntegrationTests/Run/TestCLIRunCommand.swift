@@ -143,6 +143,23 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandFractionalCPUs() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(name: c, image: image, args: ["--cpus", "0.25"], autoRemove: false)
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+            let output = try f.doExec(c, cmd: ["cat", "/sys/fs/cgroup/cpu.max"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            #expect(output == "25000 100000")
+        }
+    }
+
     @Test func testRunCommandMemory() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

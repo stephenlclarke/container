@@ -1856,7 +1856,23 @@ struct ParserTest {
     @Test func testResourcesFlagOverridesDefaults() throws {
         let result = try Parser.resources(cpus: 1, memory: "256m", defaultCPUs: 8, defaultMemory: MemorySize("2g"))
         #expect(result.cpus == 1)
+        #expect(result.cpuQuotaInMicroseconds == 100_000)
         #expect(result.memoryInBytes == 256.mib())
+    }
+
+    @Test func testResourcesSupportsFractionalCPUs() throws {
+        let result = try Parser.resources(cpus: 0.25, memory: nil, defaultCPUs: 8, defaultMemory: MemorySize("2g"))
+
+        #expect(result.cpus == 1)
+        #expect(result.cpuQuotaInMicroseconds == 25_000)
+    }
+
+    @Test func testResourcesRejectsUnrepresentableCPUs() {
+        for cpus in [0.0, -1.0, 0.000_001, .infinity] {
+            #expect(throws: (any Error).self) {
+                _ = try Parser.resources(cpus: cpus, memory: nil, defaultCPUs: 8, defaultMemory: MemorySize("2g"))
+            }
+        }
     }
 
     @Test func testResourcesRetainsBytePreciseMemoryFlag() throws {

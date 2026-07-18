@@ -186,7 +186,7 @@ public struct Parser {
     }
 
     public static func resources(
-        cpus: Int64?,
+        cpus: Double?,
         memory: String?,
         defaultCPUs: Int,
         defaultMemory: MemorySize,
@@ -196,7 +196,22 @@ public struct Parser {
         resource.memoryInBytes = defaultMemory.toUInt64(unit: .bytes)
 
         if let cpus {
-            resource.cpus = Int(cpus)
+            let quota = cpus * 100_000
+            let vmCPUs = cpus.rounded(.up)
+            guard
+                cpus.isFinite,
+                cpus > 0,
+                quota >= 1,
+                quota <= Double(Int64.max),
+                vmCPUs <= Double(Int.max)
+            else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--cpus must be a positive value representable as a CPU quota"
+                )
+            }
+            resource.cpus = max(1, Int(vmCPUs))
+            resource.cpuQuotaInMicroseconds = Int64(quota.rounded(.down))
         }
 
         if let memory {

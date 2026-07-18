@@ -82,6 +82,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesFractionalCPUFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cpus", "0.25", "alpine", "sleep", "infinity"])
+
+        #expect(command.resourceFlags.cpus == 0.25)
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["sleep", "infinity"])
+    }
+
+    @Test
     func runParsesNetworkHostFlag() throws {
         let command = try Application.ContainerRun.parse(["--network", "host", "alpine", "ip", "addr"])
 

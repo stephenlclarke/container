@@ -1379,6 +1379,7 @@ public actor RuntimeService {
         log: Logger? = nil,
     ) throws {
         czConfig.cpus = config.resources.cpus
+        czConfig.cpuQuotaInMicroseconds = config.resources.cpuQuotaInMicroseconds
         czConfig.cpuOverhead = config.resources.cpuOverhead
         czConfig.memoryInBytes = config.resources.memoryInBytes
         if let runtimeData {

@@ -146,7 +146,7 @@ extension Application {
             let defaultBuildCPUs: Int = containerSystemConfig.build.cpus
             let defaultBuildMemory = containerSystemConfig.build.memory
             let resources = try Parser.resources(
-                cpus: cpus,
+                cpus: cpus.map(Double.init),
                 memory: memory,
                 defaultCPUs: defaultBuildCPUs,
                 defaultMemory: defaultBuildMemory,

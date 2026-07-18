@@ -123,13 +123,13 @@ public struct Flags {
     public struct Resource: ParsableArguments {
         public init() {}
 
-        public init(cpus: Int64?, memory: String?) {
+        public init(cpus: Double?, memory: String?) {
             self.cpus = cpus
             self.memory = memory
         }
 
-        @Option(name: .shortAndLong, help: "Number of CPUs to allocate to the container")
-        public var cpus: Int64?
+        @Option(name: .shortAndLong, help: "CPU limit (supports fractional values such as 0.25)")
+        public var cpus: Double?
 
         @Option(
             name: .shortAndLong,
