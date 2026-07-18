@@ -177,6 +177,24 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandCPUShares() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(name: c, image: image, args: ["--cpu-shares", "512"], autoRemove: false)
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+            let output = try f.doExec(c, cmd: ["cat", "/sys/fs/cgroup/cpu.weight"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            // OCI shares are translated to cgroup v2's CPU-weight scale.
+            #expect(output == "59")
+        }
+    }
+
     @Test func testRunCommandCPUQuotaAndPeriod() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
