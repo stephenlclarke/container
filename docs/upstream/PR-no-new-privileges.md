@@ -56,5 +56,8 @@ primitive that works from macOS.
 
 ## Commit tracking
 
-The immediate follow-up linkage commit records the exact implementation commit
-after local validation completes.
+- `container` code and tests:
+  `8fe41fb32adcdad3520aa38ce1e9befda155bfec`
+  (`feat(security): support no-new-privileges`).
+- `containerization` code change: none; the implementation uses its existing
+  `LinuxProcessConfiguration.noNewPrivileges` field.
