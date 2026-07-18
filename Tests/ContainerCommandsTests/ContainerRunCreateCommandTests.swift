@@ -91,6 +91,20 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func createParsesCPUQuotaAndPeriodFlags() throws {
+        let command = try Application.ContainerCreate.parse([
+            "--cpu-period", "200000",
+            "--cpu-quota", "50000",
+            "alpine", "sleep", "infinity",
+        ])
+
+        #expect(command.resourceFlags.cpuPeriod == 200_000)
+        #expect(command.resourceFlags.cpuQuota == 50_000)
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["sleep", "infinity"])
+    }
+
+    @Test
     func runParsesNetworkHostFlag() throws {
         let command = try Application.ContainerRun.parse(["--network", "host", "alpine", "ip", "addr"])
 

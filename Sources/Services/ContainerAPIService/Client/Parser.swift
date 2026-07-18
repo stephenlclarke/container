@@ -188,6 +188,8 @@ public struct Parser {
     public static func resources(
         cpus: Double?,
         memory: String?,
+        cpuPeriod: Int64? = nil,
+        cpuQuota: Int64? = nil,
         defaultCPUs: Int,
         defaultMemory: MemorySize,
     ) throws -> ContainerConfiguration.Resources {
@@ -196,6 +198,18 @@ public struct Parser {
         resource.memoryInBytes = defaultMemory.toUInt64(unit: .bytes)
 
         if let cpus {
+            if let cpuPeriod, cpuPeriod > 0 {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--cpus and --cpu-period cannot both be set"
+                )
+            }
+            if let cpuQuota, cpuQuota > 0 {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--cpus and --cpu-quota cannot both be set"
+                )
+            }
             let quota = cpus * 100_000
             let vmCPUs = cpus.rounded(.up)
             guard
@@ -212,6 +226,26 @@ public struct Parser {
             }
             resource.cpus = max(1, Int(vmCPUs))
             resource.cpuQuotaInMicroseconds = Int64(quota.rounded(.down))
+        }
+
+        if let cpuPeriod, cpuPeriod != 0 {
+            guard cpuPeriod > 0 else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--cpu-period must be zero or a positive integer"
+                )
+            }
+            resource.cpuPeriodInMicroseconds = UInt64(cpuPeriod)
+        }
+
+        if let cpuQuota, cpuQuota != 0 {
+            guard cpuQuota >= -1 else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--cpu-quota must be -1, zero, or a positive integer"
+                )
+            }
+            resource.cpuQuotaInMicroseconds = cpuQuota
         }
 
         if let memory {

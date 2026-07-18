@@ -123,13 +123,32 @@ public struct Flags {
     public struct Resource: ParsableArguments {
         public init() {}
 
-        public init(cpus: Double?, memory: String?) {
+        public init(
+            cpus: Double?,
+            memory: String?,
+            cpuPeriod: Int64? = nil,
+            cpuQuota: Int64? = nil
+        ) {
             self.cpus = cpus
             self.memory = memory
+            self.cpuPeriod = cpuPeriod
+            self.cpuQuota = cpuQuota
         }
 
         @Option(name: .shortAndLong, help: "CPU limit (supports fractional values such as 0.25)")
         public var cpus: Double?
+
+        @Option(
+            name: .customLong("cpu-period"),
+            help: .init("CPU CFS period in microseconds", valueName: "microseconds")
+        )
+        public var cpuPeriod: Int64?
+
+        @Option(
+            name: .customLong("cpu-quota"),
+            help: .init("CPU CFS quota in microseconds (-1 for unlimited)", valueName: "microseconds")
+        )
+        public var cpuQuota: Int64?
 
         @Option(
             name: .shortAndLong,

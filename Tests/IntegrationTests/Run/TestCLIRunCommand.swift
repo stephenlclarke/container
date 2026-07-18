@@ -160,6 +160,28 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandCPUQuotaAndPeriod() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--cpu-period", "200000", "--cpu-quota", "50000"],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+            let output = try f.doExec(c, cmd: ["cat", "/sys/fs/cgroup/cpu.max"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            #expect(output == "50000 200000")
+        }
+    }
+
     @Test func testRunCommandMemory() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

@@ -1867,6 +1867,77 @@ struct ParserTest {
         #expect(result.cpuQuotaInMicroseconds == 25_000)
     }
 
+    @Test func testResourcesAppliesExplicitCPUQuotaAndPeriod() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: nil,
+            cpuPeriod: 200_000,
+            cpuQuota: 50_000,
+            defaultCPUs: 8,
+            defaultMemory: MemorySize("2g")
+        )
+
+        #expect(result.cpus == 8)
+        #expect(result.cpuPeriodInMicroseconds == 200_000)
+        #expect(result.cpuQuotaInMicroseconds == 50_000)
+    }
+
+    @Test func testResourcesTreatsZeroCPUQuotaAndPeriodAsUnset() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: nil,
+            cpuPeriod: 0,
+            cpuQuota: 0,
+            defaultCPUs: 8,
+            defaultMemory: MemorySize("2g")
+        )
+
+        #expect(result.cpuPeriodInMicroseconds == nil)
+        #expect(result.cpuQuotaInMicroseconds == nil)
+    }
+
+    @Test func testResourcesAllowsUnlimitedCPUQuota() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: nil,
+            cpuQuota: -1,
+            defaultCPUs: 8,
+            defaultMemory: MemorySize("2g")
+        )
+
+        #expect(result.cpuQuotaInMicroseconds == -1)
+    }
+
+    @Test func testResourcesRejectsInvalidCPUPeriodAndQuota() {
+        for (cpuPeriod, cpuQuota) in [(-1, 0), (0, -2)] {
+            #expect(throws: (any Error).self) {
+                _ = try Parser.resources(
+                    cpus: nil,
+                    memory: nil,
+                    cpuPeriod: Int64(cpuPeriod),
+                    cpuQuota: Int64(cpuQuota),
+                    defaultCPUs: 8,
+                    defaultMemory: MemorySize("2g")
+                )
+            }
+        }
+    }
+
+    @Test func testResourcesRejectsCPUsCombinedWithExplicitQuotaOrPeriod() {
+        for (cpuPeriod, cpuQuota) in [(100_000, 0), (0, 50_000)] {
+            #expect(throws: (any Error).self) {
+                _ = try Parser.resources(
+                    cpus: 0.25,
+                    memory: nil,
+                    cpuPeriod: Int64(cpuPeriod),
+                    cpuQuota: Int64(cpuQuota),
+                    defaultCPUs: 8,
+                    defaultMemory: MemorySize("2g")
+                )
+            }
+        }
+    }
+
     @Test func testResourcesRejectsUnrepresentableCPUs() {
         for cpus in [0.0, -1.0, 0.000_001, .infinity] {
             #expect(throws: (any Error).self) {
