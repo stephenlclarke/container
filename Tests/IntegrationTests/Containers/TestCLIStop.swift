@@ -49,6 +49,24 @@ struct TestCLIStop {
         }
     }
 
+    @Test func configuredStopDefaultsPersistAndApply() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            try await f.withContainer(
+                image: image,
+                runArgs: ["--stop-signal", "SIGKILL", "--stop-timeout", "0"],
+                autoRemove: false
+            ) { name in
+                let inspect = try f.inspectContainer(name)
+                #expect(inspect.configuration.stopSignal == "SIGKILL")
+                #expect(inspect.configuration.stopTimeoutInSeconds == 0)
+
+                try f.doStop(name, signal: nil)
+                #expect(try f.getContainerStatus(name) == "stopped")
+            }
+        }
+    }
+
     @Test func testStopIdempotent() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])

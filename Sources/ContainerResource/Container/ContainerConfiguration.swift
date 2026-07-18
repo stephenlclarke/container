@@ -74,8 +74,10 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var capDrop: [String] = []
     /// Size of /dev/shm in bytes. When nil, the default size is used.
     public var shmSize: UInt64?
-    /// Signal to send to the container process on stop (from image config).
+    /// Signal to send to the container process on stop.
     public var stopSignal: String?
+    /// Seconds to wait for a graceful stop before forcing termination.
+    public var stopTimeoutInSeconds: Int32?
     /// The time at which the container was created.
     public var creationDate: Date = Date()
 
@@ -109,6 +111,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         case capDrop
         case shmSize
         case stopSignal
+        case stopTimeoutInSeconds
         case creationDate
     }
 
@@ -152,6 +155,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         capDrop = try container.decodeIfPresent([String].self, forKey: .capDrop) ?? []
         shmSize = try container.decodeIfPresent(UInt64.self, forKey: .shmSize)
         stopSignal = try container.decodeIfPresent(String.self, forKey: .stopSignal)
+        stopTimeoutInSeconds = try container.decodeIfPresent(Int32.self, forKey: .stopTimeoutInSeconds)
         creationDate = try container.decodeIfPresent(Date.self, forKey: .creationDate) ?? Date(timeIntervalSince1970: 0)
     }
 

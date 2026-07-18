@@ -37,7 +37,7 @@ extension Application {
         var signal: String?
 
         @Option(name: .shortAndLong, help: "Seconds to wait before killing the containers")
-        var time: Int32 = 5
+        var time: Int32?
 
         @OptionGroup
         public var logOptions: Flags.Logging

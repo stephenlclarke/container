@@ -653,7 +653,7 @@ public actor RuntimeService {
 
         let stopOptions = try message.stopOptions()
         let signal = try Signal(stopOptions.signal ?? "SIGTERM")
-        let timeout: Duration = .seconds(stopOptions.timeoutInSeconds)
+        let timeout: Duration = .seconds(stopOptions.timeoutInSeconds ?? 5)
 
         return try await self.lock.withLock { _ in
             switch await self.state {

@@ -17,16 +17,24 @@
 import Foundation
 
 public struct ContainerStopOptions: Sendable, Codable {
-    public var timeoutInSeconds: Int32
+    /// Seconds to wait before forcing termination. Nil lets the container's
+    /// persisted default (or the runtime default) apply.
+    public var timeoutInSeconds: Int32?
     public var signal: String?
 
     public static let `default` = ContainerStopOptions(
-        timeoutInSeconds: 5,
+        timeoutInSeconds: nil,
         signal: nil
     )
 
-    public init(timeoutInSeconds: Int32, signal: String?) {
+    public init(timeoutInSeconds: Int32?, signal: String?) {
         self.timeoutInSeconds = timeoutInSeconds
         self.signal = signal
+    }
+
+    /// Source-compatible convenience initializer for callers that provide an
+    /// explicit stop timeout.
+    public init(timeoutInSeconds: Int32, signal: String?) {
+        self.init(timeoutInSeconds: Optional(timeoutInSeconds), signal: signal)
     }
 }

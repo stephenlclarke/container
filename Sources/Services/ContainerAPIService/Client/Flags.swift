@@ -227,6 +227,8 @@ public struct Flags {
             runtime: String?,
             ssh: Bool,
             shmSize: String?,
+            stopSignal: String? = nil,
+            stopTimeout: Int32? = nil,
             pidsLimit: Int64? = nil,
             memoryReservation: String? = nil,
             memorySwap: String? = nil,
@@ -282,6 +284,8 @@ public struct Flags {
             self.runtime = runtime
             self.ssh = ssh
             self.shmSize = shmSize
+            self.stopSignal = stopSignal
+            self.stopTimeout = stopTimeout
             self.pidsLimit = pidsLimit
             self.memoryReservation = memoryReservation
             self.memorySwap = memorySwap
@@ -460,6 +464,12 @@ public struct Flags {
         @Option(name: .customLong("shm-size"), help: "Size of /dev/shm (e.g. 64M, 1G)")
         public var shmSize: String?
 
+        @Option(name: .customLong("stop-signal"), help: "Signal to send when stopping the container")
+        public var stopSignal: String?
+
+        @Option(name: .customLong("stop-timeout"), help: "Seconds to wait before forcing container termination")
+        public var stopTimeout: Int32?
+
         @Option(
             name: .customLong("pids-limit"),
             parsing: .unconditional,
@@ -548,6 +558,9 @@ public struct Flags {
         public var volumes: [String] = []
 
         public func validate() throws {
+            if let stopTimeout, stopTimeout < 0 {
+                throw ValidationError("--stop-timeout must be non-negative")
+            }
             if dnsDisabled {
                 let hasDNSConfig =
                     !dns.nameservers.isEmpty

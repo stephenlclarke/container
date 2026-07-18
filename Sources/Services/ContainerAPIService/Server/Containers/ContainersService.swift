@@ -715,6 +715,9 @@ public actor ContainersService {
         if resolvedOptions.signal == nil, let stopSignal = state.snapshot.configuration.stopSignal {
             resolvedOptions.signal = stopSignal
         }
+        if resolvedOptions.timeoutInSeconds == nil {
+            resolvedOptions.timeoutInSeconds = state.snapshot.configuration.stopTimeoutInSeconds
+        }
 
         do {
             try await client.stop(options: resolvedOptions)

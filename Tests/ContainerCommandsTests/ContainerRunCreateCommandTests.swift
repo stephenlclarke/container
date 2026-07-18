@@ -58,6 +58,30 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesStopDefaults() throws {
+        let command = try Application.ContainerRun.parse([
+            "--stop-signal", "SIGUSR1",
+            "--stop-timeout", "9",
+            "alpine", "sleep", "infinity",
+        ])
+
+        #expect(command.managementFlags.stopSignal == "SIGUSR1")
+        #expect(command.managementFlags.stopTimeout == 9)
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["sleep", "infinity"])
+    }
+
+    @Test
+    func createRejectsNegativeStopTimeout() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Application.ContainerCreate.parse([
+                "--stop-timeout", "-1",
+                "alpine", "sleep", "infinity",
+            ])
+        }
+    }
+
+    @Test
     func runParsesNetworkHostFlag() throws {
         let command = try Application.ContainerRun.parse(["--network", "host", "alpine", "ip", "addr"])
 

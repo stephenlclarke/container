@@ -398,3 +398,29 @@ struct ContainerConfigurationCreationDateTests {
         #expect(decoded.creationDate == Date(timeIntervalSince1970: 0))
     }
 }
+
+struct ContainerConfigurationStopTests {
+    @Test func roundTripsStopDefaults() throws {
+        var config = makeTestConfiguration()
+        config.stopSignal = "SIGUSR1"
+        config.stopTimeoutInSeconds = 9
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.stopSignal == "SIGUSR1")
+        #expect(decoded.stopTimeoutInSeconds == 9)
+    }
+
+    @Test func decodesMissingStopTimeoutAsNil() throws {
+        var config = makeTestConfiguration()
+        config.stopTimeoutInSeconds = 9
+        let data = try JSONEncoder().encode(config)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        obj.removeValue(forKey: "stopTimeoutInSeconds")
+        let stripped = try JSONSerialization.data(withJSONObject: obj)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(decoded.stopTimeoutInSeconds == nil)
+    }
+}
