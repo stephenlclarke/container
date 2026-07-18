@@ -446,7 +446,7 @@ public struct Flags {
         @Option(name: .long, help: "Set OS if image can target multiple operating systems")
         public var os = "linux"
 
-        @Option(name: .customLong("pid"), help: "Set the PID namespace mode (host)")
+        @Option(name: .customLong("pid"), help: "Set the PID namespace mode (host or private)")
         public var pid: String?
 
         @Option(name: .customLong("cgroupns"), help: "Set the cgroup namespace mode (host or private)")

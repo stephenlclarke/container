@@ -2593,8 +2593,18 @@ struct ParserTest {
     }
 
     @Test
-    func testHostPIDNamespaceParserAcceptsHost() throws {
+    func testManagementFlagsAcceptsPIDPrivate() throws {
+        let flags = try Flags.Management.parse([
+            "--pid", "private",
+        ])
+
+        #expect(flags.pid == "private")
+    }
+
+    @Test
+    func testHostPIDNamespaceParserAcceptsHostAndPrivate() throws {
         #expect(try Parser.hostPIDNamespace("host"))
+        #expect(try !Parser.hostPIDNamespace("private"))
         #expect(try !Parser.hostPIDNamespace(nil))
     }
 

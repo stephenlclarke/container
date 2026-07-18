@@ -269,6 +269,29 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandPrivatePIDNamespace() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--pid", "private"],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+
+            let inspect = try f.inspectContainer(c)
+            #expect(!inspect.configuration.hostPIDNamespace)
+            let initPID = try f.doExec(c, cmd: ["sh", "-c", "test -r /proc/1/status"])
+            #expect(initPID.isEmpty)
+        }
+    }
+
     @Test func testRunCommandCPUQuotaAndPeriod() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

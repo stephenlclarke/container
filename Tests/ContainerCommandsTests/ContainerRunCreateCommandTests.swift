@@ -150,6 +150,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func createParsesPIDPrivateFlag() throws {
+        let command = try Application.ContainerCreate.parse(["--pid", "private", "alpine", "ps"])
+
+        #expect(command.managementFlags.pid == "private")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["ps"])
+    }
+
+    @Test
     func runParsesHostCgroupNamespaceFlag() throws {
         let command = try Application.ContainerRun.parse(["--cgroupns", "host", "alpine", "true"])
 

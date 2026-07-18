@@ -1041,10 +1041,14 @@ public struct Parser {
         guard let value else {
             return false
         }
-        guard value == "host" else {
-            throw ContainerizationError(.invalidArgument, message: "unsupported --pid value '\(value)' (supported: host)")
+        switch value {
+        case "host":
+            return true
+        case "private":
+            return false
+        default:
+            throw ContainerizationError(.invalidArgument, message: "unsupported --pid value '\(value)' (supported: host or private)")
         }
-        return true
     }
 
     /// Parses Docker-compatible cgroup namespace modes supported by this runtime.
