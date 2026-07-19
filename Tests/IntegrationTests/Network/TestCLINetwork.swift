@@ -141,6 +141,37 @@ struct TestCLINetwork {
         }
     }
 
+    @available(macOS 26, *)
+    @Test func testNetworkScopedAttachmentNames() async throws {
+        try await ContainerFixture.with { f in
+            let frontendNetwork = "\(f.testID)-frontend"
+            let backendNetwork = "\(f.testID)-backend"
+            let frontendContainer = "\(f.testID)-frontend-service"
+            let backendContainer = "\(f.testID)-backend-service"
+
+            f.addCleanup {
+                f.doNetworkDeleteIfExists(frontendNetwork)
+                f.doNetworkDeleteIfExists(backendNetwork)
+            }
+            f.addCleanup {
+                try? f.doRemove(frontendContainer)
+                try? f.doRemove(backendContainer)
+            }
+
+            try f.doNetworkCreate(frontendNetwork)
+            try f.doNetworkCreate(backendNetwork)
+
+            try f.doCreate(
+                name: frontendContainer,
+                networks: ["\(frontendNetwork),alias=api"]
+            )
+            try f.doCreate(
+                name: backendContainer,
+                networks: ["\(backendNetwork),alias=api"]
+            )
+        }
+    }
+
     @Test func testNetworkMTU() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])

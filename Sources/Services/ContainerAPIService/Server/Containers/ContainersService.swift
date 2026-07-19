@@ -309,25 +309,11 @@ public actor ContainersService {
                 )
             }
 
-            var allHostnames = Set<String>()
-            for container in await self.containers.values {
-                for attachmentConfiguration in container.snapshot.configuration.networks {
-                    allHostnames.insert(attachmentConfiguration.options.hostname)
-                    allHostnames.formUnion(attachmentConfiguration.options.aliases)
-                }
-            }
-
-            var conflictingHostnames = [String]()
-            var requestedHostnames = Set<String>()
-            for attachmentConfiguration in configuration.networks {
-                let requestedNames = Set([attachmentConfiguration.options.hostname] + attachmentConfiguration.options.aliases)
-                for requestedName in requestedNames.sorted() {
-                    if allHostnames.contains(requestedName) || requestedHostnames.contains(requestedName) {
-                        conflictingHostnames.append(requestedName)
-                    }
-                    requestedHostnames.insert(requestedName)
-                }
-            }
+            let existingAttachments = await self.containers.values.map(\.snapshot.configuration.networks)
+            let conflictingHostnames = Self.conflictingNetworkNames(
+                existingAttachments: existingAttachments,
+                requestedAttachments: configuration.networks
+            )
 
             guard conflictingHostnames.isEmpty else {
                 throw ContainerizationError(
@@ -413,6 +399,35 @@ public actor ContainersService {
         }
 
         await publishContainerEvent(action: "create", snapshot: createdSnapshot)
+    }
+
+    /// Returns network attachment names that are already reserved on the same network.
+    ///
+    /// Network hostnames and aliases identify attachments within a network, so the same
+    /// name is valid when it belongs to distinct networks.
+    static func conflictingNetworkNames(
+        existingAttachments: [[AttachmentConfiguration]],
+        requestedAttachments: [AttachmentConfiguration]
+    ) -> [String] {
+        var namesByNetwork = [String: Set<String>]()
+
+        for attachments in existingAttachments {
+            for attachment in attachments {
+                namesByNetwork[attachment.network, default: []].formUnion(
+                    [attachment.options.hostname] + attachment.options.aliases
+                )
+            }
+        }
+
+        var conflictingNames = Set<String>()
+        for attachment in requestedAttachments {
+            let names = Set([attachment.options.hostname] + attachment.options.aliases)
+            let reservedNames = namesByNetwork[attachment.network, default: []]
+            conflictingNames.formUnion(reservedNames.intersection(names))
+            namesByNetwork[attachment.network, default: []].formUnion(names)
+        }
+
+        return conflictingNames.sorted()
     }
 
     /// Bootstrap the init process of the container.
