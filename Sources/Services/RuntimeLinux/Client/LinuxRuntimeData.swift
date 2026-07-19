@@ -75,6 +75,11 @@ public struct LinuxRuntimeData: Codable, Sendable {
     /// Relative CPU scheduling weight carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let cpuShares: UInt64?
+    /// Relative parent for the container cgroup inside the Linux guest.
+    ///
+    /// The runtime validates that this is a safe relative path and creates the
+    /// container as a leaf below its managed guest cgroup root.
+    public let cgroupParent: String?
     /// Device cgroup rules carried opaquely through
     /// `RuntimeConfiguration.runtimeData`.
     public let deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup]
@@ -90,6 +95,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         memoryReservationInBytes: Int64? = nil,
         memorySwapLimitInBytes: Int64? = nil,
         cpuShares: UInt64? = nil,
+        cgroupParent: String? = nil,
         deviceCgroupRules: [ContainerizationOCI.LinuxDeviceCgroup] = [],
         devices: [LinuxDeviceMapping] = [],
         gpuRequests: [LinuxGPURequest] = []
@@ -100,6 +106,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         self.memoryReservationInBytes = memoryReservationInBytes
         self.memorySwapLimitInBytes = memorySwapLimitInBytes
         self.cpuShares = cpuShares
+        self.cgroupParent = cgroupParent
         self.deviceCgroupRules = deviceCgroupRules
         self.devices = devices
         self.gpuRequests = gpuRequests
@@ -112,6 +119,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         case memoryReservationInBytes
         case memorySwapLimitInBytes
         case cpuShares
+        case cgroupParent
         case deviceCgroupRules
         case devices
         case gpuRequests
@@ -125,6 +133,7 @@ public struct LinuxRuntimeData: Codable, Sendable {
         memoryReservationInBytes = try container.decodeIfPresent(Int64.self, forKey: .memoryReservationInBytes)
         memorySwapLimitInBytes = try container.decodeIfPresent(Int64.self, forKey: .memorySwapLimitInBytes)
         cpuShares = try container.decodeIfPresent(UInt64.self, forKey: .cpuShares)
+        cgroupParent = try container.decodeIfPresent(String.self, forKey: .cgroupParent)
         deviceCgroupRules = try container.decodeIfPresent([ContainerizationOCI.LinuxDeviceCgroup].self, forKey: .deviceCgroupRules) ?? []
         devices = try container.decodeIfPresent([LinuxDeviceMapping].self, forKey: .devices) ?? []
         gpuRequests = try container.decodeIfPresent([LinuxGPURequest].self, forKey: .gpuRequests) ?? []

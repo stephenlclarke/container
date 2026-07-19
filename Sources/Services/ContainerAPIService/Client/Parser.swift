@@ -319,6 +319,29 @@ public struct Parser {
         return shares
     }
 
+    /// Parses a relative Linux guest cgroup parent path.
+    ///
+    /// The runtime reserves the root cgroup path, so callers may select only
+    /// descendant components and cannot escape that managed hierarchy.
+    public static func cgroupParent(_ parent: String?) throws -> String? {
+        guard let parent else {
+            return nil
+        }
+
+        let components = parent.split(separator: "/", omittingEmptySubsequences: false)
+        guard
+            !parent.isEmpty,
+            !parent.hasPrefix("/"),
+            components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." })
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--cgroup-parent must be a non-empty relative path without empty, '.' or '..' components"
+            )
+        }
+        return parent
+    }
+
     /// Parses an optional Docker-compatible protected memory reservation.
     /// Omit the flag, or pass zero, to leave the OCI reservation unset.
     public static func memoryReservation(_ reservation: String?) throws -> Int64? {

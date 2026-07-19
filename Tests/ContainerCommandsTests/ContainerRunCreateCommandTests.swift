@@ -258,6 +258,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesCgroupParentFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cgroup-parent", "workloads/build", "alpine", "true"])
+
+        #expect(command.managementFlags.cgroupParent == "workloads/build")
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["true"])
+    }
+
+    @Test
     func runParsesCPUSetFlag() throws {
         let command = try Application.ContainerRun.parse(["--cpuset-cpus", "0-1,3", "alpine", "true"])
 
@@ -384,6 +393,16 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runtimeDataEncodesCgroupParentFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cgroup-parent", "workloads/build", "alpine", "true"])
+
+        let data = try #require(try LinuxRuntimeData.encoded(from: command.managementFlags))
+        let decoded = try JSONDecoder().decode(LinuxRuntimeData.self, from: data)
+
+        #expect(decoded.cgroupParent == "workloads/build")
+    }
+
+    @Test
     func runtimeDataOmitsDefaultCPUSharesFlag() throws {
         let command = try Application.ContainerRun.parse(["--cpu-shares", "0", "alpine", "true"])
 
@@ -404,6 +423,17 @@ struct ContainerRunCreateCommandTests {
     @Test
     func runtimeDataRejectsInvalidPidsLimitFlag() throws {
         let command = try Application.ContainerRun.parse(["--pids-limit", "0", "alpine", "true"])
+
+        #expect {
+            _ = try LinuxRuntimeData.encoded(from: command.managementFlags)
+        } throws: { _ in
+            true
+        }
+    }
+
+    @Test
+    func runtimeDataRejectsUnsafeCgroupParentFlag() throws {
+        let command = try Application.ContainerRun.parse(["--cgroup-parent", "../escape", "alpine", "true"])
 
         #expect {
             _ = try LinuxRuntimeData.encoded(from: command.managementFlags)

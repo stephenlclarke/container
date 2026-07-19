@@ -18,6 +18,7 @@ import ContainerResource
 import ContainerRuntimeLinuxClient
 import Containerization
 import ContainerizationExtras
+import Foundation
 import Testing
 
 @testable import ContainerRuntimeLinuxServer
@@ -421,6 +422,21 @@ struct RuntimeServiceHostsTests {
         #expect(runtimeConfiguration.process.capabilities.bounding.isEmpty)
         #expect(runtimeConfiguration.maskedPaths.isEmpty)
         #expect(runtimeConfiguration.readonlyPaths.isEmpty)
+    }
+
+    @Test
+    func configureContainerPassesCgroupParentToContainerization() throws {
+        let config = runtimeTestConfiguration(id: "demo-api-1")
+        let runtimeData = try JSONEncoder().encode(LinuxRuntimeData(cgroupParent: "workloads/build"))
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureContainer(
+            czConfig: &runtimeConfiguration,
+            config: config,
+            runtimeData: runtimeData
+        )
+
+        #expect(runtimeConfiguration.cgroupParent == "workloads/build")
     }
 
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {

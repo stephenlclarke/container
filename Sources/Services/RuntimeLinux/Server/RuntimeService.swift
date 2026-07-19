@@ -1371,7 +1371,7 @@ public actor RuntimeService {
         return LinuxGPUResolution(enabled: true, guestDevices: guestDevices)
     }
 
-    private static func configureContainer(
+    static func configureContainer(
         czConfig: inout LinuxContainer.Configuration,
         config: ContainerConfiguration,
         runtimeData: Data? = nil,
@@ -1393,6 +1393,7 @@ public actor RuntimeService {
             czConfig.memoryReservationInBytes = linuxData.memoryReservationInBytes
             czConfig.memorySwapLimitInBytes = linuxData.memorySwapLimitInBytes
             czConfig.cpuShares = linuxData.cpuShares
+            czConfig.cgroupParent = linuxData.cgroupParent
             czConfig.devices.append(contentsOf: deviceMapping.devices)
             czConfig.guestDevices.append(contentsOf: gpu.guestDevices)
             czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules)

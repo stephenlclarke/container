@@ -264,6 +264,7 @@ public struct Flags {
             memoryReservation: String? = nil,
             memorySwap: String? = nil,
             cpuShares: UInt64? = nil,
+            cgroupParent: String? = nil,
             blkio: [String] = [],
             deviceCgroupRules: [String] = [],
             devices: [String] = [],
@@ -325,6 +326,7 @@ public struct Flags {
             self.memoryReservation = memoryReservation
             self.memorySwap = memorySwap
             self.cpuShares = cpuShares
+            self.cgroupParent = cgroupParent
             self.blkio = blkio
             self.deviceCgroupRules = deviceCgroupRules
             self.devices = devices
@@ -542,6 +544,12 @@ public struct Flags {
             help: "Relative CPU scheduling weight (must be at least 2)"
         )
         public var cpuShares: UInt64?
+
+        @Option(
+            name: .customLong("cgroup-parent"),
+            help: "Place the container under a relative Linux guest cgroup path"
+        )
+        public var cgroupParent: String?
 
         @Option(
             name: .customLong("blkio"),

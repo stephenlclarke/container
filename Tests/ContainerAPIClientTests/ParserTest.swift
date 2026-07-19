@@ -2080,6 +2080,21 @@ struct ParserTest {
         }
     }
 
+    @Test func testCgroupParentAcceptsRelativeGuestPaths() throws {
+        #expect(try Parser.cgroupParent("workloads/build") == "workloads/build")
+        #expect(try Parser.cgroupParent(nil) == nil)
+    }
+
+    @Test func testCgroupParentRejectsUnsafePaths() {
+        for value in ["", "/root", ".", "..", "workloads/../escape", "workloads//build", "workloads/"] {
+            #expect {
+                _ = try Parser.cgroupParent(value)
+            } throws: { _ in
+                true
+            }
+        }
+    }
+
     @Test func testMemoryReservationParsesBytesAndDefaults() throws {
         #expect(try Parser.memoryReservation("512m") == Int64(512.mib()))
         #expect(try Parser.memoryReservation("0") == nil)

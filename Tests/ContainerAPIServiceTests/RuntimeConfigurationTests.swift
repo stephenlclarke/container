@@ -129,6 +129,7 @@ struct RuntimeConfigurationTests {
             memoryReservationInBytes: Int64(512.mib()),
             memorySwapLimitInBytes: Int64(1.gib()),
             cpuShares: 512,
+            cgroupParent: "workloads/build",
             deviceCgroupRules: [
                 ContainerizationOCI.LinuxDeviceCgroup(allow: true, type: "c", major: 1, minor: 3, access: "mr")
             ],
@@ -162,6 +163,7 @@ struct RuntimeConfigurationTests {
         #expect(decodedData.memoryReservationInBytes == Int64(512.mib()), "Memory reservation should round-trip through RuntimeConfiguration")
         #expect(decodedData.memorySwapLimitInBytes == Int64(1.gib()), "Memory swap limit should round-trip through RuntimeConfiguration")
         #expect(decodedData.cpuShares == 512, "CPU shares should round-trip through RuntimeConfiguration")
+        #expect(decodedData.cgroupParent == "workloads/build", "Cgroup parent should round-trip through RuntimeConfiguration")
         #expect(decodedData.deviceCgroupRules.first?.major == 1, "Device cgroup rules should round-trip through RuntimeConfiguration")
         #expect(decodedData.deviceCgroupRules.first?.access == "mr", "Device cgroup rule access should round-trip through RuntimeConfiguration")
         #expect(decodedData.devices.first?.source == "/dev/null", "Device source should round-trip through RuntimeConfiguration")
@@ -181,6 +183,7 @@ struct RuntimeConfigurationTests {
         #expect(decoded.memoryReservationInBytes == nil)
         #expect(decoded.memorySwapLimitInBytes == nil)
         #expect(decoded.cpuShares == nil)
+        #expect(decoded.cgroupParent == nil)
         #expect(decoded.deviceCgroupRules.isEmpty)
         #expect(decoded.devices.isEmpty)
         #expect(decoded.gpuRequests.isEmpty)
