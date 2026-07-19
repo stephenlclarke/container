@@ -76,6 +76,8 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var hostUTSNamespace: Bool = false
     /// Whether to create a private user namespace inside the sandbox VM.
     public var privateUserNamespace: Bool = false
+    /// Whether to disable the default masked and read-only paths in the Linux guest.
+    public var unconfinedSystemPaths: Bool = false
     /// Linux capabilities to add (normalized CAP_* strings, or "ALL").
     public var capAdd: [String] = []
     /// Linux capabilities to drop (normalized CAP_* strings, or "ALL").
@@ -119,6 +121,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         case hostIPCNamespace
         case hostUTSNamespace
         case privateUserNamespace
+        case unconfinedSystemPaths
         case capAdd
         case capDrop
         case shmSize
@@ -167,6 +170,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         hostIPCNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostIPCNamespace) ?? false
         hostUTSNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostUTSNamespace) ?? false
         privateUserNamespace = try container.decodeIfPresent(Bool.self, forKey: .privateUserNamespace) ?? false
+        unconfinedSystemPaths = try container.decodeIfPresent(Bool.self, forKey: .unconfinedSystemPaths) ?? false
         capAdd = try container.decodeIfPresent([String].self, forKey: .capAdd) ?? []
         capDrop = try container.decodeIfPresent([String].self, forKey: .capDrop) ?? []
         shmSize = try container.decodeIfPresent(UInt64.self, forKey: .shmSize)

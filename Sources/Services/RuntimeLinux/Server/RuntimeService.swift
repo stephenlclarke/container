@@ -1508,13 +1508,15 @@ public actor RuntimeService {
             // privileged container retains the sandbox boundary, but restores
             // the Linux guest privilege surface that the runtime can expose.
             czConfig.process.capabilities = .allCapabilities
-            czConfig.maskedPaths = []
-            czConfig.readonlyPaths = []
         } else {
             czConfig.process.capabilities = try Self.effectiveCapabilities(
                 capAdd: config.capAdd,
                 capDrop: config.capDrop
             )
+        }
+        if process.privileged || config.unconfinedSystemPaths {
+            czConfig.maskedPaths = []
+            czConfig.readonlyPaths = []
         }
         switch process.user {
         case .raw(let name):

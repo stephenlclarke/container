@@ -58,6 +58,15 @@ struct ContainerRunCreateCommandTests {
     }
 
     @Test
+    func runParsesSystemPathsSecurityOptionFlag() throws {
+        let command = try Application.ContainerRun.parse(["--security-opt", "systempaths=unconfined", "alpine", "id"])
+
+        #expect(command.managementFlags.securityOpts == ["systempaths=unconfined"])
+        #expect(command.image == "alpine")
+        #expect(command.arguments == ["id"])
+    }
+
+    @Test
     func runParsesStopDefaults() throws {
         let command = try Application.ContainerRun.parse([
             "--stop-signal", "SIGUSR1",

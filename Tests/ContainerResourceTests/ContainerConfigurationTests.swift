@@ -225,6 +225,28 @@ struct ContainerConfigurationUserNamespaceTests {
     }
 }
 
+struct ContainerConfigurationSystemPathTests {
+    @Test func roundTripsUnconfinedSystemPaths() throws {
+        var config = makeTestConfiguration()
+        config.unconfinedSystemPaths = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.unconfinedSystemPaths)
+    }
+
+    @Test func decodesMissingUnconfinedSystemPathsAsFalse() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "unconfinedSystemPaths")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(!decoded.unconfinedSystemPaths)
+    }
+}
+
 struct ContainerConfigurationHostNetworkTests {
     @Test func roundTripsHostNetwork() throws {
         var config = makeTestConfiguration()

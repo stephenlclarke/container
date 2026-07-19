@@ -409,6 +409,20 @@ struct RuntimeServiceHostsTests {
         #expect(runtimeConfiguration.readonlyPaths == LinuxContainer.defaultReadonlyPaths())
     }
 
+    @Test
+    func unconfinedSystemPathsPreserveRestrictedCapabilities() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.capDrop = ["ALL"]
+        config.unconfinedSystemPaths = true
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureInitialProcess(czConfig: &runtimeConfiguration, config: config)
+
+        #expect(runtimeConfiguration.process.capabilities.bounding.isEmpty)
+        #expect(runtimeConfiguration.maskedPaths.isEmpty)
+        #expect(runtimeConfiguration.readonlyPaths.isEmpty)
+    }
+
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",

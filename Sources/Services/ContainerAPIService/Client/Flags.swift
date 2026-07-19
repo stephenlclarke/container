@@ -584,7 +584,10 @@ public struct Flags {
 
         @Option(
             name: .customLong("security-opt"),
-            help: .init("Set a supported Linux security option (no-new-privileges:true|false)", valueName: "option")
+            help: .init(
+                "Set a supported Linux security option (no-new-privileges[:|=]true|false or systempaths[:|=]unconfined)",
+                valueName: "option"
+            )
         )
         public var securityOpts: [String] = []
 

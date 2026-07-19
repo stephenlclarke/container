@@ -1445,7 +1445,7 @@ public struct Parser {
             rlimits: rlimits,
             oomScoreAdj: processFlags.oomScoreAdj,
             privileged: processFlags.privileged,
-            noNewPrivileges: try noNewPrivileges(managementFlags.securityOpts)
+            noNewPrivileges: try securityOptions(managementFlags.securityOpts).noNewPrivileges
         )
     }
 
@@ -2332,12 +2332,19 @@ public struct Parser {
 
     // MARK: Security and capabilities
 
-    /// Parses the portable `no-new-privileges` security option accepted by
-    /// Docker-compatible container callers. Both the Compose spelling
-    /// `no-new-privileges:true` and the CLI spelling
-    /// `no-new-privileges=true` are accepted.
-    public static func noNewPrivileges(_ options: [String]) throws -> Bool {
-        var value = false
+    /// Generic security controls that change the OCI process or filesystem
+    /// configuration in the Linux guest.
+    public struct SecurityOptions: Equatable, Sendable {
+        /// Prevent an executable from gaining new privileges.
+        public var noNewPrivileges = false
+        /// Disable the OCI masked and read-only system paths.
+        public var unconfinedSystemPaths = false
+    }
+
+    /// Parses supported security options. Both `:` and `=` separators are
+    /// accepted so callers can use Compose-compatible or command-line forms.
+    public static func securityOptions(_ options: [String]) throws -> SecurityOptions {
+        var result = SecurityOptions()
 
         for option in options {
             let separator: Character
@@ -2348,32 +2355,54 @@ public struct Parser {
             } else {
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "invalid --security-opt '\(option)'; expected no-new-privileges:true|false"
+                    message: "invalid --security-opt '\(option)'; expected name:value or name=value"
                 )
             }
 
             let parts = option.split(separator: separator, maxSplits: 1, omittingEmptySubsequences: false)
-            guard parts.count == 2, parts[0] == "no-new-privileges" else {
+            guard parts.count == 2 else {
                 throw ContainerizationError(
-                    .unsupported,
-                    message: "unsupported --security-opt '\(option)'; supported option is no-new-privileges:true|false"
+                    .invalidArgument,
+                    message: "invalid --security-opt '\(option)'; expected name:value or name=value"
                 )
             }
 
-            switch parts[1] {
-            case "true":
-                value = true
-            case "false":
-                value = false
-            default:
+            switch (parts[0], parts[1]) {
+            case ("no-new-privileges", "true"):
+                result.noNewPrivileges = true
+            case ("no-new-privileges", "false"):
+                result.noNewPrivileges = false
+            case ("systempaths", "unconfined"):
+                result.unconfinedSystemPaths = true
+            case ("no-new-privileges", _):
                 throw ContainerizationError(
                     .invalidArgument,
                     message: "invalid --security-opt '\(option)'; no-new-privileges value must be true or false"
                 )
+            case ("systempaths", _):
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "invalid --security-opt '\(option)'; systempaths value must be unconfined"
+                )
+            default:
+                throw ContainerizationError(
+                    .unsupported,
+                    message: "unsupported --security-opt '\(option)'; supported options are no-new-privileges:true|false and systempaths:unconfined"
+                )
             }
         }
 
-        return value
+        return result
+    }
+
+    /// Returns the no-new-privileges control from supported security options.
+    public static func noNewPrivileges(_ options: [String]) throws -> Bool {
+        try securityOptions(options).noNewPrivileges
+    }
+
+    /// Returns whether the default guest system-path confinement is disabled.
+    public static func unconfinedSystemPaths(_ options: [String]) throws -> Bool {
+        try securityOptions(options).unconfinedSystemPaths
     }
 
     /// Parse and validate --cap-add / --cap-drop arguments.

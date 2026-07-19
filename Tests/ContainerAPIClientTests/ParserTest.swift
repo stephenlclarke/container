@@ -1228,10 +1228,11 @@ struct ParserTest {
     }
 
     @Test
-    func testProcessMapsNoNewPrivilegesSecurityOption() throws {
+    func testProcessMapsNoNewPrivilegesAlongsideSystemPathsSecurityOptions() throws {
         let processFlags = try Flags.Process.parse([])
         let managementFlags = try Flags.Management.parse([
             "--security-opt", "no-new-privileges:true",
+            "--security-opt", "systempaths=unconfined",
         ])
 
         let result = try Parser.process(
@@ -1732,19 +1733,31 @@ struct ParserTest {
     // MARK: - Capabilities Parser Tests
 
     @Test
-    func testNoNewPrivilegesSecurityOptionAcceptsComposeAndCLIForms() throws {
+    func testSecurityOptionsAcceptComposeAndCLIForms() throws {
         #expect(try Parser.noNewPrivileges(["no-new-privileges:true"]))
         #expect(try Parser.noNewPrivileges(["no-new-privileges=true"]))
         #expect(!(try Parser.noNewPrivileges(["no-new-privileges:false"])))
+        #expect(try Parser.unconfinedSystemPaths(["systempaths:unconfined"]))
+        #expect(try Parser.unconfinedSystemPaths(["systempaths=unconfined"]))
+
+        let result = try Parser.securityOptions([
+            "no-new-privileges:true",
+            "systempaths=unconfined",
+        ])
+        #expect(result.noNewPrivileges)
+        #expect(result.unconfinedSystemPaths)
     }
 
     @Test
-    func testNoNewPrivilegesSecurityOptionRejectsUnsupportedOrInvalidValues() {
+    func testSecurityOptionsRejectUnsupportedOrInvalidValues() {
         #expect(throws: (any Error).self) {
             _ = try Parser.noNewPrivileges(["label:disable"])
         }
         #expect(throws: (any Error).self) {
             _ = try Parser.noNewPrivileges(["no-new-privileges:enabled"])
+        }
+        #expect(throws: (any Error).self) {
+            _ = try Parser.unconfinedSystemPaths(["systempaths=confined"])
         }
     }
 

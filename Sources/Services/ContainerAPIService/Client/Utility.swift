@@ -331,6 +331,7 @@ public struct Utility {
         config.hostIPCNamespace = try Parser.hostIPCNamespace(management.ipc)
         config.hostUTSNamespace = try Parser.hostUTSNamespace(management.uts)
         config.privateUserNamespace = try Parser.privateUserNamespace(management.userNamespace)
+        config.unconfinedSystemPaths = try Parser.unconfinedSystemPaths(management.securityOpts)
 
         let caps = try Parser.capabilities(capAdd: management.capAdd, capDrop: management.capDrop)
         config.capAdd = caps.capAdd
