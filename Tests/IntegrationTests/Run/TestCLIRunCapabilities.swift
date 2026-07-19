@@ -220,6 +220,30 @@ struct TestCLIRunCapabilities {
         }
     }
 
+    // MARK: - Privileged mode
+
+    @Test func testPrivilegedRestoresGuestReadonlyPaths() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(name: c, image: image, args: ["--privileged"], autoRemove: false)
+            try await f.waitForContainerRunning(c)
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+
+            let inspect = try f.inspectContainer(c)
+            #expect(inspect.configuration.initProcess.privileged)
+
+            let output = try f.doExec(
+                c,
+                cmd: ["sh", "-c", "echo privileged-hostname > /proc/sys/kernel/hostname && cat /proc/sys/kernel/hostname"]
+            )
+            #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == "privileged-hostname")
+        }
+    }
+
     @Test func testCapAddALLDropNetAdminCannotDownInterface() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

@@ -382,6 +382,33 @@ struct RuntimeServiceHostsTests {
         #expect(runtimeConfiguration.process.noNewPrivileges)
     }
 
+    @Test
+    func privilegedInitialProcessRestoresSupportedGuestPrivilegeSurface() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.capDrop = ["ALL"]
+        config.initProcess.privileged = true
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureInitialProcess(czConfig: &runtimeConfiguration, config: config)
+
+        #expect(Set(runtimeConfiguration.process.capabilities.bounding) == Set(LinuxCapabilities.allCapabilities.bounding))
+        #expect(runtimeConfiguration.maskedPaths.isEmpty)
+        #expect(runtimeConfiguration.readonlyPaths.isEmpty)
+    }
+
+    @Test
+    func unprivilegedInitialProcessKeepsRestrictedGuestPaths() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.capDrop = ["ALL"]
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureInitialProcess(czConfig: &runtimeConfiguration, config: config)
+
+        #expect(runtimeConfiguration.process.capabilities.bounding.isEmpty)
+        #expect(runtimeConfiguration.maskedPaths == LinuxContainer.defaultMaskedPaths())
+        #expect(runtimeConfiguration.readonlyPaths == LinuxContainer.defaultReadonlyPaths())
+    }
+
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",
