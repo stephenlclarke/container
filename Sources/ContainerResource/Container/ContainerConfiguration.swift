@@ -74,6 +74,8 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var hostIPCNamespace: Bool = false
     /// Whether to run the container in the sandbox VM UTS namespace.
     public var hostUTSNamespace: Bool = false
+    /// Whether to create a private user namespace inside the sandbox VM.
+    public var privateUserNamespace: Bool = false
     /// Linux capabilities to add (normalized CAP_* strings, or "ALL").
     public var capAdd: [String] = []
     /// Linux capabilities to drop (normalized CAP_* strings, or "ALL").
@@ -116,6 +118,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         case hostCgroupNamespace
         case hostIPCNamespace
         case hostUTSNamespace
+        case privateUserNamespace
         case capAdd
         case capDrop
         case shmSize
@@ -163,6 +166,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         hostCgroupNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostCgroupNamespace) ?? false
         hostIPCNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostIPCNamespace) ?? false
         hostUTSNamespace = try container.decodeIfPresent(Bool.self, forKey: .hostUTSNamespace) ?? false
+        privateUserNamespace = try container.decodeIfPresent(Bool.self, forKey: .privateUserNamespace) ?? false
         capAdd = try container.decodeIfPresent([String].self, forKey: .capAdd) ?? []
         capDrop = try container.decodeIfPresent([String].self, forKey: .capDrop) ?? []
         shmSize = try container.decodeIfPresent(UInt64.self, forKey: .shmSize)

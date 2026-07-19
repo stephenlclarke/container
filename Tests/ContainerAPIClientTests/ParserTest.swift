@@ -2670,6 +2670,27 @@ struct ParserTest {
     }
 
     @Test
+    func testManagementFlagsAcceptsUserNamespace() throws {
+        let flags = try Flags.Management.parse(["--userns", "private"])
+
+        #expect(flags.userNamespace == "private")
+    }
+
+    @Test
+    func testPrivateUserNamespaceParserAcceptsHostAndPrivate() throws {
+        #expect(try !Parser.privateUserNamespace("host"))
+        #expect(try Parser.privateUserNamespace("private"))
+        #expect(try !Parser.privateUserNamespace(nil))
+    }
+
+    @Test
+    func testPrivateUserNamespaceParserRejectsUnsupportedValue() throws {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.privateUserNamespace("container:db")
+        }
+    }
+
+    @Test
     func testManagementFlagsAcceptsLogDriver() throws {
         let flags = try Flags.Management.parse(["--log-driver", "none"])
 

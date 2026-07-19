@@ -203,6 +203,28 @@ struct ContainerConfigurationIPCUTSNamespaceTests {
     }
 }
 
+struct ContainerConfigurationUserNamespaceTests {
+    @Test func roundTripsPrivateUserNamespace() throws {
+        var config = makeTestConfiguration()
+        config.privateUserNamespace = true
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.privateUserNamespace)
+    }
+
+    @Test func decodesMissingPrivateUserNamespaceAsFalse() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "privateUserNamespace")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(!decoded.privateUserNamespace)
+    }
+}
+
 struct ContainerConfigurationHostNetworkTests {
     @Test func roundTripsHostNetwork() throws {
         var config = makeTestConfiguration()

@@ -292,6 +292,36 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandPrivateUserNamespace() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--userns", "private"],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+
+            let inspect = try f.inspectContainer(c)
+            #expect(inspect.configuration.privateUserNamespace)
+            let mapping = try f.doExec(
+                c,
+                cmd: [
+                    "sh", "-c",
+                    "test \"$(readlink /proc/self/ns/user)\" != \"user:[4026531837]\" && cat /proc/self/uid_map",
+                ]
+            )
+                .split(whereSeparator: \.isWhitespace)
+            #expect(mapping == ["0", "0", "4294967295"])
+        }
+    }
+
     @Test func testRunCommandCPUQuotaAndPeriod() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

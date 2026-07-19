@@ -330,6 +330,7 @@ public struct Utility {
         config.hostCgroupNamespace = try Parser.hostCgroupNamespace(management.cgroupNamespace)
         config.hostIPCNamespace = try Parser.hostIPCNamespace(management.ipc)
         config.hostUTSNamespace = try Parser.hostUTSNamespace(management.uts)
+        config.privateUserNamespace = try Parser.privateUserNamespace(management.userNamespace)
 
         let caps = try Parser.capabilities(capAdd: management.capAdd, capDrop: management.capDrop)
         config.capAdd = caps.capAdd

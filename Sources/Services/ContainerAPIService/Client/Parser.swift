@@ -1076,6 +1076,23 @@ public struct Parser {
         try hostNamespace(value, flag: "uts")
     }
 
+    /// Parses Docker-compatible user namespace modes supported by this runtime.
+    /// `host` retains the sandbox VM's existing user namespace; `private`
+    /// creates an identity-mapped user namespace inside that guest.
+    public static func privateUserNamespace(_ value: String?) throws -> Bool {
+        guard let value else {
+            return false
+        }
+        switch value {
+        case "host":
+            return false
+        case "private":
+            return true
+        default:
+            throw ContainerizationError(.invalidArgument, message: "unsupported --userns value '\(value)' (supported: host or private)")
+        }
+    }
+
     private static func hostNamespace(_ value: String?, flag: String) throws -> Bool {
         guard let value else {
             return false
