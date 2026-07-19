@@ -45,7 +45,7 @@ public actor SnapshotStore {
                 minBlockSize = 512.mib()
             }
             let journal = EXT4.JournalConfig(defaultMode: .ordered)
-            return EXT4Unpacker(blockSizeInBytes: minBlockSize, journal: journal)
+            return EXT4Unpacker(capacityInBytes: minBlockSize, journal: journal)
         }
     }
 
