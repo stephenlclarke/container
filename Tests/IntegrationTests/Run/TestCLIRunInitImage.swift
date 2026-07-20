@@ -26,18 +26,21 @@ import Testing
 @Suite
 struct TestCLIRunInitImage {
     private let alpine = ContainerFixture.warmupImages[0]
+    // This is rejected by OCI reference validation before any registry lookup.
+    // Keep validation deterministic and independent of DNS or registry timeouts.
+    private let invalidInitImage = "invalid init image"
 
-    @Test func testRunWithNonExistentInitImage() async throws {
+    @Test func testRunWithInvalidInitImage() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
             let c = "\(f.testID)-c"
             f.addCleanup { try? f.doRemove(c, force: true) }
             let result = try f.run([
                 "run", "--rm", "--name", c, "-d",
-                "--init-image", "nonexistent.invalid/init-image:does-not-exist",
+                "--init-image", invalidInitImage,
                 image, "sleep", "infinity",
             ])
-            #expect(result.status != 0, "run with non-existent init-image should fail")
+            #expect(result.status != 0, "run with an invalid init-image should fail")
         }
     }
 
@@ -49,17 +52,17 @@ struct TestCLIRunInitImage {
         }
     }
 
-    @Test func testCreateWithNonExistentInitImage() async throws {
+    @Test func testCreateWithInvalidInitImage() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
             let c = "\(f.testID)-c"
             f.addCleanup { try? f.doRemove(c, force: true) }
             let result = try f.run([
                 "create", "--name", c,
-                "--init-image", "nonexistent.invalid/init-image:does-not-exist",
+                "--init-image", invalidInitImage,
                 image, "echo", "hello",
             ])
-            #expect(result.status != 0, "create with non-existent init-image should fail")
+            #expect(result.status != 0, "create with an invalid init-image should fail")
         }
     }
 
