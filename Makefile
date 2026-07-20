@@ -285,6 +285,10 @@ INTEGRATION_POST_TEST ?=
 # ordinary runs; coverage runs set LLVM_PROFILE_FILE here so launchd-managed helper
 # (XPC service) processes emit their own profraw data.
 INTEGRATION_PROFILE_ENV ?=
+# Keep integration runs independent of a developer's persisted runtime configuration.
+# `container system start` snapshots XDG's config file into APP_ROOT, so an inherited
+# ~/.config/container/config.toml can otherwise change the builder image under test.
+INTEGRATION_CONFIG_HOME ?= $(SCRATCH_ROOT)/xdg-config
 
 PRESERVE_KERNELS ?= false
 # Default scratch root under the project directory so container build can access context
@@ -295,6 +299,8 @@ SCRATCH_ROOT ?= $(ROOT_DIR)/.test-scratch
 define RUN_INTEGRATION
 	@echo Ensuring apiserver stopped before the CLI integration tests...
 	@bin/container system stop && sleep 3 && scripts/ensure-container-stopped.sh
+	@rm -f "$(INTEGRATION_CONFIG_HOME)/container/config.toml"
+	@mkdir -p "$(INTEGRATION_CONFIG_HOME)"
 	@if [ -n "$(APP_ROOT)" ]; then \
 		mkdir -p $(APP_ROOT) ; \
 		if [ "$(PRESERVE_KERNELS)" = "true" ]; then \
@@ -307,11 +313,12 @@ define RUN_INTEGRATION
 	fi
 	@"$(MAKE)" init-block
 	@echo Running the integration tests...
-	@$(INTEGRATION_PROFILE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
+	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_PROFILE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
 	{ \
 		CLITEST_LOG_ROOT=$(LOG_ROOT) && export CLITEST_LOG_ROOT ; \
 		CLITEST_SCRATCH_ROOT=$(SCRATCH_ROOT) && export CLITEST_SCRATCH_ROOT ; \
 		CONTAINER_CLI_PATH=$(ROOT_DIR)/bin/container && export CONTAINER_CLI_PATH ; \
+		XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" && export XDG_CONFIG_HOME ; \
 		echo "==> Warmup pass" && \
 		$(SWIFT) test $(INTEGRATION_SWIFT_EXTRA) -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) --filter "$(WARMUP_FILTER)" && \
 		echo "==> Concurrent pass (width=$(PARALLEL_WIDTH))" && \
