@@ -18,6 +18,15 @@ rm -rf test-data
 make APP_ROOT=test-data all test integration
 ```
 
+Integration tests run one VM-backed CLI test at a time by default. This avoids
+local API-server launch saturation on high-core-count Macs. Set
+`PARALLEL_WIDTH` explicitly only when the target environment has been validated
+at a different concurrency level:
+
+```bash
+make APP_ROOT=test-data PARALLEL_WIDTH=2 integration
+```
+
 Copy the binaries to `/usr/local/bin` and `/usr/local/libexec` (requires entering an administrator password):
 
 ```bash

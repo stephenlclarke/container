@@ -260,9 +260,13 @@ define GENERATE_COV_REPORTS
 endef
 
 # PARALLEL_WIDTH controls --experimental-maximum-parallelization-width for the
-# concurrent pass. WARMUP_FILTER, CONCURRENT_FILTER, and SERIAL_FILTER select
-# the three phases.
-PARALLEL_WIDTH ?= $(shell sysctl -n hw.physicalcpu)
+# concurrent pass. Each CLI integration test can create a
+# Virtualization-backed Linux guest through the single local API server, which
+# cannot reliably service overlapping create and stop requests. Use a
+# deterministic serial default instead of all host CPU cores. Callers can still
+# override this when validating a known-capable environment.
+# WARMUP_FILTER, CONCURRENT_FILTER, and SERIAL_FILTER select the three phases.
+PARALLEL_WIDTH ?= 1
 WARMUP_FILTER = ImageWarmup/
 
 # Concurrent suites: Test*.swift files whose names do NOT end in Serial.
