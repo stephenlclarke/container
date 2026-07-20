@@ -86,7 +86,6 @@ build-tests:
 .PHONY: coverage-all
 coverage-all: build-tests
 	@"$(MAKE)" BUILD_CONFIGURATION=$(BUILD_CONFIGURATION) DEST_DIR="$(ROOT_DIR)/" SUDO= install
-	@"$(MAKE)" init-block
 
 .PHONY: cli
 cli:
@@ -306,6 +305,7 @@ define RUN_INTEGRATION
 			find "$(APP_ROOT)" -mindepth 1 -maxdepth 1 -exec rm -rf {} + ; \
 		fi ; \
 	fi
+	@"$(MAKE)" init-block
 	@echo Running the integration tests...
 	@$(INTEGRATION_PROFILE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
 	{ \
@@ -327,14 +327,14 @@ define RUN_INTEGRATION
 endef
 
 .PHONY: integration
-# integration uses bin/container from the project install path and then runs
-# init-block before RUN_INTEGRATION clears APP_ROOT. Keep the prerequisites
-# ordered even under make -j, and preserve the kernels installed by init-block by
-# default while allowing command-line PRESERVE_KERNELS=false when a full
-# app-root wipe is needed.
+# integration uses bin/container from the project install path. RUN_INTEGRATION
+# clears APP_ROOT before loading the source-matched init image, so a clean test
+# root cannot lose that image and fall back to an external registry pull. Keep
+# the target non-parallel while allowing command-line PRESERVE_KERNELS=false
+# when a full app-root wipe is needed.
 .NOTPARALLEL: integration
 integration coverage-integration: PRESERVE_KERNELS = true
-integration: container init-block
+integration: container
 	$(RUN_INTEGRATION)
 
 .PHONY: coverage-integration
