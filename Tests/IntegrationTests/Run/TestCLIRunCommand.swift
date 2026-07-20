@@ -126,7 +126,14 @@ struct TestCLIRunCommand {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
             let c = "\(f.testID)-c"
-            try f.doLongRun(name: c, image: image, args: ["--cpus", "2"], autoRemove: false)
+            // CPU cgroup controls are provided by the source-matched guest
+            // installed by this integration target.
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--cpus", "2"],
+                autoRemove: false
+            )
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
@@ -147,7 +154,12 @@ struct TestCLIRunCommand {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
             let c = "\(f.testID)-c"
-            try f.doLongRun(name: c, image: image, args: ["--cpus", "0.25"], autoRemove: false)
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--cpus", "0.25"],
+                autoRemove: false
+            )
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
@@ -164,7 +176,12 @@ struct TestCLIRunCommand {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
             let c = "\(f.testID)-c"
-            try f.doLongRun(name: c, image: image, args: ["--cpus", "0"], autoRemove: false)
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--cpus", "0"],
+                autoRemove: false
+            )
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
@@ -181,7 +198,15 @@ struct TestCLIRunCommand {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
             let c = "\(f.testID)-c"
-            try f.doLongRun(name: c, image: image, args: ["--cpu-shares", "512"], autoRemove: false)
+            // The cgroup v2 CPU-share bridge is provided by the matched guest
+            // image installed by the integration target, not the versioned
+            // release guest used by a stock default configuration.
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--init-image", "vminit:latest", "--cpu-shares", "512"],
+                autoRemove: false
+            )
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
@@ -362,7 +387,9 @@ struct TestCLIRunCommand {
             try f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--cpu-period", "200000", "--cpu-quota", "50000"],
+                args: [
+                    "--init-image", "vminit:latest", "--cpu-period", "200000", "--cpu-quota", "50000",
+                ],
                 autoRemove: false
             )
             f.addCleanup {
