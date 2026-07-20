@@ -166,6 +166,9 @@ actor BuildFSSync: BuildPipelineHandler {
             }
 
             let relPath = try url.relativeChildPath(to: root)
+            guard !relPath.isEmpty else {
+                continue
+            }
             let parentPath = try url.deletingLastPathComponent().relativeChildPath(to: root)
             let entry = DirEntry(url: url, isDirectory: url.hasDirectoryPath, relativePath: relPath)
             entries[parentPath, default: []].insert(entry)
@@ -209,7 +212,7 @@ actor BuildFSSync: BuildPipelineHandler {
             format: .paxRestricted,
             filter: .none)
 
-        let tarHash = try Archiver.compress(
+        _ = try Archiver.compress(
             source: root,
             destination: tarURL,
             writerConfiguration: writerCfg
@@ -239,7 +242,11 @@ actor BuildFSSync: BuildPipelineHandler {
                 pathInArchive: URL(fileURLWithPath: rel))
         }
 
-        let hash = tarHash.compactMap { String(format: "%02x", $0) }.joined()
+        var archiveHasher = SHA256()
+        for try await chunk in try tarURL.bufferedCopyReader() {
+            archiveHasher.update(data: chunk)
+        }
+        let hash = archiveHasher.finalize().map { String(format: "%02x", $0) }.joined()
         let header = BuildTransfer(
             id: packet.id,
             source: tarURL.path,
