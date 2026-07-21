@@ -39,6 +39,25 @@ struct ParserTest {
     }
 
     @Test
+    func testExposePortParserCanonicalizesAndDeduplicates() throws {
+        let result = try Parser.exposedPorts([
+            "8443/UDP",
+            "8080",
+            "9000-9001/tcp",
+            "8080/tcp",
+        ])
+
+        #expect(result == ["8080", "8443/udp", "9000-9001"])
+    }
+
+    @Test(arguments: ["", "0", "65536", "9001-9000", "9000-", "8080/sctp", "8080/"])
+    func testExposePortParserRejectsInvalidValues(_ value: String) throws {
+        #expect(throws: ContainerizationError.self) {
+            _ = try Parser.exposedPort(value)
+        }
+    }
+
+    @Test
     func testPublishPortParserUdp() throws {
         let result = try Parser.publishPorts(["192.168.32.36:8000:8080/UDP"])
         #expect(result.count == 1)
@@ -1227,6 +1246,17 @@ struct ParserTest {
                 "com.example.owner": "platform",
                 "com.example.purpose": "local-development",
             ])
+    }
+
+    @Test
+    func testManagementFlagsAcceptExposedPorts() throws {
+        let flags = try Flags.Management.parse([
+            "--expose", "8080",
+            "--expose", "8443/udp",
+        ])
+
+        #expect(flags.exposedPorts == ["8080", "8443/udp"])
+        #expect(try Parser.exposedPorts(flags.exposedPorts) == ["8080", "8443/udp"])
     }
 
     @Test

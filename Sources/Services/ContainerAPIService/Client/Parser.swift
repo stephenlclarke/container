@@ -1837,6 +1837,60 @@ public struct Parser {
         return publishPorts
     }
 
+    /// Parse `--expose` arguments into canonical container metadata strings.
+    ///
+    /// Exposed ports do not open a host listener. They describe ports available
+    /// to peers on the container's configured network.
+    public static func exposedPorts(_ rawExposedPorts: [String]) throws -> [String] {
+        try Array(Set(rawExposedPorts.map(exposedPort))).sorted()
+    }
+
+    /// Parse one `--expose` argument in `port[-port][/protocol]` form.
+    public static func exposedPort(_ portText: String) throws -> String {
+        let parts = portText.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count <= 2, let portRange = parts.first, !portRange.isEmpty else {
+            throw ContainerizationError(.invalidArgument, message: "invalid expose value: \(portText)")
+        }
+
+        let protocolName: String
+        if parts.count == 2 {
+            guard !parts[1].isEmpty else {
+                throw ContainerizationError(.invalidArgument, message: "invalid expose protocol: \(portText)")
+            }
+            protocolName = parts[1].lowercased()
+            guard protocolName == "tcp" || protocolName == "udp" else {
+                throw ContainerizationError(.invalidArgument, message: "invalid expose protocol: \(protocolName)")
+            }
+        } else {
+            protocolName = "tcp"
+        }
+
+        let bounds = portRange.split(separator: "-", omittingEmptySubsequences: false)
+        guard bounds.count <= 2,
+            let startText = bounds.first,
+            let start = UInt16(startText),
+            start > 0
+        else {
+            throw ContainerizationError(.invalidArgument, message: "invalid expose port: \(portRange)")
+        }
+        let end: UInt16
+        if bounds.count == 2 {
+            guard let endText = bounds.last,
+                let parsedEnd = UInt16(endText),
+                parsedEnd > 0,
+                start <= parsedEnd
+            else {
+                throw ContainerizationError(.invalidArgument, message: "invalid expose port range: \(portRange)")
+            }
+            end = parsedEnd
+        } else {
+            end = start
+        }
+
+        let canonicalRange = start == end ? "\(start)" : "\(start)-\(end)"
+        return protocolName == "tcp" ? canonicalRange : "\(canonicalRange)/\(protocolName)"
+    }
+
     // Parse a single `--publish-port` argument into a `PublishPort`.
     public static func publishPort(_ portText: String) throws -> PublishPort {
         let publishPortRegex = #/((\[(?<ipv6>[^\]]*)\]|(?<ipv4>[^:].*)):)?(?<hostPort>[^:].*):(?<containerPort>[^:/]*)(/(?<proto>.*))?/#

@@ -250,6 +250,7 @@ public struct Flags {
             userNamespace: String? = nil,
             platform: String?,
             publishPorts: [String],
+            exposedPorts: [String] = [],
             publishSockets: [String],
             readOnly: Bool,
             remove: Bool,
@@ -314,6 +315,7 @@ public struct Flags {
             self.userNamespace = userNamespace
             self.platform = platform
             self.publishPorts = publishPorts
+            self.exposedPorts = exposedPorts
             self.publishSockets = publishSockets
             self.readOnly = readOnly
             self.remove = remove
@@ -486,6 +488,15 @@ public struct Flags {
             )
         )
         public var publishPorts: [String] = []
+
+        @Option(
+            name: .customLong("expose"),
+            help: .init(
+                "Record a container port as metadata without publishing it to the host (format: port[-port][/protocol])",
+                valueName: "port"
+            )
+        )
+        public var exposedPorts: [String] = []
 
         @Option(name: .long, help: "Platform for the image if it's multi-platform. This takes precedence over --os and --arch [environment: CONTAINER_DEFAULT_PLATFORM]")
         public var platform: String?

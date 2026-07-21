@@ -26,6 +26,8 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var mounts: [Filesystem] = []
     /// Ports to publish from container to host.
     public var publishedPorts: [PublishPort] = []
+    /// Ports exposed as container metadata without publishing them to the host.
+    public var exposedPorts: [String] = []
     /// Sockets to publish from container to host.
     public var publishedSockets: [PublishSocket] = []
     /// Key/Value labels for the container.
@@ -98,6 +100,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         case image
         case mounts
         case publishedPorts
+        case exposedPorts
         case publishedSockets
         case labels
         case annotations
@@ -142,6 +145,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         image = try container.decode(ImageDescription.self, forKey: .image)
         mounts = try container.decodeIfPresent([Filesystem].self, forKey: .mounts) ?? []
         publishedPorts = try container.decodeIfPresent([PublishPort].self, forKey: .publishedPorts) ?? []
+        exposedPorts = try container.decodeIfPresent([String].self, forKey: .exposedPorts) ?? []
         publishedSockets = try container.decodeIfPresent([PublishSocket].self, forKey: .publishedSockets) ?? []
         labels = try container.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
         annotations = try container.decodeIfPresent([String: String].self, forKey: .annotations) ?? [:]

@@ -74,6 +74,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `--pid <pid>`: Set the PID namespace mode (`host`)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
+*   `--expose <port>`: Record a container port as metadata without publishing it to the host (format: port[-port][/protocol])
 *   `--platform <platform>`: Platform for the image if it's multi-platform. This takes precedence over --os and --arch
 *   `--publish-socket <spec>`: Publish a socket from container to host (format: host_path:container_path)
 *   `--read-only`: Mount the container's root filesystem as read-only
@@ -313,6 +314,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `--os <os>`: Set OS if image can target multiple operating systems (default: linux)
 *   `--pid <pid>`: Set the PID namespace mode (`host`)
 *   `-p, --publish <spec>`: Publish a port from container to host (format: [host-ip:]host-port:container-port[/protocol])
+*   `--expose <port>`: Record a container port as metadata without publishing it to the host (format: port[-port][/protocol])
 *   `--platform <platform>`: Platform for the image if it's multi-platform. This takes precedence over --os and --arch
 *   `--publish-socket <spec>`: Publish a socket from container to host (format: host_path:container_path)
 *   `--read-only`: Mount the container's root filesystem as read-only

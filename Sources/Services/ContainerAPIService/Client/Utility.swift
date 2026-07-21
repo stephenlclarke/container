@@ -319,6 +319,7 @@ public struct Utility {
         guard !config.publishedPorts.hasOverlaps() else {
             throw ContainerizationError(.invalidArgument, message: "host ports for different publish port specs may not overlap")
         }
+        config.exposedPorts = try Parser.exposedPorts(management.exposedPorts)
 
         // Parse --publish-socket arguments and add to container configuration
         // to enable socket forwarding from container to host.

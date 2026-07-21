@@ -52,6 +52,30 @@ func makeTestConfiguration(
 }
 
 struct ContainerConfigurationResourcesTests {
+    @Test func roundTripsExposedPorts() throws {
+        var config = makeTestConfiguration()
+        config.exposedPorts = ["8080", "8443/udp"]
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.exposedPorts == ["8080", "8443/udp"])
+    }
+
+    @Test func decodesMissingExposedPortsAsEmpty() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "exposedPorts")
+
+        let decoded = try JSONDecoder().decode(
+            ContainerConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.exposedPorts.isEmpty)
+    }
+
     @Test func roundTripsAnnotations() throws {
         var config = makeTestConfiguration()
         config.annotations = ["com.example.owner": "platform"]
