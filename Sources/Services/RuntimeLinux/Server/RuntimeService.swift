@@ -229,6 +229,7 @@ public actor RuntimeService {
                             ipv4Address: attachment.ipv4Address,
                             ipv4Gateway: attachment.ipv4Gateway,
                             ipv6Address: attachment.ipv6Address,
+                            ipv6Gateway: attachment.ipv6Gateway,
                             macAddress: attachment.macAddress,
                             mtu: mtu,
                             variant: attachment.variant

@@ -75,6 +75,13 @@ extension Application {
             })
         var ipv6Subnet: CIDRv6? = nil
 
+        @Option(
+            name: .customLong("gateway-v6"), help: "Set the IPv6 gateway address for a network",
+            transform: {
+                try IPv6Address($0)
+            })
+        var ipv6Gateway: IPv6Address? = nil
+
         @Flag(name: .customLong("disable-ipv6"), help: "Disable IPv6 on the network")
         var disableIPv6: Bool = false
 
@@ -98,6 +105,7 @@ extension Application {
                 ipv4AllocationRange: ipv4AllocationRange,
                 ipv4ReservedAddresses: ipv4ReservedAddresses,
                 ipv6Subnet: ipv6Subnet,
+                ipv6Gateway: ipv6Gateway,
                 enableIPv6: !disableIPv6,
                 labels: parsedLabels,
                 plugin: self.plugin,

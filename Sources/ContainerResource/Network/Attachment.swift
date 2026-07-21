@@ -31,6 +31,9 @@ public struct Attachment: Codable, Sendable {
     /// The CIDR address describing the interface IPv6 address, with the prefix length of the subnet.
     /// The address is nil if the IPv6 subnet could not be determined at network creation time.
     public let ipv6Address: CIDRv6?
+    /// The IPv6 gateway address.
+    /// The address is nil if the IPv6 subnet could not be determined at network creation time.
+    public let ipv6Gateway: IPv6Address?
     /// The MAC address associated with the attachment (optional).
     public let macAddress: MACAddress?
     /// The MTU for the network interface.
@@ -45,6 +48,7 @@ public struct Attachment: Codable, Sendable {
         ipv4Address: CIDRv4,
         ipv4Gateway: IPv4Address,
         ipv6Address: CIDRv6?,
+        ipv6Gateway: IPv6Address? = nil,
         macAddress: MACAddress?,
         mtu: UInt32? = nil,
         variant: String? = nil
@@ -55,6 +59,7 @@ public struct Attachment: Codable, Sendable {
         self.ipv4Address = ipv4Address
         self.ipv4Gateway = ipv4Gateway
         self.ipv6Address = ipv6Address
+        self.ipv6Gateway = ipv6Gateway
         self.macAddress = macAddress
         self.mtu = mtu
         self.variant = variant
@@ -67,6 +72,7 @@ public struct Attachment: Codable, Sendable {
         case ipv4Address
         case ipv4Gateway
         case ipv6Address
+        case ipv6Gateway
         case macAddress
         case mtu
         case variant
@@ -94,6 +100,7 @@ public struct Attachment: Codable, Sendable {
             ipv4Gateway = try container.decode(IPv4Address.self, forKey: .gateway)
         }
         ipv6Address = try container.decodeIfPresent(CIDRv6.self, forKey: .ipv6Address)
+        ipv6Gateway = try container.decodeIfPresent(IPv6Address.self, forKey: .ipv6Gateway)
         macAddress = try container.decodeIfPresent(MACAddress.self, forKey: .macAddress)
         mtu = try container.decodeIfPresent(UInt32.self, forKey: .mtu)
         variant = try container.decodeIfPresent(String.self, forKey: .variant)
@@ -109,6 +116,7 @@ public struct Attachment: Codable, Sendable {
         try container.encode(ipv4Address, forKey: .ipv4Address)
         try container.encode(ipv4Gateway, forKey: .ipv4Gateway)
         try container.encodeIfPresent(ipv6Address, forKey: .ipv6Address)
+        try container.encodeIfPresent(ipv6Gateway, forKey: .ipv6Gateway)
         try container.encodeIfPresent(macAddress, forKey: .macAddress)
         try container.encodeIfPresent(mtu, forKey: .mtu)
         try container.encodeIfPresent(variant, forKey: .variant)

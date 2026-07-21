@@ -378,6 +378,14 @@ You can also specify custom IPv4 and IPv6 subnets when creating a network:
 container network create foo --subnet 192.168.100.0/24 --subnet-v6 fd00:1234::/64
 ```
 
+To use a specific IPv6 gateway, provide `--gateway-v6` with an address in the
+IPv6 subnet. When it is omitted, the vmnet network uses the first address in
+the configured IPv6 subnet as its gateway.
+
+```bash
+container network create foo --subnet-v6 fd00:1234::/64 --gateway-v6 fd00:1234::53
+```
+
 The `foo` network, the default network, and any other networks you create are isolated from one another. A container on one network has no connectivity to containers on other networks.
 
 Run `container network list` to see the networks that exist:

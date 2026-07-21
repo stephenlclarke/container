@@ -67,15 +67,20 @@ struct AttachmentConfigurationTest {
             aliases: ["web"],
             ipv4Address: try CIDRv4("192.168.64.2/24"),
             ipv4Gateway: try IPv4Address("192.168.64.1"),
-            ipv6Address: nil,
+            ipv6Address: try CIDRv6("fd00::2/64"),
+            ipv6Gateway: try IPv6Address("fd00::1"),
             macAddress: nil
         )
 
         let data = try JSONEncoder().encode(attachment)
         let decoded = try JSONDecoder().decode(Attachment.self, from: data)
+        let expectedIPv6Address = try CIDRv6("fd00::2/64")
+        let expectedIPv6Gateway = try IPv6Address("fd00::1")
 
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == ["web"])
+        #expect(decoded.ipv6Address == expectedIPv6Address)
+        #expect(decoded.ipv6Gateway == expectedIPv6Gateway)
     }
 }
 
@@ -91,6 +96,21 @@ struct NetworkConfigurationTest {
         let decoded = try JSONDecoder().decode(NetworkStatus.self, from: JSONSerialization.data(withJSONObject: encoded))
 
         #expect(decoded.ipv4ReservedAddresses == [])
+        #expect(decoded.ipv6Gateway == nil)
+    }
+
+    @Test func networkStatusRoundTripsIPv6Gateway() throws {
+        let gateway = try IPv6Address("fd00:1234::53")
+        let status = NetworkStatus(
+            ipv4Subnet: try CIDRv4("192.0.2.0/24"),
+            ipv4Gateway: try IPv4Address("192.0.2.1"),
+            ipv6Subnet: try CIDRv6("fd00:1234::/64"),
+            ipv6Gateway: gateway
+        )
+
+        let decoded = try JSONDecoder().decode(NetworkStatus.self, from: JSONEncoder().encode(status))
+
+        #expect(decoded.ipv6Gateway == gateway)
     }
 
     @Test func networkConfigurationRoundTripsIPv4ReservedAddresses() throws {
@@ -143,6 +163,47 @@ struct NetworkConfigurationTest {
         } throws: { error in
             guard let error = error as? ContainerizationError else { return false }
             return error.code == .invalidArgument
+        }
+    }
+
+    @Test func networkConfigurationRoundTripsIPv6Gateway() throws {
+        let subnet = try CIDRv6("fd00:1234::/64")
+        let gateway = try IPv6Address("fd00:1234::53")
+        let configuration = try NetworkConfiguration(
+            name: "ipv6-gateway-network",
+            mode: .nat,
+            ipv6Subnet: subnet,
+            ipv6Gateway: gateway,
+            plugin: "container-network-vmnet"
+        )
+
+        let decoded = try JSONDecoder().decode(NetworkConfiguration.self, from: JSONEncoder().encode(configuration))
+
+        #expect(decoded.ipv6Subnet == subnet)
+        #expect(decoded.ipv6Gateway == gateway)
+    }
+
+    @Test func networkConfigurationRejectsInvalidIPv6Gateway() throws {
+        let invalidConfigurations: [(CIDRv6?, IPv6Address?, Bool)] = [
+            (nil, try IPv6Address("fd00:1234::1"), true),
+            (try CIDRv6("fd00:1234::/64"), try IPv6Address("fd00:5678::1"), true),
+            (try CIDRv6("fd00:1234::/64"), try IPv6Address("fd00:1234::1"), false),
+        ]
+
+        for (subnet, gateway, enableIPv6) in invalidConfigurations {
+            #expect {
+                _ = try NetworkConfiguration(
+                    name: "invalid-ipv6-gateway-network",
+                    mode: .nat,
+                    ipv6Subnet: subnet,
+                    ipv6Gateway: gateway,
+                    enableIPv6: enableIPv6,
+                    plugin: "container-network-vmnet"
+                )
+            } throws: { error in
+                guard let error = error as? ContainerizationError else { return false }
+                return error.code == .invalidArgument
+            }
         }
     }
 

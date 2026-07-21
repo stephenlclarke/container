@@ -961,7 +961,7 @@ Creates a new network with the given name.
 **Usage**
 
 ```bash
-container network create [--internal] [--label <label> ...] [--option <option> ...] [--plugin <plugin>] [--subnet <subnet>] [--subnet-v6 <subnet-v6>] [--debug] <name>
+container network create [--internal] [--label <label> ...] [--option <option> ...] [--plugin <plugin>] [--subnet <subnet>] [--subnet-v6 <subnet-v6>] [--gateway-v6 <gateway-v6>] [--debug] <name>
 ```
 
 **Arguments**
@@ -976,6 +976,7 @@ container network create [--internal] [--label <label> ...] [--option <option> .
 *   `--plugin <plugin>`: Network plugin to use (default: `container-network-vmnet`)
 *   `--subnet <subnet>`: Set the IPv4 subnet for a network (CIDR format, e.g., 192.168.100.0/24)
 *   `--subnet-v6 <subnet-v6>`: Set the IPv6 prefix for a network (CIDR format, e.g., fd00:1234::/64)
+*   `--gateway-v6 <gateway-v6>`: Set the IPv6 gateway for a network (for example, fd00:1234::53)
 
 ### `container network delete (rm)`
 

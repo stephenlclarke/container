@@ -39,6 +39,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         let ipv4Gateway: IPv4Address
         let ipv4AllocationRange: CIDRv4?
         let ipv6Subnet: CIDRv6?
+        let ipv6Gateway: IPv6Address?
     }
 
     private let configuration: NetworkConfiguration
@@ -89,7 +90,8 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
                 ipv4Gateway: networkInfo.ipv4Gateway,
                 ipv4AllocationRange: networkInfo.ipv4AllocationRange,
                 ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
-                ipv6Subnet: networkInfo.ipv6Subnet
+                ipv6Subnet: networkInfo.ipv6Subnet,
+                ipv6Gateway: networkInfo.ipv6Gateway
             )
             state.network = networkInfo.network
         }
@@ -148,7 +150,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
 
         // set the IPv6 network prefix
         if let ipv6Subnet {
-            let gateway = IPv6Address(ipv6Subnet.lower.value + 1)
+            let gateway = configuration.ipv6Gateway ?? IPv6Address(ipv6Subnet.lower.value + 1)
             var gatewayAddr = in6_addr()
             inet_pton(AF_INET6, gateway.description, &gatewayAddr)
             log.info(
@@ -178,6 +180,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         let runningGateway = configuration.ipv4Gateway ?? IPv4Address(runningSubnet.lower.value + 1)
 
         let runningV6Subnet: CIDRv6?
+        let runningV6Gateway: IPv6Address?
         if configuration.enableIPv6 {
             var prefixAddr = in6_addr()
             var prefixLength = UInt8(0)
@@ -189,9 +192,15 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
                 Array($0)
             }
             let prefixIpv6Addr = try IPv6Address(prefixIpv6Bytes)
-            runningV6Subnet = try CIDRv6(prefixIpv6Addr, prefix: prefix)
+            let reportedSubnet = try CIDRv6(prefixIpv6Addr, prefix: prefix)
+            // vmnet reports the router address in the prefix buffer. Normalize it
+            // to the network address before exposing the CIDR to callers.
+            let subnet = try CIDRv6(reportedSubnet.lower, prefix: prefix)
+            runningV6Subnet = subnet
+            runningV6Gateway = configuration.ipv6Gateway ?? IPv6Address(subnet.lower.value + 1)
         } else {
             runningV6Subnet = nil
+            runningV6Gateway = nil
         }
 
         log.info(
@@ -201,6 +210,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
                 "mode": "\(configuration.mode)",
                 "cidr": "\(runningSubnet)",
                 "cidrv6": runningV6Subnet.map { "\($0)" } ?? "disabled",
+                "gatewayv6": runningV6Gateway.map { "\($0)" } ?? "disabled",
             ]
         )
 
@@ -210,6 +220,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
             ipv4Gateway: runningGateway,
             ipv4AllocationRange: configuration.ipv4AllocationRange,
             ipv6Subnet: runningV6Subnet,
+            ipv6Gateway: runningV6Gateway,
         )
     }
 }

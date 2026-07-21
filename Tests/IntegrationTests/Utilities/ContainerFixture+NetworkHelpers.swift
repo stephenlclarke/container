@@ -25,6 +25,7 @@ struct NetworkInspectOutput: Codable {
         let ipv4Subnet: String?
         let ipv4Gateway: String?
         let ipv6Subnet: String?
+        let ipv6Gateway: String?
     }
     let id: String
     let configuration: NetworkConfiguration

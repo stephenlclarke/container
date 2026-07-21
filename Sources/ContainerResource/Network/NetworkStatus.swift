@@ -34,18 +34,23 @@ public struct NetworkStatus: Codable, Sendable {
     /// The IPv6 subnet assigned to the network, if IPv6 is enabled.
     public let ipv6Subnet: CIDRv6?
 
+    /// The IPv6 gateway address, if IPv6 is enabled.
+    public let ipv6Gateway: IPv6Address?
+
     public init(
         ipv4Subnet: CIDRv4,
         ipv4Gateway: IPv4Address,
         ipv4AllocationRange: CIDRv4? = nil,
         ipv4ReservedAddresses: [IPv4Address] = [],
-        ipv6Subnet: CIDRv6?
+        ipv6Subnet: CIDRv6?,
+        ipv6Gateway: IPv6Address? = nil
     ) {
         self.ipv4Subnet = ipv4Subnet
         self.ipv4Gateway = ipv4Gateway
         self.ipv4AllocationRange = ipv4AllocationRange
         self.ipv4ReservedAddresses = ipv4ReservedAddresses
         self.ipv6Subnet = ipv6Subnet
+        self.ipv6Gateway = ipv6Gateway
     }
 
     enum CodingKeys: String, CodingKey {
@@ -54,6 +59,7 @@ public struct NetworkStatus: Codable, Sendable {
         case ipv4AllocationRange
         case ipv4ReservedAddresses
         case ipv6Subnet
+        case ipv6Gateway
     }
 
     /// Decodes a network status, treating statuses written before reserved IPv4
@@ -65,6 +71,7 @@ public struct NetworkStatus: Codable, Sendable {
         ipv4AllocationRange = try container.decodeIfPresent(CIDRv4.self, forKey: .ipv4AllocationRange)
         ipv4ReservedAddresses = try container.decodeIfPresent([IPv4Address].self, forKey: .ipv4ReservedAddresses) ?? []
         ipv6Subnet = try container.decodeIfPresent(CIDRv6.self, forKey: .ipv6Subnet)
+        ipv6Gateway = try container.decodeIfPresent(IPv6Address.self, forKey: .ipv6Gateway)
     }
 
     /// Encodes the active network status.
@@ -75,5 +82,6 @@ public struct NetworkStatus: Codable, Sendable {
         try container.encodeIfPresent(ipv4AllocationRange, forKey: .ipv4AllocationRange)
         try container.encode(ipv4ReservedAddresses, forKey: .ipv4ReservedAddresses)
         try container.encodeIfPresent(ipv6Subnet, forKey: .ipv6Subnet)
+        try container.encodeIfPresent(ipv6Gateway, forKey: .ipv6Gateway)
     }
 }

@@ -76,7 +76,8 @@ struct RuntimeServiceHostsTests {
             hostname: "demo-api-1",
             ipv4Address: try CIDRv4("192.168.64.2/24"),
             ipv4Gateway: try IPv4Address("192.168.64.1"),
-            ipv6Address: nil,
+            ipv6Address: try CIDRv6("fd00:1234::2/64"),
+            ipv6Gateway: try IPv6Address("fd00:1234::53"),
             macAddress: nil
         )
 
@@ -86,8 +87,12 @@ struct RuntimeServiceHostsTests {
             guestInterfaceName: "frontend",
             additionalData: nil
         )
+        let expectedIPv6Address = try CIDRv6("fd00:1234::2/64")
+        let expectedIPv6Gateway = try IPv6Address("fd00:1234::53")
 
         #expect(interface.guestInterfaceName == "frontend")
+        #expect(interface.ipv6Address == expectedIPv6Address)
+        #expect(interface.ipv6Gateway == expectedIPv6Gateway)
     }
 
     @Test

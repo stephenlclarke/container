@@ -123,7 +123,8 @@ public actor DefaultNetworkService: NetworkService {
         let resolvedIPv6Address = try resolveIPv6Address(
             requestedIPv6Address,
             macAddress: effectiveMACAddress,
-            subnet: status.ipv6Subnet
+            subnet: status.ipv6Subnet,
+            gateway: status.ipv6Gateway
         )
         if let resolvedIPv6Address, let owner = ipv6AddressIndexes[resolvedIPv6Address], owner != existingIndex {
             throw ContainerizationError(.exists, message: "IPv6 address '\(resolvedIPv6Address)' is already allocated")
@@ -161,6 +162,7 @@ public actor DefaultNetworkService: NetworkService {
                 "ipv4Address": "\(attachment.ipv4Address)",
                 "ipv4Gateway": "\(attachment.ipv4Gateway)",
                 "ipv6Address": "\(attachment.ipv6Address?.description ?? "unavailable")",
+                "ipv6Gateway": "\(attachment.ipv6Gateway?.description ?? "unavailable")",
                 "macAddress": "\(attachment.macAddress?.description ?? "unspecified")",
             ])
 
@@ -244,7 +246,8 @@ public actor DefaultNetworkService: NetworkService {
     private func resolveIPv6Address(
         _ requestedIPv6Address: IPv6Address?,
         macAddress: MACAddress,
-        subnet: CIDRv6?
+        subnet: CIDRv6?,
+        gateway: IPv6Address?
     ) throws -> IPv6Address? {
         if let requestedIPv6Address {
             guard !requestedIPv6Address.isUnspecified else {
@@ -261,6 +264,9 @@ public actor DefaultNetworkService: NetworkService {
                     .invalidArgument,
                     message: "requested IPv6 address '\(requestedIPv6Address)' is not in subnet '\(subnet)'"
                 )
+            }
+            guard requestedIPv6Address != gateway else {
+                throw ContainerizationError(.invalidArgument, message: "requested IPv6 address '\(requestedIPv6Address)' is the network gateway")
             }
             return requestedIPv6Address
         }
@@ -291,6 +297,7 @@ public actor DefaultNetworkService: NetworkService {
             ipv4Address: try CIDRv4(IPv4Address(index), prefix: status.ipv4Subnet.prefix),
             ipv4Gateway: status.ipv4Gateway,
             ipv6Address: ipv6CIDR,
+            ipv6Gateway: status.ipv6Gateway,
             macAddress: macAddress,
             variant: network.variant
         )

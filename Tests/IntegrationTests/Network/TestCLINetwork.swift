@@ -124,6 +124,43 @@ struct TestCLINetwork {
     }
 
     @available(macOS 26, *)
+    @Test func testNetworkCreateWithIPv6Gateway() async throws {
+        try await ContainerFixture.with { f in
+            let net = "\(f.testID)-ipv6-gateway"
+            let container = "\(f.testID)-ipv6-gateway-client"
+            let subnet = "fd42:4242:4242::/64"
+            let gateway = "fd42:4242:4242::53"
+            f.addCleanup { f.doNetworkDeleteIfExists(net) }
+            f.addCleanup {
+                try? f.doStop(container)
+                try? f.doRemove(container)
+            }
+
+            try f.doNetworkCreate(net, args: ["--subnet-v6", subnet, "--gateway-v6", gateway])
+
+            let network = try f.inspectNetwork(net)
+            #expect(network.configuration.ipv6Gateway?.description == gateway)
+            #expect(network.status.ipv6Subnet?.description == subnet)
+            #expect(network.status.ipv6Gateway?.description == gateway)
+
+            try f.doLongRun(
+                name: container,
+                image: "docker.io/library/alpine",
+                args: ["--network", net],
+                containerArgs: ["sleep", "infinity"],
+                autoRemove: false
+            )
+            try await f.waitForContainerRunning(container)
+
+            let attachment = try #require(try f.inspectContainer(container).networks.first { $0.network == net })
+            #expect(attachment.ipv6Address != nil)
+            #expect(attachment.ipv6Gateway?.description == gateway)
+            let routes = try f.doExec(container, cmd: ["ip", "-6", "route", "show", "default"])
+            #expect(routes.contains("via \(gateway)"), "expected IPv6 default route through \(gateway): \(routes)")
+        }
+    }
+
+    @available(macOS 26, *)
     @Test func testNetworkRequestedIPv4Address() async throws {
         try await ContainerFixture.with { f in
             let net = "\(f.testID)-net"

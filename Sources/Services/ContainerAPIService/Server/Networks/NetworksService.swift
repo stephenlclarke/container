@@ -177,6 +177,7 @@ public actor NetworksService {
                 ipv4AllocationRange: configuration.ipv4AllocationRange,
                 ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
                 ipv6Subnet: configuration.ipv6Subnet,
+                ipv6Gateway: configuration.ipv6Gateway,
                 enableIPv6: configuration.enableIPv6,
                 labels: configuration.labels,
                 plugin: configuration.plugin,
@@ -412,6 +413,10 @@ public actor NetworksService {
             }
 
             args += ["--subnet-v6", ipv6Subnet.description]
+        }
+
+        if let ipv6Gateway = configuration.ipv6Gateway {
+            args += ["--gateway-v6", ipv6Gateway.description]
         }
 
         if let variant = configuration.options["variant"] {

@@ -68,6 +68,9 @@ extension NetworkVmnetHelper {
         @Option(name: .customLong("subnet-v6"), help: "CIDR address for the IPv6 prefix")
         var ipv6Subnet: String?
 
+        @Option(name: .customLong("gateway-v6"), help: "IPv6 gateway address for the network")
+        var ipv6Gateway: String?
+
         @Flag(name: .customLong("disable-ipv6"), help: "Disable IPv6 on the network")
         var disableIPv6 = false
 
@@ -97,6 +100,7 @@ extension NetworkVmnetHelper {
                 let ipv4AllocationRange = try self.ipv4AllocationRange.map { try CIDRv4($0) }
                 let ipv4ReservedAddresses = try self.ipv4ReservedAddresses.map { try IPv4Address($0) }
                 let ipv6Subnet = try self.ipv6Subnet.map { try CIDRv6($0) }
+                let ipv6Gateway = try self.ipv6Gateway.map { try IPv6Address($0) }
 
                 let configuration = try NetworkConfiguration(
                     name: id,
@@ -106,6 +110,7 @@ extension NetworkVmnetHelper {
                     ipv4AllocationRange: ipv4AllocationRange,
                     ipv4ReservedAddresses: ipv4ReservedAddresses,
                     ipv6Subnet: ipv6Subnet,
+                    ipv6Gateway: ipv6Gateway,
                     enableIPv6: !disableIPv6,
                     plugin: NetworkVmnetHelper._commandName,
                     options: ["variant": self.variant.rawValue]

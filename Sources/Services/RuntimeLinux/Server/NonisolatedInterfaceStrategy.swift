@@ -66,10 +66,13 @@ public struct NonisolatedInterfaceStrategy: InterfaceStrategy {
 
         log.info("creating NATNetworkInterface with network reference")
         let ipv4Gateway = interfaceIndex == 0 ? attachment.ipv4Gateway : nil
+        let ipv6Gateway = interfaceIndex == 0 ? attachment.ipv6Gateway : nil
         return NATNetworkInterface(
             ipv4Address: attachment.ipv4Address,
             ipv4Gateway: ipv4Gateway,
             reference: networkRef,
+            ipv6Address: attachment.ipv6Address,
+            ipv6Gateway: ipv6Gateway,
             macAddress: attachment.macAddress,
             // https://github.com/apple/containerization/pull/38
             mtu: attachment.mtu ?? 1280,
