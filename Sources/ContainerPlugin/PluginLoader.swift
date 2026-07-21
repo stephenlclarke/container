@@ -32,8 +32,6 @@ public struct PluginLoader: Sendable {
 
     private let log: Logger?
 
-    private let isServiceRegistered: @Sendable (String) throws -> Bool
-
     private let registerService: @Sendable (String) throws -> Void
 
     public typealias PluginQualifier = ((Plugin) -> Bool)
@@ -58,7 +56,6 @@ public struct PluginLoader: Sendable {
             pluginDirectories: pluginDirectories,
             pluginFactories: pluginFactories,
             log: log,
-            isServiceRegistered: { try ServiceManager.isRegistered(fullServiceLabel: $0) },
             registerService: { try ServiceManager.register(plistPath: $0) }
         )
     }
@@ -70,7 +67,6 @@ public struct PluginLoader: Sendable {
         pluginDirectories: [URL],
         pluginFactories: [PluginFactory],
         log: Logger? = nil,
-        isServiceRegistered: @escaping @Sendable (String) throws -> Bool,
         registerService: @escaping @Sendable (String) throws -> Void
     ) throws {
         let pluginResourceRoot = appRoot.appendingPathComponent("plugin-state")
@@ -82,7 +78,6 @@ public struct PluginLoader: Sendable {
         self.pluginDirectories = pluginDirectories
         self.pluginFactories = pluginFactories
         self.log = log
-        self.isServiceRegistered = isServiceRegistered
         self.registerService = registerService
     }
 
@@ -286,9 +281,9 @@ extension PluginLoader {
         let plistUrl = rootURL.appendingPathComponent("service.plist")
         let data = try plist.encode()
         try data.write(to: plistUrl)
-        if try !isServiceRegistered(id) {
-            try registerService(plistUrl.path)
-        }
+        // Registration reuses this plist when it is already active and replaces
+        // a same-label service from another application root.
+        try registerService(plistUrl.path)
     }
 
     public func deregisterWithLaunchd(plugin: Plugin, instanceId: String? = nil) throws {

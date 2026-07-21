@@ -126,10 +126,10 @@ extension Application {
             let data = try plist.encode()
             try data.write(to: plistURL)
 
-            if try !ServiceManager.isRegistered(fullServiceLabel: "com.apple.container.apiserver") {
-                log.info("Launching container-apiserver...")
-                try ServiceManager.register(plistPath: plistURL.path)
-            }
+            log.info("Launching container-apiserver...")
+            // Registration reuses this plist when it is already active and replaces
+            // a same-label service from another application root.
+            try ServiceManager.register(plistPath: plistURL.path)
 
             // Now ping our friendly daemon. Fail if we don't get a response.
             let health: SystemHealth

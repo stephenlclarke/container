@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerizationError
+import Foundation
 import Testing
 
 @testable import ContainerPlugin
@@ -37,5 +38,48 @@ struct ServiceManagerTests {
         #expect(error?.code == .internalError)
         #expect(error?.message.contains("launchctl bootstrap gui/501 /tmp/service.plist") == true)
         #expect(error?.message.hasSuffix("status 5") == true)
+    }
+
+    @Test func registrationActionRegistersWhenServiceIsMissing() {
+        #expect(
+            ServiceManager.registrationAction(
+                loadedPlistPath: nil,
+                expectedPlistPath: "/tmp/current/service.plist"
+            ) == .register
+        )
+    }
+
+    @Test func registrationActionReusesMatchingService() throws {
+        let directory = "/tmp/container-service-manager-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let plistPath = "\(directory)/service.plist"
+        FileManager.default.createFile(atPath: plistPath, contents: Data())
+
+        #expect(
+            ServiceManager.registrationAction(
+                loadedPlistPath: "/private\(plistPath)",
+                expectedPlistPath: plistPath
+            ) == .reuse
+        )
+    }
+
+    @Test func registrationActionReplacesStaleService() {
+        #expect(
+            ServiceManager.registrationAction(
+                loadedPlistPath: "/tmp/previous/service.plist",
+                expectedPlistPath: "/tmp/current/service.plist"
+            ) == .replace
+        )
+    }
+
+    @Test func parsesPlistPathFromLaunchctlPrint() {
+        let output = """
+            gui/501/com.apple.container.example = {
+                path = /private/tmp/container/app/service.plist
+                state = running
+            }
+            """
+        #expect(ServiceManager.plistPath(fromLaunchctlPrint: output) == "/private/tmp/container/app/service.plist")
     }
 }

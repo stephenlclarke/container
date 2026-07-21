@@ -202,7 +202,6 @@ struct PluginLoaderTest {
             logRoot: nil,
             pluginDirectories: [tempURL],
             pluginFactories: [factory],
-            isServiceRegistered: { _ in false },
             registerService: { _ in registered.withLock { $0 = true } }
         )
 
@@ -232,7 +231,6 @@ struct PluginLoaderTest {
             logRoot: nil,
             pluginDirectories: [tempURL],
             pluginFactories: [factory],
-            isServiceRegistered: { _ in false },
             registerService: { _ in }
         )
 
@@ -261,7 +259,6 @@ struct PluginLoaderTest {
             logRoot: nil,
             pluginDirectories: [tempURL],
             pluginFactories: [factory],
-            isServiceRegistered: { _ in false },
             registerService: { _ in }
         )
 
@@ -280,7 +277,7 @@ struct PluginLoaderTest {
     }
 
     @Test
-    func testRegisterSkipsAlreadyRegisteredService() async throws {
+    func testRegisterDelegatesAlreadyRegisteredServiceToReconciliation() async throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tempURL) }
         let factory = try setupMock(tempURL: tempURL)
@@ -291,7 +288,6 @@ struct PluginLoaderTest {
             logRoot: nil,
             pluginDirectories: [tempURL],
             pluginFactories: [factory],
-            isServiceRegistered: { _ in true },
             registerService: { _ in registeredAgain.withLock { $0 = true } }
         )
 
@@ -301,7 +297,7 @@ struct PluginLoaderTest {
             pluginStateRoot: tempURL.appendingPathComponent("test-state")
         )
 
-        #expect(!registeredAgain.withLock { $0 })
+        #expect(registeredAgain.withLock { $0 })
     }
 
     private func setupMock(tempURL: URL) throws -> MockPluginFactory {

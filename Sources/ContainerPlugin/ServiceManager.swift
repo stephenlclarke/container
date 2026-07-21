@@ -18,6 +18,12 @@ import ContainerizationError
 import Foundation
 
 public struct ServiceManager {
+    enum RegistrationAction: Equatable {
+        case register
+        case reuse
+        case replace
+    }
+
     private static func runLaunchctlCommand(args: [String]) throws -> Int32 {
         let launchctl = Foundation.Process()
         launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
@@ -34,11 +40,54 @@ public struct ServiceManager {
     }
 
     /// Register a service by providing the path to a plist.
+    ///
+    /// A launchd label is global to its domain. Reusing a label from another
+    /// application root would direct this installation to the previous helper,
+    /// so replace only services whose plist path does not match this registration.
     public static func register(plistPath: String) throws {
+        let label = try launchdLabel(inPlistAt: plistPath)
         let domain = try Self.getDomainString()
+        let service = "\(domain)/\(label)"
+
+        let loadedPath = try loadedPlistPath(fullServiceLabel: service)
+        switch registrationAction(loadedPlistPath: loadedPath, expectedPlistPath: plistPath) {
+        case .reuse:
+            return
+        case .replace:
+            let args = ["bootout", service]
+            let status = try runLaunchctlCommand(args: args)
+            try validateLaunchctlSuccess(status: status, args: args)
+        case .register:
+            break
+        }
+
         let args = ["bootstrap", domain, plistPath]
         let status = try runLaunchctlCommand(args: args)
         try validateLaunchctlSuccess(status: status, args: args)
+    }
+
+    static func registrationAction(loadedPlistPath: String?, expectedPlistPath: String) -> RegistrationAction {
+        guard let loadedPlistPath else {
+            return .register
+        }
+        guard canonicalPath(loadedPlistPath) == canonicalPath(expectedPlistPath) else {
+            return .replace
+        }
+        return .reuse
+    }
+
+    static func plistPath(fromLaunchctlPrint output: String) -> String? {
+        output
+            .split(whereSeparator: \.isNewline)
+            .lazy
+            .compactMap { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard trimmed.hasPrefix("path = ") else {
+                    return nil
+                }
+                return String(trimmed.dropFirst("path = ".count))
+            }
+            .first
     }
 
     static func validateLaunchctlSuccess(status: Int32, args: [String]) throws {
@@ -47,6 +96,51 @@ public struct ServiceManager {
                 .internalError,
                 message: "command `launchctl \(args.joined(separator: " "))` failed with status \(status)"
             )
+        }
+    }
+
+    private static func loadedPlistPath(fullServiceLabel: String) throws -> String? {
+        let launchctl = Foundation.Process()
+        launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        launchctl.arguments = ["print", fullServiceLabel]
+
+        let output = Pipe()
+        launchctl.standardOutput = output
+        launchctl.standardError = FileHandle.nullDevice
+
+        try launchctl.run()
+        let outputData = output.fileHandleForReading.readDataToEndOfFile()
+        launchctl.waitUntilExit()
+        guard launchctl.terminationStatus == 0,
+            let outputText = String(data: outputData, encoding: .utf8)
+        else {
+            return nil
+        }
+        return plistPath(fromLaunchctlPrint: outputText)
+    }
+
+    private static func launchdLabel(inPlistAt plistPath: String) throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: plistPath))
+        guard
+            let plist = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+            let label = plist["Label"] as? String,
+            !label.isEmpty
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "launchd plist at \(plistPath) does not contain a Label"
+            )
+        }
+        return label
+    }
+
+    private static func canonicalPath(_ path: String) -> String {
+        path.withCString { pointer in
+            guard let resolved = realpath(pointer, nil) else {
+                return URL(fileURLWithPath: path).standardizedFileURL.path(percentEncoded: false)
+            }
+            defer { free(resolved) }
+            return String(cString: resolved)
         }
     }
 
