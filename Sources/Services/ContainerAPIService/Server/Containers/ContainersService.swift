@@ -49,6 +49,12 @@ public actor ContainersService {
         }
     }
 
+    private struct StartedExecProcess {
+        let snapshot: ContainerSnapshot
+        let processID: String
+        let client: RuntimeClient
+    }
+
     private static let machServicePrefix = "com.apple.container"
     private static let launchdDomainString = try! ServiceManager.getDomainString()
     private static let logTailReadChunkSize = UInt64(32 * 1024)
@@ -69,6 +75,8 @@ public actor ContainersService {
     private var restartTaskTokens: [String: UUID] = [:]
     private var restartStabilityTasks: [String: Task<Void, Never>] = [:]
     private var restartStabilityTaskTokens: [String: UUID] = [:]
+    private var execEventTracker = ContainerExecEventTracker()
+    private var execExitTasks: [String: [String: Task<Void, Never>]] = [:]
 
     // FIXME: Find a better mechanism for services running on the APIServer to work with each other
     private weak var networksService: NetworksService?
@@ -558,6 +566,17 @@ public actor ContainersService {
             config: config,
             stdio: stdio
         )
+        guard !Self.isInitProcess(id: id, processID: processID) else {
+            return
+        }
+
+        await eventBroadcaster.publish(
+            execEventTracker.create(
+                snapshot: state.snapshot,
+                processID: processID,
+                configuration: config
+            )
+        )
     }
 
     /// Start a process in a container. This can either be a process created via
@@ -584,19 +603,31 @@ public actor ContainersService {
         }
 
         let restartPolicy = try getContainerCreationOptions(id: id).restartPolicy
-        let startedSnapshot = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)", "processId": "\(processID)"]) { context -> ContainerSnapshot? in
+        let execConfiguration = execEventTracker.configuration(containerID: id, processID: processID)
+        let (startedSnapshot, startedExecProcess) = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)", "processId": "\(processID)"]) {
+            context -> (ContainerSnapshot?, StartedExecProcess?) in
             var state = try await self.getContainerState(id: id, context: context)
 
             let isInit = Self.isInitProcess(id: id, processID: processID)
             if state.snapshot.status == .running && isInit {
-                return nil
+                return (nil, nil)
             }
 
             let client = try state.getClient()
             try await client.startProcess(processID)
 
             guard isInit else {
-                return nil
+                guard execConfiguration != nil else {
+                    return (nil, nil)
+                }
+                return (
+                    nil,
+                    StartedExecProcess(
+                        snapshot: state.snapshot,
+                        processID: processID,
+                        client: client
+                    )
+                )
             }
 
             do {
@@ -635,13 +666,27 @@ public actor ContainersService {
                     healthCheck: state.snapshot.configuration.healthCheck,
                     client: client
                 )
-                return state.snapshot
+                return (state.snapshot, nil)
             } catch {
                 await self.stopHealthCheckMonitor(id: id)
                 await self.exitMonitor.stopTracking(id: id)
                 try? await client.stop(options: ContainerStopOptions.default)
                 throw error
             }
+        }
+
+        if let startedExecProcess {
+            if let event = execEventTracker.start(
+                snapshot: startedExecProcess.snapshot,
+                processID: startedExecProcess.processID
+            ) {
+                await eventBroadcaster.publish(event)
+            }
+            scheduleExecExit(
+                id: id,
+                processID: startedExecProcess.processID,
+                client: startedExecProcess.client
+            )
         }
 
         if let startedSnapshot {
@@ -2010,6 +2055,7 @@ public actor ContainersService {
     private func cleanUp(id: String, context: AsyncLock.Context) async throws {
         self.stopHealthCheckMonitor(id: id)
         self.cancelRestartTasks(id: id)
+        self.cancelExecTasks(id: id)
         try await self._cleanUp(id: id)
     }
 
@@ -2104,6 +2150,56 @@ public actor ContainersService {
         restartStabilityTasks[id]?.cancel()
         restartStabilityTasks.removeValue(forKey: id)
         restartStabilityTaskTokens.removeValue(forKey: id)
+    }
+
+    /// Cancels detached exec observers and drops their transient event state with the container.
+    private func cancelExecTasks(id: String) {
+        if let tasks = execExitTasks[id] {
+            for task in tasks.values {
+                task.cancel()
+            }
+        }
+        execExitTasks.removeValue(forKey: id)
+        execEventTracker.removeContainer(id: id)
+    }
+
+    /// Begins observing one started exec process so detached commands also emit `exec_die`.
+    private func scheduleExecExit(id: String, processID: String, client: RuntimeClient) {
+        execExitTasks[id]?[processID]?.cancel()
+        execExitTasks[id, default: [:]][processID] = Task { [weak self] in
+            do {
+                let status = try await client.wait(processID)
+                guard !Task.isCancelled else {
+                    return
+                }
+                await self?.completeExecProcess(
+                    id: id,
+                    processID: processID,
+                    exitCode: status.exitCode
+                )
+            } catch {
+                // A stopped or removed container can invalidate its runtime client before its exec exits.
+            }
+        }
+    }
+
+    /// Publishes a terminal exec event exactly once, even when a caller is also waiting on the process.
+    private func completeExecProcess(id: String, processID: String, exitCode: Int32) async {
+        execExitTasks[id]?.removeValue(forKey: processID)
+        guard let state = containers[id] else {
+            execEventTracker.removeContainer(id: id)
+            return
+        }
+        guard
+            let event = execEventTracker.die(
+                snapshot: state.snapshot,
+                processID: processID,
+                exitCode: exitCode
+            )
+        else {
+            return
+        }
+        await eventBroadcaster.publish(event)
     }
 
     private func scheduleRestart(id: String, delayInNanoseconds: UInt64) {

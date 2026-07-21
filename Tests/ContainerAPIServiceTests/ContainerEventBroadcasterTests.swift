@@ -52,6 +52,49 @@ struct ContainerEventBroadcasterTests {
         #expect(event.attributes["process"] == "demo-api-1")
     }
 
+    @Test func execLifecycleEventsUseDockerActionsAndAttributes() {
+        let snapshot = stoppedSnapshot(status: .running)
+        let configuration = ProcessConfiguration(
+            executable: "sh",
+            arguments: ["-c", "exit 23"],
+            environment: []
+        )
+        var tracker = ContainerExecEventTracker()
+
+        let create = tracker.create(
+            snapshot: snapshot,
+            processID: "exec-123",
+            configuration: configuration
+        )
+        #expect(tracker.configuration(containerID: "demo-api-1", processID: "exec-123")?.executable == "sh")
+        let start = tracker.start(
+            snapshot: snapshot,
+            processID: "exec-123"
+        )
+        let die = tracker.die(
+            snapshot: snapshot,
+            processID: "exec-123",
+            exitCode: 23
+        )
+
+        #expect(create.action == "exec_create: sh -c exit 23")
+        #expect(start?.action == "exec_start: sh -c exit 23")
+        #expect(die?.action == "exec_die")
+        #expect(create.attributes["execID"] == "exec-123")
+        #expect(start?.attributes["execID"] == "exec-123")
+        #expect(die?.attributes["execID"] == "exec-123")
+        #expect(die?.attributes["exitCode"] == "23")
+        #expect(create.attributes["status"] == nil)
+        #expect(create.attributes["image"] == "alpine:3.20")
+        #expect(create.attributes["com.example.role"] == "api")
+        #expect(tracker.die(snapshot: snapshot, processID: "exec-123", exitCode: 23) == nil)
+        #expect(tracker.start(snapshot: snapshot, processID: "exec-123") == nil)
+
+        _ = tracker.create(snapshot: snapshot, processID: "exec-456", configuration: configuration)
+        tracker.removeContainer(id: "demo-api-1")
+        #expect(tracker.configuration(containerID: "demo-api-1", processID: "exec-456") == nil)
+    }
+
     @Test func streamsPublishedEventsAsJSONLines() async throws {
         let broadcaster = ContainerEventBroadcaster()
         let subscription = await broadcaster.subscribe()
