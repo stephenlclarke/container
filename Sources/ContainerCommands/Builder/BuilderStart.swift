@@ -240,7 +240,9 @@ extension Application {
                 useRosetta ? nil : "--enable-qemu",
             ].compactMap { $0 }
 
-            try ContainerAPIClient.Utility.validEntityName(builderContainerId)
+            guard ManagedContainer.nameValid(builderContainerId) else {
+                throw ContainerizationError(.invalidArgument, message: "container ID \(builderContainerId) is not a valid container ID")
+            }
 
             let image = try await ClientImage.fetch(
                 reference: builderImage,
