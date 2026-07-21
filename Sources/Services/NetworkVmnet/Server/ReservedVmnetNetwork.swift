@@ -38,7 +38,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         let ipv4Subnet: CIDRv4
         let ipv4Gateway: IPv4Address
         let ipv4AllocationRange: CIDRv4?
-        let ipv6Subnet: CIDRv6
+        let ipv6Subnet: CIDRv6?
     }
 
     private let configuration: NetworkConfiguration
@@ -120,6 +120,10 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         }
 
         vmnet_network_configuration_disable_dhcp(vmnetConfiguration)
+        if !configuration.enableIPv6 {
+            vmnet_network_configuration_disable_nat66(vmnetConfiguration)
+            vmnet_network_configuration_disable_router_advertisement(vmnetConfiguration)
+        }
 
         let ipv4Subnet = configuration.ipv4Subnet
         let ipv6Subnet = configuration.ipv6Subnet
@@ -173,17 +177,22 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         let runningSubnet = try CIDRv4(lower: lower, upper: upper)
         let runningGateway = configuration.ipv4Gateway ?? IPv4Address(runningSubnet.lower.value + 1)
 
-        var prefixAddr = in6_addr()
-        var prefixLength = UInt8(0)
-        vmnet_network_get_ipv6_prefix(network, &prefixAddr, &prefixLength)
-        guard let prefix = Prefix(length: prefixLength) else {
-            throw ContainerizationError(.internalError, message: "invalid IPv6 prefix length \(prefixLength) for network \(configuration.id)")
+        let runningV6Subnet: CIDRv6?
+        if configuration.enableIPv6 {
+            var prefixAddr = in6_addr()
+            var prefixLength = UInt8(0)
+            vmnet_network_get_ipv6_prefix(network, &prefixAddr, &prefixLength)
+            guard let prefix = Prefix(length: prefixLength) else {
+                throw ContainerizationError(.internalError, message: "invalid IPv6 prefix length \(prefixLength) for network \(configuration.id)")
+            }
+            let prefixIpv6Bytes = withUnsafeBytes(of: prefixAddr.__u6_addr.__u6_addr8) {
+                Array($0)
+            }
+            let prefixIpv6Addr = try IPv6Address(prefixIpv6Bytes)
+            runningV6Subnet = try CIDRv6(prefixIpv6Addr, prefix: prefix)
+        } else {
+            runningV6Subnet = nil
         }
-        let prefixIpv6Bytes = withUnsafeBytes(of: prefixAddr.__u6_addr.__u6_addr8) {
-            Array($0)
-        }
-        let prefixIpv6Addr = try IPv6Address(prefixIpv6Bytes)
-        let runningV6Subnet = try CIDRv6(prefixIpv6Addr, prefix: prefix)
 
         log.info(
             "started vmnet network",
@@ -191,7 +200,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
                 "id": "\(configuration.id)",
                 "mode": "\(configuration.mode)",
                 "cidr": "\(runningSubnet)",
-                "cidrv6": "\(runningV6Subnet)",
+                "cidrv6": runningV6Subnet.map { "\($0)" } ?? "disabled",
             ]
         )
 

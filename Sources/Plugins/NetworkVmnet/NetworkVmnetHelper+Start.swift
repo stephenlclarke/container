@@ -68,6 +68,9 @@ extension NetworkVmnetHelper {
         @Option(name: .customLong("subnet-v6"), help: "CIDR address for the IPv6 prefix")
         var ipv6Subnet: String?
 
+        @Flag(name: .customLong("disable-ipv6"), help: "Disable IPv6 on the network")
+        var disableIPv6 = false
+
         @Option(name: .long, help: "Variant of the network helper to use.")
         var variant: Variant = {
             guard #available(macOS 26, *) else {
@@ -103,6 +106,7 @@ extension NetworkVmnetHelper {
                     ipv4AllocationRange: ipv4AllocationRange,
                     ipv4ReservedAddresses: ipv4ReservedAddresses,
                     ipv6Subnet: ipv6Subnet,
+                    enableIPv6: !disableIPv6,
                     plugin: NetworkVmnetHelper._commandName,
                     options: ["variant": self.variant.rawValue]
                 )

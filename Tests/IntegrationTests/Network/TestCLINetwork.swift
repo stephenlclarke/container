@@ -110,6 +110,20 @@ struct TestCLINetwork {
     }
 
     @available(macOS 26, *)
+    @Test func testNetworkCreateWithIPv6Disabled() async throws {
+        try await ContainerFixture.with { f in
+            let net = "\(f.testID)-no-ipv6"
+            f.addCleanup { f.doNetworkDeleteIfExists(net) }
+
+            try f.doNetworkCreate(net, args: ["--disable-ipv6"])
+
+            let network = try f.inspectNetwork(net)
+            #expect(!network.configuration.enableIPv6)
+            #expect(network.status.ipv6Subnet == nil)
+        }
+    }
+
+    @available(macOS 26, *)
     @Test func testNetworkRequestedIPv4Address() async throws {
         try await ContainerFixture.with { f in
             let net = "\(f.testID)-net"

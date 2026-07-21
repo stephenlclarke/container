@@ -110,6 +110,42 @@ struct NetworkConfigurationTest {
         #expect(decoded.ipv4ReservedAddresses == reservedAddresses)
     }
 
+    @Test func networkConfigurationDefaultsAndRoundTripsIPv6Enablement() throws {
+        let defaultConfiguration = try NetworkConfiguration(
+            name: "default-ipv6-network",
+            mode: .nat,
+            plugin: "container-network-vmnet"
+        )
+        #expect(defaultConfiguration.enableIPv6)
+
+        let disabledConfiguration = try NetworkConfiguration(
+            name: "disabled-ipv6-network",
+            mode: .nat,
+            enableIPv6: false,
+            plugin: "container-network-vmnet"
+        )
+        let decoded = try JSONDecoder().decode(
+            NetworkConfiguration.self,
+            from: JSONEncoder().encode(disabledConfiguration)
+        )
+        #expect(!decoded.enableIPv6)
+    }
+
+    @Test func networkConfigurationRejectsIPv6SubnetWhenIPv6IsDisabled() throws {
+        #expect {
+            _ = try NetworkConfiguration(
+                name: "invalid-disabled-ipv6-network",
+                mode: .nat,
+                ipv6Subnet: try CIDRv6("2001:db8::/64"),
+                enableIPv6: false,
+                plugin: "container-network-vmnet"
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else { return false }
+            return error.code == .invalidArgument
+        }
+    }
+
     @Test func networkConfigurationRejectsInvalidIPv4ReservedAddresses() throws {
         let subnet = try CIDRv4("192.0.2.0/24")
         let invalidAddressLists = [

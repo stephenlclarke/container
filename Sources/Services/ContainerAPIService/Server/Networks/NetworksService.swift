@@ -177,6 +177,7 @@ public actor NetworksService {
                 ipv4AllocationRange: configuration.ipv4AllocationRange,
                 ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
                 ipv6Subnet: configuration.ipv6Subnet,
+                enableIPv6: configuration.enableIPv6,
                 labels: configuration.labels,
                 plugin: configuration.plugin,
                 options: configuration.options
@@ -358,6 +359,9 @@ public actor NetworksService {
         ]
         if debugHelpers {
             args.append("--debug")
+        }
+        if !configuration.enableIPv6 {
+            args.append("--disable-ipv6")
         }
 
         if let ipv4Subnet = configuration.ipv4Subnet {

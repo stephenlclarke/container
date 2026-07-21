@@ -47,6 +47,9 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
     /// The preferred CIDR address for the IPv6 subnet, if specified
     public let ipv6Subnet: CIDRv6?
 
+    /// Whether the network provides IPv6 connectivity.
+    public let enableIPv6: Bool
+
     /// Key-value labels for the network.
     /// Resource labels should not be mutated, except while building a network configurations.
     public let labels: ResourceLabels
@@ -66,6 +69,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         ipv4AllocationRange: CIDRv4? = nil,
         ipv4ReservedAddresses: [IPv4Address] = [],
         ipv6Subnet: CIDRv6? = nil,
+        enableIPv6: Bool = true,
         labels: ResourceLabels = .init(),
         plugin: String,
         options: [String: String] = [:]
@@ -78,6 +82,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         self.ipv4AllocationRange = ipv4AllocationRange
         self.ipv4ReservedAddresses = ipv4ReservedAddresses
         self.ipv6Subnet = ipv6Subnet
+        self.enableIPv6 = enableIPv6
         self.labels = labels
         self.plugin = plugin
         self.options = options
@@ -96,6 +101,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         case ipv4AllocationRange
         case ipv4ReservedAddresses
         case ipv6Subnet
+        case enableIPv6
         case labels
         case plugin
         case options
@@ -124,6 +130,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         ipv4ReservedAddresses = try container.decodeIfPresent([IPv4Address].self, forKey: .ipv4ReservedAddresses) ?? []
         ipv6Subnet = try container.decodeIfPresent(String.self, forKey: .ipv6Subnet)
             .map { try CIDRv6($0) }
+        enableIPv6 = try container.decodeIfPresent(Bool.self, forKey: .enableIPv6) ?? true
         let decodedLabels = try container.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
         labels = try .init(decodedLabels)
 
@@ -157,6 +164,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         try container.encodeIfPresent(ipv4AllocationRange, forKey: .ipv4AllocationRange)
         try container.encode(ipv4ReservedAddresses, forKey: .ipv4ReservedAddresses)
         try container.encodeIfPresent(ipv6Subnet, forKey: .ipv6Subnet)
+        try container.encode(enableIPv6, forKey: .enableIPv6)
         try container.encode(labels, forKey: .labels)
         try container.encode(plugin, forKey: .plugin)
         try container.encode(options, forKey: .options)
@@ -227,6 +235,13 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
                     )
                 }
             }
+        }
+
+        if !enableIPv6, ipv6Subnet != nil {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "an IPv6 subnet requires IPv6 to be enabled"
+            )
         }
     }
 }
