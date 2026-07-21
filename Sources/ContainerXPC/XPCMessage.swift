@@ -255,21 +255,28 @@ extension XPCMessage {
     }
 
     public func fileHandles(key: String) -> [FileHandle]? {
-        let fds = lock.withLock {
-            xpc_dictionary_get_value(self.object, key)
-        }
-        if let fds {
-            let fd1 = xpc_array_dup_fd(fds, 0)
-            let fd2 = xpc_array_dup_fd(fds, 1)
-            if fd1 == -1 || fd2 == -1 {
+        let descriptors: [Int32]? = lock.withLock {
+            guard let fds = xpc_dictionary_get_value(self.object, key),
+                xpc_get_type(fds) == XPC_TYPE_ARRAY
+            else {
                 return nil
             }
-            return [
-                FileHandle(fileDescriptor: fd1, closeOnDealloc: false),
-                FileHandle(fileDescriptor: fd2, closeOnDealloc: false),
-            ]
+
+            var descriptors: [Int32] = []
+            descriptors.reserveCapacity(Int(xpc_array_get_count(fds)))
+            for index in 0..<xpc_array_get_count(fds) {
+                let descriptor = xpc_array_dup_fd(fds, index)
+                guard descriptor != -1 else {
+                    for descriptor in descriptors {
+                        close(descriptor)
+                    }
+                    return nil
+                }
+                descriptors.append(descriptor)
+            }
+            return descriptors
         }
-        return nil
+        return descriptors?.map { FileHandle(fileDescriptor: $0, closeOnDealloc: false) }
     }
 
     public func set(key: String, value: [FileHandle]) throws {

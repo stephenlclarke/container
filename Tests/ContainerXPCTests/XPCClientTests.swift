@@ -24,6 +24,34 @@ import Testing
 
 @Suite(.timeLimit(.minutes(1)), .serialized)
 struct XPCClientTests {
+    @Test(arguments: [0, 1, 2])
+    func fileHandlesPreserveEveryDescriptor(count: Int) throws {
+        let message = XPCMessage(route: "file-handles")
+        let sourceHandles = try (0..<count).map { _ in
+            try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        }
+        try message.set(key: "file-handles", value: sourceHandles)
+
+        let receivedHandles = try #require(message.fileHandles(key: "file-handles"))
+        defer {
+            for handle in receivedHandles {
+                try? handle.close()
+            }
+        }
+
+        #expect(receivedHandles.count == count)
+        #expect(receivedHandles.allSatisfy { $0.fileDescriptor >= 0 })
+    }
+
+    @Test
+    func fileHandlesRejectNonArrayValue() throws {
+        let message = XPCMessage(route: "file-handles")
+        let sourceHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        message.set(key: "file-handles", value: sourceHandle)
+
+        #expect(message.fileHandles(key: "file-handles") == nil)
+    }
+
     @Test
     func responseTimeoutReturnsWithinBound() async throws {
         let server = AnonymousXPCServer()
