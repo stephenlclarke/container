@@ -224,6 +224,7 @@ public struct Flags {
             dnsDisabled: Bool,
             addHost: [String] = [],
             entrypoint: String?,
+            clearEntrypoint: Bool = false,
             initImage: String?,
             kernel: String?,
             labels: [String],
@@ -286,6 +287,7 @@ public struct Flags {
             self.dnsDisabled = dnsDisabled
             self.addHost = addHost
             self.entrypoint = entrypoint
+            self.clearEntrypoint = clearEntrypoint
             self.initImage = initImage
             self.kernel = kernel
             self.labels = labels
@@ -378,6 +380,12 @@ public struct Flags {
             )
         )
         public var entrypoint: String?
+
+        @Flag(
+            name: .customLong("clear-entrypoint"),
+            help: "Clear the image entrypoint while retaining the image command"
+        )
+        public var clearEntrypoint = false
 
         @Flag(name: .customLong("init"), help: "Run an init process inside the container that forwards signals and reaps processes")
         public var useInit = false

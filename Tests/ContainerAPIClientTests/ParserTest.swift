@@ -17,6 +17,7 @@
 import ContainerResource
 import ContainerizationError
 import ContainerizationExtras
+import ContainerizationOCI
 import Foundation
 import SystemPackage
 import Testing
@@ -1194,6 +1195,60 @@ struct ParserTest {
 
         #expect(result.executable == "./uname")
         #expect(result.workingDirectory == "/bin")
+    }
+
+    @Test
+    func testProcessClearEntrypointRetainsImageCommand() throws {
+        let result = try Parser.process(
+            arguments: [],
+            processFlags: try Flags.Process.parse([]),
+            managementFlags: try Flags.Management.parse(["--clear-entrypoint"]),
+            config: ImageConfig(entrypoint: ["/usr/local/bin/server"], cmd: ["/usr/local/bin/server", "--serve", "8080"])
+        )
+
+        #expect(result.executable == "/usr/local/bin/server")
+        #expect(result.arguments == ["--serve", "8080"])
+    }
+
+    @Test
+    func testProcessUsesImageEntrypointWithImageCommand() throws {
+        let result = try Parser.process(
+            arguments: [],
+            processFlags: try Flags.Process.parse([]),
+            managementFlags: try Flags.Management.parse([]),
+            config: ImageConfig(entrypoint: ["/usr/local/bin/server"], cmd: ["--serve", "8080"])
+        )
+
+        #expect(result.executable == "/usr/local/bin/server")
+        #expect(result.arguments == ["--serve", "8080"])
+    }
+
+    @Test
+    func testProcessRejectsCombinedEntrypointOverrides() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.process(
+                arguments: [],
+                processFlags: try Flags.Process.parse([]),
+                managementFlags: try Flags.Management.parse(["--clear-entrypoint", "--entrypoint", "/bin/sh"]),
+                config: ImageConfig(entrypoint: ["/usr/local/bin/server"], cmd: ["--serve"])
+            )
+        }
+
+        #expect(try #require(error).message == "--clear-entrypoint cannot be combined with --entrypoint")
+    }
+
+    @Test
+    func testProcessRequiresCommandOrEntrypoint() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.process(
+                arguments: [],
+                processFlags: try Flags.Process.parse([]),
+                managementFlags: try Flags.Management.parse([]),
+                config: ImageConfig()
+            )
+        }
+
+        #expect(try #require(error).message == "command/entrypoint not specified for container process")
     }
 
     @Test
