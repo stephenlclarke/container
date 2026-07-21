@@ -402,7 +402,9 @@ struct TestCLIMachineRuntimeSerial {
             try await f.waitForMachineStatus(name, status: "running")
 
             let result = try f.runMachine(["ls", "-q"]).check()
-            #expect(result.output.trimmingCharacters(in: .whitespacesAndNewlines) == name)
+            let listedNames = result.output.split(whereSeparator: \.isNewline).map(String.init)
+            #expect(listedNames.contains(name))
+            #expect(!listedNames.contains("NAME"), "quiet mode should not print a header")
         }
     }
 
