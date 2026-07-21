@@ -679,12 +679,21 @@ public actor ContainersService {
         }
         let client = try state.getClient()
         try await client.kill(processID, signal: signal)
+        let parsedSignal = try? Signal(signal)
+        await eventBroadcaster.publish(
+            Self.killEvent(
+                snapshot: state.snapshot,
+                processID: processID,
+                signal: parsedSignal?.rawValue,
+                requestedSignal: signal
+            )
+        )
 
         // SIGKILL is guaranteed to terminate the target. When directed at the
         // container's init process, follow up with the same API-server cleanup
         // that `stop` performs.
-        if processID == id, (try? Signal(signal)) == .kill {
-            try await handleContainerExit(id: id)
+        if processID == id, parsedSignal == .kill {
+            try await handleContainerExit(id: id, code: ExitStatus(exitCode: 128 + Signal.kill.rawValue))
         }
     }
 
@@ -1661,10 +1670,10 @@ public actor ContainersService {
                 stoppedSnapshot.status = .stopped
                 stoppedSnapshot.networks = []
                 stoppedSnapshot.health = nil
-                return [
-                    Self.containerEvent(action: "stop", snapshot: stoppedSnapshot),
-                    Self.containerEvent(action: "delete", snapshot: stoppedSnapshot),
-                ]
+                stoppedSnapshot.exitCode = 128 + Signal.kill.rawValue
+                stoppedSnapshot.exitedDate = .now
+                return Self.terminalLifecycleEvents(snapshot: stoppedSnapshot)
+                    + Self.removalEvents(snapshot: stoppedSnapshot)
             }
         case .stopping:
             throw ContainerizationError(
@@ -1674,7 +1683,7 @@ public actor ContainersService {
         default:
             events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
                 try await self.cleanUp(id: id, context: context)
-                return [Self.containerEvent(action: "delete", snapshot: state.snapshot)]
+                return Self.removalEvents(snapshot: state.snapshot)
             }
         }
 
@@ -1852,14 +1861,11 @@ public actor ContainersService {
         state.client = nil
 
         let options = try getContainerCreationOptions(id: id)
-        let stopEvent = Self.containerEvent(action: "stop", snapshot: state.snapshot)
+        let terminalEvents = Self.terminalLifecycleEvents(snapshot: state.snapshot)
         if options.autoRemove {
             await self.setContainerState(id, state, context: context)
             try await self.cleanUp(id: id, context: context)
-            return [
-                stopEvent,
-                Self.containerEvent(action: "delete", snapshot: state.snapshot),
-            ]
+            return terminalEvents + Self.removalEvents(snapshot: state.snapshot)
         }
 
         let restartDelay = state.restart.restartDelay(
@@ -1870,18 +1876,55 @@ public actor ContainersService {
         if let restartDelay {
             self.scheduleRestart(id: id, delayInNanoseconds: restartDelay)
         }
-        return [stopEvent]
+        return terminalEvents
     }
 
     private static func fullLaunchdServiceLabel(runtimeName: String, instanceId: String) -> String {
         "\(Self.launchdDomainString)/\(Self.machServicePrefix).\(runtimeName).\(instanceId)"
     }
 
-    private static func containerEvent(action: String, snapshot: ContainerSnapshot) -> ContainerEvent {
+    /// Returns Docker's terminal event before the existing generic stop event.
+    static func terminalLifecycleEvents(snapshot: ContainerSnapshot) -> [ContainerEvent] {
+        var exitAttributes = [String: String]()
+        if let exitCode = snapshot.exitCode {
+            exitAttributes["exitCode"] = "\(exitCode)"
+        }
+        return [
+            containerEvent(action: "die", snapshot: snapshot, additionalAttributes: exitAttributes),
+            containerEvent(action: "stop", snapshot: snapshot),
+        ]
+    }
+
+    /// Returns the generic deletion event and Docker's matching destroy event.
+    static func removalEvents(snapshot: ContainerSnapshot) -> [ContainerEvent] {
+        [
+            containerEvent(action: "delete", snapshot: snapshot),
+            containerEvent(action: "destroy", snapshot: snapshot),
+        ]
+    }
+
+    /// Describes a signal delivered through the generic container API.
+    static func killEvent(
+        snapshot: ContainerSnapshot,
+        processID: String,
+        signal: Int32?,
+        requestedSignal: String
+    ) -> ContainerEvent {
+        var attributes = ["process": processID]
+        attributes["signal"] = signal.map(String.init) ?? requestedSignal
+        return containerEvent(action: "kill", snapshot: snapshot, additionalAttributes: attributes)
+    }
+
+    private static func containerEvent(
+        action: String,
+        snapshot: ContainerSnapshot,
+        additionalAttributes: [String: String] = [:]
+    ) -> ContainerEvent {
         var attributes = snapshot.configuration.labels
         attributes["image"] = snapshot.configuration.image.reference
         attributes["status"] = snapshot.status.rawValue
         attributes["health"] = snapshot.health?.rawValue
+        attributes.merge(additionalAttributes) { _, additional in additional }
         return ContainerEvent(
             type: "container",
             id: snapshot.id,

@@ -16,12 +16,42 @@
 
 import ContainerResource
 import ContainerXPC
+import Containerization
 import Foundation
 import Testing
 
 @testable import ContainerAPIService
 
 struct ContainerEventBroadcasterTests {
+    @Test func terminalLifecycleEventsReportExitBeforeGenericStop() {
+        let events = ContainersService.terminalLifecycleEvents(snapshot: stoppedSnapshot(exitCode: 137))
+
+        #expect(events.map(\.action) == ["die", "stop"])
+        #expect(events[0].attributes["exitCode"] == "137")
+        #expect(events[0].attributes["status"] == "stopped")
+        #expect(events[1].attributes["exitCode"] == nil)
+    }
+
+    @Test func removalEventsPreserveGenericDeleteAndAddDockerDestroy() {
+        let events = ContainersService.removalEvents(snapshot: stoppedSnapshot())
+
+        #expect(events.map(\.action) == ["delete", "destroy"])
+        #expect(events.allSatisfy { $0.attributes["image"] == "alpine:3.20" })
+    }
+
+    @Test func killEventUsesCanonicalSignalAndIncludesTargetProcess() {
+        let event = ContainersService.killEvent(
+            snapshot: stoppedSnapshot(status: .running),
+            processID: "demo-api-1",
+            signal: Signal.kill.rawValue,
+            requestedSignal: "SIGKILL"
+        )
+
+        #expect(event.action == "kill")
+        #expect(event.attributes["signal"] == "9")
+        #expect(event.attributes["process"] == "demo-api-1")
+    }
+
     @Test func streamsPublishedEventsAsJSONLines() async throws {
         let broadcaster = ContainerEventBroadcaster()
         let subscription = await broadcaster.subscribe()
@@ -160,5 +190,37 @@ struct ContainerEventBroadcasterTests {
         return try lines.map { line in
             try decoder.decode(ContainerEvent.self, from: Data(line.utf8))
         }
+    }
+
+    private func stoppedSnapshot(
+        status: RuntimeStatus = .stopped,
+        exitCode: Int32? = nil
+    ) -> ContainerSnapshot {
+        let image = ImageDescription(
+            reference: "alpine:3.20",
+            descriptor: .init(
+                mediaType: "application/vnd.oci.image.manifest.v1+json",
+                digest: "sha256:" + String(repeating: "0", count: 64),
+                size: 0
+            )
+        )
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: [],
+            workingDirectory: "/",
+            terminal: false,
+            user: .id(uid: 0, gid: 0),
+            supplementalGroups: [],
+            rlimits: []
+        )
+        var configuration = ContainerConfiguration(id: "demo-api-1", image: image, process: process)
+        configuration.labels = ["com.example.role": "api"]
+        return ContainerSnapshot(
+            configuration: configuration,
+            status: status,
+            networks: [],
+            exitCode: exitCode
+        )
     }
 }
