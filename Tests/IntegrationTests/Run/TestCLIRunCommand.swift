@@ -70,6 +70,31 @@ struct TestCLIRunCommand {
         }
     }
 
+    @Test func testRunCommandLabelsPreserveEqualsInValues() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(alpine)
+            let c = "\(f.testID)-c"
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: [
+                    "--label", "config=key=value",
+                    "--label", "traefik.http.routers.api.rule=Host(`example.test`)",
+                ],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+
+            let labels = try f.inspectContainer(c).configuration.labels
+            #expect(labels["config"] == "key=value")
+            #expect(labels["traefik.http.routers.api.rule"] == "Host(`example.test`)")
+        }
+    }
+
     @Test func testRunCommandEnvFile() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)

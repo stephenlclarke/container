@@ -1385,7 +1385,7 @@ public struct Parser {
             if label.isEmpty {
                 throw ContainerizationError(.invalidArgument, message: "label cannot be an empty string")
             }
-            let parts = label.split(separator: "=", maxSplits: 2)
+            let parts = label.split(separator: "=", maxSplits: 1)
             switch parts.count {
             case 1:
                 result[String(parts[0])] = ""

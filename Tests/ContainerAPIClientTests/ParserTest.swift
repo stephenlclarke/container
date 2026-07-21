@@ -1249,6 +1249,18 @@ struct ParserTest {
     }
 
     @Test
+    func testLabelsPreserveEqualsInValues() throws {
+        #expect(
+            try Parser.labels([
+                "config=key=value",
+                "traefik.http.routers.api.rule=Host(`example.test`)",
+            ]) == [
+                "config": "key=value",
+                "traefik.http.routers.api.rule": "Host(`example.test`)",
+            ])
+    }
+
+    @Test
     func testManagementFlagsAcceptExposedPorts() throws {
         let flags = try Flags.Management.parse([
             "--expose", "8080",
