@@ -24,6 +24,7 @@ import Containerization
 import ContainerizationError
 import ContainerizationExtras
 import ContainerizationOCI
+import Darwin
 import Foundation
 import Logging
 import TerminalProgress
@@ -100,6 +101,10 @@ extension Application {
             progressUpdate: @escaping ProgressUpdateHandler,
             containerSystemConfig: ContainerSystemConfig,
         ) async throws {
+            guard ManagedContainer.nameValid(builderContainerId) else {
+                throw ContainerizationError(.invalidArgument, message: "container ID \(builderContainerId) is not a valid container ID")
+            }
+
             await progressUpdate([
                 .setDescription("Fetching BuildKit image"),
                 .setItemsName("blobs"),
@@ -109,6 +114,11 @@ extension Application {
 
             let builderImage: String = containerSystemConfig.build.image
             let systemHealth = try await ClientHealthCheck.ping(timeout: .seconds(10))
+            let startupLock = try BuilderStartupLock.acquire(
+                appRoot: systemHealth.appRoot,
+                builderContainerId: builderContainerId
+            )
+            defer { startupLock.unlock() }
             let exportsMount: String = systemHealth.appRoot
                 .appendingPathComponent(Application.BuilderCommand.builderResourceDir)
                 .absolutePath()
@@ -239,10 +249,6 @@ extension Application {
                 "--vsock",
                 useRosetta ? nil : "--enable-qemu",
             ].compactMap { $0 }
-
-            guard ManagedContainer.nameValid(builderContainerId) else {
-                throw ContainerizationError(.invalidArgument, message: "container ID \(builderContainerId) is not a valid container ID")
-            }
 
             let image = try await ClientImage.fetch(
                 reference: builderImage,

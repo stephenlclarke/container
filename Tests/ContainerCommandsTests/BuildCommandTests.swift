@@ -22,6 +22,24 @@ import Testing
 
 struct BuildCommandTests {
     @Test
+    func builderStartupLockSerializesConcurrentProcessStartup() throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let firstLock = try BuilderStartupLock.acquire(appRoot: directory, builderContainerId: "buildkit")
+        defer { firstLock.unlock() }
+
+        #expect(FileManager.default.fileExists(atPath: BuilderStartupLock.path(appRoot: directory, builderContainerId: "buildkit")))
+        firstLock.unlock()
+        let replacementLock = try BuilderStartupLock.acquire(
+            appRoot: directory,
+            builderContainerId: "buildkit",
+            nonBlocking: true
+        )
+        replacementLock.unlock()
+    }
+
+    @Test
     func dockerignoreFallsBackToContextFile() throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }

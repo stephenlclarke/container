@@ -65,15 +65,14 @@ let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_RE
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-29329914750-5939a91ec0dd"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:09bdaafcffcde28e3022ff65ef5ae3a6502022b3c9735a9b4f45acb17d054d3d"
 let scVersion = "0.37.0"
+let containerizationRevision = "93d77103c9a1ada25fd825478b2643e296810dc2"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
     ?? "stephenlclarke/containerization"
 let scRef =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_REF"]
-    ?? resolvedPackageState(identity: "containerization", key: "revision")
-    ?? resolvedPackageState(identity: "containerization", key: "branch")
-    ?? "main"
+    ?? containerizationRevision
 
 let package = Package(
     name: "container",
@@ -105,7 +104,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/stephenlclarke/containerization.git",
-            revision: "93d77103c9a1ada25fd825478b2643e296810dc2"
+            revision: containerizationRevision
         ),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
