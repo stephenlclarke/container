@@ -69,12 +69,15 @@ services. This PR deliberately does not claim complete Docker event parity.
 - Generic runtime implementation and tests:
   [`7ed57b18a7dbadddea21007d0a2c17d0ae399fa0`](https://github.com/stephenlclarke/container/commit/7ed57b18a7dbadddea21007d0a2c17d0ae399fa0),
   `feat(runtime): add Docker terminal lifecycle events`.
-- The Compose consumer handoff will reference its companion adapter commit,
-  package pin, parity fixture, and status-ledger update.
+- Compose consumer adapter, package pin, parity fixture, and status-ledger
+  update:
+  [`4a4396544200419011b5afc5eb896821a0a059bc`](https://github.com/stephenlclarke/container-compose/commit/4a4396544200419011b5afc5eb896821a0a059bc),
+  `feat(events): preserve Docker terminal lifecycle actions`.
 
 ## Non-goals
 
 - Docker daemon/API/socket emulation.
 - Linux OOM action reporting or Windows event behavior.
-- Automatic-restart, rename, resize, update, attach/detach, or exec event
-  actions.
+- OOM, explicit restart, rename, resize, update, or attach/detach event
+  actions. Automatic restart is now represented as `die` then `start`, and
+  exec actions are covered by the later exec lifecycle handoff.

@@ -79,8 +79,9 @@ change.
   [`735e8aaec538a1d043d97525074e4175ae1ac10f`](https://github.com/stephenlclarke/container/commit/735e8aaec538a1d043d97525074e4175ae1ac10f),
   `feat(runtime): add exec lifecycle events`.
 - Downstream Compose adapter, dependency pin, help/status update, and Docker
-  Compose V2 fixture validation: recorded in the companion `container-compose`
-  handoff after its signed commit is available.
+  Compose V2 fixture validation:
+  [`3c7998e3ea12ecf757b57d0c9b338d18b513725f`](https://github.com/stephenlclarke/container-compose/commit/3c7998e3ea12ecf757b57d0c9b338d18b513725f),
+  `feat(events): preserve Docker exec lifecycle actions`.
 
 ## Non-goals
 
