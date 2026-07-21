@@ -49,5 +49,5 @@ This adds the generic macOS OCI primitive only. It intentionally does not emulat
 ## Commit tracking
 
 - `containerization` primitive, tests, and handoff: `9109cbb8dab85917475f2ab3cecdbee797e2c0ad` (`feat(runtime): add OCI container annotations`).
-- `container` code, tests, and command-reference update: `9a751570a8fbd58438d8d2670027875c87cf3e33` (`feat(runtime): add OCI container annotations`).
+- `container` code, tests, and command-reference update: `9a75157a0c4ed1497bfb6b4ce8f43f6f1c25f0c8` (`feat(runtime): add OCI container annotations`).
 - `container-compose` adapter: pending; it will pin both revisions and reference this handoff.
