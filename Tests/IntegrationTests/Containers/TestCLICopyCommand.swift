@@ -50,6 +50,21 @@ struct TestCLICopyCommand {
         }
     }
 
+    @Test func testCopyContainerPathWithColonToHost() async throws {
+        try await ContainerFixture.with { f in
+            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            try await f.withContainer(image: image) { name in
+                let source = "/tmp/app-2026-07-20T10:30:00.log"
+                let content = "hello from a colon-named container path"
+                try f.doExec(name, cmd: ["sh", "-c", "printf '%s' '\(content)' > '\(source)'"])
+                let destination = f.testDir.appending("out.log")
+
+                try f.run(["copy", "\(name):\(source)", destination.string]).check()
+                #expect(try String(contentsOfFile: destination.string, encoding: .utf8) == content)
+            }
+        }
+    }
+
     @Test func testCopyUsingCpAlias() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])

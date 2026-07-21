@@ -30,12 +30,12 @@ extension Application {
         }
 
         static func parsePathRef(_ ref: String) throws -> PathRef {
-            let parts = ref.components(separatedBy: ":")
+            let parts = ref.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
             switch parts.count {
             case 1:
                 return .local(ref)
             case 2 where !parts[0].isEmpty && parts[1].starts(with: "/"):
-                return .container(id: parts[0], path: parts[1])
+                return .container(id: String(parts[0]), path: String(parts[1]))
             default:
                 throw ContainerizationError(.invalidArgument, message: "invalid path given: \(ref)")
             }

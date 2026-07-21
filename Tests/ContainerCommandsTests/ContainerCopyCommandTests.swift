@@ -79,6 +79,17 @@ struct ContainerCopyCommandTests {
         #expect(!command.followLink)
     }
 
+    @Test func copyPathReferencePreservesColonsInContainerPaths() throws {
+        let ref = try Application.ContainerCopy.parsePathRef("example:/var/log/app-2026-07-20T10:30:00.log")
+
+        guard case .container(let id, let path) = ref else {
+            Issue.record("expected a container path reference")
+            return
+        }
+        #expect(id == "example")
+        #expect(path == "/var/log/app-2026-07-20T10:30:00.log")
+    }
+
     @Test func localFilePathResolvesRelativePathsAgainstWorkingDirectory() {
         let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
         let expected = cwd.appendingPathComponent("copy-output").standardizedFileURL.path
