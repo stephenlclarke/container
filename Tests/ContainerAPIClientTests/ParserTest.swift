@@ -1211,6 +1211,25 @@ struct ParserTest {
     }
 
     @Test
+    func testManagementFlagsAcceptAnnotations() throws {
+        let flags = try Flags.Management.parse([
+            "--annotation", "com.example.owner=platform",
+            "--annotation", "com.example.purpose=local-development",
+        ])
+
+        #expect(
+            flags.annotations == [
+                "com.example.owner=platform",
+                "com.example.purpose=local-development",
+            ])
+        #expect(
+            try Parser.labels(flags.annotations) == [
+                "com.example.owner": "platform",
+                "com.example.purpose": "local-development",
+            ])
+    }
+
+    @Test
     func testProcessUsesImageEntrypointWithImageCommand() throws {
         let result = try Parser.process(
             arguments: [],

@@ -308,6 +308,7 @@ public struct Utility {
         }
 
         config.labels = try Parser.labels(management.labels)
+        config.annotations = try Parser.labels(management.annotations)
         config.hostname = try Parser.hostname(management.hostname)
         config.domainname = try Parser.hostname(management.domainname, option: "--domainname")
 

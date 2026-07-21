@@ -1400,6 +1400,7 @@ public actor RuntimeService {
             czConfig.graphics = gpu.enabled ? .virtioDevice : .disabled
         }
         czConfig.sysctl = try Self.resolvedSysctls(config: config)
+        czConfig.annotations = config.annotations
         // If the host doesn't support this, we'll throw on container creation.
         czConfig.virtualization = config.virtualization
         czConfig.useInit = config.useInit

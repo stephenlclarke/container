@@ -52,6 +52,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `--domainname <domainname>`: Set the NIS domain name visible inside the container
 *   `--entrypoint <cmd>`: Override the entrypoint of the image
 *   `--clear-entrypoint`: Clear the image entrypoint while retaining the image command
+*   `--annotation <annotation>`: Add a key=value OCI annotation to the container
 *   `--health-cmd <command>`: Run a shell command to check container health
 *   `--health-interval <duration>`: Time between health probes (default: 30s)
 *   `--health-retries <count>`: Consecutive failures required before reporting unhealthy (default: 3)
@@ -290,6 +291,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `--domainname <domainname>`: Set the NIS domain name visible inside the container
 *   `--entrypoint <cmd>`: Override the entrypoint of the image
 *   `--clear-entrypoint`: Clear the image entrypoint while retaining the image command
+*   `--annotation <annotation>`: Add a key=value OCI annotation to the container
 *   `--health-cmd <command>`: Run a shell command to check container health
 *   `--health-interval <duration>`: Time between health probes (default: 30s)
 *   `--health-retries <count>`: Consecutive failures required before reporting unhealthy (default: 3)
