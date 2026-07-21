@@ -439,6 +439,20 @@ struct RuntimeServiceHostsTests {
         #expect(runtimeConfiguration.cgroupParent == "workloads/build")
     }
 
+    @Test
+    func configureContainerPassesAnnotationsToContainerization() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.annotations = ["com.example.owner": "platform"]
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureContainer(
+            czConfig: &runtimeConfiguration,
+            config: config
+        )
+
+        #expect(runtimeConfiguration.annotations == ["com.example.owner": "platform"])
+    }
+
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",

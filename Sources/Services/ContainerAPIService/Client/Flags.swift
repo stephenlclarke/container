@@ -228,6 +228,7 @@ public struct Flags {
             initImage: String?,
             kernel: String?,
             labels: [String],
+            annotations: [String] = [],
             healthCommand: String? = nil,
             healthInterval: String? = nil,
             healthRetries: Int? = nil,
@@ -291,6 +292,7 @@ public struct Flags {
             self.initImage = initImage
             self.kernel = kernel
             self.labels = labels
+            self.annotations = annotations
             self.healthCommand = healthCommand
             self.healthInterval = healthInterval
             self.healthRetries = healthRetries
@@ -408,6 +410,9 @@ public struct Flags {
 
         @Option(name: [.short, .customLong("label")], help: "Add a key=value label to the container")
         public var labels: [String] = []
+
+        @Option(name: .customLong("annotation"), help: "Add a key=value OCI annotation to the container")
+        public var annotations: [String] = []
 
         @Option(name: .customLong("health-cmd"), help: "Command to run to check container health")
         public var healthCommand: String?

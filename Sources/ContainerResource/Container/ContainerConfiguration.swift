@@ -30,6 +30,8 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var publishedSockets: [PublishSocket] = []
     /// Key/Value labels for the container.
     public var labels: [String: String] = [:]
+    /// OCI annotations for the container runtime specification.
+    public var annotations: [String: String] = [:]
     /// System controls for the container.
     public var sysctls: [String: String] = [:]
     /// The networks the container will be added to.
@@ -98,6 +100,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         case publishedPorts
         case publishedSockets
         case labels
+        case annotations
         case sysctls
         case networks
         case hostname
@@ -141,6 +144,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         publishedPorts = try container.decodeIfPresent([PublishPort].self, forKey: .publishedPorts) ?? []
         publishedSockets = try container.decodeIfPresent([PublishSocket].self, forKey: .publishedSockets) ?? []
         labels = try container.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
+        annotations = try container.decodeIfPresent([String: String].self, forKey: .annotations) ?? [:]
         sysctls = try container.decodeIfPresent([String: String].self, forKey: .sysctls) ?? [:]
 
         if container.contains(.networks) {

@@ -52,6 +52,30 @@ func makeTestConfiguration(
 }
 
 struct ContainerConfigurationResourcesTests {
+    @Test func roundTripsAnnotations() throws {
+        var config = makeTestConfiguration()
+        config.annotations = ["com.example.owner": "platform"]
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.annotations == ["com.example.owner": "platform"])
+    }
+
+    @Test func decodesMissingAnnotationsAsEmpty() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "annotations")
+
+        let decoded = try JSONDecoder().decode(
+            ContainerConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.annotations.isEmpty)
+    }
+
     @Test func roundTripsCpuOverhead() throws {
         var config = makeTestConfiguration()
         config.resources.cpuOverhead = 2
