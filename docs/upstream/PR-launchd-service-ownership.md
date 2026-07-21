@@ -23,6 +23,9 @@ This is reproducible by starting one source-matched runtime, then starting a
 second one with a different `--app-root`. The second start must replace the
 API server, machine API, image, and vmnet network-helper plists together.
 
+The companion problem statement is
+[ISSUE-launchd-service-ownership.md](ISSUE-launchd-service-ownership.md).
+
 ## Apple-shaped boundary
 
 The change is confined to `apple/container`'s existing `ServiceManager`
@@ -102,3 +105,4 @@ installation after this runtime fix lands.
 
 - `container` code and tests: `7272c401bc134f67f64f50da5b6b5db922ebc6f7`
   (`fix(launchd): reconcile stale service ownership`, signed and verified).
+- `container` issue/PR handoff completion: this documentation commit.
