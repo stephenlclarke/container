@@ -40,12 +40,13 @@ public actor SnapshotStore {
             guard platform.os == "linux" else {
                 return nil
             }
-            var minBlockSize = 512.gib()
+            let capacityInBytes: UInt64
             if image.reference == initImage {
-                minBlockSize = 512.mib()
+                capacityInBytes = 512.mib()
+            } else {
+                capacityInBytes = 512.gib()
             }
-            let journal = EXT4.JournalConfig(defaultMode: .ordered)
-            return EXT4Unpacker(capacityInBytes: minBlockSize, journal: journal)
+            return EXT4Unpacker(capacityInBytes: capacityInBytes, journal: .init(defaultMode: .ordered))
         }
     }
 

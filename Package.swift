@@ -64,7 +64,7 @@ let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ??
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-29329914750-5939a91ec0dd"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:09bdaafcffcde28e3022ff65ef5ae3a6502022b3c9735a9b4f45acb17d054d3d"
-let scVersion = "0.37.0"
+let scVersion = "0.38.0"
 let containerizationRevision = "93d77103c9a1ada25fd825478b2643e296810dc2"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
@@ -106,7 +106,7 @@ let package = Package(
             url: "https://github.com/stephenlclarke/containerization.git",
             revision: containerizationRevision
         ),
-        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.13.2"),
@@ -137,6 +137,9 @@ let package = Package(
             dependencies: [
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationArchive", package: "containerization"),
@@ -147,6 +150,7 @@ let package = Package(
                 "ContainerAPIClient",
                 "ContainerLog",
                 "ContainerPersistence",
+                "ContainerPlugin",
                 "ContainerResource",
                 "MachineAPIClient",
                 "Yams",
@@ -500,6 +504,13 @@ let package = Package(
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SystemPackage", package: "swift-system"),
+            ]
+        ),
+        .testTarget(
+            name: "CLITests",
+            dependencies: [
+                .product(name: "SystemPackage", package: "swift-system"),
+                "ContainerLog",
             ]
         ),
         .target(

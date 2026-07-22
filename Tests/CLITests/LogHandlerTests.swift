@@ -21,7 +21,7 @@ import SystemPackage
 import Testing
 
 struct LogHandlerTests {
-    @Test func fileLogHandlerWritesSwiftLogEvents() throws {
+    @Test func fileLogHandlerWritesLegacyAndSwiftLogEvents() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("container-log-handler-\(UUID().uuidString)", isDirectory: true)
         defer {
@@ -43,10 +43,22 @@ struct LogHandlerTests {
                 line: #line
             ))
 
+        handler.log(
+            level: .notice,
+            message: "swift-log-path",
+            metadata: ["request": "def456"],
+            source: "ContainerLogTests",
+            file: #fileID,
+            function: #function,
+            line: #line
+        )
+
         let output = try String(contentsOf: logURL, encoding: .utf8)
         #expect(output.contains("[info] container-test unit"))
         #expect(output.contains("event-path"))
         #expect(output.contains("suite"))
         #expect(output.contains("request"))
+        #expect(output.contains("swift-log-path"))
+        #expect(output.contains("def456"))
     }
 }

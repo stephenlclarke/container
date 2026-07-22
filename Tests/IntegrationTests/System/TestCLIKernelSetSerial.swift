@@ -14,19 +14,22 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import ContainerAPIClient
 import ContainerPersistence
-import ContainerizationArchive
 import Foundation
 import Testing
 
 /// Tests for `container system kernel set`. Each test modifies the global default
 /// kernel binary, so the suite must run fully serialised.
+///
+/// None of these tests touch the network: they capture the bytes of whatever
+/// kernel is already installed (from the previous test, or from the initial
+/// `system start --enable-kernel-install`) and repackage them into a fixture
+/// tar via ``KernelFixture``, so the real install/extract/digest-verify/
+/// guest-boot code paths are still exercised end to end.
 @Suite(.serialized)
 struct TestCLIKernelSetSerial {
-    private let remoteTar = ContainerSystemConfig().kernel.url
+    private let fixture = KernelFixture()
     private let defaultBinaryPath = ContainerSystemConfig().kernel.binaryPath
-    private let defaultDigest = KernelConfig.defaultDigest
 
     /// Kernel release string parsed from the binary filename.
     ///
@@ -75,39 +78,35 @@ struct TestCLIKernelSetSerial {
     }
 
     @Test func fromLocalTar() async throws {
-        let symlinkBinaryPath = URL(filePath: defaultBinaryPath)
-            .deletingLastPathComponent()
-            .appending(path: "vmlinux.container")
-            .relativePath
-
         try await ContainerFixture.with { f in
-            f.addCleanup { await resetKernelToRecommended(f) }
-            let localTarPath = try await cachedKernelTar()
+            let capturedBinary = try prepareFixture(f)
+            let tarPath = URL(filePath: f.testDir.string).appending(path: "kernel.tar")
+            let digest = try fixture.writeTar(binary: capturedBinary, binaryArchivePath: defaultBinaryPath, to: tarPath)
             try f.run([
                 "system", "kernel", "set",
                 "--force",
-                "--tar", localTarPath.path,
+                "--tar", tarPath.path,
                 "--binary", symlinkBinaryPath,
-                "--digest", defaultDigest,
+                "--digest", digest,
             ]).check()
             try await validateGuestKernel(f)
         }
     }
 
     @Test func fromRemoteTarSymlink() async throws {
-        let symlinkBinaryPath = URL(filePath: defaultBinaryPath)
-            .deletingLastPathComponent()
-            .appending(path: "vmlinux.container")
-            .relativePath
-
         try await ContainerFixture.with { f in
-            f.addCleanup { await resetKernelToRecommended(f) }
+            let capturedBinary = try prepareFixture(f)
+            let tarPath = URL(filePath: f.testDir.string).appending(path: "kernel.tar")
+            let digest = try fixture.writeTar(binary: capturedBinary, binaryArchivePath: defaultBinaryPath, to: tarPath)
+
+            let server = try LoopbackFileServer(serving: try Data(contentsOf: tarPath))
+            defer { server.shutdown() }
             try f.run([
                 "system", "kernel", "set",
                 "--force",
-                "--tar", remoteTar.absoluteString,
+                "--tar", server.url.absoluteString,
                 "--binary", symlinkBinaryPath,
-                "--digest", defaultDigest,
+                "--digest", digest,
             ]).check()
             try await validateGuestKernel(f)
         }
@@ -115,43 +114,48 @@ struct TestCLIKernelSetSerial {
 
     @Test func fromLocalDisk() async throws {
         try await ContainerFixture.with { f in
-            f.addCleanup { await resetKernelToRecommended(f) }
-            let tempDir = URL(filePath: f.testDir.string)
-            let localTarPath = try await cachedKernelTar()
-
-            let targetPath = tempDir.appending(path: URL(string: defaultBinaryPath)!.lastPathComponent)
-            let archiveReader = try ArchiveReader(file: localTarPath)
-            let (_, data) = try archiveReader.extractFile(path: defaultBinaryPath)
-            try data.write(to: targetPath, options: .atomic)
-
-            try f.run(["system", "kernel", "set", "--force", "--binary", targetPath.path]).check()
+            let capturedBinary = try prepareFixture(f)
+            try f.run(["system", "kernel", "set", "--force", "--binary", capturedBinary.path]).check()
             try await validateGuestKernel(f)
         }
     }
 
     // MARK: - Private helpers
 
-    private func cachedKernelTar() async throws -> URL {
-        try await KernelArchiveCache.shared.tar(remoteTar: remoteTar, kernelFilePath: defaultBinaryPath)
+    /// The archive path `fromLocalTar`/`fromRemoteTarSymlink` request — a symlink
+    /// alongside the real binary, deliberately exercising `KernelService.extractFile`'s
+    /// symlink-following branch.
+    private var symlinkBinaryPath: String {
+        URL(filePath: defaultBinaryPath)
+            .deletingLastPathComponent()
+            .appending(path: "vmlinux.container")
+            .relativePath
     }
 
-    /// Resets the kernel back to the recommended default. Used as a cleanup at the
+    /// Captures the currently-installed kernel binary and registers cleanup to
+    /// restore it regardless of test outcome. The upcoming `kernel set --force`
+    /// command overwrites whatever is currently installed, so there's no need
+    /// to clear it out first.
+    private func prepareFixture(_ f: ContainerFixture) throws -> URL {
+        let capturedBinary = URL(filePath: f.testDir.string).appending(path: "captured-kernel")
+        try fixture.captureInstalledBinary(to: capturedBinary)
+        f.addCleanup { restoreCapturedKernel(f, from: capturedBinary) }
+        return capturedBinary
+    }
+
+    /// Restores the kernel captured at the start of a test. Used as cleanup at the
     /// end of every test so a failure here doesn't silently affect the next test —
     /// the suite is serialised and the kernel is global state. The fixture's
     /// cleanup runner swallows throws with `try?`, so we record an issue against
     /// the current test rather than rely on error propagation.
-    private func resetKernelToRecommended(_ f: ContainerFixture) async {
+    private func restoreCapturedKernel(_ f: ContainerFixture, from capturedBinary: URL) {
         do {
-            let kernel = try await KernelArchiveCache.shared.kernelBinary(
-                remoteTar: remoteTar,
-                kernelFilePath: defaultBinaryPath
-            )
-            let result = try f.run(["system", "kernel", "set", "--force", "--binary", kernel.path])
+            let result = try f.run(["system", "kernel", "set", "--force", "--binary", capturedBinary.path])
             if result.status != 0 {
-                Issue.record("kernel reset failed (status \(result.status)): \(result.error)")
+                Issue.record("kernel restore from captured binary failed (status \(result.status)): \(result.error)")
             }
         } catch {
-            Issue.record("kernel reset could not run: \(error)")
+            Issue.record("kernel restore from captured binary could not run: \(error)")
         }
     }
 
@@ -167,78 +171,6 @@ struct TestCLIKernelSetSerial {
             #expect(
                 release == expectedKernelRelease,
                 "expected guest kernel \(expectedKernelRelease), got \(release)")
-        }
-    }
-}
-
-private actor KernelArchiveCache {
-    static let shared = KernelArchiveCache()
-
-    private let fileManager = FileManager.default
-
-    func tar(remoteTar: URL, kernelFilePath: String) async throws -> URL {
-        let cacheDirectory = try cacheDirectory()
-        let destination = cacheDirectory.appending(path: remoteTar.lastPathComponent)
-        if isValidTar(destination, kernelFilePath: kernelFilePath) {
-            return destination
-        }
-
-        try? fileManager.removeItem(at: destination)
-        let tempURL = cacheDirectory.appending(path: "\(remoteTar.lastPathComponent).\(UUID().uuidString).tmp")
-        defer { try? fileManager.removeItem(at: tempURL) }
-
-        try await ContainerAPIClient.FileDownloader.downloadFile(url: remoteTar, to: tempURL)
-        guard isValidTar(tempURL, kernelFilePath: kernelFilePath) else {
-            throw NSError(
-                domain: "TestCLIKernelSetSerial",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "downloaded kernel archive does not contain \(kernelFilePath)"]
-            )
-        }
-
-        try fileManager.moveItem(at: tempURL, to: destination)
-        return destination
-    }
-
-    func kernelBinary(remoteTar: URL, kernelFilePath: String) async throws -> URL {
-        let tarURL = try await tar(remoteTar: remoteTar, kernelFilePath: kernelFilePath)
-        let destination = try cacheDirectory().appending(path: URL(filePath: kernelFilePath).lastPathComponent)
-        if fileManager.fileExists(atPath: destination.path) {
-            return destination
-        }
-
-        let archiveReader = try ArchiveReader(file: tarURL)
-        let (_, data) = try archiveReader.extractFile(path: kernelFilePath)
-        let tempURL =
-            destination
-            .deletingLastPathComponent()
-            .appending(path: "\(destination.lastPathComponent).\(UUID().uuidString).tmp")
-        defer { try? fileManager.removeItem(at: tempURL) }
-
-        try data.write(to: tempURL, options: .atomic)
-        try fileManager.moveItem(at: tempURL, to: destination)
-        return destination
-    }
-
-    private func cacheDirectory() throws -> URL {
-        let scratchRoot =
-            ProcessInfo.processInfo.environment["CLITEST_SCRATCH_ROOT"]
-            ?? FileManager.default.temporaryDirectory.path
-        let directory = URL(filePath: scratchRoot).appending(path: "kernel-cache")
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
-
-    private func isValidTar(_ url: URL, kernelFilePath: String) -> Bool {
-        guard fileManager.fileExists(atPath: url.path) else {
-            return false
-        }
-        do {
-            let archiveReader = try ArchiveReader(file: url)
-            _ = try archiveReader.extractFile(path: kernelFilePath)
-            return true
-        } catch {
-            return false
         }
     }
 }
