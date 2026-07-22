@@ -15,7 +15,6 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
-import Testing
 
 // MARK: - Image inspect types
 
@@ -87,6 +86,8 @@ extension ContainerFixture {
     /// Asserts that the image was successfully built and is present in the image store.
     public func assertImageBuilt(_ image: String) throws {
         let name = try inspectImage(image)
-        #expect(name == image, "expected image \(image) to be present")
+        guard name == image else {
+            throw CommandError.executionFailed("expected image \(image) to be present")
+        }
     }
 }

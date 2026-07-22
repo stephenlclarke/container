@@ -20,7 +20,10 @@ import Foundation
 import Logging
 import Synchronization
 import SystemPackage
+
+#if canImport(Testing)
 import Testing
+#endif
 
 /// Per-test fixture for CLI integration tests.
 ///
@@ -95,10 +98,15 @@ public final class ContainerFixture: Sendable {
             .map { FilePath($0) }
             ?? FilePath(FileManager.default.temporaryDirectory.path)
 
+        #if canImport(Testing)
         let testName =
             Test.current.map { $0.name.hasSuffix("()") ? String($0.name.dropLast(2)) : $0.name }
             ?? testID
         let suiteName = Test.current.map { "\(type(of: $0))" } ?? "unknown"
+        #else
+        let testName = testID
+        let suiteName = "unknown"
+        #endif
 
         // Name the scratch directory so it's immediately identifiable when browsing:
         // {sanitizedTestName}-{testID}

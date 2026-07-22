@@ -18,7 +18,9 @@ WARNINGS_AS_ERRORS ?= true
 SWIFT_CONFIGURATION := $(if $(filter-out false,$(WARNINGS_AS_ERRORS)),-Xswiftc -warnings-as-errors) -Xswiftc -enable-testing
 # Optional runner arguments for `swift test`. CI passes `--no-parallel`
 # explicitly so the runner configuration remains stable across SwiftPM defaults.
-SWIFT_TEST_FLAGS ?=
+# Swift Testing schedules suites concurrently by default. Several tests create
+# and close real loopback sockets, so keep the project test gate deterministic.
+SWIFT_TEST_FLAGS ?= --no-parallel
 # Code-coverage instrumentation, layered onto the shared build stages. Empty for
 # ordinary builds; the coverage-* targets opt in via a target-specific value so
 # only those goals compile instrumented binaries.

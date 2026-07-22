@@ -673,6 +673,10 @@ let package = Package(
                 "ContainerResource",
             ]
         ),
+        .testTarget(
+            name: "ContainerTestSupportTests",
+            dependencies: ["ContainerTestSupport"]
+        ),
         .target(
             name: "MachineAPIClient",
             dependencies: [
