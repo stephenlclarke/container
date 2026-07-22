@@ -804,16 +804,23 @@ struct TestCLIRunCommand {
         }
     }
 
-    @Test func testPrivilegedPortError() async throws {
+    @Test func testPrivilegedLoopbackPortBinding() async throws {
         try #require(geteuid() != 0)
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(alpine)
             let c = "\(f.testID)-c"
-            f.addCleanup { try? f.doRemove(c, force: true) }
-            let result = try f.run(["run", "--name", c, "--publish", "127.0.0.1:80:80", image])
-            #expect(result.status != 0)
-            #expect(result.error.contains("Permission denied while binding to host port 80"))
-            #expect(result.error.contains("root privileges"))
+            try f.doLongRun(
+                name: c,
+                image: image,
+                args: ["--publish", "127.0.0.1:80:80"],
+                autoRemove: false
+            )
+            f.addCleanup {
+                try? f.doStop(c)
+                try? f.doRemove(c)
+            }
+            try await f.waitForContainerRunning(c)
+            #expect(try f.getContainerStatus(c) == "running")
         }
     }
 

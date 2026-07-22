@@ -169,17 +169,21 @@ public struct UDPForwarder: SocketForwarder {
 
     private let eventLoopGroup: any EventLoopGroup
 
+    private let boundInterface: SocketBoundInterface?
+
     private let log: Logger?
 
     public init(
         proxyAddress: SocketAddress,
         serverAddress: SocketAddress,
         eventLoopGroup: any EventLoopGroup,
+        boundInterface: SocketBoundInterface? = nil,
         log: Logger? = nil
     ) throws {
         self.proxyAddress = proxyAddress
         self.serverAddress = serverAddress
         self.eventLoopGroup = eventLoopGroup
+        self.boundInterface = boundInterface
         self.log = log
     }
 
@@ -197,6 +201,7 @@ public struct UDPForwarder: SocketForwarder {
                     try serverChannel.pipeline.syncOperations.addHandler(proxyToServerHandler)
                 }
             }
+            .binding(to: self.boundInterface)
         return
             bootstrap
             .bind(to: proxyAddress)

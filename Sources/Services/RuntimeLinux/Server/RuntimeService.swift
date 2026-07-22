@@ -1162,7 +1162,9 @@ public actor RuntimeService {
         try await withThrowingTaskGroup(of: SocketForwarderResult.self) { group in
             for publishedPort in publishedPorts {
                 for index in 0..<publishedPort.count {
-                    let proxyAddress = try SocketAddress(ipAddress: publishedPort.hostAddress.description, port: Int(publishedPort.hostPort + index))
+                    let hostPort = publishedPort.hostPort + index
+                    let hostBinding = try HostPortBinding.resolve(hostAddress: publishedPort.hostAddress, hostPort: hostPort)
+                    let proxyAddress = hostBinding.proxyAddress
                     let containerIPAddress: String
                     switch publishedPort.hostAddress {
                     case .v4(_):
@@ -1189,6 +1191,7 @@ public actor RuntimeService {
                                 proxyAddress: proxyAddress,
                                 serverAddress: serverAddress,
                                 eventLoopGroup: self.eventLoopGroup,
+                                boundInterface: hostBinding.boundInterface,
                                 log: self.log
                             )
                         case .udp:
@@ -1196,6 +1199,7 @@ public actor RuntimeService {
                                 proxyAddress: proxyAddress,
                                 serverAddress: serverAddress,
                                 eventLoopGroup: self.eventLoopGroup,
+                                boundInterface: hostBinding.boundInterface,
                                 log: self.log
                             )
                         }

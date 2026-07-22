@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import Darwin
 import NIO
 import Testing
 
@@ -34,14 +35,18 @@ struct TCPForwarderTest {
         let actualServerAddress = try #require(serverChannel.localAddress)
 
         // bring up proxy on ephemeral port and get address
-        let proxyAddress = try SocketAddress(ipAddress: "127.0.0.1", port: 0)
+        let proxyAddress = try SocketAddress(ipAddress: "0.0.0.0", port: 0)
+        let loopbackInterface = if_nametoindex("lo0")
+        try #require(loopbackInterface != 0)
         let forwarder = try TCPForwarder(
             proxyAddress: proxyAddress,
             serverAddress: actualServerAddress,
-            eventLoopGroup: eventLoopGroup
+            eventLoopGroup: eventLoopGroup,
+            boundInterface: .ipv4(CInt(bitPattern: loopbackInterface))
         )
         let forwarderResult = try await forwarder.run().get()
-        let actualProxyAddress = try #require(forwarderResult.proxyAddress)
+        let actualProxyPort = try #require(forwarderResult.proxyAddress?.port)
+        let actualProxyAddress = try SocketAddress(ipAddress: "127.0.0.1", port: actualProxyPort)
 
         // send a bunch of messages and collect them
         try await withThrowingTaskGroup(of: String.self) { group in
