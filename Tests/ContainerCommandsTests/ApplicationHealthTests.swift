@@ -18,7 +18,6 @@ import ContainerAPIClient
 import ContainerPlugin
 import ContainerVersion
 import ContainerizationError
-import Darwin
 import Foundation
 import SystemPackage
 import Testing
@@ -125,9 +124,7 @@ struct ApplicationHealthTests {
         let box = UncheckedSendableBox(command)
 
         try await Self.requireCompletesWithin(.seconds(2)) {
-            try await Self.discardStandardOutput {
-                try await box.value.run()
-            }
+            try await box.value.run()
         }
     }
 
@@ -138,9 +135,7 @@ struct ApplicationHealthTests {
         let box = UncheckedSendableBox(command)
 
         try await Self.requireCompletesWithin(.seconds(2)) {
-            try await Self.discardStandardOutput {
-                try await box.value.run()
-            }
+            try await box.value.run()
         }
     }
 
@@ -311,29 +306,6 @@ struct ApplicationHealthTests {
         }
     }
 
-    private static func discardStandardOutput(operation: () async throws -> Void) async throws {
-        fflush(stdout)
-        let original = dup(STDOUT_FILENO)
-        let pipe = Pipe()
-        var restored = false
-        dup2(pipe.fileHandleForWriting.fileDescriptor, STDOUT_FILENO)
-        defer {
-            fflush(stdout)
-            if !restored {
-                dup2(original, STDOUT_FILENO)
-                pipe.fileHandleForWriting.closeFile()
-            }
-            close(original)
-            pipe.fileHandleForReading.closeFile()
-        }
-
-        try await operation()
-        fflush(stdout)
-        dup2(original, STDOUT_FILENO)
-        restored = true
-        pipe.fileHandleForWriting.closeFile()
-        pipe.fileHandleForReading.readDataToEndOfFile()
-    }
 }
 
 private actor VoidAsyncResult {
