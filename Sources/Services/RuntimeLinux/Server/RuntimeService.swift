@@ -1415,6 +1415,14 @@ public actor RuntimeService {
         czConfig.hostUTSNamespace = config.hostUTSNamespace
         czConfig.privateUserNamespace = config.privateUserNamespace
 
+        // nil leaves LinuxContainer's own default set in place.
+        if let maskedPaths = config.maskedPaths {
+            czConfig.maskedPaths = maskedPaths
+        }
+        if let readonlyPaths = config.readonlyPaths {
+            czConfig.readonlyPaths = readonlyPaths
+        }
+
         if let shmSize = config.shmSize {
             for i in czConfig.mounts.indices {
                 if czConfig.mounts[i].destination == "/dev/shm" {
