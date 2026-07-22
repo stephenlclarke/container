@@ -274,6 +274,32 @@ struct ContainerConfigurationUserNamespaceTests {
 }
 
 struct ContainerConfigurationSystemPathTests {
+    @Test func roundTripsCustomSystemPaths() throws {
+        var config = makeTestConfiguration()
+        config.maskedPaths = ["/proc/acpi", "/proc/kcore"]
+        config.readonlyPaths = ["/proc/sys", "/sys/firmware"]
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.maskedPaths == ["/proc/acpi", "/proc/kcore"])
+        #expect(decoded.readonlyPaths == ["/proc/sys", "/sys/firmware"])
+    }
+
+    @Test func decodesMissingCustomSystemPathsAsNil() throws {
+        var config = makeTestConfiguration()
+        config.maskedPaths = ["/proc/acpi"]
+        config.readonlyPaths = ["/proc/sys"]
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "maskedPaths")
+        object.removeValue(forKey: "readonlyPaths")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: stripped)
+
+        #expect(decoded.maskedPaths == nil)
+        #expect(decoded.readonlyPaths == nil)
+    }
+
     @Test func roundTripsUnconfinedSystemPaths() throws {
         var config = makeTestConfiguration()
         config.unconfinedSystemPaths = true

@@ -458,6 +458,36 @@ struct RuntimeServiceHostsTests {
         #expect(runtimeConfiguration.annotations == ["com.example.owner": "platform"])
     }
 
+    @Test
+    func configureContainerPassesSystemPathOverridesToContainerization() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.maskedPaths = ["/proc/acpi", "/proc/kcore"]
+        config.readonlyPaths = ["/proc/sys", "/sys/firmware"]
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureContainer(
+            czConfig: &runtimeConfiguration,
+            config: config
+        )
+
+        #expect(runtimeConfiguration.maskedPaths == ["/proc/acpi", "/proc/kcore"])
+        #expect(runtimeConfiguration.readonlyPaths == ["/proc/sys", "/sys/firmware"])
+    }
+
+    @Test
+    func configureContainerKeepsDefaultSystemPathsWhenOverridesAreNil() throws {
+        let config = runtimeTestConfiguration(id: "demo-api-1")
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureContainer(
+            czConfig: &runtimeConfiguration,
+            config: config
+        )
+
+        #expect(runtimeConfiguration.maskedPaths == LinuxContainer.defaultMaskedPaths())
+        #expect(runtimeConfiguration.readonlyPaths == LinuxContainer.defaultReadonlyPaths())
+    }
+
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",
