@@ -26,7 +26,7 @@ import Testing
 /// once a test init image is published to the registry.
 @Suite
 struct TestCLIRunInitImage {
-    private let alpine = ContainerFixture.warmupImages[0]
+    private let alpine = WarmupImage.alpine320
     // This is rejected by OCI reference validation before any registry lookup.
     // Keep validation deterministic and independent of DNS or registry timeouts.
     private let invalidInitImage = "invalid init image"

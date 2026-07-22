@@ -32,7 +32,7 @@ import Testing
 // therefore 1024+92=1116 and 1024+256=1280.
 @Suite
 struct TestCLIRunFilesystem {
-    private let alpine = ContainerFixture.warmupImages[0]
+    private let alpine = WarmupImage.alpine320
 
     private static let featureCompatOffset = 1116
     private static let defaultMountOptsOffset = 1280

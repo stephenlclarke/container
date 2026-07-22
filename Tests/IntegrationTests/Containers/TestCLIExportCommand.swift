@@ -28,7 +28,7 @@ struct TestCLIExportCommand {
 
     @Test func testExportCreatedContainer() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let image = try f.copyWarmupImage(.alpine320)
             let name = "\(f.testID)-created"
             try f.doCreate(name: name, image: image)
             f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
@@ -45,7 +45,7 @@ struct TestCLIExportCommand {
 
     @Test func testExportRejectsCorruptMaterializedRootfsMetadata() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let image = try f.copyWarmupImage(.alpine320)
             let name = "\(f.testID)-corrupt-rootfs"
             try f.doCreate(name: name, image: image)
             f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
@@ -68,7 +68,7 @@ struct TestCLIExportCommand {
 
     @Test func testExportCommand() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let image = try f.copyWarmupImage(.alpine320)
             try await f.withContainer(image: image, autoRemove: false) { name in
                 let mustBeInImage = "must-be-in-image"
                 try f.doExec(name, cmd: ["sh", "-c", "echo \(mustBeInImage) > /foo"])
@@ -101,7 +101,7 @@ struct TestCLIExportCommand {
 
     @Test func testExportCommandLive() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let image = try f.copyWarmupImage(.alpine320)
             try await f.withContainer(image: image, autoRemove: false) { name in
                 let mustBeInImage = "must-be-in-image-live"
                 try f.doExec(name, cmd: ["sh", "-c", "echo \(mustBeInImage) > /foo-live"])
@@ -129,7 +129,7 @@ struct TestCLIExportCommand {
 
     @Test func testExportCommandLiveWithoutFreeze() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(ContainerFixture.warmupImages[0])
+            let image = try f.copyWarmupImage(.alpine320)
             try await f.withContainer(image: image, autoRemove: false) { name in
                 let mustBeInImage = "must-be-in-image-live-no-freeze"
                 try f.doExec(name, cmd: ["sh", "-c", "echo \(mustBeInImage) > /foo-live-no-freeze && sync"])
