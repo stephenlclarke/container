@@ -5,7 +5,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//   https://www.apache.org/licenses/LICENSE-2.0
+// http://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,19 +17,19 @@
 import Darwin
 
 extension ContainerFixture {
-    func availableTCPPort() throws -> UInt16 {
+    public func availableTCPPort() throws -> UInt16 {
         let fd = try Self.bindTCPPort(0, address: .ipv4Any)
         defer { Darwin.close(fd) }
         return try Self.boundPort(fd, address: .ipv4Any)
     }
 
-    func availableTCPPortV6() throws -> UInt16 {
+    public func availableTCPPortV6() throws -> UInt16 {
         let fd = try Self.bindTCPPort(0, address: .ipv6Loopback)
         defer { Darwin.close(fd) }
         return try Self.boundPort(fd, address: .ipv6Loopback)
     }
 
-    func availableTCPPortRange(count: UInt16) throws -> UInt16 {
+    public func availableTCPPortRange(count: UInt16) throws -> UInt16 {
         guard count > 0 else {
             throw CommandError.executionFailed("port range count must be greater than zero")
         }

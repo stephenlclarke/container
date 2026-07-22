@@ -24,7 +24,7 @@ import Testing
 
 extension ContainerFixture {
     /// A file-system entry to materialize inside a build context directory.
-    enum FileSystemEntry {
+    public enum FileSystemEntry {
         case file(
             _ path: String,
             content: FileEntryContent,
@@ -41,22 +41,23 @@ extension ContainerFixture {
         case symbolicLink(_ path: String, target: String, uid: uid_t = 0, gid: gid_t = 0)
     }
 
-    enum FileEntryContent {
+    public enum FileEntryContent {
         case zeroFilled(size: Int64)
         case data(Data)
     }
 
-    struct FilePermissions: OptionSet {
-        let rawValue: UInt16
-        static let r = FilePermissions(rawValue: 0o400)
-        static let w = FilePermissions(rawValue: 0o200)
-        static let x = FilePermissions(rawValue: 0o100)
-        static let gr = FilePermissions(rawValue: 0o040)
-        static let gw = FilePermissions(rawValue: 0o020)
-        static let gx = FilePermissions(rawValue: 0o010)
-        static let or = FilePermissions(rawValue: 0o004)
-        static let ow = FilePermissions(rawValue: 0o002)
-        static let ox = FilePermissions(rawValue: 0o001)
+    public struct FilePermissions: OptionSet, Sendable {
+        public let rawValue: UInt16
+        public init(rawValue: UInt16) { self.rawValue = rawValue }
+        public static let r = FilePermissions(rawValue: 0o400)
+        public static let w = FilePermissions(rawValue: 0o200)
+        public static let x = FilePermissions(rawValue: 0o100)
+        public static let gr = FilePermissions(rawValue: 0o040)
+        public static let gw = FilePermissions(rawValue: 0o020)
+        public static let gx = FilePermissions(rawValue: 0o010)
+        public static let or = FilePermissions(rawValue: 0o004)
+        public static let ow = FilePermissions(rawValue: 0o002)
+        public static let ox = FilePermissions(rawValue: 0o001)
     }
 }
 
@@ -65,7 +66,7 @@ extension ContainerFixture {
 extension ContainerFixture {
 
     /// Starts the buildkit builder container.
-    func builderStart(builder: String? = nil, cpus: Int64 = 2, memoryInGBs: Int64 = 2) throws {
+    public func builderStart(builder: String? = nil, cpus: Int64 = 2, memoryInGBs: Int64 = 2) throws {
         var args = ["builder", "start"]
         if let builder { args.append("--builder=\(builder)") }
         args += ["-c", "\(cpus)", "-m", "\(memoryInGBs)GB"]
@@ -73,14 +74,14 @@ extension ContainerFixture {
     }
 
     /// Stops the buildkit builder container.
-    func builderStop(builder: String? = nil) throws {
+    public func builderStop(builder: String? = nil) throws {
         var args = ["builder", "stop"]
         if let builder { args.append("--builder=\(builder)") }
         try run(args).check()
     }
 
     /// Deletes the buildkit builder container.
-    func builderDelete(builder: String? = nil, force: Bool = false) throws {
+    public func builderDelete(builder: String? = nil, force: Bool = false) throws {
         var args = ["builder", "delete"]
         if let builder { args.append("--builder=\(builder)") }
         if force { args.append("--force") }
@@ -88,7 +89,7 @@ extension ContainerFixture {
     }
 
     /// Polls until the buildkit container is running and the builder shim is ready.
-    func waitForBuilderRunning(_ container: String = "buildkit") async throws {
+    public func waitForBuilderRunning(_ container: String = "buildkit") async throws {
         try await waitForContainerRunning(container, attempts: 10)
         for _ in 0..<3 {
             let response = try? doExec(container, cmd: ["pidof", "-s", "container-builder-shim"])
@@ -105,7 +106,7 @@ extension ContainerFixture {
     /// Each build test gets an isolated builder to avoid inter-test contamination.
     /// Acquires a process-wide lock so only one test holds the buildkit singleton at a time,
     /// regardless of how many suites run concurrently in the global pass.
-    func withBuilder(
+    public func withBuilder(
         cpus: Int64 = 2,
         memoryInGBs: Int64 = 2,
         _ body: @Sendable (ContainerFixture) async throws -> Void
@@ -126,7 +127,7 @@ extension ContainerFixture {
     /// Use this in tests that manually manage the builder lifecycle (e.g. lifecycle
     /// tests that call ``builderStart()``/``builderStop()`` directly) so they
     /// serialise correctly with tests that use ``withBuilder(_:)``.
-    func withBuilderLock<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+    public func withBuilderLock<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
         try await withoutActuallyEscaping(body) { escapingBody in
             try await Self.builderLock.withLock { _ in
                 try await escapingBody()
@@ -144,7 +145,7 @@ extension ContainerFixture {
     /// Creates a new scratch directory under ``testDir`` and returns its path.
     ///
     /// The directory is removed automatically when the fixture scope exits.
-    func createTempDir() throws -> FilePath {
+    public func createTempDir() throws -> FilePath {
         let dir = testDir.appending(UUID().uuidString)
         try FileManager.default.createDirectory(
             atPath: dir.string, withIntermediateDirectories: true, attributes: nil)
@@ -152,7 +153,7 @@ extension ContainerFixture {
     }
 
     /// Writes `contents` to a new file under ``testDir`` with the given suffix.
-    func createTempFile(suffix: String, contents: Data) throws -> FilePath {
+    public func createTempFile(suffix: String, contents: Data) throws -> FilePath {
         let file = testDir.appending(UUID().uuidString + suffix)
         try contents.write(to: URL(filePath: file.string), options: .atomic)
         return file
@@ -162,7 +163,7 @@ extension ContainerFixture {
     ///
     /// Creates `dir/Dockerfile` (if `dockerfile` is non-empty) and
     /// `dir/context/` populated with `context` entries.
-    func createContext(dir: FilePath, dockerfile: String, context: [FileSystemEntry]? = nil) throws {
+    public func createContext(dir: FilePath, dockerfile: String, context: [FileSystemEntry]? = nil) throws {
         if !dockerfile.isEmpty {
             try Data(dockerfile.utf8).write(to: URL(filePath: dir.appending("Dockerfile").string), options: .atomic)
         }
@@ -175,7 +176,7 @@ extension ContainerFixture {
     }
 
     /// Materializes a ``FileSystemEntry`` inside `contextDir`.
-    func createEntry(_ entry: FileSystemEntry, contextDir: FilePath) throws {
+    public func createEntry(_ entry: FileSystemEntry, contextDir: FilePath) throws {
         switch entry {
         case .file(let path, let content, let permissions, let uid, let gid):
             let fullPath = appendingRelative(contextDir, path)
@@ -248,7 +249,7 @@ extension ContainerFixture {
 
     /// Builds an image from `contextDir/Dockerfile` with context `contextDir/context/`.
     @discardableResult
-    func build(
+    public func build(
         tag: String,
         contextDir: FilePath = FilePath("."),
         buildArgs: [String] = [],
@@ -268,7 +269,7 @@ extension ContainerFixture {
     /// - `contextDir` defaults to the current directory (`.`)
     /// - `dockerfilePath` defaults to `nil`, resolved to `contextDir/Dockerfile` at call time
     @discardableResult
-    func buildWithPaths(
+    public func buildWithPaths(
         tags: [String] = [],
         contextDir: FilePath = FilePath("."),
         dockerfilePath: FilePath? = nil,
@@ -293,7 +294,7 @@ extension ContainerFixture {
 
     /// Builds with a Dockerfile read from stdin.
     @discardableResult
-    func buildWithStdin(
+    public func buildWithStdin(
         tags: [String],
         contextDir: FilePath,
         dockerfileContents: String,
@@ -316,7 +317,7 @@ extension ContainerFixture {
 
     /// Builds with `--output type=local,dest=<outputDir>`.
     @discardableResult
-    func buildWithPathsAndLocalOutput(
+    public func buildWithPathsAndLocalOutput(
         tag: String,
         contextDir: FilePath = FilePath("."),
         dockerfilePath: FilePath? = nil,
@@ -346,18 +347,18 @@ extension ContainerFixture {
 
 extension ContainerFixture {
     /// Returns true if `path` exists as a regular file inside `container`.
-    func containerHasFile(_ container: String, at path: String) throws -> Bool {
+    public func containerHasFile(_ container: String, at path: String) throws -> Bool {
         try run(["exec", container, "test", "-f", path]).status == 0
     }
 
     /// Asserts that `path` exists as a regular file inside `container`.
-    func assertContainerHasFile(_ container: String, at path: String, _ comment: String? = nil) throws {
+    public func assertContainerHasFile(_ container: String, at path: String, _ comment: String? = nil) throws {
         let exists = try containerHasFile(container, at: path)
         #expect(exists, "\(comment ?? path) should exist in container")
     }
 
     /// Asserts that `path` does NOT exist inside `container`.
-    func assertContainerMissingFile(_ container: String, at path: String, _ comment: String? = nil) throws {
+    public func assertContainerMissingFile(_ container: String, at path: String, _ comment: String? = nil) throws {
         let exists = try containerHasFile(container, at: path)
         #expect(!exists, "\(comment ?? path) should NOT exist in container")
     }

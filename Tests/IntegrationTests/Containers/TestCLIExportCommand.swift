@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerAPIClient
+import ContainerTestSupport
 import ContainerizationArchive
 import Foundation
 import Testing
