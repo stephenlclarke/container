@@ -33,7 +33,7 @@ struct TestCLIRunInitImage {
 
     @Test func testRunWithInvalidInitImage() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(alpine)
+            let image = alpine.rawValue
             let c = "\(f.testID)-c"
             f.addCleanup { try? f.doRemove(c, force: true) }
             let result = try f.run([
@@ -55,7 +55,7 @@ struct TestCLIRunInitImage {
 
     @Test func testCreateWithInvalidInitImage() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(alpine)
+            let image = alpine.rawValue
             let c = "\(f.testID)-c"
             f.addCleanup { try? f.doRemove(c, force: true) }
             let result = try f.run([
@@ -69,13 +69,12 @@ struct TestCLIRunInitImage {
 
     @Test func testRunWithExplicitDefaultInitImage() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(alpine)
+            let image = alpine.rawValue
             let c = "\(f.testID)-c"
             let config = try f.getSystemConfig()
-            try f.doLongRun(
+            try await f.doLongRun(
                 name: c, image: image,
-                args: ["--init-image", config.vminit.image], autoRemove: false)
-            try await f.waitForContainerRunning(c)
+                args: ["--init-image", config.vminit.image], autoRemove: false, waitUntilRunning: true)
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)

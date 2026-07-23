@@ -42,16 +42,15 @@ struct TestCLINetwork {
             #expect(networkIds == networkIds.sorted(), "network IDs should be sorted")
 
             let port = UInt16.random(in: 50000..<60000)
-            try f.doLongRun(
+            try await f.doLongRun(
                 name: c, image: "docker.io/library/python:alpine",
                 args: ["--network", net],
                 containerArgs: ["python3", "-m", "http.server", "--bind", "0.0.0.0", "\(port)"],
-                autoRemove: false)
+                autoRemove: false, waitUntilRunning: true)
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
             }
-            try await f.waitForContainerRunning(c)
 
             let container = try f.inspectContainer(c)
             #expect(container.networks.count > 0)
@@ -144,7 +143,7 @@ struct TestCLINetwork {
             #expect(network.status.ipv6Subnet?.description == subnet)
             #expect(network.status.ipv6Gateway?.description == gateway)
 
-            try f.doLongRun(
+            try await f.doLongRun(
                 name: container,
                 image: "docker.io/library/alpine",
                 args: ["--network", net],
@@ -178,7 +177,7 @@ struct TestCLINetwork {
             let subnet = try CIDRv4(subnetText)
             let requestedAddress = IPv4Address(subnet.lower.value + 2)
 
-            try f.doLongRun(
+            try await f.doLongRun(
                 name: c,
                 image: "docker.io/library/alpine",
                 args: ["--network", "\(net),ip=\(requestedAddress)"],
@@ -226,14 +225,13 @@ struct TestCLINetwork {
 
     @Test func testNetworkMTU() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(.alpine320)
+            let image = WarmupImage.alpine320.rawValue
             let c = "\(f.testID)-c"
-            try f.doLongRun(name: c, image: image, args: ["--network", "default,mtu=1500"], autoRemove: false)
+            try await f.doLongRun(name: c, image: image, args: ["--network", "default,mtu=1500"], autoRemove: false, waitUntilRunning: true)
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
             }
-            try await f.waitForContainerRunning(c)
             let output = try f.doExec(c, cmd: ["ip", "link", "show", "eth0"])
             #expect(output.contains("mtu 1500"), "expected mtu 1500 in ip link output: \(output)")
         }
@@ -257,12 +255,11 @@ struct TestCLINetwork {
                 try f.doNetworkCreate(net, args: ["--internal"])
 
                 let port = UInt16.random(in: 50000..<60000)
-                try f.doLongRun(
+                try await f.doLongRun(
                     name: server, image: pythonImage,
                     args: ["--network", net],
                     containerArgs: ["python3", "-m", "http.server", "--bind", "0.0.0.0", "\(port)"],
-                    autoRemove: false)
-                try await f.waitForContainerRunning(server)
+                    autoRemove: false, waitUntilRunning: true)
 
                 let container = try f.inspectContainer(server)
                 #expect(container.networks.count > 0)

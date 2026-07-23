@@ -68,7 +68,7 @@ struct TestCLIExportCommand {
 
     @Test func testExportCommand() async throws {
         try await ContainerFixture.with { f in
-            let image = try f.copyWarmupImage(.alpine320)
+            let image = WarmupImage.alpine320.rawValue
             try await f.withContainer(image: image, autoRemove: false) { name in
                 let mustBeInImage = "must-be-in-image"
                 try f.doExec(name, cmd: ["sh", "-c", "echo \(mustBeInImage) > /foo"])

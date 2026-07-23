@@ -28,7 +28,7 @@ struct TestCLIRunLifecycleSerial {
             try f.run(["image", "pull", serverImage]).check()
 
             let server = "\(f.testID)-server"
-            try f.doLongRun(
+            try await f.doLongRun(
                 name: server,
                 image: serverImage,
                 args: ["--publish", "\(port):\(port)"],
