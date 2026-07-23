@@ -10,9 +10,26 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "update-homebrew-formula.py"
 TEMPLATE = ROOT / "Formula" / "container.rb"
+WORKFLOW = ROOT / ".github" / "workflows" / "homebrew.yml"
 
 
 class UpdateHomebrewFormulaTests(unittest.TestCase):
+    def test_workflow_tolerates_a_retired_template_archive(self) -> None:
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertNotIn(
+            "brew audit --formula --strict --online",
+            workflow,
+        )
+        self.assertIn(
+            "id: template_archive",
+            workflow,
+        )
+        self.assertEqual(
+            workflow.count("if: steps.template_archive.outputs.available == 'true'"),
+            2,
+        )
+
     def test_formula_smoke_test_is_service_state_independent(self) -> None:
         template = TEMPLATE.read_text(encoding="utf-8")
 

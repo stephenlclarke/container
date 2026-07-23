@@ -63,14 +63,34 @@ jobs:
       - name: Audit formula
         run: |
           set -euo pipefail
-          brew audit --formula --strict --online stephenlclarke/container/container
+          brew audit --formula --strict stephenlclarke/container/container
+
+      - name: Check retained template archive
+        id: template_archive
+        run: |
+          set -euo pipefail
+          url="$(
+            brew ruby -e '
+              formula = Formulary.factory("stephenlclarke/container/container")
+              puts formula.stable.url
+            '
+          )"
+          if curl --fail --silent --show-error --location --head "${url}" >/dev/null; then
+            printf 'available=true\n' >> "${GITHUB_OUTPUT}"
+          else
+            printf 'available=false\n' >> "${GITHUB_OUTPUT}"
+            printf '::notice title=Retired template archive::%s\n' \
+              "Release retention removed ${url}; active generated formulae remain release-gated."
+          fi
 
       - name: Fetch formula archive
+        if: steps.template_archive.outputs.available == 'true'
         run: |
           set -euo pipefail
           brew fetch --formula --force stephenlclarke/container/container
 
       - name: Install and test formula
+        if: steps.template_archive.outputs.available == 'true'
         run: |
           set -euo pipefail
           brew install --formula stephenlclarke/container/container
