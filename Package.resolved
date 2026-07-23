@@ -15,7 +15,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
-        "revision" : "9097a24d60deddaaa394f73c2ec5f8276ab5867b"
+        "revision" : "6aa6e803539c59ce754c55628e5417356216b297"
       }
     },
     {
