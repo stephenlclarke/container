@@ -13,6 +13,18 @@ TEMPLATE = ROOT / "Formula" / "container.rb"
 
 
 class UpdateHomebrewFormulaTests(unittest.TestCase):
+    def test_formula_smoke_test_is_service_state_independent(self) -> None:
+        template = TEMPLATE.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'shell_output("#{bin}/container list --help")',
+            template,
+        )
+        self.assertNotIn(
+            'shell_output("#{bin}/container list 2>&1", 1)',
+            template,
+        )
+
     def test_existing_formula_is_rebuilt_from_the_maintained_template(self) -> None:
         stale_formula = TEMPLATE.read_text(encoding="utf-8").replace(
             "    working_dir var\n",

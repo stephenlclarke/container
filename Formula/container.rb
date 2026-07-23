@@ -58,7 +58,6 @@ class Container < Formula
 
   test do
     assert_match "container CLI version", shell_output("#{bin}/container --version")
-    assert_match(/Error: (?:interrupted: ")?internalError: "failed to list containers"/,
-                 shell_output("#{bin}/container list 2>&1", 1))
+    assert_match "List running containers", shell_output("#{bin}/container list --help")
   end
 end
