@@ -11,9 +11,29 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "update-homebrew-formula.py"
 TEMPLATE = ROOT / "Formula" / "container.rb"
 WORKFLOW = ROOT / ".github" / "workflows" / "homebrew.yml"
+PREBUILT_WORKFLOW = ROOT / ".github" / "workflows" / "prebuilt-binaries.yml"
 
 
 class UpdateHomebrewFormulaTests(unittest.TestCase):
+    def test_main_prebuilt_does_not_replace_the_matched_stable_formula(self) -> None:
+        workflow = PREBUILT_WORKFLOW.read_text(encoding="utf-8")
+        main_lane = workflow.split("            main)", 1)[1].split(
+            "            release)",
+            1,
+        )[0]
+        release_lane = workflow.split("            release)", 1)[1].split(
+            "            release-*)",
+            1,
+        )[0]
+
+        self.assertIn("promote_to_tap=false", main_lane)
+        self.assertIn("promote_to_tap=true", release_lane)
+        self.assertIn(
+            "if: steps.lane.outputs.promote_to_tap == 'true'\n"
+            "        id: tap-token",
+            workflow,
+        )
+
     def test_workflow_tolerates_a_retired_template_archive(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
 

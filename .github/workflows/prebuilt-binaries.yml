@@ -112,6 +112,7 @@ jobs:
               printf 'formula=container.rb\n' >> "$GITHUB_OUTPUT"
               printf 'formula_class=Container\n' >> "$GITHUB_OUTPUT"
               printf 'label=main lane\n' >> "$GITHUB_OUTPUT"
+              printf 'promote_to_tap=false\n' >> "$GITHUB_OUTPUT"
               ;;
             release)
               formula_class="$(python3 -c 'import re, sys; print("Container" + "".join(part.capitalize() for part in re.split(r"[^a-zA-Z0-9]+", sys.argv[1]) if part))' "$formula_slug")"
@@ -121,6 +122,7 @@ jobs:
               printf 'formula=container-%s.rb\n' "$formula_slug" >> "$GITHUB_OUTPUT"
               printf 'formula_class=%s\n' "$formula_class" >> "$GITHUB_OUTPUT"
               printf 'label=release lane\n' >> "$GITHUB_OUTPUT"
+              printf 'promote_to_tap=true\n' >> "$GITHUB_OUTPUT"
               ;;
             release-*)
               formula_class="$(python3 -c 'import re, sys; print("Container" + "".join(part.capitalize() for part in re.split(r"[^a-zA-Z0-9]+", sys.argv[1]) if part))' "$formula_slug")"
@@ -130,6 +132,7 @@ jobs:
               printf 'formula=container-%s.rb\n' "$formula_slug" >> "$GITHUB_OUTPUT"
               printf 'formula_class=%s\n' "$formula_class" >> "$GITHUB_OUTPUT"
               printf 'label=%s branch\n' "${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              printf 'promote_to_tap=true\n' >> "$GITHUB_OUTPUT"
               ;;
             *)
               printf 'Unsupported branch for prebuilt packaging: %s\n' "${GITHUB_REF_NAME}" >&2
@@ -213,6 +216,7 @@ jobs:
             --clobber
 
       - name: Check Homebrew tap token
+        if: steps.lane.outputs.promote_to_tap == 'true'
         id: tap-token
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
