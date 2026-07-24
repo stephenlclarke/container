@@ -42,34 +42,32 @@ struct TestCLIBuilderLifecycleSerial {
 
     @Test func testNamedBuilderStartBuildStopDelete() async throws {
         try await ContainerFixture.with { f in
-            try await f.withBuilderLock {
-                let builderName = "integration-\(UUID().uuidString.lowercased())"
-                let builderContainer = "buildkit-\(builderName)"
-                let image = "registry.local/named-builder:\(UUID().uuidString)"
+            let builderName = "integration-\(UUID().uuidString.lowercased())"
+            let builderContainer = "buildkit-\(builderName)"
+            let image = "registry.local/named-builder:\(UUID().uuidString)"
 
-                f.addCleanup {
-                    _ = try? f.run(["image", "delete", image])
-                    try? f.builderDelete(builder: builderName, force: true)
-                }
-
-                let dir = try f.createTempDir()
-                try f.createContext(
-                    dir: dir,
-                    dockerfile: "FROM ghcr.io/linuxcontainers/alpine:3.20\nRUN printf named-builder >/named-builder.txt\n")
-
-                try f.builderStart(builder: builderName)
-                try await f.waitForBuilderRunning(builderContainer)
-
-                let status = try f.getContainerStatus(builderContainer)
-                #expect(status == "running", "named buildkit container should be running")
-
-                try f.build(tag: image, contextDir: dir, otherArgs: ["--builder", builderName])
-                try f.assertImageBuilt(image)
-
-                try f.builderStop(builder: builderName)
-                let stoppedStatus = try f.getContainerStatus(builderContainer)
-                #expect(stoppedStatus == "stopped", "named buildkit container should be stopped")
+            f.addCleanup {
+                _ = try? f.run(["image", "delete", image])
+                try? f.builderDelete(builder: builderName, force: true)
             }
+
+            let dir = try f.createTempDir()
+            try f.createContext(
+                dir: dir,
+                dockerfile: "FROM ghcr.io/linuxcontainers/alpine:3.20\nRUN printf named-builder >/named-builder.txt\n")
+
+            try f.builderStart(builder: builderName)
+            try await f.waitForBuilderRunning(builderContainer)
+
+            let status = try f.getContainerStatus(builderContainer)
+            #expect(status == "running", "named buildkit container should be running")
+
+            try f.build(tag: image, contextDir: dir, otherArgs: ["--builder", builderName])
+            try f.assertImageBuilt(image)
+
+            try f.builderStop(builder: builderName)
+            let stoppedStatus = try f.getContainerStatus(builderContainer)
+            #expect(stoppedStatus == "stopped", "named buildkit container should be stopped")
         }
     }
 
