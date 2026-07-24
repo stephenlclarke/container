@@ -343,6 +343,7 @@ public struct Builder: Sendable {
         public let dockerignore: Data?
         public let labels: [String]
         public let noCache: Bool
+        public let noCacheFilter: [String]
         public let platforms: [Platform]
         public let terminal: Terminal?
         public let tags: [String]
@@ -375,6 +376,7 @@ public struct Builder: Sendable {
             dockerignore: Data?,
             labels: [String],
             noCache: Bool,
+            noCacheFilter: [String] = [],
             platforms: [Platform],
             terminal: Terminal?,
             tags: [String],
@@ -406,6 +408,7 @@ public struct Builder: Sendable {
             self.dockerignore = dockerignore
             self.labels = labels
             self.noCache = noCache
+            self.noCacheFilter = noCacheFilter
             self.platforms = platforms
             self.terminal = terminal
             self.tags = tags
@@ -437,8 +440,11 @@ public struct Builder: Sendable {
         for platform in config.platforms {
             metadata.addString(platform.description, forKey: "platforms")
         }
-        if config.noCache {
-            metadata.addString("", forKey: "no-cache")
+        if let noCache = noCacheMetadataValue(
+            noCache: config.noCache,
+            noCacheFilter: config.noCacheFilter
+        ) {
+            metadata.addString(noCache, forKey: "no-cache")
         }
         if config.check {
             metadata.addString("", forKey: "check")
@@ -490,6 +496,18 @@ public struct Builder: Sendable {
         }
 
         return metadata
+    }
+
+    static func noCacheMetadataValue(noCache: Bool, noCacheFilter: [String]) -> String? {
+        if noCache {
+            return ""
+        }
+
+        let filters =
+            noCacheFilter
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return filters.isEmpty ? nil : filters.joined(separator: ",")
     }
 }
 

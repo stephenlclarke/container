@@ -113,6 +113,12 @@ extension Application {
         @Flag(name: .long, help: "Do not use cache")
         var noCache: Bool = false
 
+        @Option(
+            name: .customLong("no-cache-filter"),
+            help: ArgumentHelp("Do not use cache for the specified build stage", valueName: "stage")
+        )
+        var noCacheFilter: [String] = []
+
         @Option(name: .long, help: ArgumentHelp("Set Dockerfile RUN network mode (default|none|host|sandbox)", valueName: "mode"))
         var network: String?
 
@@ -417,7 +423,7 @@ extension Application {
                     group.addTask {
                         [
                             terminal, buildArg, secretsData, sshForwarding, contextDir, ignoreFileData, label,
-                            noCache, target, quiet, cacheIn, cacheOut, pull, check, exports, imageNames, tempURL, log, attestations,
+                            noCache, noCacheFilter, target, quiet, cacheIn, cacheOut, pull, check, exports, imageNames, tempURL, log, attestations,
                             buildContexts, allow, addHost, network, privileged, shmSize, ulimit,
                         ] in
                         let config = Builder.BuildConfig(
@@ -440,6 +446,7 @@ extension Application {
                             dockerignore: ignoreFileData,
                             labels: label,
                             noCache: noCache,
+                            noCacheFilter: noCacheFilter,
                             platforms: [Platform](platforms),
                             terminal: terminal,
                             tags: imageNames,
@@ -562,6 +569,7 @@ extension Application {
                     throw ValidationError("invalid reference \(name)")
                 }
             }
+            noCacheFilter = try Self.normalizedNoCacheFilters(noCacheFilter)
 
             switch file {
             case "-":
@@ -613,6 +621,20 @@ extension Application {
                     throw ValidationError("secret bad value \(parts[1])")
                 }
             }
+        }
+
+        static func normalizedNoCacheFilters(_ values: [String]) throws -> [String] {
+            var filters: [String] = []
+            for value in values {
+                for component in value.split(separator: ",", omittingEmptySubsequences: false) {
+                    let filter = component.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !filter.isEmpty else {
+                        throw ValidationError("no-cache filter stage cannot be empty")
+                    }
+                    filters.append(filter)
+                }
+            }
+            return filters
         }
 
         private func buildAttestations() -> [String: String] {

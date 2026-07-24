@@ -81,6 +81,7 @@ struct BuilderMetadataTests {
             dockerignore: nil,
             labels: [],
             noCache: false,
+            noCacheFilter: ["base", "compile"],
             platforms: [],
             terminal: nil,
             tags: ["example/app:latest"],
@@ -111,6 +112,19 @@ struct BuilderMetadataTests {
         #expect(Array(metadata[stringValues: "attest-provenance"]) == ["mode=max"])
         #expect(Array(metadata[stringValues: "attest-sbom"]) == [""])
         #expect(Array(metadata[stringValues: "check"]) == [""])
+        #expect(Array(metadata[stringValues: "no-cache"]) == ["base,compile"])
+    }
+
+    @Test
+    func noCacheMetadataPreservesFiltersAndAllStagesOverride() {
+        #expect(Builder.noCacheMetadataValue(noCache: false, noCacheFilter: []) == nil)
+        #expect(
+            Builder.noCacheMetadataValue(
+                noCache: false,
+                noCacheFilter: [" base ", "", "compile"]
+            ) == "base,compile"
+        )
+        #expect(Builder.noCacheMetadataValue(noCache: true, noCacheFilter: ["base"]) == "")
     }
 }
 
