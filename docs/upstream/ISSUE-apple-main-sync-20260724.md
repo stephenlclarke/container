@@ -86,3 +86,5 @@ Phase 4 release is complete.
   `d1d763530df3c6a326dbae7f0c0a59a335808045`.
 - Signed ancestry merge:
   `1bc31674629287f3386637db4c6d8652dc36602a`.
+- Signed named-builder test reconciliation:
+  `abed15fdd0cafe340f8aceb65080e4a88d0ceb0a`.
