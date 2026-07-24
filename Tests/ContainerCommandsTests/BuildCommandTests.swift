@@ -111,6 +111,8 @@ struct BuildCommandTests {
             "--privileged",
             "--shm-size", "67108864",
             "--ulimit", "nofile=1024:2048",
+            "--no-cache-filter", "base,compile",
+            "--no-cache-filter", "final",
             "--ssh", "default",
             "--ssh", "git=/tmp/agent.sock",
             "--tag", "example/app:latest",
@@ -126,9 +128,18 @@ struct BuildCommandTests {
         #expect(command.privileged)
         #expect(command.shmSize == "67108864")
         #expect(command.ulimit == ["nofile=1024:2048"])
+        #expect(command.noCacheFilter == ["base", "compile", "final"])
         #expect(command.ssh == ["default", "git=/tmp/agent.sock"])
         #expect(command.contextDir == directory.path)
         #expect(command.targetImageNames == ["example/app:latest"])
+    }
+
+    @Test
+    func buildRejectsEmptyNoCacheFilterStages() throws {
+        #expect(throws: ValidationError.self) {
+            _ = try Application.BuildCommand.normalizedNoCacheFilters(["base,,compile"])
+        }
+        #expect(try Application.BuildCommand.normalizedNoCacheFilters([]).isEmpty)
     }
 
     private func makeTemporaryDirectory() throws -> URL {
