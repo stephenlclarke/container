@@ -105,6 +105,51 @@ struct ContainerLogsCommandTests {
         #expect(String(data: try Data(contentsOf: outputURL), encoding: .utf8) == "\ntwo\n")
     }
 
+    @Test("returns a complete line when it exceeds the 1024-byte read chunk")
+    func logFileOutputDoesNotTruncateSingleLongLine() async throws {
+        let line = "START" + String(repeating: "X", count: 3_000) + "END"
+        let inputHandle = try fileHandle(containing: Data("\(line)\n".utf8))
+        let outputURL = temporaryFileURL()
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+
+        try await LogFileOutput.write(
+            fh: inputHandle,
+            n: 1,
+            follow: false,
+            output: outputHandle
+        )
+        try outputHandle.close()
+
+        #expect(String(data: try Data(contentsOf: outputURL), encoding: .utf8) == "\(line)\n")
+    }
+
+    @Test("returns a complete oldest line when the tail spans read chunks")
+    func logFileOutputDoesNotTruncateOldestLineAcrossChunks() async throws {
+        let first = String(repeating: "A", count: 800)
+        let second = String(repeating: "B", count: 800)
+        let third = String(repeating: "C", count: 800)
+        let inputHandle = try fileHandle(containing: Data("\(first)\n\(second)\n\(third)\n".utf8))
+        let outputURL = temporaryFileURL()
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+        _ = FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        let outputHandle = try FileHandle(forWritingTo: outputURL)
+
+        try await LogFileOutput.write(
+            fh: inputHandle,
+            n: 2,
+            follow: false,
+            output: outputHandle
+        )
+        try outputHandle.close()
+
+        #expect(
+            String(data: try Data(contentsOf: outputURL), encoding: .utf8)
+                == "\(second)\n\(third)\n"
+        )
+    }
+
     @Test
     func logFileOutputNegativeTailWritesExistingBytesBeforeFollow() async throws {
         let input = Data([0xff, 0xfe, 0x0a, 0x41])
