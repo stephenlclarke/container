@@ -35,6 +35,25 @@ struct RuntimeAttachIOTests {
     }
 
     @Test
+    func outputKeepsPersistentLogAfterClientWriteFails() throws {
+        let disconnectedClient = Pipe()
+        let persistentLog = Pipe()
+        let output = AttachableOutput(
+            initial: disconnectedClient.fileHandleForReading,
+            persistent: persistentLog.fileHandleForWriting
+        )
+
+        try output.write(Data("before detach\n".utf8))
+        try output.write(Data("after detach\n".utf8))
+        try output.close()
+
+        #expect(
+            try persistentLog.fileHandleForReading.readToEnd()
+                == Data("before detach\nafter detach\n".utf8)
+        )
+    }
+
+    @Test
     func inputRemainsOpenWhenOneClientEnds() async throws {
         let first = Pipe()
         let second = Pipe()
