@@ -6,6 +6,8 @@
   the optional `APP_ROOT` cleanup.
 - Start the default build runtime before a source-backed Containerization
   checkout invokes `container build` as part of `make init`.
+- Reuse an already responsive runtime so an isolated caller does not register
+  the same launchd label from a conflicting plist path.
 - Remove the earlier duplicate `init-block` prerequisites from the normal and
   coverage integration paths.
 - Keep the source-matched `vminit:latest` guest available to the CPU,
@@ -64,6 +66,11 @@ needed failure cleanup. The follow-up shell cases force both `make init` and
 `cctl images save` to fail and prove that a runtime started by the script is
 stopped before exit.
 
+The Docker Compose parity preflight then reproduced launchd status 5 when an
+isolated runtime was already responsive. A fourth shell case now proves the
+bootstrap start is skipped in that state, while the existing stop,
+target-root start, and image-load handoff remains unchanged.
+
 ## Compatibility and risks
 
 The image is still generated and loaded by the same `init-block`; only its
@@ -80,3 +87,5 @@ Normal developer roots retain their existing cleanup and init-image behavior.
   (`fix(integration): start runtime before init image build`).
 - `25bfef82e76105a3c01327d702e89de1380669b1`
   (`fix(integration): stop failed bootstrap runtime`).
+- `98b3ae7db2d3dcfdcefd6e4eace5a65f850ac52e`
+  (`fix(integration): reuse active bootstrap runtime`).

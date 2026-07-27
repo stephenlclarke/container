@@ -57,6 +57,10 @@ bootstrap without widening either production boundary.
 - `25bfef82e76105a3c01327d702e89de1380669b1` stops only a runtime
   started by the init-image bootstrap when `make init` or image save fails.
   Its shell regression covers both failure stages.
+- `98b3ae7db2d3dcfdcefd6e4eace5a65f850ac52e` reuses an already
+  responsive bootstrap runtime instead of trying to register the same launchd
+  label from a second application root. Its shell regression covers the
+  pre-existing-runtime path used by the Compose parity harness.
 
 The upstream issue and pull-request handoffs for the four production changes
 are retained in the consuming Compose repository so each proposal remains
@@ -88,7 +92,8 @@ suites, the complete init-image shell-ordering regression, formatting, and
 license checks.
 Review follow-up validation also passed all six glob test groups and all three
 init-image shell scenarios: success, `make init` failure, and image-save
-failure.
+failure. The parity preflight added a fourth shell scenario for a pre-existing
+runtime and proved that the bootstrap start is skipped.
 
 The source-matched coverage integration gate built and loaded the matching
 6.45 GB Containerization guest, then passed 293 tests in 31 concurrent suites
@@ -113,7 +118,8 @@ against this exact runtime revision.
 - The integration bootstrap uses the default runtime only for the existing
   image build. The existing stop, isolated-root start, and image-load sequence
   remains authoritative for the test runtime. Failure cleanup stops the
-  bootstrap only when the script started it.
+  bootstrap only when the script started it. A responsive runtime is reused,
+  avoiding a conflicting launchd registration for the same service label.
 - The setup volume prune runs only inside the serialized destructive suite and
   changes no production behavior.
 
