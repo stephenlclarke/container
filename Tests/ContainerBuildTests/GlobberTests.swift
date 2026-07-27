@@ -150,6 +150,14 @@ let testCases = [
         #expect(globber.cachedPatternCount == 2)
     }
 
+    @Test
+    func preservesFoundationUnicodeScalarMatching() throws {
+        let globber = Globber(URL(fileURLWithPath: "/"))
+
+        #expect(try globber.glob("é", "?"))
+        #expect(try !globber.glob("e\u{301}", "?"))
+    }
+
     @Test("All expected patterns match", arguments: testCases)
     func testExpectedPatterns(_ test: TestCase) throws {
         let charactersToTrim = CharacterSet(charactersIn: "/")

@@ -19,7 +19,7 @@ import Foundation
 public class Globber {
     let input: URL
     var results: Set<URL> = .init()
-    private var regularExpressions: [String: Regex<AnyRegexOutput>] = [:]
+    private var regularExpressions: [String: NSRegularExpression] = [:]
 
     var cachedPatternCount: Int {
         regularExpressions.count
@@ -82,10 +82,11 @@ public class Globber {
 
     func glob(_ input: String, _ pattern: String) throws -> Bool {
         let expression = try regularExpression(for: pattern)
-        return input.wholeMatch(of: expression) != nil
+        let range = NSRange(input.startIndex..<input.endIndex, in: input)
+        return expression.firstMatch(in: input, range: range) != nil
     }
 
-    func regularExpression(for pattern: String) throws -> Regex<AnyRegexOutput> {
+    func regularExpression(for pattern: String) throws -> NSRegularExpression {
         if let expression = regularExpressions[pattern] {
             return expression
         }
@@ -99,7 +100,10 @@ public class Globber {
             .replacingOccurrences(of: "\\[", with: "[")
             .replacingOccurrences(of: "\\]", with: "]") + "$"
 
-        let expression = try Regex(regexPattern)
+        // Keep the established Swift Regex validation contract while matching
+        // with Foundation to preserve its Unicode-scalar behavior.
+        let _ = try Regex(regexPattern)
+        let expression = try NSRegularExpression(pattern: regexPattern)
         regularExpressions[pattern] = expression
         return expression
     }
