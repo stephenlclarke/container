@@ -251,29 +251,57 @@ public actor ContainersService {
     /// Calculate disk usage for containers
     /// - Returns: Tuple of (total count, active count, total size, reclaimable size)
     public func calculateDiskUsage() async -> (Int, Int, UInt64, UInt64) {
-        await lock.withLock(logMetadata: ["acquirer": "\(#function)"]) { _ in
+        let containers = await lock.withLock(logMetadata: ["acquirer": "\(#function)"]) { _ in
+            await self.containers.map {
+                ContainerDiskUsageEntry(id: $0.key, status: $0.value.snapshot.status)
+            }
+        }
+
+        let paths = containers.compactMap { container -> ContainerDiskUsagePath? in
+            guard let bundlePath = try? Self.containerPath(root: containerRoot, id: container.id) else {
+                log.warning(
+                    "skipping disk usage for container with invalid storage identifier",
+                    metadata: ["id": "\(container.id)"]
+                )
+                return nil
+            }
+            return ContainerDiskUsagePath(path: bundlePath, status: container.status)
+        }
+        return await Self.calculateDiskUsage(totalCount: containers.count, paths: paths)
+    }
+
+    struct ContainerDiskUsageEntry: Sendable {
+        let id: String
+        let status: RuntimeStatus
+    }
+
+    struct ContainerDiskUsagePath: Sendable {
+        let path: URL
+        let status: RuntimeStatus
+    }
+
+    nonisolated static func calculateDiskUsage(
+        totalCount: Int,
+        paths: [ContainerDiskUsagePath]
+    ) async -> (Int, Int, UInt64, UInt64) {
+        await Task.detached(priority: .utility) {
             var totalSize: UInt64 = 0
             var reclaimableSize: UInt64 = 0
             var activeCount = 0
 
-            for (id, state) in await self.containers {
-                guard let bundlePath = try? Self.containerPath(root: self.containerRoot, id: id) else {
-                    self.log.warning("skipping disk usage for container with invalid storage identifier", metadata: ["id": "\(id)"])
-                    continue
-                }
-                let containerSize = FileManager.default.allocatedSize(of: bundlePath)
+            for path in paths {
+                let containerSize = FileManager.default.allocatedSize(of: path.path)
                 totalSize += containerSize
 
-                if state.snapshot.status == .running {
+                if path.status == .running {
                     activeCount += 1
                 } else {
-                    // Stopped containers are reclaimable
                     reclaimableSize += containerSize
                 }
             }
 
-            return (await self.containers.count, activeCount, totalSize, reclaimableSize)
-        }
+            return (totalCount, activeCount, totalSize, reclaimableSize)
+        }.value
     }
 
     /// Get set of image references used by containers (for disk usage calculation)

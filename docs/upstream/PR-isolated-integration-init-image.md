@@ -4,6 +4,12 @@
 
 - Move `init-block` into the existing integration execution sequence, after
   the optional `APP_ROOT` cleanup.
+- Start the default build runtime before a source-backed Containerization
+  checkout invokes `container build` as part of `make init`.
+- Reuse an already responsive runtime so an isolated caller does not register
+  the same launchd label from a conflicting plist path.
+- Pass the integration scratch `XDG_CONFIG_HOME` through `init-block` so the
+  bootstrap build cannot inherit developer builder settings.
 - Remove the earlier duplicate `init-block` prerequisites from the normal and
   coverage integration paths.
 - Keep the source-matched `vminit:latest` guest available to the CPU,
@@ -17,8 +23,17 @@ runtime services, image resolution, or Compose code.
 
 ## Code map
 
-- `Makefile`: clear a caller-provided test root, then invoke the existing
-  `init-block`, then start the test server and run the CLI suites.
+- `Makefile`: clear a caller-provided test root, invoke the existing
+  `init-block` with the isolated integration configuration, then start the
+  test server and run the CLI suites.
+- `scripts/install-init.sh`: ensure the default runtime is responsive before
+  building the init image, then retain the existing stop, target-root start,
+  and image-load sequence.
+- `Tests/ScriptTests/TestInstallInit.sh`: use injected CLI, Swift, and Make
+  executables to prove start-before-build, the complete handoff order, and
+  cleanup after both build and image-save failures. Its Make dry-run
+  regression also proves there is no early duplicate `init-block` prerequisite
+  and that the scratch `XDG_CONFIG_HOME` reaches the sole invocation.
 
 ## Validation
 
@@ -27,6 +42,7 @@ APP_ROOT="$PWD/.test-scratch/isolated-init-image-app-root" \
 LOG_ROOT="$PWD/.test-scratch/isolated-init-image-log-root" \
 CONTAINERIZATION_INIT_SOURCE_PATH=/path/to/containerization \
 make coverage-integration
+make test-install-init
 make check
 ```
 
@@ -41,13 +57,49 @@ and tar-export Builder gaps. `make check` also passed. This change is test
 orchestration only, so Docker Compose configuration parity does not apply; the
 Compose release gate consumes the validated runtime build.
 
+The 27 July maintenance rerun reproduced the stopped-runtime failure before
+`make init`. The shell regression now proves the exact bootstrap-start, build,
+save, stop, target-start, and load ordering. The source-matched coverage
+integration rerun built and loaded the 6.45 GB Containerization guest, then
+passed 293 tests in 31 concurrent suites and 87 tests in 11 serial suites. The
+corrected-head rerun reported zero known or unexpected issues.
+Integration-only line coverage was 27.55%, and the merged
+unit-plus-integration line coverage was 51.56%.
+
+The exact-head connector review then identified that the new bootstrap start
+needed failure cleanup. The follow-up shell cases force both `make init` and
+`cctl images save` to fail and prove that a runtime started by the script is
+stopped before exit.
+
+The Docker Compose parity preflight then reproduced launchd status 5 when an
+isolated runtime was already responsive. A fourth shell case now proves the
+bootstrap start is skipped in that state, while the existing stop,
+target-root start, and image-load handoff remains unchanged.
+
+The final connector review identified that the integration `init-block`
+invocation still inherited the developer configuration. The focused shell
+gate now dry-runs the complete Make target, rejects the reintroduced early
+prerequisite, and requires the isolated scratch `XDG_CONFIG_HOME` on the sole
+init-image bootstrap.
+
 ## Compatibility and risks
 
 The image is still generated and loaded by the same `init-block`; only its
-position relative to an explicitly isolated cleanup changes. Normal developer
-roots retain their existing cleanup and init-image behavior.
+position relative to an explicitly isolated cleanup changes. The bootstrap
+start uses the default runtime only for the image build; the existing stop and
+target-root restart still select the requested isolated root before loading.
+The bootstrap reads only the empty integration scratch configuration. Normal
+developer roots retain their existing cleanup and init-image behavior.
 
 ## Commit tracking
 
-- `2dfec65b2bf9c863b1fdcec89432e43636c9a46b`
+- `2dfec65be7cc1d5ce52e48a295c38a9b3ddc8a7b`
   (`fix(integration): load matched init image after cleanup`).
+- `345ae6d50db8480b1f85a481b15a6d8c291fe6d3`
+  (`fix(integration): start runtime before init image build`).
+- `25bfef8c7f810aed0442d7214e2e9fd38f3bd89c`
+  (`fix(integration): stop failed bootstrap runtime`).
+- `98b3ae7db2d3dcfdcefd6e4eace5a65f850ac52e`
+  (`fix(integration): reuse active bootstrap runtime`).
+- `20e00d7b340b4a7daf730f505e6a3e80dc812ebc`
+  (`fix(integration): isolate init image bootstrap config`).

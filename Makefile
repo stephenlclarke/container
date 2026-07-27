@@ -207,8 +207,11 @@ dsym:
 	@echo Packaging the debug symbols...
 	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
 
-.PHONY: test
-test: build-tests
+.PHONY: test test-install-init
+test-install-init:
+	@Tests/ScriptTests/TestInstallInit.sh
+
+test: build-tests test-install-init
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
@@ -322,7 +325,7 @@ define RUN_INTEGRATION
 			find "$(APP_ROOT)" -mindepth 1 -maxdepth 1 -exec rm -rf {} + ; \
 		fi ; \
 	fi
-	@"$(MAKE)" init-block
+	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" "$(MAKE)" init-block
 	@echo Running the integration tests...
 	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_PROFILE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
 	{ \
@@ -353,7 +356,7 @@ endef
 # when a full app-root wipe is needed.
 .NOTPARALLEL: integration
 integration coverage-integration: PRESERVE_KERNELS = true
-integration: container init-block
+integration: container
 	@echo "HOSTNAME: $$(hostname)"
 	$(RUN_INTEGRATION)
 

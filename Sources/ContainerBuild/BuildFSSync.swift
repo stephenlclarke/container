@@ -229,9 +229,8 @@ actor BuildFSSync: BuildPipelineHandler {
                 return nil
             }
 
-            let include = items.contains { item in
-                item.relativePath == rel
-            }
+            let entry = DirEntry(url: url, isDirectory: url.hasDirectoryPath, relativePath: rel)
+            let include = items.contains(entry)
 
             guard include else {
                 return nil

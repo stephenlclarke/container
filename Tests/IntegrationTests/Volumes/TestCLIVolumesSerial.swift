@@ -24,6 +24,11 @@ struct TestCLIVolumesSerial {
 
     @Test func testVolumePruneNoVolumes() async throws {
         try await ContainerFixture.with { f in
+            // This suite follows the concurrent integration pass. Establish the
+            // empty-state precondition instead of inheriting global volume state
+            // from an unrelated test.
+            try f.run(["volume", "prune"]).check()
+
             let result = try f.run(["volume", "prune"]).check()
             #expect(result.error.contains("Zero KB"), "should show no space reclaimed")
         }

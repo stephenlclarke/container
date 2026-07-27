@@ -196,42 +196,66 @@ public actor VolumesService {
             )
         }
 
-        return try await lock.withLock { _ in
-            let allVolumes = try await self.store.list()
-
-            // Atomically get active volumes with container list
-            return try await self.containersService.withContainerList(logMetadata: ["acquirer": "\(#function)"]) { containers in
-                var inUseSet = Set<String>()
-
-                // Find all mounted volumes
-                for container in containers {
-                    for mount in container.configuration.mounts {
-                        if mount.isVolume, let volumeName = mount.volumeName {
-                            inUseSet.insert(volumeName)
-                        }
-                    }
-                }
-
-                var totalSize: UInt64 = 0
-                var reclaimableSize: UInt64 = 0
-
-                // Calculate sizes
-                for volume in allVolumes {
-                    guard let volumePath = try? self.volumePath(for: volume.name) else {
-                        self.log.warning("skipping disk usage for volume with invalid storage name", metadata: ["name": "\(volume.name)"])
-                        continue
-                    }
-                    let volumeSize = FileManager.default.allocatedSize(of: URL(fileURLWithPath: volumePath))
-                    totalSize += volumeSize
-
-                    if !inUseSet.contains(volume.name) {
-                        reclaimableSize += volumeSize
-                    }
-                }
-
-                return (allVolumes.count, inUseSet.count, totalSize, reclaimableSize)
-            }
+        let allVolumes = try await lock.withLock { _ in
+            try await self.store.list()
         }
+        let inUseSet = try await containersService.withContainerList(logMetadata: ["acquirer": "\(#function)"]) { containers in
+            var result = Set<String>()
+            for container in containers {
+                for mount in container.configuration.mounts {
+                    if mount.isVolume, let volumeName = mount.volumeName {
+                        result.insert(volumeName)
+                    }
+                }
+            }
+            return result
+        }
+
+        let paths = allVolumes.compactMap { volume -> VolumeDiskUsagePath? in
+            guard let volumePath = try? volumePath(for: volume.name) else {
+                log.warning(
+                    "skipping disk usage for volume with invalid storage name",
+                    metadata: ["name": "\(volume.name)"]
+                )
+                return nil
+            }
+            return VolumeDiskUsagePath(
+                path: URL(fileURLWithPath: volumePath),
+                isInUse: inUseSet.contains(volume.name)
+            )
+        }
+        return await Self.calculateDiskUsage(
+            totalCount: allVolumes.count,
+            paths: paths
+        )
+    }
+
+    struct VolumeDiskUsagePath: Sendable {
+        let path: URL
+        let isInUse: Bool
+    }
+
+    nonisolated static func calculateDiskUsage(
+        totalCount: Int,
+        paths: [VolumeDiskUsagePath]
+    ) async -> (Int, Int, UInt64, UInt64) {
+        await Task.detached(priority: .utility) {
+            var activeCount = 0
+            var totalSize: UInt64 = 0
+            var reclaimableSize: UInt64 = 0
+
+            for path in paths {
+                let volumeSize = FileManager.default.allocatedSize(of: path.path)
+                totalSize += volumeSize
+                if path.isInUse {
+                    activeCount += 1
+                } else {
+                    reclaimableSize += volumeSize
+                }
+            }
+
+            return (totalCount, activeCount, totalSize, reclaimableSize)
+        }.value
     }
 
     private func parseSize(_ sizeString: String) throws -> UInt64 {

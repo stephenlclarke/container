@@ -138,6 +138,26 @@ let testCases = [
         }
     }
 
+    @Test
+    func reusesCompiledRegularExpressionForEachPattern() throws {
+        let globber = Globber(URL(fileURLWithPath: "/"))
+
+        #expect(try globber.glob("main.swift", "*.swift"))
+        #expect(try globber.glob("test.swift", "*.swift"))
+        #expect(globber.cachedPatternCount == 1)
+
+        #expect(try globber.glob("README.md", "*.md"))
+        #expect(globber.cachedPatternCount == 2)
+    }
+
+    @Test
+    func preservesFoundationUnicodeScalarMatching() throws {
+        let globber = Globber(URL(fileURLWithPath: "/"))
+
+        #expect(try globber.glob("é", "?"))
+        #expect(try !globber.glob("e\u{301}", "?"))
+    }
+
     @Test("All expected patterns match", arguments: testCases)
     func testExpectedPatterns(_ test: TestCase) throws {
         let charactersToTrim = CharacterSet(charactersIn: "/")
