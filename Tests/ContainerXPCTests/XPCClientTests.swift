@@ -16,6 +16,7 @@
 
 #if os(macOS)
 import ContainerizationError
+import Darwin
 @preconcurrency import Foundation
 import Logging
 import Testing
@@ -24,6 +25,41 @@ import Testing
 
 @Suite(.timeLimit(.minutes(1)), .serialized)
 struct XPCClientTests {
+    @Test(arguments: [false, true])
+    func boxedFileHandlesCannotCloseReusedDescriptors(useArray: Bool) throws {
+        let message = XPCMessage(route: "file-handles")
+        var source: FileHandle? = try FileHandle(
+            forReadingFrom: URL(fileURLWithPath: "/dev/null")
+        )
+        let transferredDescriptor = try #require(source?.fileDescriptor)
+        if useArray {
+            try message.set(
+                key: "file-handles",
+                value: [try #require(source)]
+            )
+        } else {
+            message.set(
+                key: "file-handle",
+                value: try #require(source)
+            )
+        }
+
+        let replacement = open("/dev/null", O_RDONLY | O_CLOEXEC)
+        #expect(replacement >= 0)
+        if replacement != transferredDescriptor {
+            #expect(
+                dup2(replacement, transferredDescriptor)
+                    == transferredDescriptor
+            )
+            Darwin.close(replacement)
+        }
+
+        try source?.close()
+        source = nil
+        #expect(fcntl(transferredDescriptor, F_GETFD) >= 0)
+        Darwin.close(transferredDescriptor)
+    }
+
     @Test(arguments: [0, 1, 2])
     func fileHandlesPreserveEveryDescriptor(count: Int) throws {
         let message = XPCMessage(route: "file-handles")
