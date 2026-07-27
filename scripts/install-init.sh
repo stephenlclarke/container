@@ -122,8 +122,8 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
 	if ! "${CONTAINER_INIT_CLI}" system status >/dev/null 2>&1; then
 		BOOTSTRAP_RUNTIME_STARTED=true
+		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BUILD_START_ARGS[@]}"
 	fi
-	"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BUILD_START_ARGS[@]}"
 	"${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
 	INIT_IMAGE_TAR="$(mktemp -t container-init.XXXXXX.tar)"
 	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o "${INIT_IMAGE_TAR}" "${IMAGE_NAME}"

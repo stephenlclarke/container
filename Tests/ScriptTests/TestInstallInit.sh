@@ -135,3 +135,23 @@ run_failure_case() {
 
 run_failure_case make
 run_failure_case save
+
+PREEXISTING_LOG_PATH="${TEST_ROOT}/preexisting.log"
+PREEXISTING_RUNNING_PATH="${TEST_ROOT}/preexisting-running"
+touch "${PREEXISTING_RUNNING_PATH}"
+
+INSTALL_INIT_TEST_LOG="${PREEXISTING_LOG_PATH}" \
+INSTALL_INIT_TEST_RUNNING="${PREEXISTING_RUNNING_PATH}" \
+CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
+CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
+CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
+CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
+CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
+    scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+
+if grep -q '^container --debug system start --timeout 60' "${PREEXISTING_LOG_PATH}"; then
+    printf 'pre-existing runtime was started again\n' >&2
+    exit 1
+fi
+grep -q '^container system stop$' "${PREEXISTING_LOG_PATH}"
+grep -q '^container --debug system start --enable-kernel-install' "${PREEXISTING_LOG_PATH}"
