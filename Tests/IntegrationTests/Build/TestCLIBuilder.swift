@@ -208,10 +208,11 @@ struct TestCLIBuilder {
     @Test func testBuildNetworkAccess() async throws {
         try await ContainerFixture.with { f in
             let dir = try f.createTempDir()
+            let alpine = WarmupImage.alpine320.preparedReference
             try f.createContext(
                 dir: dir,
                 dockerfile: """
-                    FROM ghcr.io/linuxcontainers/alpine:3.20
+                    FROM \(alpine)
                     ARG HTTP_PROXY
                     ARG HTTPS_PROXY
                     ARG NO_PROXY

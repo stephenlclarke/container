@@ -23,6 +23,22 @@ import Testing
 struct ContainerTestSupportTests {
 
     @Test
+    func additionalCABundleUsesDistinctAlpineReferences() {
+        let originalBundle = ProcessInfo.processInfo.environment["CLITEST_CA_BUNDLE"]
+        defer { restoreEnvironment("CLITEST_CA_BUNDLE", to: originalBundle) }
+
+        unsetenv("CLITEST_CA_BUNDLE")
+        for image in WarmupImage.allCases {
+            #expect(image.preparedReference == image.rawValue)
+        }
+
+        setenv("CLITEST_CA_BUNDLE", "/tmp/clitest-ca-bundle.pem", 1)
+        #expect(WarmupImage.alpine320.preparedReference != WarmupImage.alpine320.rawValue)
+        #expect(WarmupImage.alpine318.preparedReference != WarmupImage.alpine318.rawValue)
+        #expect(WarmupImage.busybox136.preparedReference == WarmupImage.busybox136.rawValue)
+    }
+
+    @Test
     func dnsOverrideIsAppliedOnlyWhenRequested() async throws {
         let originalNameservers = ProcessInfo.processInfo.environment["CLITEST_DNS_NAMESERVERS"]
         let originalEchoArguments = ProcessInfo.processInfo.environment["CLITEST_ECHO_ARGUMENTS"]

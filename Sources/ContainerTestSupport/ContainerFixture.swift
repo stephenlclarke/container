@@ -294,14 +294,19 @@ public final class ContainerFixture: Sendable {
     /// the canonical warmup image is never touched.
     public func copyWarmupImage(_ image: WarmupImage) throws -> String {
         let canonical = image.rawValue
+        let prepared = image.preparedReference
         let lastComponent = canonical.split(separator: "/").last.map(String.init) ?? canonical
         let parts = lastComponent.split(separator: ":", maxSplits: 1)
         let name = String(parts[0])
         let tag = parts.count > 1 ? String(parts[1]) : "latest"
         let localRef = "\(testID)-\(name):\(tag)"
 
-        let tagResult = try run(["image", "tag", canonical, localRef])
+        let tagResult = try run(["image", "tag", prepared, localRef])
         if tagResult.status != 0 {
+            if prepared != canonical {
+                throw CommandError.executionFailed(
+                    "prepared warmup image \(prepared) is missing")
+            }
             try doPull(canonical)
             try run(["image", "tag", canonical, localRef]).check()
         }

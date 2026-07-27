@@ -573,7 +573,7 @@ struct TestCLIRunCommand {
 
     @Test func testRunCommandUnixSocketMount() async throws {
         try await ContainerFixture.with { f in
-            let image = alpine.rawValue
+            let image = alpine.preparedReference
             let c = "\(f.testID)-c"
             let socketDir = try f.makeShortSocketDir("sock")
             let socketPath = socketDir + "/ssh-auth.sock"
