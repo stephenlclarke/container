@@ -8,6 +8,8 @@
   requested list order.
 - Snapshot container and volume metadata under service locks, then perform
   filesystem traversal outside those locks.
+- Derive volume active counts from the same volume snapshot used for totals
+  and size traversal.
 - Make source-backed integration runs start the default runtime before
   Containerization builds the matched init image.
 - Make the serial empty-volume prune assertion establish its own global
@@ -41,10 +43,12 @@ bootstrap without widening either production boundary.
   `Tests/ContainerCommandsTests/ContainerStatsCommandTests.swift`.
 - `b15ac4aaf1ad7ce59a124c7e222a427565525d3a` moves resource-tree sizing
   outside the container and volume service locks. The implementation is in
-  `Sources/ContainerServer/Server/Containers/ContainersService.swift` and
-  `Sources/ContainerServer/Server/Volumes/VolumesService.swift`; focused
+  `Sources/Services/ContainerAPIService/Server/Containers/ContainersService.swift`
+  and
+  `Sources/Services/ContainerAPIService/Server/Volumes/VolumesService.swift`;
+  focused
   concurrency coverage is in
-  `Tests/ContainerServerTests/DiskUsageConcurrencyTests.swift`.
+  `Tests/ContainerAPIServiceTests/DiskUsageConcurrencyTests.swift`.
 - `345ae6d50db8480b1f85a481b15a6d8c291fe6d3` starts the runtime needed
   by Containerization's source init-image build. The change covers `Makefile`,
   `scripts/install-init.sh`, and `Tests/ScriptTests/TestInstallInit.sh`.
@@ -61,6 +65,11 @@ bootstrap without widening either production boundary.
   responsive bootstrap runtime instead of trying to register the same launchd
   label from a second application root. Its shell regression covers the
   pre-existing-runtime path used by the Compose parity harness.
+- `c7d05f1e3396436d96090dbffc8f8196d34f3c1d` derives volume
+  `activeCount` from the snapshotted volume paths, preventing a concurrent
+  container attach from making `activeCount` exceed `totalCount`. The focused
+  disk-usage regression covers active and unused paths while retaining an
+  intentionally larger metadata total.
 
 The upstream issue and pull-request handoffs for the four production changes
 are retained in the consuming Compose repository so each proposal remains
@@ -94,6 +103,8 @@ Review follow-up validation also passed all six glob test groups and all three
 init-image shell scenarios: success, `make init` failure, and image-save
 failure. The parity preflight added a fourth shell scenario for a pre-existing
 runtime and proved that the bootstrap start is skipped.
+The final connector follow-up passed both focused disk-usage tests and strict
+Swift formatting after making active-volume counts snapshot-consistent.
 
 The source-matched coverage integration gate built and loaded the matching
 6.45 GB Containerization guest, then passed 293 tests in 31 concurrent suites
@@ -115,6 +126,9 @@ against this exact runtime revision.
   not become completion order; any sample failure still fails the command.
 - Service locks continue to protect metadata snapshots. Only detached,
   read-only filesystem traversal occurs after the snapshot is released.
+  Active-volume totals are derived from those snapshotted paths, so later
+  container attachments cannot make the returned counts internally
+  inconsistent.
 - The integration bootstrap uses the default runtime only for the existing
   image build. The existing stop, isolated-root start, and image-load sequence
   remains authoritative for the test runtime. Failure cleanup stops the
