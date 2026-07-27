@@ -50,7 +50,7 @@ import Testing
 /// Resources are torn down when the closure exits regardless of whether it
 /// throws.
 ///
-/// - ``withContainer(image:tag:runArgs:containerArgs:autoRemove:_:)`` starts a
+/// - ``withContainer(image:tag:runArgs:containerArgs:autoRemove:dnsOverride:_:)`` starts a
 ///   detached container, waits for `running`, calls the body, then stops (and
 ///   optionally deletes) it on exit.
 ///
@@ -314,7 +314,8 @@ public final class ContainerFixture: Sendable {
     /// Polls until the named container reaches the `running` state.
     ///
     /// Call this directly only when using ``doCreate(_:image:args:volumes:networks:ports:)``
-    /// and ``doStart(_:)`` — ``withContainer(image:tag:runArgs:containerArgs:autoRemove:_:)``
+    /// and ``doStart(_:)`` —
+    /// ``withContainer(image:tag:runArgs:containerArgs:autoRemove:dnsOverride:_:)``
     /// waits automatically.
     public func waitForContainerRunning(_ name: String, attempts: Int = 30) async throws {
         for _ in 0..<attempts {
@@ -347,13 +348,14 @@ public final class ContainerFixture: Sendable {
         runArgs: [String] = [],
         containerArgs: [String] = ["sleep", "infinity"],
         autoRemove: Bool = true,
+        dnsOverride: Bool = true,
         _ body: (String) async throws -> Void
     ) async throws {
         let name = "\(testID)-\(tag)"
         var args = ["run", "--name", name, "-d"]
         if autoRemove { args.append("--rm") }
         args += runArgs + [image] + containerArgs
-        try run(args).check()
+        try run(args, dnsOverride: dnsOverride).check()
         defer {
             _ = try? run(["stop", "-s", "SIGKILL", name])
             if !autoRemove { _ = try? run(["delete", name]) }
