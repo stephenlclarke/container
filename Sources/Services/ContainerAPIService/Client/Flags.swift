@@ -227,6 +227,7 @@ public struct Flags {
             clearEntrypoint: Bool = false,
             initImage: String?,
             kernel: String?,
+            kernelArgs: [String],
             labels: [String],
             annotations: [String] = [],
             healthCommand: String? = nil,
@@ -292,6 +293,7 @@ public struct Flags {
             self.clearEntrypoint = clearEntrypoint
             self.initImage = initImage
             self.kernel = kernel
+            self.kernelArgs = kernelArgs
             self.labels = labels
             self.annotations = annotations
             self.healthCommand = healthCommand
@@ -409,6 +411,15 @@ public struct Flags {
             }
         )
         public var kernel: String?
+
+        @Option(
+            name: .customLong("kernel-arg"),
+            help: .init(
+                "Append a raw boot argument to the kernel command line (repeatable).",
+                valueName: "arg"
+            )
+        )
+        public var kernelArgs: [String] = []
 
         @Option(name: [.short, .customLong("label")], help: "Add a key=value label to the container")
         public var labels: [String] = []
