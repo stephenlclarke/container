@@ -54,6 +54,10 @@ cat > "${FAKE_MAKE}" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 test -f "${INSTALL_INIT_TEST_RUNNING}"
+if [[ -n "${INSTALL_INIT_TEST_FORBIDDEN_BUILD_CACHE:-}" ]]; then
+    test ! -e "$2/.build"
+    test -f "$2/Package.swift"
+fi
 printf 'make %s\n' "$*" >> "${INSTALL_INIT_TEST_LOG}"
 if [[ "${INSTALL_INIT_TEST_FAILURE:-}" == "make" ]]; then
     exit 42
@@ -155,6 +159,31 @@ if grep -q '^container --debug system start --timeout 60' "${PREEXISTING_LOG_PAT
 fi
 grep -q '^container system stop$' "${PREEXISTING_LOG_PATH}"
 grep -q '^container --debug system start --enable-kernel-install' "${PREEXISTING_LOG_PATH}"
+
+READ_ONLY_LOG_PATH="${TEST_ROOT}/read-only.log"
+READ_ONLY_RUNNING_PATH="${TEST_ROOT}/read-only-running"
+mkdir -p "${CONTAINERIZATION_PATH}/.build/ModuleCache"
+touch "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
+chmod a-w "${CONTAINERIZATION_PATH}/Package.swift"
+chmod a-w \
+    "${CONTAINERIZATION_PATH}/.build" \
+    "${CONTAINERIZATION_PATH}/.build/ModuleCache"
+
+INSTALL_INIT_TEST_LOG="${READ_ONLY_LOG_PATH}" \
+INSTALL_INIT_TEST_RUNNING="${READ_ONLY_RUNNING_PATH}" \
+INSTALL_INIT_TEST_FORBIDDEN_BUILD_CACHE=1 \
+CONTAINERIZATION_INIT_FORCE_COPY=true \
+CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
+CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
+CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
+CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
+CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
+    scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+
+test -e "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
+grep -Eq '^make -C .*/containerization init VMINIT_IMAGE=test-init:latest$' "${READ_ONLY_LOG_PATH}"
+chmod -R u+w "${CONTAINERIZATION_PATH}/.build"
+chmod u+w "${CONTAINERIZATION_PATH}/Package.swift"
 
 INTEGRATION_SCRATCH_ROOT="${TEST_ROOT}/integration-scratch"
 INTEGRATION_DRY_RUN="$(
