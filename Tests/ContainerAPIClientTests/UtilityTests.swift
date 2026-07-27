@@ -124,6 +124,12 @@ struct UtilityTests {
 
         #expect(
             try Utility.isInfraImage(
+                name: "custom-builder:latest",
+                containerSystemConfig: config
+            )
+        )
+        #expect(
+            try Utility.isInfraImage(
                 name: "registry.example.com/custom-builder:latest",
                 containerSystemConfig: config
             )

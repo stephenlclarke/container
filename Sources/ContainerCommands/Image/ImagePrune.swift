@@ -49,6 +49,7 @@ extension Application {
                 let containers = try await client.list()
                 var imagesInUse = Set<String>()
                 for container in containers {
+                    imagesInUse.insert(container.configuration.image.reference)
                     imagesInUse.insert(
                         try ClientImage.normalizeReference(
                             container.configuration.image.reference,

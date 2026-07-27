@@ -182,7 +182,9 @@ extension Application {
                 let envChanged = existingManagedEnv != targetEnvVars
 
                 // Check if we need to recreate the builder due to different image
-                let imageChanged = existingImage != normalizedBuilderImage
+                let imageChanged =
+                    existingImage != builderImage
+                    && existingImage != normalizedBuilderImage
                 let cpuChanged = existingResources.cpus != resources.cpus
                 let memChanged = existingResources.memoryInBytes != resources.memoryInBytes
                 let sshChanged =
