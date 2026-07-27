@@ -153,24 +153,20 @@ extension Application {
             }
         }
 
-        private struct StatsSnapshot {
+        private struct StatsSnapshot: Sendable {
             let container: ContainerSnapshot
             let stats1: ContainerResource.ContainerStats
             let stats2: ContainerResource.ContainerStats
         }
 
         private static func collectStats(client: ContainerClient, for containers: [ContainerSnapshot]) async throws -> [StatsSnapshot] {
-            var snapshots: [StatsSnapshot] = []
-
-            // First sample
-            for container in containers {
-                guard container.status == .running else { continue }
+            let runningContainers = containers.filter { $0.status == .running }
+            var snapshots = await orderedConcurrentCompactMap(runningContainers) { container in
                 do {
                     let stats1 = try await client.stats(id: container.id)
-                    snapshots.append(StatsSnapshot(container: container, stats1: stats1, stats2: stats1))
+                    return StatsSnapshot(container: container, stats1: stats1, stats2: stats1)
                 } catch {
-                    // Skip containers that error out
-                    continue
+                    return nil
                 }
             }
 
@@ -178,23 +174,51 @@ extension Application {
             if !snapshots.isEmpty {
                 try await Task.sleep(for: .seconds(2))
 
-                // Second sample
-                for i in 0..<snapshots.count {
+                snapshots = await orderedConcurrentCompactMap(snapshots) { snapshot in
                     do {
-                        let stats2 = try await client.stats(id: snapshots[i].container.id)
-                        snapshots[i] = StatsSnapshot(
-                            container: snapshots[i].container,
-                            stats1: snapshots[i].stats1,
+                        let stats2 = try await client.stats(id: snapshot.container.id)
+                        return StatsSnapshot(
+                            container: snapshot.container,
+                            stats1: snapshot.stats1,
                             stats2: stats2
                         )
                     } catch {
-                        // Keep the original stats if second sample fails
-                        continue
+                        return snapshot
                     }
                 }
             }
 
             return snapshots
+        }
+
+        static func orderedConcurrentCompactMap<Input: Sendable, Output: Sendable>(
+            _ inputs: [Input],
+            transform: @escaping @Sendable (Input) async -> Output?
+        ) async -> [Output] {
+            await withTaskGroup(of: IndexedResult<Output>?.self) { group in
+                for (index, input) in inputs.enumerated() {
+                    group.addTask {
+                        guard let output = await transform(input) else {
+                            return nil
+                        }
+                        return IndexedResult(index: index, output: output)
+                    }
+                }
+
+                var results: [IndexedResult<Output>] = []
+                results.reserveCapacity(inputs.count)
+                for await result in group {
+                    if let result {
+                        results.append(result)
+                    }
+                }
+                return results.sorted { $0.index < $1.index }.map(\.output)
+            }
+        }
+
+        private struct IndexedResult<Output: Sendable>: Sendable {
+            let index: Int
+            let output: Output
         }
 
         /// Calculate CPU percentage from two stat snapshots
