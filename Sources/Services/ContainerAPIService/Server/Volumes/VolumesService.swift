@@ -226,7 +226,6 @@ public actor VolumesService {
         }
         return await Self.calculateDiskUsage(
             totalCount: allVolumes.count,
-            activeCount: inUseSet.count,
             paths: paths
         )
     }
@@ -238,17 +237,19 @@ public actor VolumesService {
 
     nonisolated static func calculateDiskUsage(
         totalCount: Int,
-        activeCount: Int,
         paths: [VolumeDiskUsagePath]
     ) async -> (Int, Int, UInt64, UInt64) {
         await Task.detached(priority: .utility) {
+            var activeCount = 0
             var totalSize: UInt64 = 0
             var reclaimableSize: UInt64 = 0
 
             for path in paths {
                 let volumeSize = FileManager.default.allocatedSize(of: path.path)
                 totalSize += volumeSize
-                if !path.isInUse {
+                if path.isInUse {
+                    activeCount += 1
+                } else {
                     reclaimableSize += volumeSize
                 }
             }

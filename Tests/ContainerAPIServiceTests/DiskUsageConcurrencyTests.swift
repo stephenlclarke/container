@@ -46,7 +46,7 @@ struct DiskUsageConcurrencyTests {
     }
 
     @Test
-    func volumeSizingPreservesActiveAndReclaimableTotals() async throws {
+    func volumeSizingDerivesActiveCountFromTheVolumeSnapshot() async throws {
         let root = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
 
@@ -57,7 +57,6 @@ struct DiskUsageConcurrencyTests {
 
         let result = await VolumesService.calculateDiskUsage(
             totalCount: 3,
-            activeCount: 1,
             paths: [
                 .init(path: active, isInUse: true),
                 .init(path: unused, isInUse: false),
