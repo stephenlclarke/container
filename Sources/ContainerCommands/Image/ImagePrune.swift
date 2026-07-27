@@ -16,6 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerPersistence
 import ContainerizationOCI
 import Foundation
 
@@ -33,19 +34,22 @@ extension Application {
         var all: Bool = false
 
         public func run() async throws {
-            let allImages = try await ClientImage.list()
+            let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
+            let allImages = try await ClientImage.list().filter { image in
+                !(try Utility.isInfraImage(
+                    name: image.reference,
+                    containerSystemConfig: containerSystemConfig
+                ))
+            }
 
             let imagesToPrune: [ClientImage]
             if all {
                 // Find all images not used by any container
                 let client = ContainerClient()
                 let containers = try await client.list()
-                var imagesInUse = Set<String>()
-                for container in containers {
-                    imagesInUse.insert(container.configuration.image.reference)
-                }
+                let imagesInUse = Set(containers.map { $0.configuration.image.digest })
                 imagesToPrune = allImages.filter { image in
-                    !imagesInUse.contains(image.reference)
+                    !imagesInUse.contains(image.digest)
                 }
             } else {
                 // Find dangling images (images with no tag)
