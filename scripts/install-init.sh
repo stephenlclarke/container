@@ -40,6 +40,7 @@ EOF
 
 # Parse command line options
 START_ARGS=()
+BUILD_START_ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         -a|--app-root)
@@ -60,6 +61,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable-kernel-install|--disable-kernel-install)
             START_ARGS+=("$1")
+            BUILD_START_ARGS+=("$1")
             shift
             ;;
         -h|--help)
@@ -72,7 +74,9 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-SWIFT="/usr/bin/swift"
+CONTAINER_INIT_CLI="${CONTAINER_INIT_CLI:-bin/container}"
+CONTAINER_INIT_MAKE="${CONTAINER_INIT_MAKE:-make}"
+CONTAINER_INIT_SWIFT="${CONTAINER_INIT_SWIFT:-/usr/bin/swift}"
 IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-vminit:latest}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
@@ -97,11 +101,11 @@ copy_containerization_checkout() {
 	chmod -R u+w "${CONTAINERIZATION_PATH}"
 }
 
-CONTAINERIZATION_VERSION="$(${SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
+CONTAINERIZATION_VERSION="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
 CONTAINERIZATION_PATH="${CONTAINERIZATION_INIT_SOURCE_PATH:-}"
 if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspecified" ]] ; then
 	if [[ -z "${CONTAINERIZATION_PATH}" ]]; then
-		CONTAINERIZATION_PATH="$(${SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
+		CONTAINERIZATION_PATH="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
 	fi
 	if [ ! -d "${CONTAINERIZATION_PATH}" ] ; then
 		echo "containerization directory at ${CONTAINERIZATION_PATH} does not exist"
@@ -112,14 +116,15 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 		copy_containerization_checkout "${CONTAINERIZATION_PATH}"
 	fi
 	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
-	make -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
+	"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BUILD_START_ARGS[@]}"
+	"${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
 	INIT_IMAGE_TAR="$(mktemp -t container-init.XXXXXX.tar)"
 	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o "${INIT_IMAGE_TAR}" "${IMAGE_NAME}"
 
 	# Sleep because commands after stop and start are racy.
-	bin/container system stop
+	"${CONTAINER_INIT_CLI}" system stop
 	sleep 3
-	bin/container --debug system start "${START_ARGS[@]}"
+	"${CONTAINER_INIT_CLI}" --debug system start "${START_ARGS[@]}"
 	sleep 3
-	bin/container i load -i "${INIT_IMAGE_TAR}"
+	"${CONTAINER_INIT_CLI}" i load -i "${INIT_IMAGE_TAR}"
 fi
