@@ -33,6 +33,8 @@ Environment:
     CONTAINERIZATION_INIT_SOURCE_PATH
                                Build the init image from this containerization
                                checkout instead of the SwiftPM resolved path
+    CONTAINERIZATION_INIT_FORCE_COPY
+                               Force a temporary writable source copy (default: false)
 
 EOF
     exit 0
@@ -101,9 +103,12 @@ copy_containerization_checkout() {
 	TEMP_CONTAINERIZATION_ROOT="$(mktemp -d)"
 	CONTAINERIZATION_PATH="${TEMP_CONTAINERIZATION_ROOT}/containerization"
 	mkdir -p "${CONTAINERIZATION_PATH}"
-	cp -R "${source_path}/." "${CONTAINERIZATION_PATH}/"
+	(
+		set -o pipefail
+		tar --exclude='./.build' -C "${source_path}" -cf - . |
+			tar -C "${CONTAINERIZATION_PATH}" -xf -
+	)
 	chmod -R u+w "${CONTAINERIZATION_PATH}"
-	rm -rf "${CONTAINERIZATION_PATH}/.build"
 }
 
 CONTAINERIZATION_VERSION="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
@@ -116,8 +121,9 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 		echo "containerization directory at ${CONTAINERIZATION_PATH} does not exist"
 		exit 1
 	fi
-	if [ ! -w "${CONTAINERIZATION_PATH}/Package.swift" ] ; then
-		echo "containerization is a read-only source-control checkout; copying to a writable init image build directory"
+	if [[ "${CONTAINERIZATION_INIT_FORCE_COPY:-false}" == "true" ||
+		! -w "${CONTAINERIZATION_PATH}/Package.swift" ]] ; then
+		echo "Copying containerization source to a writable init image build directory"
 		copy_containerization_checkout "${CONTAINERIZATION_PATH}"
 	fi
 	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
