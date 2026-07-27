@@ -70,7 +70,7 @@ struct ImageWarmup {
             && rm /tmp/clitest-ca-bundle.pem
         """.write(to: dockerfile, atomically: true, encoding: .utf8)
 
-        try fixture.run(["build", "-t", image.rawValue, fixture.testDir.string])
-            .check("failed to install additional certificates in \(image.rawValue)")
+        try fixture.run(["build", "-t", image.preparedReference, fixture.testDir.string])
+            .check("failed to install additional certificates in \(image.preparedReference)")
     }
 }
