@@ -80,8 +80,12 @@ CONTAINER_INIT_SWIFT="${CONTAINER_INIT_SWIFT:-/usr/bin/swift}"
 IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-vminit:latest}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
+BOOTSTRAP_RUNTIME_STARTED=false
 
 cleanup() {
+	if [[ "${BOOTSTRAP_RUNTIME_STARTED}" == "true" ]]; then
+		"${CONTAINER_INIT_CLI}" system stop >/dev/null 2>&1 || true
+	fi
 	if [[ -n "${INIT_IMAGE_TAR}" && -f "${INIT_IMAGE_TAR}" ]]; then
 		rm -f "${INIT_IMAGE_TAR}"
 	fi
@@ -116,6 +120,9 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 		copy_containerization_checkout "${CONTAINERIZATION_PATH}"
 	fi
 	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
+	if ! "${CONTAINER_INIT_CLI}" system status >/dev/null 2>&1; then
+		BOOTSTRAP_RUNTIME_STARTED=true
+	fi
 	"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BUILD_START_ARGS[@]}"
 	"${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
 	INIT_IMAGE_TAR="$(mktemp -t container-init.XXXXXX.tar)"
@@ -123,6 +130,7 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 
 	# Sleep because commands after stop and start are racy.
 	"${CONTAINER_INIT_CLI}" system stop
+	BOOTSTRAP_RUNTIME_STARTED=false
 	sleep 3
 	"${CONTAINER_INIT_CLI}" --debug system start "${START_ARGS[@]}"
 	sleep 3

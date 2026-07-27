@@ -36,6 +36,10 @@ EOF
 cat > "${FAKE_CONTAINER}" <<'EOF'
 #!/bin/bash
 set -euo pipefail
+if [[ "$*" == "system status" ]]; then
+    test -f "${INSTALL_INIT_TEST_RUNNING}"
+    exit
+fi
 printf 'container %s\n' "$*" >> "${INSTALL_INIT_TEST_LOG}"
 if [[ "$*" == *"system start"* ]]; then
     touch "${INSTALL_INIT_TEST_RUNNING}"
@@ -51,12 +55,18 @@ cat > "${FAKE_MAKE}" <<'EOF'
 set -euo pipefail
 test -f "${INSTALL_INIT_TEST_RUNNING}"
 printf 'make %s\n' "$*" >> "${INSTALL_INIT_TEST_LOG}"
+if [[ "${INSTALL_INIT_TEST_FAILURE:-}" == "make" ]]; then
+    exit 42
+fi
 EOF
 
 cat > "${CONTAINERIZATION_PATH}/bin/cctl" <<'EOF'
 #!/bin/bash
 set -euo pipefail
 printf 'cctl %s\n' "$*" >> "${INSTALL_INIT_TEST_LOG}"
+if [[ "${INSTALL_INIT_TEST_FAILURE:-}" == "save" ]]; then
+    exit 43
+fi
 while (($# > 0)); do
     if [[ "$1" == "-o" ]]; then
         touch "$2"
@@ -98,3 +108,30 @@ EXPECTED=(
 for index in "${!EXPECTED[@]}"; do
     [[ "${OPERATIONS[${index}]}" == "${EXPECTED[${index}]}"* ]]
 done
+
+run_failure_case() {
+    local stage="$1"
+    local failure_log_path="${TEST_ROOT}/${stage}-failure.log"
+    local failure_running_path="${TEST_ROOT}/${stage}-failure-running"
+
+    if INSTALL_INIT_TEST_LOG="${failure_log_path}" \
+        INSTALL_INIT_TEST_RUNNING="${failure_running_path}" \
+        INSTALL_INIT_TEST_FAILURE="${stage}" \
+        CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
+        CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
+        CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
+        CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
+        CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
+        scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+    then
+        printf 'expected %s failure\n' "${stage}" >&2
+        exit 1
+    fi
+
+    test ! -e "${failure_running_path}"
+    grep -q '^container --debug system start --timeout 60' "${failure_log_path}"
+    grep -q '^container system stop$' "${failure_log_path}"
+}
+
+run_failure_case make
+run_failure_case save
