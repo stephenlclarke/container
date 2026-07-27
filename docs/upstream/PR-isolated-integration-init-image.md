@@ -25,7 +25,8 @@ runtime services, image resolution, or Compose code.
   building the init image, then retain the existing stop, target-root start,
   and image-load sequence.
 - `Tests/ScriptTests/TestInstallInit.sh`: use injected CLI, Swift, and Make
-  executables to prove start-before-build and the complete handoff order.
+  executables to prove start-before-build, the complete handoff order, and
+  cleanup after both build and image-save failures.
 
 ## Validation
 
@@ -54,9 +55,14 @@ The 27 July maintenance rerun reproduced the stopped-runtime failure before
 save, stop, target-start, and load ordering. The source-matched coverage
 integration rerun built and loaded the 6.45 GB Containerization guest, then
 passed 293 tests in 31 concurrent suites and 87 tests in 11 serial suites. The
-three reported known issues are the pre-declared host-vmnet route limitations;
-no unexpected issue or failure occurred. Integration-only line coverage was
-27.49%, and the merged unit-plus-integration line coverage was 51.53%.
+corrected-head rerun reported zero known or unexpected issues.
+Integration-only line coverage was 27.55%, and the merged
+unit-plus-integration line coverage was 51.56%.
+
+The exact-head connector review then identified that the new bootstrap start
+needed failure cleanup. The follow-up shell cases force both `make init` and
+`cctl images save` to fail and prove that a runtime started by the script is
+stopped before exit.
 
 ## Compatibility and risks
 
@@ -72,3 +78,5 @@ Normal developer roots retain their existing cleanup and init-image behavior.
   (`fix(integration): load matched init image after cleanup`).
 - `345ae6d50db8480b1f85a481b15a6d8c291fe6d3`
   (`fix(integration): start runtime before init image build`).
+- `25bfef82e76105a3c01327d702e89de1380669b1`
+  (`fix(integration): stop failed bootstrap runtime`).

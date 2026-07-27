@@ -38,3 +38,5 @@ matched init image could be saved or loaded.
   `fix(integration): load matched init image after cleanup`.
 - `345ae6d50db8480b1f85a481b15a6d8c291fe6d3` —
   `fix(integration): start runtime before init image build`.
+- `25bfef82e76105a3c01327d702e89de1380669b1` —
+  `fix(integration): stop failed bootstrap runtime`.

@@ -22,7 +22,9 @@ test-orchestration changes only.
 
 Each behavior is a standalone signed commit so Apple can review or cherry-pick
 it independently. This aggregate pull request exists to validate those commits
-together in the supported macOS fork.
+together in the supported macOS fork. Two review-driven follow-up commits keep
+the original Foundation glob semantics and clean up a failed integration
+bootstrap without widening either production boundary.
 
 ## Commit and code map
 
@@ -49,6 +51,12 @@ together in the supported macOS fork.
 - `d48a962c30b873d054345cbbb5856eb616e4f2ee` isolates the serial
   empty-volume prune precondition in
   `Tests/IntegrationTests/Volumes/TestCLIVolumesSerial.swift`.
+- `4436afe5e6882d91f525fbd9df28dbc1635d015f` retains Foundation
+  matching for the cached glob while preserving the existing Swift Regex
+  validation contract. Its regression covers composed and decomposed Unicode.
+- `25bfef82e76105a3c01327d702e89de1380669b1` stops only a runtime
+  started by the init-image bootstrap when `make init` or image save fails.
+  Its shell regression covers both failure stages.
 
 The upstream issue and pull-request handoffs for the four production changes
 are retained in the consuming Compose repository so each proposal remains
@@ -69,20 +77,25 @@ make test
 make check
 ```
 
-The coverage-unit gate passed 1,147 tests in 134 suites. The changed build
-files reported 82.97% line coverage for `BuildFSSync.swift` and 99.06% for
+The corrected-head coverage-unit gate passed 1,148 tests in 134 suites at
+39.16% line coverage. The changed build files reported 82.97% line coverage
+for `BuildFSSync.swift` and 99.09% for
 `Globber.swift`; the statistics and disk-usage concurrency helpers are also
 exercised by focused unit tests.
 
-The final uninstrumented gate passed 1,146 tests in 134 suites, the complete
-init-image shell-ordering regression, formatting, and license checks.
+The final local and hosted uninstrumented gates passed 1,147 tests in 134
+suites, the complete init-image shell-ordering regression, formatting, and
+license checks.
+Review follow-up validation also passed all six glob test groups and all three
+init-image shell scenarios: success, `make init` failure, and image-save
+failure.
 
 The source-matched coverage integration gate built and loaded the matching
 6.45 GB Containerization guest, then passed 293 tests in 31 concurrent suites
-and 87 tests in 11 serial suites from an isolated application root. The only
-reported items were the three pre-declared host-vmnet route known issues.
-Integration-only line coverage was 27.49% (10,762 of 39,145), and merged
-unit-plus-integration line coverage was 51.53% (20,172 of 39,145).
+and 87 tests in 11 serial suites from an isolated application root, with zero
+known or unexpected issues. Integration-only line coverage was 27.55% (10,785
+of 39,149), and merged unit-plus-integration line coverage was 51.56% (20,187
+of 39,149).
 
 Docker Compose V2 parity is validated in the consuming Compose pull request
 against this exact runtime revision.
@@ -90,7 +103,8 @@ against this exact runtime revision.
 ## Compatibility and risks
 
 - The glob cache preserves the same Swift regular-expression construction and
-  matching behavior; only repeated compilation is removed.
+  validation, plus Foundation's established Unicode-scalar matching behavior;
+  only repeated compilation is removed.
 - Set membership uses the collection type already supplied by the call site.
 - Statistics results are written by input index, so user-visible order does
   not become completion order; any sample failure still fails the command.
@@ -98,7 +112,8 @@ against this exact runtime revision.
   read-only filesystem traversal occurs after the snapshot is released.
 - The integration bootstrap uses the default runtime only for the existing
   image build. The existing stop, isolated-root start, and image-load sequence
-  remains authoritative for the test runtime.
+  remains authoritative for the test runtime. Failure cleanup stops the
+  bootstrap only when the script started it.
 - The setup volume prune runs only inside the serialized destructive suite and
   changes no production behavior.
 
