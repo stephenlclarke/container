@@ -153,8 +153,8 @@ public final class ContainerFixture: Sendable {
     /// into a thrown error.
     ///
     /// When `CLITEST_DNS_NAMESERVERS` contains a comma-separated list, its
-    /// nameservers are passed to build, create, and run commands unless the
-    /// caller supplies `--dns`, `--no-dns`, or disables `dnsOverride`.
+    /// nameservers are passed to build, create, and run commands. Tests that
+    /// exercise DNS flags or default DNS behaviour must disable `dnsOverride`.
     public func run(
         _ arguments: [String],
         stdin: Data? = nil,
@@ -250,11 +250,8 @@ public final class ContainerFixture: Sendable {
 
     private func argumentsWithDNSOverride(_ arguments: [String], enabled: Bool) -> [String] {
         guard enabled,
-            let command = arguments.first,
-            ["build", "create", "run"].contains(command),
-            !arguments.contains(where: {
-                $0 == "--dns" || $0.hasPrefix("--dns=") || $0 == "--no-dns"
-            }),
+            let commandIndex = arguments.firstIndex(where: { $0 != "--debug" }),
+            ["build", "create", "run"].contains(arguments[commandIndex]),
             let configuredNameservers = ProcessInfo.processInfo.environment["CLITEST_DNS_NAMESERVERS"]
         else {
             return arguments
@@ -269,7 +266,9 @@ public final class ContainerFixture: Sendable {
         guard !dnsArguments.isEmpty else {
             return arguments
         }
-        return [command] + dnsArguments + arguments.dropFirst()
+        var arguments = arguments
+        arguments.insert(contentsOf: dnsArguments, at: arguments.index(after: commandIndex))
+        return arguments
     }
 
     /// Creates a directory at a short, fixed-depth path under `/tmp`, suitable for

@@ -42,25 +42,26 @@ struct ContainerTestSupportTests {
                             == [command, "--dns", "10.0.0.1", "--dns", "10.0.0.2", "example"])
                 }
 
-                let explicit = try fixture.run(["run", "--dns", "192.0.2.1", "example"])
+                let globalFlag = try fixture.run(["--debug", "run", "example"])
                 #expect(
-                    explicit.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
-                        == ["run", "--dns", "192.0.2.1", "example"])
+                    globalFlag.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                        == ["--debug", "run", "--dns", "10.0.0.1", "--dns", "10.0.0.2", "example"])
 
-                let disabledByFlag = try fixture.run(["run", "--no-dns", "example"])
+                let passthrough = try fixture.run(["run", "example", "--dns", "192.0.2.1"])
                 #expect(
-                    disabledByFlag.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
-                        == ["run", "--no-dns", "example"])
+                    passthrough.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                        == ["run", "--dns", "10.0.0.1", "--dns", "10.0.0.2", "example", "--dns", "192.0.2.1"])
 
-                let disabled = try fixture.run(["run", "example"], dnsOverride: false)
+                let disabled = try fixture.run(
+                    ["run", "--no-dns", "example"], dnsOverride: false)
                 #expect(
                     disabled.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
-                        == ["run", "example"])
+                        == ["run", "--no-dns", "example"])
 
-                let unrelated = try fixture.run(["exec", "example", "true"])
+                let unrelated = try fixture.run(["exec", "example", "run"])
                 #expect(
                     unrelated.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
-                        == ["exec", "example", "true"])
+                        == ["exec", "example", "run"])
             }
         }
     }
