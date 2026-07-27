@@ -47,18 +47,9 @@ extension Application {
                 // Find all images not used by any container
                 let client = ContainerClient()
                 let containers = try await client.list()
-                var imagesInUse = Set<String>()
-                for container in containers {
-                    imagesInUse.insert(container.configuration.image.reference)
-                    imagesInUse.insert(
-                        try ClientImage.normalizeReference(
-                            container.configuration.image.reference,
-                            containerSystemConfig: containerSystemConfig
-                        )
-                    )
-                }
+                let imagesInUse = Set(containers.map { $0.configuration.image.digest })
                 imagesToPrune = allImages.filter { image in
-                    !imagesInUse.contains(image.reference)
+                    !imagesInUse.contains(image.digest)
                 }
             } else {
                 // Find dangling images (images with no tag)

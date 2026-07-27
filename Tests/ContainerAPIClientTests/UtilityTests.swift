@@ -117,9 +117,9 @@ struct UtilityTests {
     @Test("Infrastructure image matching normalizes configured references")
     func infrastructureImageMatchingNormalizesConfiguredReferences() throws {
         let config = ContainerSystemConfig(
-            build: BuildConfig(image: "custom-builder:latest"),
+            build: BuildConfig(image: "custom-builder"),
             registry: RegistryConfig(domain: "registry.example.com"),
-            vminit: VminitConfig(image: "custom-init:latest")
+            vminit: VminitConfig(image: "custom-init")
         )
 
         #expect(
@@ -130,7 +130,19 @@ struct UtilityTests {
         )
         #expect(
             try Utility.isInfraImage(
+                name: "custom-builder:latest",
+                containerSystemConfig: config
+            )
+        )
+        #expect(
+            try Utility.isInfraImage(
                 name: "registry.example.com/custom-builder:latest",
+                containerSystemConfig: config
+            )
+        )
+        #expect(
+            try Utility.isInfraImage(
+                name: "custom-init",
                 containerSystemConfig: config
             )
         )

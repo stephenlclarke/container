@@ -163,7 +163,7 @@ extension Application {
             )
 
             let client = ContainerClient()
-            let normalizedBuilderImage = try ClientImage.normalizeReference(
+            let builderImageAliases = try Utility.imageReferenceAliases(
                 builderImage,
                 containerSystemConfig: containerSystemConfig
             )
@@ -182,9 +182,7 @@ extension Application {
                 let envChanged = existingManagedEnv != targetEnvVars
 
                 // Check if we need to recreate the builder due to different image
-                let imageChanged =
-                    existingImage != builderImage
-                    && existingImage != normalizedBuilderImage
+                let imageChanged = !builderImageAliases.contains(existingImage)
                 let cpuChanged = existingResources.cpus != resources.cpus
                 let memChanged = existingResources.memoryInBytes != resources.memoryInBytes
                 let sshChanged =
