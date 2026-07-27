@@ -36,11 +36,10 @@ extension Application {
         public func run() async throws {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
             let allImages = try await ClientImage.list().filter { image in
-                !Utility.isInfraImage(
+                !(try Utility.isInfraImage(
                     name: image.reference,
-                    builderImage: containerSystemConfig.build.image,
-                    initImage: containerSystemConfig.vminit.image
-                )
+                    containerSystemConfig: containerSystemConfig
+                ))
             }
 
             let imagesToPrune: [ClientImage]
@@ -50,7 +49,12 @@ extension Application {
                 let containers = try await client.list()
                 var imagesInUse = Set<String>()
                 for container in containers {
-                    imagesInUse.insert(container.configuration.image.reference)
+                    imagesInUse.insert(
+                        try ClientImage.normalizeReference(
+                            container.configuration.image.reference,
+                            containerSystemConfig: containerSystemConfig
+                        )
+                    )
                 }
                 imagesToPrune = allImages.filter { image in
                     !imagesInUse.contains(image.reference)

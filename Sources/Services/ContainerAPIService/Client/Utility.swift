@@ -45,9 +45,12 @@ public struct Utility {
         return name
     }
 
-    public static func isInfraImage(name: String, builderImage: String, initImage: String) -> Bool {
-        for infraImage in [builderImage, initImage] {
+    public static func isInfraImage(name: String, containerSystemConfig: ContainerSystemConfig) throws -> Bool {
+        for infraImage in [containerSystemConfig.build.image, containerSystemConfig.vminit.image] {
             if name == infraImage {
+                return true
+            }
+            if name == (try ClientImage.normalizeReference(infraImage, containerSystemConfig: containerSystemConfig)) {
                 return true
             }
         }
