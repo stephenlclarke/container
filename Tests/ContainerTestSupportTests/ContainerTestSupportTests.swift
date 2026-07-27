@@ -23,6 +23,66 @@ import Testing
 struct ContainerTestSupportTests {
 
     @Test
+    func dnsOverrideIsAppliedOnlyWhenRequested() async throws {
+        let originalNameservers = ProcessInfo.processInfo.environment["CLITEST_DNS_NAMESERVERS"]
+        let originalEchoArguments = ProcessInfo.processInfo.environment["CLITEST_ECHO_ARGUMENTS"]
+        let originalArgumentLog = ProcessInfo.processInfo.environment["CLITEST_ARGUMENT_LOG"]
+        let argumentLog = FileManager.default.temporaryDirectory
+            .appendingPathComponent("container-test-support-\(UUID().uuidString).log")
+        setenv("CLITEST_DNS_NAMESERVERS", "10.0.0.1, 10.0.0.2", 1)
+        setenv("CLITEST_ECHO_ARGUMENTS", "true", 1)
+        setenv("CLITEST_ARGUMENT_LOG", argumentLog.path, 1)
+        defer {
+            restoreEnvironment("CLITEST_DNS_NAMESERVERS", to: originalNameservers)
+            restoreEnvironment("CLITEST_ECHO_ARGUMENTS", to: originalEchoArguments)
+            restoreEnvironment("CLITEST_ARGUMENT_LOG", to: originalArgumentLog)
+            try? FileManager.default.removeItem(at: argumentLog)
+        }
+
+        try await withFakeContainerCLI {
+            try await ContainerFixture.with { fixture in
+                for command in ["build", "create", "run"] {
+                    let result = try fixture.run([command, "example"])
+                    #expect(
+                        result.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                            == [command, "--dns", "10.0.0.1", "--dns", "10.0.0.2", "example"])
+                }
+
+                let globalFlag = try fixture.run(["--debug", "run", "example"])
+                #expect(
+                    globalFlag.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                        == ["--debug", "run", "--dns", "10.0.0.1", "--dns", "10.0.0.2", "example"])
+
+                let passthrough = try fixture.run(["run", "example", "--dns", "192.0.2.1"])
+                #expect(
+                    passthrough.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                        == ["run", "--dns", "10.0.0.1", "--dns", "10.0.0.2", "example", "--dns", "192.0.2.1"])
+
+                let disabled = try fixture.run(
+                    ["run", "--no-dns", "example"], dnsOverride: false)
+                #expect(
+                    disabled.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                        == ["run", "--no-dns", "example"])
+
+                let unrelated = try fixture.run(["exec", "example", "run"])
+                #expect(
+                    unrelated.output.components(separatedBy: .newlines).filter { !$0.isEmpty }
+                        == ["exec", "example", "run"])
+
+                try await fixture.withContainer(
+                    image: "example", runArgs: ["--no-dns"], dnsOverride: false
+                ) { _ in }
+                let invocations = try String(contentsOf: argumentLog, encoding: .utf8)
+                    .components(separatedBy: .newlines)
+                let containerRun = try #require(
+                    invocations.first { $0.hasPrefix("run ") && $0.contains(" --no-dns ") })
+                #expect(containerRun.contains(" --no-dns "))
+                #expect(!containerRun.contains("10.0.0.1"))
+            }
+        }
+    }
+
+    @Test
     func assertionsReportCommandFailuresWithoutTestingRuntime() async throws {
         try await withFakeContainerCLI {
             try await ContainerFixture.with { fixture in
@@ -71,6 +131,22 @@ struct ContainerTestSupportTests {
 
         let script = """
             #!/bin/sh
+            if [ -n "$CLITEST_ARGUMENT_LOG" ]; then
+              (
+                printf '%s' "$1"
+                shift
+                for argument in "$@"; do printf ' %s' "$argument"; done
+                printf '\\n'
+              ) >> "$CLITEST_ARGUMENT_LOG"
+            fi
+            if [ "$1" = "inspect" ]; then
+              printf '%s\\n' '"running"'
+              exit 0
+            fi
+            if [ "$CLITEST_ECHO_ARGUMENTS" = "true" ]; then
+              printf '%s\\n' "$@"
+              exit 0
+            fi
             if [ "$1" = "exec" ]; then
               case "$5" in
                 present) exit 0 ;;
@@ -102,5 +178,13 @@ struct ContainerTestSupportTests {
             }
         }
         return try await body()
+    }
+
+    private func restoreEnvironment(_ name: String, to value: String?) {
+        if let value {
+            setenv(name, value, 1)
+        } else {
+            unsetenv(name)
+        }
     }
 }

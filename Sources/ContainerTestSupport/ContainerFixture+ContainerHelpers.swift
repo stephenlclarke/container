@@ -59,6 +59,7 @@ extension ContainerFixture {
         containerArgs: [String] = ["sleep", "infinity"],
         autoRemove: Bool = true,
         containerEnv: [String: String] = [:],
+        dnsOverride: Bool = true,
         waitUntilRunning: Bool = false
     ) async throws {
         let imageRef = image ?? WarmupImage.alpine320.rawValue
@@ -70,7 +71,7 @@ extension ContainerFixture {
         for (k, v) in containerEnv { runArgs += ["-e", "\(k)=\(v)"] }
         runArgs.append(imageRef)
         runArgs += containerArgs
-        try run(runArgs).check()
+        try run(runArgs, dnsOverride: dnsOverride).check()
         if waitUntilRunning {
             try await waitForContainerRunning(name)
         }

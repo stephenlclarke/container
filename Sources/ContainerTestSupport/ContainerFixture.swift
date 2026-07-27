@@ -50,7 +50,7 @@ import Testing
 /// Resources are torn down when the closure exits regardless of whether it
 /// throws.
 ///
-/// - ``withContainer(image:tag:runArgs:containerArgs:autoRemove:_:)`` starts a
+/// - ``withContainer(image:tag:runArgs:containerArgs:autoRemove:dnsOverride:_:)`` starts a
 ///   detached container, waits for `running`, calls the body, then stops (and
 ///   optionally deletes) it on exit.
 ///
@@ -151,13 +151,19 @@ public final class ContainerFixture: Sendable {
     /// process launch error). A non-zero exit status is represented in
     /// ``CommandResult/status`` — call ``CommandResult/check(_:)`` to turn it
     /// into a thrown error.
+    ///
+    /// When `CLITEST_DNS_NAMESERVERS` contains a comma-separated list, its
+    /// nameservers are passed to build, create, and run commands. Tests that
+    /// exercise DNS flags or default DNS behaviour must disable `dnsOverride`.
     public func run(
         _ arguments: [String],
         stdin: Data? = nil,
         currentDirectory: FilePath? = nil,
         env: [String: String] = [:],
-        pty: Bool = false
+        pty: Bool = false,
+        dnsOverride: Bool = true
     ) throws -> CommandResult {
+        let arguments = argumentsWithDNSOverride(arguments, enabled: dnsOverride)
         let seq = Self.commandSeq.withLock { n in
             defer { n += 1 }
             return n
@@ -242,6 +248,29 @@ public final class ContainerFixture: Sendable {
             status: process.terminationStatus)
     }
 
+    private func argumentsWithDNSOverride(_ arguments: [String], enabled: Bool) -> [String] {
+        guard enabled,
+            let commandIndex = arguments.firstIndex(where: { $0 != "--debug" }),
+            ["build", "create", "run"].contains(arguments[commandIndex]),
+            let configuredNameservers = ProcessInfo.processInfo.environment["CLITEST_DNS_NAMESERVERS"]
+        else {
+            return arguments
+        }
+
+        let dnsArguments =
+            configuredNameservers
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .flatMap { ["--dns", $0] }
+        guard !dnsArguments.isEmpty else {
+            return arguments
+        }
+        var arguments = arguments
+        arguments.insert(contentsOf: dnsArguments, at: arguments.index(after: commandIndex))
+        return arguments
+    }
+
     /// Creates a directory at a short, fixed-depth path under `/tmp`, suitable for
     /// Unix-domain socket files that must fit within `sockaddr_un.sun_path`'s 104-byte
     /// limit on macOS regardless of the project checkout's directory depth.
@@ -285,7 +314,8 @@ public final class ContainerFixture: Sendable {
     /// Polls until the named container reaches the `running` state.
     ///
     /// Call this directly only when using ``doCreate(_:image:args:volumes:networks:ports:)``
-    /// and ``doStart(_:)`` — ``withContainer(image:tag:runArgs:containerArgs:autoRemove:_:)``
+    /// and ``doStart(_:)`` —
+    /// ``withContainer(image:tag:runArgs:containerArgs:autoRemove:dnsOverride:_:)``
     /// waits automatically.
     public func waitForContainerRunning(_ name: String, attempts: Int = 30) async throws {
         for _ in 0..<attempts {
@@ -318,13 +348,14 @@ public final class ContainerFixture: Sendable {
         runArgs: [String] = [],
         containerArgs: [String] = ["sleep", "infinity"],
         autoRemove: Bool = true,
+        dnsOverride: Bool = true,
         _ body: (String) async throws -> Void
     ) async throws {
         let name = "\(testID)-\(tag)"
         var args = ["run", "--name", name, "-d"]
         if autoRemove { args.append("--rm") }
         args += runArgs + [image] + containerArgs
-        try run(args).check()
+        try run(args, dnsOverride: dnsOverride).check()
         defer {
             _ = try? run(["stop", "-s", "SIGKILL", name])
             if !autoRemove { _ = try? run(["delete", name]) }

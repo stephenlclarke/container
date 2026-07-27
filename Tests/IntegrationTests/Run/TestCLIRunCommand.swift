@@ -683,7 +683,9 @@ struct TestCLIRunCommand {
         try await ContainerFixture.with { f in
             let image = alpine.rawValue
             let c = "\(f.testID)-c"
-            try await f.doLongRun(name: c, image: image, args: ["--no-dns"], autoRemove: false, waitUntilRunning: true)
+            try await f.doLongRun(
+                name: c, image: image, args: ["--no-dns"], autoRemove: false,
+                dnsOverride: false, waitUntilRunning: true)
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
@@ -697,7 +699,9 @@ struct TestCLIRunCommand {
         try await ContainerFixture.with { f in
             let image = alpine.rawValue
             let c = "\(f.testID)-c"
-            try await f.doLongRun(name: c, image: image, autoRemove: false, waitUntilRunning: true)
+            try await f.doLongRun(
+                name: c, image: image, autoRemove: false, dnsOverride: false,
+                waitUntilRunning: true)
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
@@ -731,7 +735,7 @@ struct TestCLIRunCommand {
                     "--dns", "8.8.8.8", "--dns-domain", "example.com",
                     "--dns-search", "test.com", "--dns-option", "debug",
                 ],
-                autoRemove: false, waitUntilRunning: true)
+                autoRemove: false, dnsOverride: false, waitUntilRunning: true)
             f.addCleanup {
                 try? f.doStop(c)
                 try? f.doRemove(c)
