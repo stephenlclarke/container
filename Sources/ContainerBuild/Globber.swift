@@ -19,6 +19,11 @@ import Foundation
 public class Globber {
     let input: URL
     var results: Set<URL> = .init()
+    private var regularExpressions: [String: Regex<AnyRegexOutput>] = [:]
+
+    var cachedPatternCount: Int {
+        regularExpressions.count
+    }
 
     public init(_ input: URL) {
         self.input = input
@@ -76,6 +81,15 @@ public class Globber {
     }
 
     func glob(_ input: String, _ pattern: String) throws -> Bool {
+        let expression = try regularExpression(for: pattern)
+        return input.wholeMatch(of: expression) != nil
+    }
+
+    func regularExpression(for pattern: String) throws -> Regex<AnyRegexOutput> {
+        if let expression = regularExpressions[pattern] {
+            return expression
+        }
+
         let regexPattern =
             "^"
             + NSRegularExpression.escapedPattern(for: pattern)
@@ -85,9 +99,9 @@ public class Globber {
             .replacingOccurrences(of: "\\[", with: "[")
             .replacingOccurrences(of: "\\]", with: "]") + "$"
 
-        // validate the regex pattern created
-        let _ = try Regex(regexPattern)
-        return input.range(of: regexPattern, options: .regularExpression) != nil
+        let expression = try Regex(regexPattern)
+        regularExpressions[pattern] = expression
+        return expression
     }
 }
 
