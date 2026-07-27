@@ -165,6 +165,9 @@ READ_ONLY_RUNNING_PATH="${TEST_ROOT}/read-only-running"
 mkdir -p "${CONTAINERIZATION_PATH}/.build/ModuleCache"
 touch "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
 chmod a-w "${CONTAINERIZATION_PATH}/Package.swift"
+chmod a-w \
+    "${CONTAINERIZATION_PATH}/.build" \
+    "${CONTAINERIZATION_PATH}/.build/ModuleCache"
 
 INSTALL_INIT_TEST_LOG="${READ_ONLY_LOG_PATH}" \
 INSTALL_INIT_TEST_RUNNING="${READ_ONLY_RUNNING_PATH}" \
@@ -178,6 +181,8 @@ CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
 
 test -e "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
 grep -Eq '^make -C .*/containerization init VMINIT_IMAGE=test-init:latest$' "${READ_ONLY_LOG_PATH}"
+chmod -R u+w "${CONTAINERIZATION_PATH}/.build"
+chmod u+w "${CONTAINERIZATION_PATH}/Package.swift"
 
 INTEGRATION_SCRATCH_ROOT="${TEST_ROOT}/integration-scratch"
 INTEGRATION_DRY_RUN="$(

@@ -102,8 +102,8 @@ copy_containerization_checkout() {
 	CONTAINERIZATION_PATH="${TEMP_CONTAINERIZATION_ROOT}/containerization"
 	mkdir -p "${CONTAINERIZATION_PATH}"
 	cp -R "${source_path}/." "${CONTAINERIZATION_PATH}/"
-	rm -rf "${CONTAINERIZATION_PATH}/.build"
 	chmod -R u+w "${CONTAINERIZATION_PATH}"
+	rm -rf "${CONTAINERIZATION_PATH}/.build"
 }
 
 CONTAINERIZATION_VERSION="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
