@@ -16,6 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerPersistence
 import ContainerizationOCI
 import Foundation
 
@@ -33,7 +34,14 @@ extension Application {
         var all: Bool = false
 
         public func run() async throws {
-            let allImages = try await ClientImage.list()
+            let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
+            let allImages = try await ClientImage.list().filter { image in
+                !Utility.isInfraImage(
+                    name: image.reference,
+                    builderImage: containerSystemConfig.build.image,
+                    initImage: containerSystemConfig.vminit.image
+                )
+            }
 
             let imagesToPrune: [ClientImage]
             if all {
