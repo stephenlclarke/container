@@ -41,11 +41,11 @@ bootstrap the same service label from a different plist and fails with status
 
 ## Commit tracking
 
-- `2dfec65b2bf9c863b1fdcec89432e43636c9a46b` —
+- `2dfec65be7cc1d5ce52e48a295c38a9b3ddc8a7b` —
   `fix(integration): load matched init image after cleanup`.
 - `345ae6d50db8480b1f85a481b15a6d8c291fe6d3` —
   `fix(integration): start runtime before init image build`.
-- `25bfef82e76105a3c01327d702e89de1380669b1` —
+- `25bfef8c7f810aed0442d7214e2e9fd38f3bd89c` —
   `fix(integration): stop failed bootstrap runtime`.
 - `98b3ae7db2d3dcfdcefd6e4eace5a65f850ac52e` —
   `fix(integration): reuse active bootstrap runtime`.

@@ -55,10 +55,10 @@ bootstrap without widening either production boundary.
 - `d48a962c30b873d054345cbbb5856eb616e4f2ee` isolates the serial
   empty-volume prune precondition in
   `Tests/IntegrationTests/Volumes/TestCLIVolumesSerial.swift`.
-- `4436afe5e6882d91f525fbd9df28dbc1635d015f` retains Foundation
+- `4436afea7c31a6a6a99e37ea7254465d333d9147` retains Foundation
   matching for the cached glob while preserving the existing Swift Regex
   validation contract. Its regression covers composed and decomposed Unicode.
-- `25bfef82e76105a3c01327d702e89de1380669b1` stops only a runtime
+- `25bfef8c7f810aed0442d7214e2e9fd38f3bd89c` stops only a runtime
   started by the init-image bootstrap when `make init` or image save fails.
   Its shell regression covers both failure stages.
 - `98b3ae7db2d3dcfdcefd6e4eace5a65f850ac52e` reuses an already
