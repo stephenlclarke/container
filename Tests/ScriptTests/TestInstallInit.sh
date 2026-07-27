@@ -155,3 +155,19 @@ if grep -q '^container --debug system start --timeout 60' "${PREEXISTING_LOG_PAT
 fi
 grep -q '^container system stop$' "${PREEXISTING_LOG_PATH}"
 grep -q '^container --debug system start --enable-kernel-install' "${PREEXISTING_LOG_PATH}"
+
+INTEGRATION_SCRATCH_ROOT="${TEST_ROOT}/integration-scratch"
+INTEGRATION_DRY_RUN="$(
+    make -n \
+        MAKE=true \
+        SCRATCH_ROOT="${INTEGRATION_SCRATCH_ROOT}" \
+        integration
+)"
+
+if grep -q '^scripts/install-init.sh ' <<<"${INTEGRATION_DRY_RUN}"; then
+    printf 'integration invoked init-block before the isolated execution sequence\n' >&2
+    exit 1
+fi
+grep -Fq \
+    "XDG_CONFIG_HOME=\"${INTEGRATION_SCRATCH_ROOT}/xdg-config\" \"true\" init-block" \
+    <<<"${INTEGRATION_DRY_RUN}"
