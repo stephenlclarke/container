@@ -12,6 +12,7 @@
   and size traversal.
 - Make source-backed integration runs start the default runtime before
   Containerization builds the matched init image.
+- Isolate that bootstrap from developer Container configuration.
 - Make the serial empty-volume prune assertion establish its own global
   precondition.
 
@@ -19,14 +20,15 @@
 
 The production changes remain in generic `apple/container` build, statistics,
 and storage abstractions. They do not add a Compose concept, Docker-specific
-schema, fork-only switch, or Windows path. The two integration corrections are
+schema, fork-only switch, or Windows path. The integration corrections are
 test-orchestration changes only.
 
 Each behavior is a standalone signed commit so Apple can review or cherry-pick
 it independently. This aggregate pull request exists to validate those commits
-together in the supported macOS fork. Two review-driven follow-up commits keep
-the original Foundation glob semantics and clean up a failed integration
-bootstrap without widening either production boundary.
+together in the supported macOS fork. Review-driven follow-up commits keep the
+original Foundation glob semantics and make the integration bootstrap
+failure-safe, active-runtime-aware, and configuration-isolated without
+widening either production boundary.
 
 ## Commit and code map
 
@@ -65,6 +67,10 @@ bootstrap without widening either production boundary.
   responsive bootstrap runtime instead of trying to register the same launchd
   label from a second application root. Its shell regression covers the
   pre-existing-runtime path used by the Compose parity harness.
+- `20e00d7b340b4a7daf730f505e6a3e80dc812ebc` invokes `init-block`
+  only inside the isolated integration sequence and passes its scratch
+  `XDG_CONFIG_HOME`. The Make dry-run regression prevents either contract from
+  regressing.
 - `c7d05f1e3396436d96090dbffc8f8196d34f3c1d` derives volume
   `activeCount` from the snapshotted volume paths, preventing a concurrent
   container attach from making `activeCount` exceed `totalCount`. The focused
@@ -91,7 +97,7 @@ make check
 ```
 
 The corrected-head coverage-unit gate passed 1,148 tests in 134 suites at
-39.16% line coverage. The changed build files reported 82.97% line coverage
+39.27% line coverage. The changed build files reported 82.97% line coverage
 for `BuildFSSync.swift` and 99.09% for
 `Globber.swift`; the statistics and disk-usage concurrency helpers are also
 exercised by focused unit tests.
@@ -99,10 +105,11 @@ exercised by focused unit tests.
 The final local and hosted uninstrumented gates passed 1,147 tests in 134
 suites, the complete init-image shell-ordering regression, formatting, and
 license checks.
-Review follow-up validation also passed all six glob test groups and all three
-init-image shell scenarios: success, `make init` failure, and image-save
-failure. The parity preflight added a fourth shell scenario for a pre-existing
-runtime and proved that the bootstrap start is skipped.
+Review follow-up validation also passed all six glob test groups and all four
+init-image shell scenarios: success, `make init` failure, image-save failure,
+and a pre-existing runtime. The final Make dry-run additionally proves the
+bootstrap has no early duplicate prerequisite and receives only the isolated
+integration configuration.
 The final connector follow-up passed both focused disk-usage tests and strict
 Swift formatting after making active-volume counts snapshot-consistent.
 
@@ -113,8 +120,10 @@ known or unexpected issues. Integration-only line coverage was 27.55% (10,785
 of 39,149), and merged unit-plus-integration line coverage was 51.56% (20,187
 of 39,149).
 
-Docker Compose V2 parity is validated in the consuming Compose pull request
-against this exact runtime revision.
+Docker Compose V2 5.3.1 parity passed all 62 strict assertions in the consuming
+Compose worktree against the reviewed production tree. The configuration
+follow-up changes integration Make orchestration only; it does not modify a
+runtime or Compose source file.
 
 ## Compatibility and risks
 
@@ -133,7 +142,9 @@ against this exact runtime revision.
   image build. The existing stop, isolated-root start, and image-load sequence
   remains authoritative for the test runtime. Failure cleanup stops the
   bootstrap only when the script started it. A responsive runtime is reused,
-  avoiding a conflicting launchd registration for the same service label.
+  avoiding a conflicting launchd registration for the same service label. The
+  bootstrap receives the empty integration scratch configuration rather than
+  developer builder settings.
 - The setup volume prune runs only inside the serialized destructive suite and
   changes no production behavior.
 
@@ -144,5 +155,5 @@ against this exact runtime revision.
 - [x] Complete unit coverage gate.
 - [x] Complete source-matched integration coverage gate.
 - [x] Final formatting, generated-source, and unit gate.
-- [ ] Docker Compose V2 5.3.1 parity on the consuming exact revision.
+- [x] Docker Compose V2 5.3.1 parity on the reviewed production tree.
 - [ ] Exact-head connector review and hosted checks.

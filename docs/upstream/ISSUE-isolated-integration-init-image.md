@@ -21,10 +21,17 @@ application root. Starting the default runtime again then asks launchd to
 bootstrap the same service label from a different plist and fails with status
 5 before the image build starts.
 
+The bootstrap invocation also previously ran before the integration harness
+applied its isolated `XDG_CONFIG_HOME`. A developer's
+`~/.config/container/config.toml` could therefore select a custom builder image
+or other unrelated setting for the supposedly isolated init-image build.
+
 ## Required Apple behavior
 
 - Clear an isolated integration application root before loading its matched
   init image.
+- Invoke `init-block` only inside the isolated integration sequence and pass
+  the same scratch `XDG_CONFIG_HOME` used by the test runtime.
 - Ensure the default build runtime is responsive before invoking
   Containerization's `make init`.
 - Reuse a responsive runtime instead of registering the same launchd label
@@ -49,3 +56,5 @@ bootstrap the same service label from a different plist and fails with status
   `fix(integration): stop failed bootstrap runtime`.
 - `98b3ae7db2d3dcfdcefd6e4eace5a65f850ac52e` —
   `fix(integration): reuse active bootstrap runtime`.
+- `20e00d7b340b4a7daf730f505e6a3e80dc812ebc` —
+  `fix(integration): isolate init image bootstrap config`.

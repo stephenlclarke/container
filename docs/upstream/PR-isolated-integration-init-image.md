@@ -8,6 +8,8 @@
   checkout invokes `container build` as part of `make init`.
 - Reuse an already responsive runtime so an isolated caller does not register
   the same launchd label from a conflicting plist path.
+- Pass the integration scratch `XDG_CONFIG_HOME` through `init-block` so the
+  bootstrap build cannot inherit developer builder settings.
 - Remove the earlier duplicate `init-block` prerequisites from the normal and
   coverage integration paths.
 - Keep the source-matched `vminit:latest` guest available to the CPU,
@@ -21,14 +23,17 @@ runtime services, image resolution, or Compose code.
 
 ## Code map
 
-- `Makefile`: clear a caller-provided test root, then invoke the existing
-  `init-block`, then start the test server and run the CLI suites.
+- `Makefile`: clear a caller-provided test root, invoke the existing
+  `init-block` with the isolated integration configuration, then start the
+  test server and run the CLI suites.
 - `scripts/install-init.sh`: ensure the default runtime is responsive before
   building the init image, then retain the existing stop, target-root start,
   and image-load sequence.
 - `Tests/ScriptTests/TestInstallInit.sh`: use injected CLI, Swift, and Make
   executables to prove start-before-build, the complete handoff order, and
-  cleanup after both build and image-save failures.
+  cleanup after both build and image-save failures. Its Make dry-run
+  regression also proves there is no early duplicate `init-block` prerequisite
+  and that the scratch `XDG_CONFIG_HOME` reaches the sole invocation.
 
 ## Validation
 
@@ -71,13 +76,20 @@ isolated runtime was already responsive. A fourth shell case now proves the
 bootstrap start is skipped in that state, while the existing stop,
 target-root start, and image-load handoff remains unchanged.
 
+The final connector review identified that the integration `init-block`
+invocation still inherited the developer configuration. The focused shell
+gate now dry-runs the complete Make target, rejects the reintroduced early
+prerequisite, and requires the isolated scratch `XDG_CONFIG_HOME` on the sole
+init-image bootstrap.
+
 ## Compatibility and risks
 
 The image is still generated and loaded by the same `init-block`; only its
 position relative to an explicitly isolated cleanup changes. The bootstrap
 start uses the default runtime only for the image build; the existing stop and
 target-root restart still select the requested isolated root before loading.
-Normal developer roots retain their existing cleanup and init-image behavior.
+The bootstrap reads only the empty integration scratch configuration. Normal
+developer roots retain their existing cleanup and init-image behavior.
 
 ## Commit tracking
 
@@ -89,3 +101,5 @@ Normal developer roots retain their existing cleanup and init-image behavior.
   (`fix(integration): stop failed bootstrap runtime`).
 - `98b3ae7db2d3dcfdcefd6e4eace5a65f850ac52e`
   (`fix(integration): reuse active bootstrap runtime`).
+- `20e00d7b340b4a7daf730f505e6a3e80dc812ebc`
+  (`fix(integration): isolate init image bootstrap config`).
