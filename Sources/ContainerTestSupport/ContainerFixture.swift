@@ -151,13 +151,19 @@ public final class ContainerFixture: Sendable {
     /// process launch error). A non-zero exit status is represented in
     /// ``CommandResult/status`` — call ``CommandResult/check(_:)`` to turn it
     /// into a thrown error.
+    ///
+    /// When `CLITEST_DNS_NAMESERVERS` contains a comma-separated list, its
+    /// nameservers are passed to build, create, and run commands unless the
+    /// caller supplies `--dns`, `--no-dns`, or disables `dnsOverride`.
     public func run(
         _ arguments: [String],
         stdin: Data? = nil,
         currentDirectory: FilePath? = nil,
         env: [String: String] = [:],
-        pty: Bool = false
+        pty: Bool = false,
+        dnsOverride: Bool = true
     ) throws -> CommandResult {
+        let arguments = argumentsWithDNSOverride(arguments, enabled: dnsOverride)
         let seq = Self.commandSeq.withLock { n in
             defer { n += 1 }
             return n
@@ -240,6 +246,30 @@ public final class ContainerFixture: Sendable {
             outputData: outputData,
             errorData: errorData,
             status: process.terminationStatus)
+    }
+
+    private func argumentsWithDNSOverride(_ arguments: [String], enabled: Bool) -> [String] {
+        guard enabled,
+            let command = arguments.first,
+            ["build", "create", "run"].contains(command),
+            !arguments.contains(where: {
+                $0 == "--dns" || $0.hasPrefix("--dns=") || $0 == "--no-dns"
+            }),
+            let configuredNameservers = ProcessInfo.processInfo.environment["CLITEST_DNS_NAMESERVERS"]
+        else {
+            return arguments
+        }
+
+        let dnsArguments =
+            configuredNameservers
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .flatMap { ["--dns", $0] }
+        guard !dnsArguments.isEmpty else {
+            return arguments
+        }
+        return [command] + dnsArguments + arguments.dropFirst()
     }
 
     /// Creates a directory at a short, fixed-depth path under `/tmp`, suitable for
