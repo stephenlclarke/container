@@ -37,6 +37,8 @@ struct TestCLIVersion {
         let builderShimRepository: String?
         let builderShimVersion: String?
         let builderShimDigest: String?
+        let runtimeCapabilitySchemaVersion: Int?
+        let runtimeCapabilities: [String]?
         let server: VersionInfo?
     }
 
@@ -85,6 +87,17 @@ struct TestCLIVersion {
             #expect(decoded[0].builderShimRepository == "ghcr.io/stephenlclarke/container-builder-shim/builder")
             #expect(decoded[0].builderShimVersion == "current-30068004175-f97cddf5b3aa")
             #expect(decoded[0].builderShimDigest == "sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197")
+            #expect(decoded[0].runtimeCapabilitySchemaVersion == 1)
+            #expect(
+                decoded[0].runtimeCapabilities == [
+                    "io.github.stephenlclarke.container.compose.archive-copy.v1",
+                    "io.github.stephenlclarke.container.compose.build-extensions.v1",
+                    "io.github.stephenlclarke.container.compose.create-configuration.v1",
+                    "io.github.stephenlclarke.container.compose.image-filesystem.v1",
+                    "io.github.stephenlclarke.container.compose.lifecycle.v1",
+                    "io.github.stephenlclarke.container.compose.observation.v1",
+                ]
+            )
             #expect(decoded[0].buildType == expectedBuildType())
         }
     }
@@ -116,6 +129,8 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
+            #expect(lines.contains("  runtime-capability-schema: 1"))
+            #expect(lines.contains(where: { $0.hasPrefix("  runtime-capabilities: ") }))
             #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197"))
         }
     }

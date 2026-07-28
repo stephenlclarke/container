@@ -20,6 +20,24 @@ import Testing
 
 struct ReleaseVersionTests {
     @Test
+    func runtimeCapabilityManifestIsVersionedUniqueAndSorted() throws {
+        let manifest = RuntimeCapabilityManifest.current
+        let identifiers = manifest.capabilities.map(\.rawValue)
+
+        #expect(manifest.schemaVersion == 1)
+        #expect(identifiers.count == 6)
+        #expect(identifiers == identifiers.sorted())
+        #expect(Set(identifiers).count == identifiers.count)
+        #expect(identifiers.allSatisfy { $0.hasSuffix(".v1") })
+        #expect(
+            try JSONDecoder().decode(
+                RuntimeCapabilityManifest.self,
+                from: JSONEncoder().encode(manifest)
+            ) == manifest
+        )
+    }
+
+    @Test
     func singleLineIncludesForkProvenance() throws {
         let line = ReleaseVersion.singleLine(appName: "container CLI")
         let containerization = try Self.expectedContainerizationProvenance()

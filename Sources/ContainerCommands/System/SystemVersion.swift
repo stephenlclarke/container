@@ -45,7 +45,8 @@ extension Application {
                 containerization: "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())",
                 builderShimRepository: ReleaseVersion.builderShimRepository(),
                 builderShimVersion: ReleaseVersion.builderShimVersion(),
-                builderShimDigest: ReleaseVersion.builderShimDigest()
+                builderShimDigest: ReleaseVersion.builderShimDigest(),
+                runtimeCapabilityManifest: RuntimeCapabilityManifest.current
             )
 
             // Try to get API server version info
@@ -90,6 +91,8 @@ extension Application {
         let builderShimRepository: String?
         let builderShimVersion: String?
         let builderShimDigest: String?
+        let runtimeCapabilitySchemaVersion: Int?
+        let runtimeCapabilities: [RuntimeCapability]?
 
         var builderShimImage: String? {
             guard let builderShimRepository else {
@@ -113,6 +116,8 @@ extension Application {
                 ("source", source),
                 ("containerization", containerization),
                 ("builder-shim", builderShimImage),
+                ("runtime-capability-schema", runtimeCapabilitySchemaVersion.map(String.init)),
+                ("runtime-capabilities", runtimeCapabilities?.map(\.rawValue).joined(separator: ", ")),
             ].compactMap { label, value -> (label: String, value: String)? in
                 guard let value else {
                     return nil
@@ -155,7 +160,8 @@ extension Application {
             containerization: String? = nil,
             builderShimRepository: String? = nil,
             builderShimVersion: String? = nil,
-            builderShimDigest: String? = nil
+            builderShimDigest: String? = nil,
+            runtimeCapabilityManifest: RuntimeCapabilityManifest? = nil
         ) {
             self.version = version
             self.buildType = buildType
@@ -167,6 +173,8 @@ extension Application {
             self.builderShimRepository = builderShimRepository
             self.builderShimVersion = builderShimVersion
             self.builderShimDigest = builderShimDigest
+            self.runtimeCapabilitySchemaVersion = runtimeCapabilityManifest?.schemaVersion
+            self.runtimeCapabilities = runtimeCapabilityManifest?.capabilities
         }
     }
 }
