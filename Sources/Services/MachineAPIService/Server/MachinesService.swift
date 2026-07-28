@@ -349,7 +349,7 @@ public actor MachinesService {
         try self._cleanUp(id: id)
     }
 
-    private nonisolated func systemPlatform(from ociPlatform: ContainerizationOCI.Platform) -> SystemPlatform {
+    static func systemPlatform(from ociPlatform: ContainerizationOCI.Platform) -> SystemPlatform {
         ociPlatform.architecture == "amd64" ? .linuxAmd : .linuxArm
     }
 
@@ -402,10 +402,12 @@ public actor MachinesService {
                 let validated = try MachineConfig.validateKernelPath(kernelPath.string)
                 kernel = Kernel(
                     path: URL(fileURLWithPath: validated.string),
-                    platform: self.systemPlatform(from: state.snapshot.configuration.platform)
+                    platform: Self.systemPlatform(from: state.snapshot.configuration.platform)
                 )
             } else {
-                kernel = try await ClientKernel.getDefaultKernel(for: .current)
+                kernel = try await ClientKernel.getDefaultKernel(
+                    for: Self.systemPlatform(from: state.snapshot.configuration.platform)
+                )
             }
 
             var fhs: [FileHandle] = []
