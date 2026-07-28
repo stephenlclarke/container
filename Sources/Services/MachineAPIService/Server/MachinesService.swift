@@ -175,6 +175,29 @@ public actor MachinesService {
         return snapshots
     }
 
+    /// Ensure that a cloned machine root filesystem can boot as a container machine.
+    ///
+    /// The machine boot process hands off to the image's init system via
+    /// `exec /sbin/init`, so an image without one (e.g. a standard application
+    /// image such as `docker.io/library/ubuntu`) produces a machine that can
+    /// never boot. Validating here surfaces an actionable error at create time.
+    public static func validateMachineRootfs(blockDevice: FilePath, image: String) throws {
+        let reader = try EXT4.EXT4Reader(blockDevice: blockDevice)
+        let initPath = FilePath("/sbin/init")
+        let initMetadata = try? reader.stat(initPath)
+        let isRegularFile = (try? reader.readFile(at: initPath, count: 0)) != nil
+        let isExecutable = initMetadata.map { $0.inode.mode & 0o111 != 0 } ?? false
+        guard isRegularFile, isExecutable else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message:
+                    "image \(image) cannot be used as a container machine: it does not contain an executable /sbin/init file. "
+                    + "Container machine images must include an init system such as systemd. "
+                    + "See \"Bring your own container machine image\" in the container machine guide for a working Dockerfile."
+            )
+        }
+    }
+
     public func create(configuration: MachineConfiguration, resources: MachineResources?, bootConfig: MachineConfig) async throws {
         self.log.debug("\(#function)")
 
@@ -199,6 +222,10 @@ public actor MachinesService {
                 let machineImage = ClientImage(description: configuration.image)
                 let imageFs = try await machineImage.getCreateSnapshot(platform: configuration.platform)
                 try bundle.setMachineRootFs(cloning: imageFs)
+                try Self.validateMachineRootfs(
+                    blockDevice: FilePath(bundle.machineRootfs.source),
+                    image: configuration.image.reference
+                )
 
                 let state = MachineState(
                     snapshot: .init(
