@@ -513,9 +513,10 @@ struct TestCLIMachineRuntimeSerial {
             try await f.waitForMachineStatus(name, status: "running")
 
             let username = NSUserName()
+            let sudoersFile = username.replacingOccurrences(of: ".", with: "_")
             let output = try f.doMachineRun(
                 name: name, root: true,
-                command: ["cat", "/etc/sudoers.d/\(username)"]
+                command: ["cat", "/etc/sudoers.d/\(sudoersFile)"]
             )
             .trimmingCharacters(in: .whitespacesAndNewlines)
             #expect(output == "\(username) ALL=(ALL) NOPASSWD:ALL")
