@@ -52,6 +52,8 @@ public enum RuntimeKeys: String {
     case createParents
     case followSymlink
     case preserveOwnership
+    case copyArchive
+    case copyContents
     /// Image path for snapshot operations
     case imagePath
     /// Whether a live snapshot should avoid freezing the guest filesystem.

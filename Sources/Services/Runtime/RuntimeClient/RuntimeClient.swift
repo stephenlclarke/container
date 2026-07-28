@@ -361,6 +361,29 @@ extension RuntimeClient {
         }
     }
 
+    public func copyIn(
+        archive: FileHandle,
+        destination: String,
+        createParents: Bool = true,
+        preserveOwnership: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: RuntimeRoutes.copyIn.rawValue)
+        request.set(key: RuntimeKeys.copyArchive.rawValue, value: archive)
+        request.set(key: RuntimeKeys.destinationPath.rawValue, value: destination)
+        request.set(key: RuntimeKeys.createParents.rawValue, value: createParents)
+        request.set(key: RuntimeKeys.preserveOwnership.rawValue, value: preserveOwnership)
+
+        do {
+            try await self.client.send(request, responseTimeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive into container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
     public func copyOut(source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         let request = XPCMessage(route: RuntimeRoutes.copyOut.rawValue)
         request.set(key: RuntimeKeys.sourcePath.rawValue, value: source)
@@ -375,6 +398,29 @@ extension RuntimeClient {
             throw ContainerizationError(
                 .internalError,
                 message: "failed to copy from container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
+    public func copyOut(
+        source: String,
+        archive: FileHandle,
+        followSymlink: Bool = false,
+        copyContents: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: RuntimeRoutes.copyOut.rawValue)
+        request.set(key: RuntimeKeys.sourcePath.rawValue, value: source)
+        request.set(key: RuntimeKeys.copyArchive.rawValue, value: archive)
+        request.set(key: RuntimeKeys.followSymlink.rawValue, value: followSymlink)
+        request.set(key: RuntimeKeys.copyContents.rawValue, value: copyContents)
+
+        do {
+            try await self.client.send(request, responseTimeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive from container \(self.id)",
                 cause: error
             )
         }

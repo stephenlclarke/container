@@ -65,7 +65,7 @@ let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_RE
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-30068004175-f97cddf5b3aa"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197"
 let scVersion = "0.40.0"
-let containerizationRevision = "043193efa5f1a2e21a240041d6edd71d7673739e"
+let containerizationRevision = "52386838456a431d24bed6c38a9e84fb0ad28997"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))

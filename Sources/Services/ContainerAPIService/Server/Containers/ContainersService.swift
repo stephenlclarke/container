@@ -1623,6 +1623,29 @@ public actor ContainersService {
             source: source, destination: destination, mode: mode, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
     }
 
+    /// Stream a tar archive from the host into a container directory.
+    public func copyIn(
+        id: String,
+        archive: FileHandle,
+        destination: String,
+        createParents: Bool = true,
+        preserveOwnership: Bool = false
+    ) async throws {
+        self.log.debug("\(#function)")
+
+        let state = try self._getContainerState(id: id)
+        guard state.snapshot.status == .running else {
+            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        }
+        let client = try state.getClient()
+        try await client.copyIn(
+            archive: archive,
+            destination: destination,
+            createParents: createParents,
+            preserveOwnership: preserveOwnership
+        )
+    }
+
     /// Copy a file or directory from the container to the host.
     public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         self.log.debug("\(#function)")
@@ -1633,6 +1656,29 @@ public actor ContainersService {
         }
         let client = try state.getClient()
         try await client.copyOut(source: source, destination: destination, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
+    }
+
+    /// Stream a container path to the host as an uncompressed tar archive.
+    public func copyOut(
+        id: String,
+        source: String,
+        archive: FileHandle,
+        followSymlink: Bool = false,
+        copyContents: Bool = false
+    ) async throws {
+        self.log.debug("\(#function)")
+
+        let state = try self._getContainerState(id: id)
+        guard state.snapshot.status == .running else {
+            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        }
+        let client = try state.getClient()
+        try await client.copyOut(
+            source: source,
+            archive: archive,
+            followSymlink: followSymlink,
+            copyContents: copyContents
+        )
     }
 
     /// Get statistics for the container.

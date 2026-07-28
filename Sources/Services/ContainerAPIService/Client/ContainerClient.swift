@@ -603,6 +603,32 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    /// Stream a tar archive from the host into a container directory.
+    public func copyIn(
+        id: String,
+        archive: FileHandle,
+        destination: String,
+        createParents: Bool = true,
+        preserveOwnership: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: .containerCopyIn)
+        request.set(key: .id, value: id)
+        request.set(key: .copyArchive, value: archive)
+        request.set(key: .destinationPath, value: destination)
+        request.set(key: .createParents, value: createParents)
+        request.set(key: .preserveOwnership, value: preserveOwnership)
+
+        do {
+            try await xpcSend(message: request, timeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive into container \(id)",
+                cause: error
+            )
+        }
+    }
+
     /// Copy a file or directory from the container to the host.
     public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         let request = XPCMessage(route: .containerCopyOut)
@@ -619,6 +645,32 @@ public struct ContainerClient: Sendable {
             throw ContainerizationError(
                 .internalError,
                 message: "failed to copy from container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Stream a container path to the host as an uncompressed tar archive.
+    public func copyOut(
+        id: String,
+        source: String,
+        archive: FileHandle,
+        followSymlink: Bool = false,
+        copyContents: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: .containerCopyOut)
+        request.set(key: .id, value: id)
+        request.set(key: .sourcePath, value: source)
+        request.set(key: .copyArchive, value: archive)
+        request.set(key: .followSymlink, value: followSymlink)
+        request.set(key: .copyContents, value: copyContents)
+
+        do {
+            try await xpcSend(message: request, timeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive from container \(id)",
                 cause: error
             )
         }

@@ -165,6 +165,8 @@ public enum XPCKeys: String {
     case createParents
     case followSymlink
     case preserveOwnership
+    case copyArchive
+    case copyContents
 
     /// Optional tail line limit for container logs.
     case logTail

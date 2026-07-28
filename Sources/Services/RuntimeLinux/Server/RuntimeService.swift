@@ -913,12 +913,6 @@ public actor RuntimeService {
         self.log.info("`copyIn` xpc handler")
         switch self.state {
         case .running, .booted:
-            guard let source = message.string(key: RuntimeKeys.sourcePath.rawValue) else {
-                throw ContainerizationError(
-                    .invalidArgument,
-                    message: "no source path supplied for copyIn"
-                )
-            }
             guard let destination = message.string(key: RuntimeKeys.destinationPath.rawValue) else {
                 throw ContainerizationError(
                     .invalidArgument,
@@ -931,14 +925,29 @@ public actor RuntimeService {
             let preserveOwnership = message.bool(key: RuntimeKeys.preserveOwnership.rawValue)
 
             let ctr = try getContainer()
-            try await ctr.container.copyIn(
-                from: URL(fileURLWithPath: source),
-                to: URL(fileURLWithPath: destination),
-                mode: mode,
-                createParents: createParents,
-                followSymlink: followSymlink,
-                preserveOwnership: preserveOwnership
-            )
+            if let archive = message.fileHandle(key: RuntimeKeys.copyArchive.rawValue) {
+                try await ctr.container.copyIn(
+                    archive: archive,
+                    to: URL(fileURLWithPath: destination),
+                    createParents: createParents,
+                    preserveOwnership: preserveOwnership
+                )
+            } else {
+                guard let source = message.string(key: RuntimeKeys.sourcePath.rawValue) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "no source path supplied for copyIn"
+                    )
+                }
+                try await ctr.container.copyIn(
+                    from: URL(fileURLWithPath: source),
+                    to: URL(fileURLWithPath: destination),
+                    mode: mode,
+                    createParents: createParents,
+                    followSymlink: followSymlink,
+                    preserveOwnership: preserveOwnership
+                )
+            }
 
             return message.reply()
         default:
@@ -968,25 +977,34 @@ public actor RuntimeService {
                     message: "no source path supplied for copyOut"
                 )
             }
-            guard let destination = message.string(key: RuntimeKeys.destinationPath.rawValue) else {
-                throw ContainerizationError(
-                    .invalidArgument,
-                    message: "no destination path supplied for copyOut"
-                )
-            }
-
             let createParents = message.bool(key: RuntimeKeys.createParents.rawValue)
             let followSymlink = message.bool(key: RuntimeKeys.followSymlink.rawValue)
             let preserveOwnership = message.bool(key: RuntimeKeys.preserveOwnership.rawValue)
+            let copyContents = message.bool(key: RuntimeKeys.copyContents.rawValue)
 
             let ctr = try getContainer()
-            try await ctr.container.copyOut(
-                from: URL(fileURLWithPath: source),
-                to: URL(fileURLWithPath: destination),
-                createParents: createParents,
-                followSymlink: followSymlink,
-                preserveOwnership: preserveOwnership
-            )
+            if let archive = message.fileHandle(key: RuntimeKeys.copyArchive.rawValue) {
+                try await ctr.container.copyOut(
+                    from: URL(fileURLWithPath: source),
+                    to: archive,
+                    followSymlink: followSymlink,
+                    copyContents: copyContents
+                )
+            } else {
+                guard let destination = message.string(key: RuntimeKeys.destinationPath.rawValue) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "no destination path supplied for copyOut"
+                    )
+                }
+                try await ctr.container.copyOut(
+                    from: URL(fileURLWithPath: source),
+                    to: URL(fileURLWithPath: destination),
+                    createParents: createParents,
+                    followSymlink: followSymlink,
+                    preserveOwnership: preserveOwnership
+                )
+            }
 
             return message.reply()
         default:
