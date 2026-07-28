@@ -1755,8 +1755,18 @@ public actor ContainersService {
             )
         default:
             events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+                let current = try await self.getContainerState(id: id, context: context)
+                switch current.snapshot.status {
+                case .running, .stopping:
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "container \(id) is \(current.snapshot.status) and can not be deleted"
+                    )
+                default:
+                    break
+                }
                 try await self.cleanUp(id: id, context: context)
-                return Self.removalEvents(snapshot: state.snapshot)
+                return Self.removalEvents(snapshot: current.snapshot)
             }
         }
 
