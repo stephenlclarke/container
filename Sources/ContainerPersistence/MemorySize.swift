@@ -49,8 +49,14 @@ public struct MemorySize: Codable, Sendable, Equatable, CustomStringConvertible 
     ]
 
     public var formatted: String {
-        let value = Int64(measurement.value)
         let label = Self.unitLabels[measurement.unit] ?? "unknown"
+        // Double.description is guaranteed to produce a round-trippable value.
+        // Retaining the original unit also avoids rounding fractions such as
+        // 0.1gb that do not convert to a whole number of bytes.
+        guard measurement.value == measurement.value.rounded() else {
+            return "\(measurement.value)\(label)"
+        }
+        let value = Int64(measurement.value)
         return "\(value)\(label)"
     }
 }
