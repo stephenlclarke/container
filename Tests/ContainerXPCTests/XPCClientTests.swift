@@ -78,25 +78,23 @@ struct XPCClientTests {
 
     @Test
     func receivedFileHandleClosesDuplicatedDescriptorOnDeallocation() throws {
-        let source = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        let source = try uniqueUnlinkedFileHandle()
         defer { try? source.close() }
 
         let message = XPCMessage(route: "file-handle")
         message.set(key: "file-handle", value: source)
 
-        let descriptor = try autoreleasepool {
+        let probe = try autoreleasepool {
             let handle = try #require(message.fileHandle(key: "file-handle"))
-            return handle.fileDescriptor
+            return try DescriptorProbe(handle.fileDescriptor)
         }
 
-        #expect(isDescriptorClosed(descriptor))
+        #expect(probe.originalObjectIsReleased)
     }
 
     @Test
     func receivedFileHandlesCloseEveryDuplicatedDescriptorOnDeallocation() throws {
-        let sources = try (0..<3).map { _ in
-            try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
-        }
+        let sources = try (0..<3).map { _ in try uniqueUnlinkedFileHandle() }
         defer {
             for handle in sources {
                 try? handle.close()
@@ -106,12 +104,12 @@ struct XPCClientTests {
         let message = XPCMessage(route: "file-handles")
         try message.set(key: "file-handles", value: sources)
 
-        let descriptors = try autoreleasepool {
+        let probes = try autoreleasepool {
             let handles = try #require(message.fileHandles(key: "file-handles"))
-            return handles.map(\.fileDescriptor)
+            return try handles.map { try DescriptorProbe($0.fileDescriptor) }
         }
 
-        #expect(descriptors.allSatisfy(isDescriptorClosed))
+        #expect(probes.allSatisfy { $0.originalObjectIsReleased })
     }
 
     @Test
@@ -250,9 +248,48 @@ private func isDescriptorOpen(_ descriptor: Int32) -> Bool {
     return fcntl(descriptor, F_GETFD) != -1
 }
 
-private func isDescriptorClosed(_ descriptor: Int32) -> Bool {
-    errno = 0
-    return fcntl(descriptor, F_GETFD) == -1 && errno == EBADF
+private struct DescriptorProbe {
+    let descriptor: Int32
+    let identity: DescriptorIdentity
+
+    init(_ descriptor: Int32) throws {
+        self.descriptor = descriptor
+        self.identity = try #require(descriptorIdentity(descriptor))
+    }
+
+    var originalObjectIsReleased: Bool {
+        descriptorIdentity(descriptor) != identity
+    }
+}
+
+private struct DescriptorIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+}
+
+private func descriptorIdentity(_ descriptor: Int32) -> DescriptorIdentity? {
+    var status = stat()
+    guard fstat(descriptor, &status) == 0 else {
+        return nil
+    }
+    return DescriptorIdentity(device: status.st_dev, inode: status.st_ino)
+}
+
+private func uniqueUnlinkedFileHandle() throws -> FileHandle {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("container-xpc-test-\(UUID().uuidString)")
+    var handle: FileHandle?
+    do {
+        try Data().write(to: url)
+        let openedHandle = try FileHandle(forReadingFrom: url)
+        handle = openedHandle
+        try FileManager.default.removeItem(at: url)
+        return openedHandle
+    } catch {
+        try? handle?.close()
+        try? FileManager.default.removeItem(at: url)
+        throw error
+    }
 }
 
 private actor DisconnectProbe {
