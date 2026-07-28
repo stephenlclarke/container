@@ -30,6 +30,11 @@ struct XPCClientTests {
         let sourceHandles = try (0..<count).map { _ in
             try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
         }
+        defer {
+            for handle in sourceHandles {
+                try? handle.close()
+            }
+        }
         try message.set(key: "file-handles", value: sourceHandles)
 
         let receivedHandles = try #require(message.fileHandles(key: "file-handles"))
@@ -44,9 +49,76 @@ struct XPCClientTests {
     }
 
     @Test
+    func settingFileHandlePreservesCallerOwnership() throws {
+        let source = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        defer { try? source.close() }
+
+        let message = XPCMessage(route: "file-handle")
+        message.set(key: "file-handle", value: source)
+
+        #expect(isDescriptorOpen(source.fileDescriptor))
+    }
+
+    @Test
+    func settingFileHandlesPreservesCallerOwnership() throws {
+        let sources = try (0..<3).map { _ in
+            try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        }
+        defer {
+            for handle in sources {
+                try? handle.close()
+            }
+        }
+
+        let message = XPCMessage(route: "file-handles")
+        try message.set(key: "file-handles", value: sources)
+
+        #expect(sources.allSatisfy { isDescriptorOpen($0.fileDescriptor) })
+    }
+
+    @Test
+    func receivedFileHandleClosesDuplicatedDescriptorOnDeallocation() throws {
+        let source = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        defer { try? source.close() }
+
+        let message = XPCMessage(route: "file-handle")
+        message.set(key: "file-handle", value: source)
+
+        let descriptor = try autoreleasepool {
+            let handle = try #require(message.fileHandle(key: "file-handle"))
+            return handle.fileDescriptor
+        }
+
+        #expect(isDescriptorClosed(descriptor))
+    }
+
+    @Test
+    func receivedFileHandlesCloseEveryDuplicatedDescriptorOnDeallocation() throws {
+        let sources = try (0..<3).map { _ in
+            try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        }
+        defer {
+            for handle in sources {
+                try? handle.close()
+            }
+        }
+
+        let message = XPCMessage(route: "file-handles")
+        try message.set(key: "file-handles", value: sources)
+
+        let descriptors = try autoreleasepool {
+            let handles = try #require(message.fileHandles(key: "file-handles"))
+            return handles.map(\.fileDescriptor)
+        }
+
+        #expect(descriptors.allSatisfy(isDescriptorClosed))
+    }
+
+    @Test
     func fileHandlesRejectNonArrayValue() throws {
         let message = XPCMessage(route: "file-handles")
         let sourceHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        defer { try? sourceHandle.close() }
         message.set(key: "file-handles", value: sourceHandle)
 
         #expect(message.fileHandles(key: "file-handles") == nil)
@@ -171,6 +243,16 @@ struct XPCClientTests {
         client.close()
         try await probe.wait(timeout: .seconds(1))
     }
+}
+
+private func isDescriptorOpen(_ descriptor: Int32) -> Bool {
+    errno = 0
+    return fcntl(descriptor, F_GETFD) != -1
+}
+
+private func isDescriptorClosed(_ descriptor: Int32) -> Bool {
+    errno = 0
+    return fcntl(descriptor, F_GETFD) == -1 && errno == EBADF
 }
 
 private actor DisconnectProbe {

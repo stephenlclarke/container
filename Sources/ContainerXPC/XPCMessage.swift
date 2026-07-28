@@ -241,14 +241,16 @@ extension XPCMessage {
         }
         if let fd {
             let fd2 = xpc_fd_dup(fd)
-            return FileHandle(fileDescriptor: fd2, closeOnDealloc: false)
+            guard fd2 != -1 else {
+                return nil
+            }
+            return FileHandle(fileDescriptor: fd2, closeOnDealloc: true)
         }
         return nil
     }
 
     public func set(key: String, value: FileHandle) {
         let fd = xpc_fd_create(value.fileDescriptor)
-        close(value.fileDescriptor)
         lock.withLock {
             xpc_dictionary_set_value(self.object, key, fd)
         }
@@ -276,7 +278,7 @@ extension XPCMessage {
             }
             return descriptors
         }
-        return descriptors?.map { FileHandle(fileDescriptor: $0, closeOnDealloc: false) }
+        return descriptors?.map { FileHandle(fileDescriptor: $0, closeOnDealloc: true) }
     }
 
     public func set(key: String, value: [FileHandle]) throws {
@@ -289,7 +291,6 @@ extension XPCMessage {
                 )
             }
             xpc_array_append_value(fdArray, xpcFd)
-            close(fh.fileDescriptor)
         }
         lock.withLock {
             xpc_dictionary_set_value(self.object, key, fdArray)

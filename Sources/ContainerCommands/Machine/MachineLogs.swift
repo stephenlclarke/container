@@ -58,6 +58,11 @@ extension Application {
 
             let fhs = try await client.logs(id: id)
             let fileHandle = boot ? fhs[1] : fhs[0]
+            defer {
+                for handle in fhs {
+                    try? handle.close()
+                }
+            }
 
             try await LogFileOutput.write(
                 fh: fileHandle,
