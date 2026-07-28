@@ -16,6 +16,7 @@
 
 import ContainerizationError
 import DNSServer
+import Darwin
 import Foundation
 import SystemPackage
 import Testing
@@ -137,7 +138,7 @@ struct DirectoryWatcherTest {
     @Test func testFailingHandlerDoesNotLeakDescriptors() async throws {
         try await withTempDir { tempPath in
             let watcher = DirectoryWatcher(directoryPath: tempPath, log: nil)
-            let baseline = try openDescriptorCount()
+            let baseline = try openDescriptorCount(for: tempPath)
 
             for _ in 0..<32 {
                 do {
@@ -150,9 +151,9 @@ struct DirectoryWatcherTest {
                 }
             }
 
-            let afterFailures = try openDescriptorCount()
+            let afterFailures = try openDescriptorCount(for: tempPath)
             #expect(
-                afterFailures <= baseline + 2,
+                afterFailures == baseline,
                 "failing handlers leaked descriptors: before=\(baseline), after=\(afterFailures)"
             )
         }
@@ -197,9 +198,25 @@ struct DirectoryWatcherTest {
 
     }
 
-    private func openDescriptorCount() throws -> Int {
-        try FileManager.default.contentsOfDirectory(atPath: "/dev/fd")
+    private func openDescriptorCount(for path: FilePath) throws -> Int {
+        var expectedBuffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        guard realpath(path.string, &expectedBuffer) != nil else {
+            throw ContainerizationError(.internalError, message: "failed to resolve test directory: \(path)")
+        }
+        let expectedBytes = expectedBuffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        let expectedPath = String(decoding: expectedBytes, as: UTF8.self)
+        let descriptors = try FileManager.default.contentsOfDirectory(atPath: "/dev/fd")
+        return
+            descriptors
             .compactMap(Int.init)
+            .filter { descriptor in
+                var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+                guard fcntl(CInt(descriptor), F_GETPATH, &buffer) == 0 else {
+                    return false
+                }
+                let pathBytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+                return String(decoding: pathBytes, as: UTF8.self) == expectedPath
+            }
             .count
     }
 }
