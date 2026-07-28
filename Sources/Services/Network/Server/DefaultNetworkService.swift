@@ -39,9 +39,7 @@ public actor DefaultNetworkService: NetworkService {
         }
 
         let subnet = status.ipv4Subnet
-        let size = Int(subnet.upper.value - subnet.lower.value - 3)
-        let allocationLower = subnet.lower.value + 2
-        let allocationUpper = subnet.upper.value - 2
+        let (allocationLower, allocationUpper, size) = try Self.ipv4AllocationBounds(subnet: subnet)
         let allocator: AttachmentAllocator
         if let allocationRange = status.ipv4AllocationRange {
             let dynamicLower = max(allocationLower, allocationRange.lower.value)
@@ -78,6 +76,21 @@ public actor DefaultNetworkService: NetworkService {
         self.ipv6Addresses = [:]
         self.ipv6AddressIndexes = [:]
         self.allocationsBySession = [:]
+    }
+
+    static func ipv4AllocationBounds(subnet: CIDRv4) throws -> (lower: UInt32, upper: UInt32, size: Int) {
+        let subnetLower = UInt64(subnet.lower.value)
+        let subnetUpper = UInt64(subnet.upper.value)
+        guard subnetUpper >= subnetLower + 4 else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "IPv4 subnet '\(subnet)' contains no allocatable host addresses"
+            )
+        }
+
+        let lower = UInt32(subnetLower + 2)
+        let upper = UInt32(subnetUpper - 2)
+        return (lower, upper, Int(upper - lower + 1))
     }
 
     @Sendable
