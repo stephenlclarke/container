@@ -206,8 +206,9 @@ public enum ConfigurationLoader {
         let tempPath = destDir.appending(".\(configFilename).\(ProcessInfo.processInfo.globallyUniqueString)")
         defer { try? fm.removeItem(atPath: tempPath.string) }
 
+        let resolvedSourcePath = try sourcePath.resolvingSymlinks()
         try fm.copyItem(
-            at: URL(filePath: sourcePath.string),
+            at: URL(filePath: resolvedSourcePath.string),
             to: URL(filePath: tempPath.string)
         )
         try fm.setAttributes([.posixPermissions: READ_ONLY], ofItemAtPath: tempPath.string)
