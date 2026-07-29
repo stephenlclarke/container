@@ -58,17 +58,6 @@ import Testing
         return p
     }
 
-    @Test func fileInfoUsesLiteralSymlinkTarget() throws {
-        try write("payload", to: contextDir.appendingPathComponent("payload.txt"))
-        let link = contextDir.appendingPathComponent("payload-link.txt")
-        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: "payload.txt")
-
-        let info = try BuildFSSync.FileInfo(path: link, contextDir: contextDir)
-
-        #expect(info.name == "payload-link.txt")
-        #expect(info.target == "payload.txt")
-    }
-
     // MARK: - read(): symlink boundary enforcement
     //
     // The tests below call read() directly and expect it to throw when the
@@ -407,35 +396,6 @@ import Testing
         #expect(secretLeak == nil, "no entry for the external file should appear in walk() results: \(infos.map { $0.name })")
     }
 
-    @Test func readUsesNamedContextDirectory() async throws {
-        let main = base.appendingPathComponent("main")
-        let shared = base.appendingPathComponent("shared")
-        try fm.createDirectory(at: main, withIntermediateDirectories: true)
-        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
-        try write("main", to: main.appendingPathComponent("payload.txt"))
-        try write("shared", to: shared.appendingPathComponent("payload.txt"))
-
-        let fssync = try BuildFSSync(main, namedContexts: ["shared": shared.path])
-        var transfer = readPacket(source: "payload.txt")
-        transfer.metadata = [
-            "dir-name": "shared",
-            "length": "6",
-        ]
-        var continuation: AsyncStream<ClientStream>.Continuation!
-        let stream = AsyncStream<ClientStream> { continuation = $0 }
-
-        try await fssync.read(continuation, transfer, "build-0")
-        continuation.finish()
-
-        var responses: [ClientStream] = []
-        for await response in stream {
-            responses.append(response)
-        }
-        let response = try #require(responses.first)
-        #expect(String(data: response.buildTransfer.data, encoding: .utf8) == "shared")
-        #expect(response.buildTransfer.source == "payload.txt")
-    }
-
     @Test func readRejectsSymlinkEscapeFromNamedContext() async throws {
         let shared = base.appendingPathComponent("shared")
         try fm.createDirectory(at: shared, withIntermediateDirectories: true)
@@ -461,26 +421,111 @@ import Testing
         }
     }
 
-    @Test func tarHeaderChecksumMatchesTransferredArchive() async throws {
-        try write("FROM scratch\n", to: contextDir.appendingPathComponent("Dockerfile"))
-        let fssync = try BuildFSSync(contextDir)
+    // MARK: - Fork support regressions
+
+    @Test
+    func fileInfoUsesLiteralSymlinkTarget() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data("payload".utf8).write(to: root.appendingPathComponent("payload.txt"))
+        let link = root.appendingPathComponent("payload-link.txt")
+        try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: "payload.txt")
+
+        let info = try BuildFSSync.FileInfo(path: link, contextDir: root)
+
+        #expect(info.name == "payload-link.txt")
+        #expect(info.target == "payload.txt")
+    }
+
+    @Test
+    func readUsesNamedContextDirectory() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        let main = root.appendingPathComponent("main", isDirectory: true)
+        let shared = root.appendingPathComponent("shared", isDirectory: true)
+        try fileManager.createDirectory(at: main, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: shared, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data("main".utf8).write(to: main.appendingPathComponent("payload.txt"))
+        try Data("shared".utf8).write(to: shared.appendingPathComponent("payload.txt"))
+
+        let fssync = try BuildFSSync(main, namedContexts: ["shared": shared.path])
+        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
+
         var transfer = BuildTransfer()
         transfer.id = "request-id"
-        transfer.source = "."
+        transfer.source = "payload.txt"
         transfer.metadata = [
-            "mode": "tar",
-            "followpaths": "Dockerfile",
+            "stage": "fssync",
+            "method": "Read",
+            "dir-name": "shared",
+            "offset": "0",
+            "length": "6",
         ]
-        var continuation: AsyncStream<ClientStream>.Continuation!
-        let stream = AsyncStream<ClientStream> { continuation = $0 }
+        var request = ServerStream()
+        request.buildID = "build-id"
+        request.buildTransfer = transfer
+        request.packetType = .buildTransfer(transfer)
 
-        try await fssync.walk(continuation, transfer, "build-0")
+        try await fssync.handle(continuation, request)
         continuation.finish()
 
         var responses: [ClientStream] = []
         for await response in stream {
             responses.append(response)
         }
+
+        let response = try #require(responses.first)
+        #expect(String(data: response.buildTransfer.data, encoding: .utf8) == "shared")
+        #expect(response.buildTransfer.source == "payload.txt")
+    }
+
+    @Test
+    func tarHeaderChecksumMatchesTransferredArchive() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data("FROM scratch\n".utf8).write(to: root.appendingPathComponent("Dockerfile"))
+        let fssync = try BuildFSSync(root)
+        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
+
+        var transfer = BuildTransfer()
+        transfer.id = "request-id"
+        transfer.source = "."
+        transfer.metadata = [
+            "stage": "fssync",
+            "method": "Walk",
+            "mode": "tar",
+            "followpaths": "Dockerfile",
+        ]
+        var request = ServerStream()
+        request.buildID = "build-id"
+        request.buildTransfer = transfer
+        request.packetType = .buildTransfer(transfer)
+
+        try await fssync.handle(continuation, request)
+        continuation.finish()
+
+        var responses: [ClientStream] = []
+        for await response in stream {
+            responses.append(response)
+        }
+
         let header = try #require(responses.first)
         let expected = try #require(header.buildTransfer.metadata["hash"])
         let archive = responses.reduce(into: Data()) { data, response in
@@ -490,40 +535,84 @@ import Testing
         #expect(actual == expected)
     }
 
-    @Test func walkDoesNotPublishContextRoot() async throws {
-        try write("", to: contextDir.appendingPathComponent("emptyFile"))
-        let fssync = try BuildFSSync(contextDir)
-        let urls = try await fssync.walk(root: contextDir, includePatterns: ["emptyFile"])
-
-        #expect(urls.contains { $0.lastPathComponent == "emptyFile" })
-        #expect(urls.allSatisfy { $0.standardizedFileURL != contextDir.standardizedFileURL })
-    }
-
-    @Test func tarWalkHandlesPrivateTmpAlias() async throws {
-        let root = URL(filePath: "/private/tmp")
+    @Test
+    func walkDoesNotPublishContextRoot() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
             .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: root, withIntermediateDirectories: true)
-        defer { try? fm.removeItem(at: root) }
-        try write("", to: root.appendingPathComponent("emptyFile"))
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
 
+        try Data().write(to: root.appendingPathComponent("emptyFile"))
         let fssync = try BuildFSSync(root)
+        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
+
         var transfer = BuildTransfer()
         transfer.id = "request-id"
         transfer.source = "."
         transfer.metadata = [
+            "stage": "fssync",
+            "method": "Walk",
+            "mode": "json",
+            "followpaths": "emptyFile",
+        ]
+        var request = ServerStream()
+        request.buildID = "build-id"
+        request.buildTransfer = transfer
+        request.packetType = .buildTransfer(transfer)
+
+        try await fssync.handle(continuation, request)
+        continuation.finish()
+
+        var responses: [ClientStream] = []
+        for await response in stream {
+            responses.append(response)
+        }
+
+        let response = try #require(responses.first)
+        let entries = try JSONDecoder().decode([BuildFSSync.FileInfo].self, from: response.buildTransfer.data)
+        #expect(entries.map(\.name) == ["emptyFile"])
+    }
+
+    @Test
+    func tarWalkHandlesPrivateTmpAlias() async throws {
+        let fileManager = FileManager.default
+        let root = URL(filePath: "/private/tmp")
+            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            try? fileManager.removeItem(at: root)
+        }
+
+        try Data().write(to: root.appendingPathComponent("emptyFile"))
+        let fssync = try BuildFSSync(root)
+        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
+
+        var transfer = BuildTransfer()
+        transfer.id = "request-id"
+        transfer.source = "."
+        transfer.metadata = [
+            "stage": "fssync",
+            "method": "Walk",
             "mode": "tar",
             "followpaths": "emptyFile",
         ]
-        var continuation: AsyncStream<ClientStream>.Continuation!
-        let stream = AsyncStream<ClientStream> { continuation = $0 }
+        var request = ServerStream()
+        request.buildID = "build-id"
+        request.buildTransfer = transfer
+        request.packetType = .buildTransfer(transfer)
 
-        try await fssync.walk(continuation, transfer, "build-0")
+        try await fssync.handle(continuation, request)
         continuation.finish()
 
-        var response: ClientStream?
-        for await item in stream {
-            response = response ?? item
+        var responses: [ClientStream] = []
+        for await response in stream {
+            responses.append(response)
         }
-        #expect(response?.buildTransfer.metadata["hash"] != nil)
+
+        #expect(responses.first?.buildTransfer.metadata["hash"] != nil)
     }
+
 }
