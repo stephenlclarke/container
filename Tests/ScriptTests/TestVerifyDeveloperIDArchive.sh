@@ -67,8 +67,10 @@ run_verifier() {
         scripts/verify-developer-id-archive.sh "${TEST_ROOT}/package.tar.gz"
 }
 
+DEVELOPER_ID_AUTHORITIES=$'Authority=Developer ID Application: Stephen Clarke (ABCDEFGHIJ)\nAuthority=Developer ID Certification Authority\nAuthority=Apple Root CA'
+
 write_codesign \
-    'Authority=Developer ID Application: Stephen Clarke (ABCDEFGHIJ)' \
+    "${DEVELOPER_ID_AUTHORITIES}" \
     'flags=0x10000(runtime)' \
     false
 output="$(run_verifier)"
@@ -82,7 +84,7 @@ fi
 grep -q 'not signed by a Developer ID Application' "${TEST_ROOT}/adhoc.err"
 
 write_codesign \
-    'Authority=Developer ID Application: Stephen Clarke (ABCDEFGHIJ)' \
+    "${DEVELOPER_ID_AUTHORITIES}" \
     'flags=0x0(none)' \
     false
 if run_verifier >"${TEST_ROOT}/runtime.out" 2>"${TEST_ROOT}/runtime.err"; then
@@ -92,7 +94,7 @@ fi
 grep -q 'missing the hardened runtime' "${TEST_ROOT}/runtime.err"
 
 write_codesign \
-    'Authority=Developer ID Application: Stephen Clarke (ABCDEFGHIJ)' \
+    "${DEVELOPER_ID_AUTHORITIES}" \
     'flags=0x10000(runtime)' \
     true
 if run_verifier >"${TEST_ROOT}/teams.out" 2>"${TEST_ROOT}/teams.err"; then
@@ -100,6 +102,17 @@ if run_verifier >"${TEST_ROOT}/teams.out" 2>"${TEST_ROOT}/teams.err"; then
     exit 1
 fi
 grep -q 'archive mixes Developer ID teams' "${TEST_ROOT}/teams.err"
+
+write_codesign \
+    'Authority=Developer ID Application: Stephen Clarke (ABCDEFGHIJ)' \
+    'flags=0x10000(runtime)' \
+    false
+if run_verifier >"${TEST_ROOT}/chain.out" 2>"${TEST_ROOT}/chain.err"; then
+    printf 'signature without the Apple certificate chain unexpectedly passed verification\n' >&2
+    exit 1
+fi
+grep -q 'does not chain through the Developer ID certification authority' \
+    "${TEST_ROOT}/chain.err"
 
 printf 'escape\n' > "${TEST_ROOT}/escape"
 python3 - "${TEST_ROOT}" <<'PY'

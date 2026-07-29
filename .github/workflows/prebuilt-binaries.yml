@@ -181,11 +181,11 @@ jobs:
           from pathlib import Path
           import sys
 
+          encoded_certificate = "".join(
+              os.environ["DEVELOPER_ID_APPLICATION_P12_BASE64"].split()
+          )
           Path(sys.argv[1]).write_bytes(
-              base64.b64decode(
-                  os.environ["DEVELOPER_ID_APPLICATION_P12_BASE64"],
-                  validate=True,
-              )
+              base64.b64decode(encoded_certificate, validate=True)
           )
           PY
           chmod 600 "${certificate}"
