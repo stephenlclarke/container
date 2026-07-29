@@ -58,6 +58,17 @@ import Testing
         return p
     }
 
+    @Test func fileInfoUsesLiteralSymlinkTarget() throws {
+        try write("payload", to: contextDir.appendingPathComponent("payload.txt"))
+        let link = contextDir.appendingPathComponent("payload-link.txt")
+        try fm.createSymbolicLink(atPath: link.path, withDestinationPath: "payload.txt")
+
+        let info = try BuildFSSync.FileInfo(path: link, contextDir: contextDir)
+
+        #expect(info.name == "payload-link.txt")
+        #expect(info.target == "payload.txt")
+    }
+
     // MARK: - read(): symlink boundary enforcement
     //
     // The tests below call read() directly and expect it to throw when the
@@ -423,6 +434,31 @@ import Testing
         let response = try #require(responses.first)
         #expect(String(data: response.buildTransfer.data, encoding: .utf8) == "shared")
         #expect(response.buildTransfer.source == "payload.txt")
+    }
+
+    @Test func readRejectsSymlinkEscapeFromNamedContext() async throws {
+        let shared = base.appendingPathComponent("shared")
+        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
+        let secret = outsideDir.appendingPathComponent("secret.txt")
+        try write("secret", to: secret)
+        try fm.createSymbolicLink(
+            atPath: shared.appendingPathComponent("leak").path,
+            withDestinationPath: secret.path
+        )
+
+        let fssync = try BuildFSSync(contextDir, namedContexts: ["shared": shared.path])
+        var transfer = readPacket(source: "leak")
+        transfer.metadata = ["dir-name": "shared"]
+        var continuation: AsyncStream<ClientStream>.Continuation!
+        _ = AsyncStream<ClientStream> { continuation = $0 }
+        defer { continuation.finish() }
+
+        do {
+            try await fssync.read(continuation, transfer, "build-0")
+            Issue.record("read should reject a named-context symlink that resolves outside that context")
+        } catch is BuildFSSync.Error {
+            // Expected.
+        }
     }
 
     @Test func tarHeaderChecksumMatchesTransferredArchive() async throws {

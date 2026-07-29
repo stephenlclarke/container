@@ -60,9 +60,7 @@ extension ConnectHandler {
             .whenComplete { result in
                 switch result {
                 case .success(let channel):
-                    guard context.channel.isActive else {
-                        self.log?.trace("backend - frontend channel closed, closing backend connection")
-                        context.channel.close(promise: nil)
+                    guard !self.closePeerIfFrontendInactive(channel, frontendChannel: context.channel) else {
                         return
                     }
                     self.log?.trace("backend - connected")
@@ -73,6 +71,16 @@ extension ConnectHandler {
                     context.fireErrorCaught(error)
                 }
             }
+    }
+
+    @discardableResult
+    func closePeerIfFrontendInactive(_ peerChannel: Channel, frontendChannel: Channel) -> Bool {
+        guard !frontendChannel.isActive else {
+            return false
+        }
+        self.log?.trace("backend - frontend channel closed, closing backend connection")
+        peerChannel.close(mode: .all, promise: nil)
+        return true
     }
 
     private func glue(_ peerChannel: Channel, context: ChannelHandlerContext) {

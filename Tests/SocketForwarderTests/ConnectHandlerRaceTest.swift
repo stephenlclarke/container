@@ -23,6 +23,25 @@ struct ConnectHandlerRaceTest {
     let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
 
     @Test
+    func testConnectedBackendClosesWhenFrontendIsAlreadyInactive() throws {
+        let address = try SocketAddress(ipAddress: "127.0.0.1", port: 0)
+        let handler = ConnectHandler(serverAddress: address, connectTimeout: .seconds(1), log: nil)
+        let frontend = EmbeddedChannel()
+        let backend = EmbeddedChannel()
+        backend.connect(to: address, promise: nil)
+        backend.embeddedEventLoop.run()
+
+        #expect(!frontend.isActive)
+        #expect(backend.isActive)
+        #expect(handler.closePeerIfFrontendInactive(backend, frontendChannel: frontend))
+        backend.embeddedEventLoop.run()
+        #expect(!backend.isActive)
+
+        _ = try frontend.finish()
+        _ = try backend.finish(acceptAlreadyClosed: true)
+    }
+
+    @Test
     func testRapidConnectDisconnect() async throws {
         let requestCount = 500
 

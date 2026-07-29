@@ -72,14 +72,15 @@ actor BuildFSSync: BuildPipelineHandler {
             guard !name.isEmpty else {
                 throw Error.invalidNamedContextName
             }
-            let url = URL(filePath: path).standardizedFileURL.resolvingSymlinksInPath()
+            let url = URL(filePath: path).standardizedFileURL
+            let resolved = url.resolvingSymlinksInPath()
             guard FileManager.default.fileExists(atPath: url.cleanPath) else {
                 throw Error.contextNotFound(url.cleanPath)
             }
-            guard url.isDirectory else {
+            guard resolved.isDirectory else {
                 throw Error.contextIsNotDirectory(url.cleanPath)
             }
-            result[name] = url
+            result[name] = resolved
         }
     }
 
