@@ -61,6 +61,13 @@ extension URL {
         return path
     }
 
+    /// Returns true if `url` is lexically a descendant of `self`.
+    ///
+    /// This is a **string-prefix check** on the normalised path components; it
+    /// does not call `realpath` or resolve symlinks. A URL that is lexically
+    /// inside the context root but reachable through an intermediate symlink
+    /// that points outside it will still pass this check. Callers that need
+    /// physical containment must resolve symlinks before calling this method.
     func parentOf(_ url: URL) -> Bool {
         let parentPath = stripPrivatePrefix(self.absoluteURL.cleanPath)
         let childPath = stripPrivatePrefix(url.absoluteURL.cleanPath)
