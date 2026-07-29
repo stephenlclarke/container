@@ -24,19 +24,28 @@ public struct ServiceManager {
         case replace
     }
 
-    private static func runLaunchctlCommand(args: [String]) throws -> Int32 {
+    private struct LaunchctlCommandResult {
+        let status: Int32
+        let standardError: String
+    }
+
+    private static func runLaunchctlCommand(args: [String]) throws -> LaunchctlCommandResult {
         let launchctl = Foundation.Process()
         launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         launchctl.arguments = args
 
-        let null = FileHandle.nullDevice
-        launchctl.standardOutput = null
-        launchctl.standardError = null
+        let standardError = Pipe()
+        launchctl.standardOutput = FileHandle.nullDevice
+        launchctl.standardError = standardError
 
         try launchctl.run()
+        let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
         launchctl.waitUntilExit()
 
-        return launchctl.terminationStatus
+        return LaunchctlCommandResult(
+            status: launchctl.terminationStatus,
+            standardError: String(data: errorData, encoding: .utf8) ?? ""
+        )
     }
 
     /// Register a service by providing the path to a plist.
@@ -55,15 +64,23 @@ public struct ServiceManager {
             return
         case .replace:
             let args = ["bootout", service]
-            let status = try runLaunchctlCommand(args: args)
-            try validateLaunchctlSuccess(status: status, args: args)
+            let result = try runLaunchctlCommand(args: args)
+            try validateLaunchctlSuccess(
+                status: result.status,
+                standardError: result.standardError,
+                args: args
+            )
         case .register:
             break
         }
 
         let args = ["bootstrap", domain, plistPath]
-        let status = try runLaunchctlCommand(args: args)
-        try validateLaunchctlSuccess(status: status, args: args)
+        let result = try runLaunchctlCommand(args: args)
+        try validateLaunchctlSuccess(
+            status: result.status,
+            standardError: result.standardError,
+            args: args
+        )
     }
 
     static func registrationAction(loadedPlistPath: String?, expectedPlistPath: String) -> RegistrationAction {
@@ -90,11 +107,13 @@ public struct ServiceManager {
             .first
     }
 
-    static func validateLaunchctlSuccess(status: Int32, args: [String]) throws {
+    static func validateLaunchctlSuccess(status: Int32, standardError: String = "", args: [String]) throws {
         guard status == 0 else {
+            let diagnostic = standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+            let diagnosticSuffix = diagnostic.isEmpty ? "" : ": \(diagnostic)"
             throw ContainerizationError(
                 .internalError,
-                message: "command `launchctl \(args.joined(separator: " "))` failed with status \(status)"
+                message: "command `launchctl \(args.joined(separator: " "))` failed with status \(status)\(diagnosticSuffix)"
             )
         }
     }
@@ -151,7 +170,7 @@ public struct ServiceManager {
 
     /// Deregister a service and pass return status
     public static func deregister(fullServiceLabel label: String, status: inout Int32) throws {
-        status = try runLaunchctlCommand(args: ["bootout", label])
+        status = try runLaunchctlCommand(args: ["bootout", label]).status
     }
 
     /// Restart a service by a launchd label.
@@ -199,8 +218,8 @@ public struct ServiceManager {
 
     /// Check if a service has been registered or not.
     public static func isRegistered(fullServiceLabel label: String) throws -> Bool {
-        let exitStatus = try runLaunchctlCommand(args: ["list", label])
-        return exitStatus == 0
+        let result = try runLaunchctlCommand(args: ["list", label])
+        return result.status == 0
     }
 
     private static func getLaunchdSessionType() throws -> String {
@@ -227,16 +246,28 @@ public struct ServiceManager {
     }
 
     public static func getDomainString() throws -> String {
+        let effectiveUserID = geteuid()
+        if effectiveUserID == 0 {
+            return LaunchPlist.Domain.System.rawValue.lowercased()
+        }
         let currentSessionType = try getLaunchdSessionType()
-        switch currentSessionType {
+        return try domainString(sessionType: currentSessionType, effectiveUserID: effectiveUserID)
+    }
+
+    static func domainString(sessionType: String, effectiveUserID: uid_t) throws -> String {
+        if effectiveUserID == 0 {
+            return LaunchPlist.Domain.System.rawValue.lowercased()
+        }
+
+        switch sessionType {
         case LaunchPlist.Domain.System.rawValue:
             return LaunchPlist.Domain.System.rawValue.lowercased()
         case LaunchPlist.Domain.Background.rawValue:
-            return "user/\(getuid())"
+            return "user/\(effectiveUserID)"
         case LaunchPlist.Domain.Aqua.rawValue:
-            return "gui/\(getuid())"
+            return "gui/\(effectiveUserID)"
         default:
-            throw ContainerizationError(.internalError, message: "unsupported session type \(currentSessionType)")
+            throw ContainerizationError(.internalError, message: "unsupported session type \(sessionType)")
         }
     }
 }

@@ -40,6 +40,55 @@ struct ServiceManagerTests {
         #expect(error?.message.hasSuffix("status 5") == true)
     }
 
+    @Test func preservesLaunchctlFailureDiagnostic() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            try ServiceManager.validateLaunchctlSuccess(
+                status: 5,
+                standardError: "Bootstrap failed: 5: Input/output error\n",
+                args: ["bootstrap", "system", "/tmp/service.plist"]
+            )
+        }
+        #expect(error?.code == .internalError)
+        #expect(
+            error?.message
+                == "command `launchctl bootstrap system /tmp/service.plist` failed with status 5: Bootstrap failed: 5: Input/output error"
+        )
+    }
+
+    @Test(arguments: [
+        LaunchPlist.Domain.System.rawValue,
+        LaunchPlist.Domain.Background.rawValue,
+        LaunchPlist.Domain.Aqua.rawValue,
+    ])
+    func rootUsesSystemDomain(sessionType: String) throws {
+        #expect(try ServiceManager.domainString(sessionType: sessionType, effectiveUserID: 0) == "system")
+    }
+
+    @Test func backgroundUserUsesUserDomain() throws {
+        #expect(
+            try ServiceManager.domainString(
+                sessionType: LaunchPlist.Domain.Background.rawValue,
+                effectiveUserID: 501
+            ) == "user/501"
+        )
+    }
+
+    @Test func aquaUserUsesGuiDomain() throws {
+        #expect(
+            try ServiceManager.domainString(
+                sessionType: LaunchPlist.Domain.Aqua.rawValue,
+                effectiveUserID: 501
+            ) == "gui/501"
+        )
+    }
+
+    @Test func rejectsUnsupportedNonRootSession() throws {
+        let error = #expect(throws: ContainerizationError.self) {
+            try ServiceManager.domainString(sessionType: "LoginWindow", effectiveUserID: 501)
+        }
+        #expect(error?.message == "unsupported session type LoginWindow")
+    }
+
     @Test func registrationActionRegistersWhenServiceIsMissing() {
         #expect(
             ServiceManager.registrationAction(
