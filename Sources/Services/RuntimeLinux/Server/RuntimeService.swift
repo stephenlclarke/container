@@ -1314,6 +1314,10 @@ public actor RuntimeService {
                             message: "network scoped DNS alias '\(alias)' maps to multiple target hostnames"
                         )
                     }
+                    scopedAliases[canonicalAlias] = RuntimeDNSResolver.ScopedAlias(
+                        target: existing.target,
+                        lookups: existing.lookups + [lookup]
+                    )
                     continue
                 }
                 scopedAliases[canonicalAlias] = RuntimeDNSResolver.ScopedAlias(

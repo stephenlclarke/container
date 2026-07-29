@@ -36,7 +36,16 @@ struct RuntimeDNSResolver: Sendable {
 
     struct ScopedAlias: Sendable {
         let target: String
-        let lookup: NetworkLookup
+        let lookups: [NetworkLookup]
+
+        init(target: String, lookup: @escaping NetworkLookup) {
+            self.init(target: target, lookups: [lookup])
+        }
+
+        init(target: String, lookups: [NetworkLookup]) {
+            self.target = target
+            self.lookups = lookups
+        }
     }
 
     private let scopedAliases: [String: ScopedAlias]
@@ -176,11 +185,16 @@ private struct RuntimeNetworkDNSHandler: DNSHandler {
         }
 
         if let scopedAlias = scopedAliases[RuntimeDNSResolver.canonicalHostname(question.name)] {
-            let addresses = try await scopedAlias.lookup(scopedAlias.target)
+            for lookup in scopedAlias.lookups {
+                let addresses = try await lookup(scopedAlias.target)
+                if let response = answer(query: query, question: question, addresses: addresses) {
+                    return response
+                }
+            }
             return answer(
                 query: query,
                 question: question,
-                addresses: addresses,
+                addresses: [],
                 emptyReturnCode: .nonExistentDomain
             )
         }

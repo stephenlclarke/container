@@ -86,6 +86,53 @@ struct RuntimeDNSProxyTests {
         #expect(await upstream.callCount == 0)
     }
 
+    @Test func scopedAliasUsesFirstAttachedNetworkContainingItsTarget() async throws {
+        let first = NetworkLookupCapture(addresses: [])
+        let second = NetworkLookupCapture(addresses: [
+            RuntimeDNSAddress(ipv4: try IPv4Address("192.168.65.2"), ipv6: nil)
+        ])
+        let third = NetworkLookupCapture(addresses: [
+            RuntimeDNSAddress(ipv4: try IPv4Address("192.168.66.2"), ipv6: nil)
+        ])
+        let resolver = RuntimeDNSResolver(
+            scopedAliases: [
+                "database": RuntimeDNSResolver.ScopedAlias(
+                    target: "db",
+                    lookups: [
+                        { hostname in await first.lookup(hostname) },
+                        { hostname in await second.lookup(hostname) },
+                        { hostname in await third.lookup(hostname) },
+                    ]
+                )
+            ],
+            networkLookups: [{ _ in throw TestError.unexpectedLookup }],
+            upstreamNameservers: [],
+            upstream: unexpectedUpstream
+        )
+
+        let response = await resolver.resolve(try query(name: "database.", type: .host))
+        let expected = try Message(
+            id: 0x1234,
+            type: .response,
+            recursionDesired: true,
+            recursionAvailable: true,
+            returnCode: .noError,
+            questions: [Question(name: "database.", type: .host)],
+            answers: [
+                HostRecord(
+                    name: "database.",
+                    ttl: 5,
+                    ip: try IPv4Address("192.168.65.2")
+                )
+            ]
+        ).serialize()
+
+        #expect(response == expected)
+        #expect(await first.hostnames == ["db"])
+        #expect(await second.hostnames == ["db"])
+        #expect(await third.hostnames.isEmpty)
+    }
+
     @Test func resolvesIPv4FromFirstAttachedNetwork() async throws {
         let request = try query(name: "web.", type: .host)
         let resolver = RuntimeDNSResolver(
