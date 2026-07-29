@@ -64,8 +64,8 @@ let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ??
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-30068004175-f97cddf5b3aa"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197"
-let scVersion = "0.40.0"
-let containerizationRevision = "043193efa5f1a2e21a240041d6edd71d7673739e"
+let scVersion = "0.40.1"
+let containerizationRevision = "073565e263f985693b4624e970be334cf7802fca"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -195,6 +195,7 @@ let package = Package(
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationArchive", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
+                .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
