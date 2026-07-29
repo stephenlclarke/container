@@ -190,7 +190,7 @@ homebrew-package: build $(STAGING_DIR)
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
 	@tar -czf "$(HOMEBREW_ARCHIVE)" -C "$(STAGING_DIR)" .
-	@shasum -a 256 "$(HOMEBREW_ARCHIVE)" > "$(HOMEBREW_ARCHIVE).sha256"
+	@scripts/write-sha256-sidecar.sh "$(HOMEBREW_ARCHIVE)"
 	@rm -rf "$(STAGING_DIR)"
 
 .PHONY: dsym
@@ -207,14 +207,17 @@ dsym:
 	@echo Packaging the debug symbols...
 	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
 
-.PHONY: test test-install-init test-verify-developer-id-archive
+.PHONY: test test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test-homebrew-archive-checksum:
+	@Tests/ScriptTests/TestHomebrewArchiveChecksum.sh
+
 test-install-init:
 	@Tests/ScriptTests/TestInstallInit.sh
 
 test-verify-developer-id-archive:
 	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
 
-test: build-tests test-install-init test-verify-developer-id-archive
+test: build-tests test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
