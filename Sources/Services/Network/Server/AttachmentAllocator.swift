@@ -66,7 +66,8 @@ actor AttachmentAllocator {
 
     /// Allocate a network address for a host and its aliases.
     func allocate(hostname: String, aliases: [String] = [], requestedIndex: UInt32? = nil) async throws -> UInt32 {
-        let names = Set([hostname] + aliases)
+        let hostname = try Self.normalized(hostname: hostname)
+        let names = Set(try ([hostname] + aliases).map(Self.normalized(hostname:)))
 
         // Client is responsible for ensuring two containers don't use same hostname, so provide existing IP if hostname exists
         if let index = primaryHostnames[hostname] {
@@ -107,6 +108,7 @@ actor AttachmentAllocator {
     /// Free an allocated network address by hostname.
     @discardableResult
     func deallocate(hostname: String) async throws -> UInt32? {
+        let hostname = try Self.normalized(hostname: hostname)
         guard let index = hostnames[hostname] else {
             return nil
         }
@@ -123,12 +125,13 @@ actor AttachmentAllocator {
 
     /// Retrieve the allocator index for a hostname.
     func lookup(hostname: String) async throws -> UInt32? {
-        hostnames[hostname]
+        let hostname = try Self.normalized(hostname: hostname)
+        return hostnames[hostname]
     }
 
     private func reserveAliases(_ aliases: [String], for index: UInt32) throws {
         var names = namesByIndex[index] ?? []
-        for alias in Set(aliases).sorted() {
+        for alias in Set(try aliases.map(Self.normalized(hostname:))).sorted() {
             if let existing = hostnames[alias], existing != index {
                 throw ContainerizationError(.exists, message: "hostname(s) already exist: [\"\(alias)\"]")
             }
@@ -136,6 +139,18 @@ actor AttachmentAllocator {
             names.insert(alias)
         }
         namesByIndex[index] = names
+    }
+
+    private static func normalized(hostname: String) throws -> String {
+        let normalized = hostname.hasSuffix(".") ? String(hostname.dropLast()) : hostname
+        guard !normalized.isEmpty,
+            !normalized.hasPrefix("."),
+            !normalized.hasSuffix("."),
+            !normalized.contains("..")
+        else {
+            throw ContainerizationError(.invalidArgument, message: "invalid hostname '\(hostname)'")
+        }
+        return normalized.lowercased()
     }
 
     private static func upper(lower: UInt32, size: UInt32) throws -> UInt32 {

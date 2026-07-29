@@ -65,7 +65,7 @@ let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_RE
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-30068004175-f97cddf5b3aa"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197"
 let scVersion = "0.40.1"
-let containerizationRevision = "66f0963cbe2b59170f9164c4dae5828baf59fdd8"
+let containerizationRevision = "d7377b962af724f8d7c2b640f3ab12184d33f1af"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -454,6 +454,9 @@ let package = Package(
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+                "CDNSResolver",
                 "ContainerAPIClient",
                 "ContainerNetworkClient",
                 "ContainerOS",
@@ -462,6 +465,7 @@ let package = Package(
                 "ContainerRuntimeClient",
                 "ContainerRuntimeLinuxClient",
                 "ContainerXPC",
+                "DNSServer",
                 "SocketForwarder",
             ],
             path: "Sources/Services/RuntimeLinux/Server"
@@ -469,8 +473,12 @@ let package = Package(
         .testTarget(
             name: "ContainerRuntimeLinuxServerTests",
             dependencies: [
+                .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationExtras", package: "containerization"),
+                .product(name: "NIOPosix", package: "swift-nio"),
                 "ContainerResource",
                 "ContainerRuntimeLinuxServer",
+                "DNSServer",
             ]
         ),
         .target(
@@ -658,6 +666,14 @@ let package = Package(
             publicHeadersPath: "include",
             linkerSettings: [
                 .linkedLibrary("bsm")
+            ]
+        ),
+        .target(
+            name: "CDNSResolver",
+            dependencies: [],
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedLibrary("resolv")
             ]
         ),
         .target(

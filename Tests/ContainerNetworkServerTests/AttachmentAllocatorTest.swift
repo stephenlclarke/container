@@ -112,13 +112,24 @@ struct AttachmentAllocatorTest {
         #expect(lookedUpAddress == allocatedAddress)
     }
 
+    @Test func testHostnameLookupNormalizesCaseAndTrailingDot() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let allocatedAddress = try await allocator.allocate(hostname: "Test-Host.")
+
+        #expect(try await allocator.lookup(hostname: "test-host") == allocatedAddress)
+        #expect(try await allocator.lookup(hostname: "TEST-HOST.") == allocatedAddress)
+        #expect(try await allocator.allocate(hostname: "test-host") == allocatedAddress)
+    }
+
     @Test func testLookupAllocatedAlias() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 
-        let allocatedAddress = try await allocator.allocate(hostname: "api", aliases: ["web", "api.internal"])
+        let allocatedAddress = try await allocator.allocate(hostname: "api", aliases: ["Web.", "api.internal"])
 
         #expect(try await allocator.lookup(hostname: "api") == allocatedAddress)
         #expect(try await allocator.lookup(hostname: "web") == allocatedAddress)
+        #expect(try await allocator.lookup(hostname: "WEB.") == allocatedAddress)
         #expect(try await allocator.lookup(hostname: "api.internal") == allocatedAddress)
     }
 
@@ -172,6 +183,16 @@ struct AttachmentAllocatorTest {
         #expect(lookedUpAddress == nil)
     }
 
+    @Test func testDeallocateNormalizesEquivalentHostname() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let allocatedAddress = try await allocator.allocate(hostname: "test-host")
+        let deallocatedAddress = try await allocator.deallocate(hostname: "TEST-HOST.")
+
+        #expect(deallocatedAddress == allocatedAddress)
+        #expect(try await allocator.lookup(hostname: "test-host") == nil)
+    }
+
     @Test func testDeallocateRemovesAliases() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 
@@ -189,6 +210,15 @@ struct AttachmentAllocatorTest {
         let deallocatedAddress = try await allocator.deallocate(hostname: "non-existent")
 
         #expect(deallocatedAddress == nil)
+    }
+
+    @Test(arguments: ["", ".", ".host", "host..", "host..internal"])
+    func testRejectsInvalidCanonicalHostnames(hostname: String) async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        await #expect(throws: Error.self) {
+            _ = try await allocator.allocate(hostname: hostname)
+        }
     }
 
     @Test func testReallocateAfterDeallocation() async throws {

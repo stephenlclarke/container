@@ -96,12 +96,27 @@ extension NetworkClient {
     }
 
     public func lookup(hostname: String) async throws -> Attachment? {
+        let client = createClient()
+        return try await lookup(hostname: hostname) { request in
+            try await client.send(request)
+        }
+    }
+
+    /// Look up an attachment over an existing network-helper session.
+    public func lookup(hostname: String, on session: XPCClientSession) async throws -> Attachment? {
+        try await lookup(hostname: hostname) { request in
+            try await session.send(request)
+        }
+    }
+
+    private func lookup(
+        hostname: String,
+        send: (XPCMessage) async throws -> XPCMessage
+    ) async throws -> Attachment? {
         let request = XPCMessage(route: NetworkRoutes.lookup.rawValue)
         request.set(key: NetworkKeys.hostname.rawValue, value: hostname)
 
-        let client = createClient()
-
-        let response = try await client.send(request)
+        let response = try await send(request)
         return try response.dataNoCopy(key: NetworkKeys.attachment.rawValue).map {
             try JSONDecoder().decode(Attachment.self, from: $0)
         }

@@ -16,6 +16,7 @@
 
 import AsyncHTTPClient
 import ContainerTestSupport
+import Containerization
 import ContainerizationExtras
 import Foundation
 import Testing
@@ -220,6 +221,87 @@ struct TestCLINetwork {
                 name: backendContainer,
                 networks: ["\(backendNetwork),alias=api"]
             )
+        }
+    }
+
+    @available(macOS 26, *)
+    @Test func testNetworkServiceDiscoveryUsesAttachedNetworkOrder() async throws {
+        try await ContainerFixture.with { f in
+            let frontendNetwork = "\(f.testID)-dns-frontend"
+            let backendNetwork = "\(f.testID)-dns-backend"
+            let frontendService = "\(f.testID)-frontend"
+            let backendService = "\(f.testID)-backend"
+            let client = "\(f.testID)-client"
+
+            f.addCleanup {
+                f.doNetworkDeleteIfExists(frontendNetwork)
+                f.doNetworkDeleteIfExists(backendNetwork)
+            }
+            for container in [frontendService, backendService, client] {
+                f.addCleanup {
+                    try? f.doStop(container)
+                    try? f.doRemove(container)
+                }
+            }
+
+            try f.doNetworkCreate(frontendNetwork)
+            try f.doNetworkCreate(backendNetwork)
+            try await f.doLongRun(
+                name: frontendService,
+                args: [
+                    "--network", "\(frontendNetwork),alias=API",
+                    "--init-image", "vminit:latest",
+                ],
+                autoRemove: false,
+                waitUntilRunning: true
+            )
+            try await f.doLongRun(
+                name: backendService,
+                args: [
+                    "--network", "\(backendNetwork),alias=api",
+                    "--init-image", "vminit:latest",
+                ],
+                autoRemove: false,
+                waitUntilRunning: true
+            )
+            try await f.doLongRun(
+                name: client,
+                args: [
+                    "--network", frontendNetwork,
+                    "--network", backendNetwork,
+                    "--init-image", "vminit:latest",
+                ],
+                autoRemove: false,
+                waitUntilRunning: true
+            )
+
+            let frontendAddress = try #require(
+                try f.inspectContainer(frontendService).networks.first {
+                    $0.network == frontendNetwork
+                }
+            ).ipv4Address.address.description
+            let backendAddress = try #require(
+                try f.inspectContainer(backendService).networks.first {
+                    $0.network == backendNetwork
+                }
+            ).ipv4Address.address.description
+
+            let primaryLookup = try f.doExec(client, cmd: ["nslookup", frontendService])
+            #expect(primaryLookup.contains(frontendAddress))
+
+            let aliasLookup = try f.doExec(client, cmd: ["nslookup", "api"])
+            #expect(aliasLookup.contains(frontendAddress))
+            #expect(!aliasLookup.contains(backendAddress))
+
+            let canonicalLookup = try f.doExec(client, cmd: ["nslookup", "API."])
+            #expect(canonicalLookup.contains(frontendAddress))
+            #expect(!canonicalLookup.contains(backendAddress))
+
+            let resolvConf = try f.doExec(client, cmd: ["cat", "/etc/resolv.conf"])
+            #expect(resolvConf.contains("nameserver \(DNSProxyProtocol.guestAddress)"))
+
+            let externalLookup = try f.doExec(client, cmd: ["nslookup", "example.com"])
+            #expect(externalLookup.lowercased().contains("name:\texample.com"))
         }
     }
 

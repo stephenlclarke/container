@@ -52,7 +52,9 @@ public actor RuntimeService {
     private var state: State = .created
     private var processes: [String: ProcessInfo] = [:]
     private var socketForwarders: [SocketForwarderResult] = []
-    private var networkSessions: [XPCClientSession] = []
+    private var networkBindings: [NetworkBinding] = []
+    private var dnsProxy: RuntimeDNSProxy?
+    private var dnsProxyTask: Task<Void, Never>?
 
     private static let sshAuthSocketGuestPath = "/var/host-services/ssh-auth.sock"
     private static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
@@ -220,9 +222,12 @@ public actor RuntimeService {
                 logger: self.log
             )
 
+            let upstreamNameservers = config.dns?.nameservers ?? []
+            try RuntimeDNSUpstream.validate(nameservers: upstreamNameservers)
+
             let networkBootstrapInfos = try message.networkBootstrapInfos()
 
-            var sessions: [XPCClientSession] = []
+            var bindings: [NetworkBinding] = []
             var attachments: [Attachment] = []
             var interfaces: [Interface] = []
             do {
@@ -230,7 +235,7 @@ public actor RuntimeService {
                     let attachmentConfig = config.networks[index]
                     let client = ContainerNetworkClient.NetworkClient(id: attachmentConfig.network, plugin: info.plugin)
                     let session = client.connect()
-                    sessions.append(session)
+                    bindings.append(NetworkBinding(client: client, session: session))
                     var (attachment, additionalData) = try await client.allocate(
                         hostname: attachmentConfig.options.hostname,
                         aliases: attachmentConfig.options.aliases,
@@ -269,21 +274,17 @@ public actor RuntimeService {
                     interfaces.append(interface)
                 }
             } catch {
-                for session in sessions { session.close() }
+                for binding in bindings { binding.session.close() }
                 throw error
             }
 
-            // Dynamically configure the DNS nameserver from a network if no explicit configuration
-            if let dns = config.dns, dns.nameservers.isEmpty {
-                let defaultNameservers = self.getDefaultNameservers(from: attachments)
-                if !defaultNameservers.isEmpty {
-                    config.dns = ContainerConfiguration.DNSConfiguration(
-                        nameservers: defaultNameservers,
-                        domain: dns.domain,
-                        searchDomains: dns.searchDomains,
-                        options: dns.options
-                    )
-                }
+            if let dns = config.dns {
+                config.dns = ContainerConfiguration.DNSConfiguration(
+                    nameservers: [DNSProxyProtocol.guestAddress],
+                    domain: dns.domain,
+                    searchDomains: dns.searchDomains,
+                    options: dns.options
+                )
             }
 
             let stdio = message.stdio()
@@ -336,10 +337,16 @@ public actor RuntimeService {
                 io: ContainerStdio(input: stdin, stdout: stdout, stderr: stderr)
             )
             await self.setContainer(ctrInfo)
-            await self.setNetworkSessions(sessions)
+            await self.setNetworkBindings(bindings)
 
             do {
                 try await container.create()
+                if config.dns != nil {
+                    try await self.startDNSProxy(
+                        container: container,
+                        upstreamNameservers: upstreamNameservers
+                    )
+                }
 
                 try await self.initializeWaiters(for: id)
                 try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
@@ -1261,6 +1268,54 @@ public actor RuntimeService {
         self.socketForwarders = forwarders
     }
 
+    private func startDNSProxy(
+        container: LinuxContainer,
+        upstreamNameservers: [String]
+    ) async throws {
+        let listener = try await container.withVirtualMachineInstance { vm in
+            try vm.listen(DNSProxyProtocol.hostVsockPort)
+        }
+        let lookups: [RuntimeDNSResolver.NetworkLookup] = networkBindings.map { binding in
+            { hostname in
+                guard
+                    let attachment = try await binding.client.lookup(
+                        hostname: hostname,
+                        on: binding.session
+                    )
+                else {
+                    return nil
+                }
+                return RuntimeDNSAddress(
+                    ipv4: attachment.ipv4Address.address,
+                    ipv6: attachment.ipv6Address?.address
+                )
+            }
+        }
+        let resolver = RuntimeDNSResolver(
+            networkLookups: lookups,
+            upstreamNameservers: upstreamNameservers,
+            log: log
+        )
+        let proxy = RuntimeDNSProxy(
+            listener: listener,
+            resolver: resolver,
+            eventLoopGroup: eventLoopGroup,
+            log: log
+        )
+        dnsProxy = proxy
+        dnsProxyTask = Task {
+            await proxy.run()
+        }
+    }
+
+    private func stopDNSProxy() async {
+        dnsProxy?.stop()
+        dnsProxyTask?.cancel()
+        await dnsProxyTask?.value
+        dnsProxyTask = nil
+        dnsProxy = nil
+    }
+
     private func stopSocketForwarders() async {
         log.info("closing forwarders")
         for forwarder in self.socketForwarders {
@@ -1521,13 +1576,6 @@ public actor RuntimeService {
         try Self.configureInitialProcess(czConfig: &czConfig, config: config)
     }
 
-    private nonisolated func getDefaultNameservers(from attachments: [Attachment]) -> [String] {
-        for attachment in attachments {
-            return [attachment.ipv4Gateway.description]
-        }
-        return []
-    }
-
     static func configureInitialProcess(
         czConfig: inout LinuxContainer.Configuration,
         config: ContainerConfiguration,
@@ -1766,6 +1814,7 @@ public actor RuntimeService {
         let id = container.id
 
         try? containerInfo.io.close()
+        await self.stopDNSProxy()
 
         do {
             try await container.stop()
@@ -1775,8 +1824,8 @@ public actor RuntimeService {
 
         await self.stopSocketForwarders()
 
-        for session in networkSessions { session.close() }
-        networkSessions = []
+        for binding in networkBindings { binding.session.close() }
+        networkBindings = []
 
         let status = exitStatus ?? ExitStatus(exitCode: 255)
         self.releaseWaiters(for: id, status: status)
@@ -2082,8 +2131,8 @@ extension RuntimeService {
         self.container = info
     }
 
-    private func setNetworkSessions(_ sessions: [XPCClientSession]) {
-        self.networkSessions = sessions
+    private func setNetworkBindings(_ bindings: [NetworkBinding]) {
+        self.networkBindings = bindings
     }
 
     private func addNewProcess(_ id: String, _ config: ProcessConfiguration, _ io: [FileHandle?]) throws {
@@ -2098,6 +2147,11 @@ extension RuntimeService {
         var process: LinuxProcess?
         var state: State
         let io: [FileHandle?]
+    }
+
+    private struct NetworkBinding: Sendable {
+        let client: ContainerNetworkClient.NetworkClient
+        let session: XPCClientSession
     }
 
     private struct ContainerInfo {

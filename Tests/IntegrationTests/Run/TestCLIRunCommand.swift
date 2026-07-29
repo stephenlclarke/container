@@ -16,6 +16,7 @@
 
 import AsyncHTTPClient
 import ContainerTestSupport
+import Containerization
 import ContainerizationExtras
 import ContainerizationOS
 import Foundation
@@ -712,12 +713,9 @@ struct TestCLIRunCommand {
                 .filter { !$0.isEmpty }
                 .map { $0.components(separatedBy: .whitespaces).joined(separator: " ") }
 
-            let inspect = try f.inspectContainer(c)
-            let ip = inspect.networks[0].ipv4Address.address
-            let nameserver = IPv4Address((ip.value & Prefix(length: 24)!.prefixMask32) + 1).description
             let config = try f.getSystemConfig()
             let expectedLines: [String] = [
-                "nameserver \(nameserver)",
+                "nameserver \(DNSProxyProtocol.guestAddress)",
                 config.dns.domain.map { "domain \($0)" },
             ].compactMap { $0 }
 
@@ -748,7 +746,7 @@ struct TestCLIRunCommand {
 
             #expect(
                 actualLines == [
-                    "nameserver 8.8.8.8",
+                    "nameserver \(DNSProxyProtocol.guestAddress)",
                     "domain example.com",
                     "search test.com",
                     "options debug",
