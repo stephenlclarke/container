@@ -65,7 +65,7 @@ let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_RE
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-30068004175-f97cddf5b3aa"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197"
 let scVersion = "0.40.1"
-let containerizationRevision = "3a74e96e337443b82148a582856aac6abcf8c349"
+let containerizationRevision = "66f0963cbe2b59170f9164c4dae5828baf59fdd8"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -276,7 +276,6 @@ let package = Package(
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerAPIClient",
                 "ContainerAPIService",
                 "ContainerResource",

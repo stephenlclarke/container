@@ -139,13 +139,6 @@ public enum XPCKeys: String {
     case volumeReadonly
     case volumeContainerId
 
-    /// Config
-    case config
-    case configs
-    case configName
-    case configData
-    case configLabels
-
     /// Container statistics
     case statistics
     /// Container process information
@@ -228,11 +221,6 @@ public enum XPCRoute: String {
 
     case volumeDiskUsage
 
-    case configCreate
-    case configDelete
-    case configList
-    case configInspect
-    case configRead
     case systemDiskUsage
 
     case ping

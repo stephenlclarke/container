@@ -83,7 +83,6 @@ extension APIServer {
                 initializeHealthCheckService(log: log, routes: &routes)
                 try initializeKernelService(log: log, routes: &routes)
                 let volumesService = try await initializeVolumeService(containersService: containersService, log: log, routes: &routes)
-                try initializeConfigsService(log: log, routes: &routes)
                 try initializeDiskUsageService(
                     containersService: containersService,
                     volumesService: volumesService,
@@ -387,23 +386,6 @@ extension APIServer {
             routes[XPCRoute.volumeDiskUsage] = XPCServer.route(harness.diskUsage)
 
             return service
-        }
-
-        private func initializeConfigsService(
-            log: Logger,
-            routes: inout [XPCRoute: XPCServer.RouteHandler]
-        ) throws {
-            log.info("initializing config service")
-
-            let resourceRoot = appRoot.appending(FilePath.Component("configs"))
-            let service = try ConfigsService(resourceRoot: resourceRoot, log: log)
-            let harness = ConfigsHarness(service: service, log: log)
-
-            routes[XPCRoute.configCreate] = XPCServer.route(harness.create)
-            routes[XPCRoute.configDelete] = XPCServer.route(harness.delete)
-            routes[XPCRoute.configList] = XPCServer.route(harness.list)
-            routes[XPCRoute.configInspect] = XPCServer.route(harness.inspect)
-            routes[XPCRoute.configRead] = XPCServer.route(harness.read)
         }
 
         private func initializeDiskUsageService(

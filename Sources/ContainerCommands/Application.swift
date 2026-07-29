@@ -98,18 +98,6 @@ public struct Application: AsyncLoggableCommand {
                 ]
             ),
             CommandGroup(
-                name: "Config",
-                subcommands: [
-                    ConfigCommand.self
-                ]
-            ),
-            CommandGroup(
-                name: "Secret",
-                subcommands: [
-                    SecretCommand.self
-                ]
-            ),
-            CommandGroup(
                 name: "Other",
                 subcommands: Self.otherCommands()
             ),
