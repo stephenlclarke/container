@@ -138,6 +138,12 @@ WORKFLOW=".github/workflows/prebuilt-binaries.yml"
 grep -Fq 'secrets.DEVELOPER_ID_APPLICATION_P12_BASE64' "${WORKFLOW}"
 grep -Fq 'secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD' "${WORKFLOW}"
 grep -Fq 'scripts/verify-developer-id-archive.sh' "${WORKFLOW}"
+grep -Fq 'security list-keychains' "${WORKFLOW}"
+grep -Fq 'developer-id-signing-probe-' "${WORKFLOW}"
+grep -Fq 'DEVELOPER_ID_ORIGINAL_KEYCHAINS' "${WORKFLOW}"
+grep -Fq 'restore_keychain_search_list' "${WORKFLOW}"
+grep -Fq -- '--keychain "${DEVELOPER_ID_KEYCHAIN}"' "${WORKFLOW}"
+grep -Fq 'CODESIGN_OPTS="--force --keychain ${DEVELOPER_ID_KEYCHAIN} --sign ${DEVELOPER_ID_APPLICATION_IDENTITY}' "${WORKFLOW}"
 grep -Fq 'security delete-keychain' "${WORKFLOW}"
-[[ "$(grep -Fc -- '--options runtime' "${WORKFLOW}")" -eq 1 ]]
-[[ "$(grep -Fc -- '--timestamp' "${WORKFLOW}")" -eq 1 ]]
+[[ "$(grep -Fc -- '--options runtime' "${WORKFLOW}")" -eq 2 ]]
+[[ "$(grep -Fc -- '--timestamp' "${WORKFLOW}")" -eq 2 ]]
