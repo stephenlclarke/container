@@ -92,7 +92,7 @@ struct ConfigurationLoaderTests {
             #expect(config.container.memory == ContainerConfig.defaultMemory)
             #expect(config.dns.domain == nil)
             #expect(config.build.image == BuildConfig.defaultImage)
-            #expect(config.build.image == "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197")
+            #expect(config.build.image == "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:b48fbf42a51bf3432bd50d64732b4d6931944f3bb30f911a9a513cf8bab9b02e")
             #expect(!config.vminit.image.isEmpty)
             #expect(!config.kernel.binaryPath.isEmpty)
             #expect(!config.kernel.url.absoluteString.isEmpty)

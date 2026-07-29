@@ -15,12 +15,98 @@
 //===----------------------------------------------------------------------===//
 
 import ArgumentParser
+import ContainerResource
 import Foundation
 import Testing
 
 @testable import ContainerCommands
 
 struct BuildCommandTests {
+    @Test
+    func builderShimUsesRuntimeDNSProxy() {
+        let arguments = Application.BuilderStart.shimArguments(
+            useRosetta: true,
+            dnsDomain: nil,
+            dnsSearchDomains: ["build.internal", "example.test"],
+            dnsOptions: ["ndots:1"]
+        )
+
+        #expect(
+            arguments == [
+                "--debug",
+                "--vsock",
+                "--dns-nameserver",
+                "127.0.0.1",
+                "--dns-search-domain",
+                "build.internal",
+                "--dns-search-domain",
+                "example.test",
+                "--dns-option",
+                "ndots:1",
+            ]
+        )
+    }
+
+    @Test
+    func builderShimUsesDNSDomainAsSearchFallbackAndKeepsQEMU() {
+        let arguments = Application.BuilderStart.shimArguments(
+            useRosetta: false,
+            dnsDomain: "build.internal",
+            dnsSearchDomains: [],
+            dnsOptions: []
+        )
+
+        #expect(
+            arguments == [
+                "--debug",
+                "--vsock",
+                "--dns-nameserver",
+                "127.0.0.1",
+                "--enable-qemu",
+                "--dns-search-domain",
+                "build.internal",
+            ]
+        )
+    }
+
+    @Test
+    func builderDNSChangeDetectionChecksEveryRequestedOverride() {
+        let existingDNS = ContainerConfiguration.DNSConfiguration(
+            nameservers: ["192.0.2.53"],
+            domain: "build.internal",
+            searchDomains: ["old.internal"],
+            options: ["ndots:1"]
+        )
+
+        #expect(
+            !Application.BuilderStart.dnsOverridesChanged(
+                existingDNS: existingDNS,
+                dnsNameservers: ["192.0.2.53"],
+                dnsDomain: "build.internal",
+                dnsSearchDomains: ["old.internal"],
+                dnsOptions: ["ndots:1"]
+            )
+        )
+        #expect(
+            Application.BuilderStart.dnsOverridesChanged(
+                existingDNS: existingDNS,
+                dnsNameservers: ["192.0.2.53"],
+                dnsDomain: "build.internal",
+                dnsSearchDomains: ["new.internal"],
+                dnsOptions: ["ndots:1"]
+            )
+        )
+        #expect(
+            Application.BuilderStart.dnsOverridesChanged(
+                existingDNS: existingDNS,
+                dnsNameservers: ["192.0.2.53"],
+                dnsDomain: "build.internal",
+                dnsSearchDomains: ["old.internal"],
+                dnsOptions: ["timeout:2"]
+            )
+        )
+    }
+
     @Test
     func builderStartupLockSerializesConcurrentProcessStartup() throws {
         let directory = try makeTemporaryDirectory()
