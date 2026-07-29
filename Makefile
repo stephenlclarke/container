@@ -207,11 +207,14 @@ dsym:
 	@echo Packaging the debug symbols...
 	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
 
-.PHONY: test test-install-init
+.PHONY: test test-install-init test-verify-developer-id-archive
 test-install-init:
 	@Tests/ScriptTests/TestInstallInit.sh
 
-test: build-tests test-install-init
+test-verify-developer-id-archive:
+	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
+
+test: build-tests test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
