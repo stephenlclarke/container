@@ -373,6 +373,21 @@ public struct Utility {
                 try validMACAddress(mac)
             }
         }
+        var scopedDNSAliases: [String: String] = [:]
+        for network in networks {
+            for (alias, target) in network.scopedDNSAliases {
+                if let existing = scopedDNSAliases[alias] {
+                    guard existing.caseInsensitiveCompare(target) == .orderedSame else {
+                        throw ContainerizationError(
+                            .invalidArgument,
+                            message: "network DNS alias '\(alias)' maps to both '\(existing)' and '\(target)'"
+                        )
+                    }
+                    continue
+                }
+                scopedDNSAliases[alias] = target
+            }
+        }
 
         // make an FQDN for the first interface
         let fqdn: String?
@@ -409,6 +424,7 @@ public struct Utility {
                         options: AttachmentOptions(
                             hostname: containerId,
                             aliases: item.element.aliases,
+                            scopedDNSAliases: item.element.scopedDNSAliases,
                             macAddress: macAddress,
                             mtu: mtu,
                             guestInterfaceName: item.element.guestInterfaceName,
@@ -423,6 +439,7 @@ public struct Utility {
                     options: AttachmentOptions(
                         hostname: fqdn ?? containerId,
                         aliases: item.element.aliases,
+                        scopedDNSAliases: item.element.scopedDNSAliases,
                         macAddress: macAddress,
                         mtu: mtu,
                         guestInterfaceName: item.element.guestInterfaceName,

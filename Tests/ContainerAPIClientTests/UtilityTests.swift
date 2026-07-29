@@ -283,6 +283,39 @@ struct UtilityTests {
     }
 
     @Test
+    func attachmentConfigurationsPreserveScopedDNSAliases() throws {
+        let configurations = try Utility.getAttachmentConfigurations(
+            containerId: "api",
+            builtinNetworkId: "backend",
+            networks: [try Parser.network("backend,dns-alias=database:db")],
+            dnsDomain: nil
+        )
+
+        #expect(configurations.count == 1)
+        #expect(configurations[0].options.scopedDNSAliases == ["database": "db"])
+    }
+
+    @Test
+    func attachmentConfigurationsRejectCrossNetworkScopedDNSAliasConflicts() throws {
+        #expect {
+            _ = try Utility.getAttachmentConfigurations(
+                containerId: "api",
+                builtinNetworkId: "default",
+                networks: [
+                    try Parser.network("frontend,dns-alias=database:db"),
+                    try Parser.network("backend,dns-alias=database:redis"),
+                ],
+                dnsDomain: nil
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("network DNS alias 'database' maps to both 'db' and 'redis'")
+        }
+    }
+
+    @Test
     func networkSelectionRejectsHostMixedWithOtherNetworks() throws {
         #expect(throws: (any Error).self) {
             _ = try Utility.networkSelection(["host", "backend"])

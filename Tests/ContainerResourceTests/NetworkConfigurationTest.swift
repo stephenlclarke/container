@@ -26,6 +26,7 @@ struct AttachmentConfigurationTest {
         let options = AttachmentOptions(
             hostname: "api",
             aliases: ["web", "api.internal"],
+            scopedDNSAliases: ["database": "db"],
             mtu: 1500,
             guestInterfaceName: "backend0",
             additionalIPAddresses: [try CIDR("198.51.100.8/32")],
@@ -40,6 +41,7 @@ struct AttachmentConfigurationTest {
 
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == ["web", "api.internal"])
+        #expect(decoded.scopedDNSAliases == ["database": "db"])
         #expect(decoded.mtu == 1500)
         #expect(decoded.guestInterfaceName == "backend0")
         #expect(decoded.additionalIPAddresses == [try CIDR("198.51.100.8/32")])
@@ -54,6 +56,7 @@ struct AttachmentConfigurationTest {
 
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == [])
+        #expect(decoded.scopedDNSAliases == [:])
         #expect(decoded.guestInterfaceName == nil)
         #expect(decoded.additionalIPAddresses == [])
         #expect(decoded.requestedIPv4Address == nil)

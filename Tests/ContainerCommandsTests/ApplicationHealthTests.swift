@@ -163,6 +163,13 @@ struct ApplicationHealthTests {
     }
 
     @Test
+    func runHelpDocumentsNetworkScopedDNSAliases() {
+        let runHelp = Application.helpMessage(for: Application.ContainerRun.self)
+
+        #expect(runHelp.contains("dns-alias=ALIAS:TARGET"))
+    }
+
+    @Test
     func apiServerHealthReturnsSuccessfulHealthCheck() async throws {
         let expected = try Self.makeSystemHealth()
 

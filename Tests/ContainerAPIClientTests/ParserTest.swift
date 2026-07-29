@@ -1079,6 +1079,47 @@ struct ParserTest {
     }
 
     @Test
+    func testParseNetworkWithScopedDNSAliases() throws {
+        let result = try Parser.network(
+            "backend,dns-alias=database:db,dns-alias=cache:redis,dns-alias=DATABASE:DB"
+        )
+
+        #expect(
+            result.scopedDNSAliases == [
+                "database": "db",
+                "cache": "redis",
+            ])
+    }
+
+    @Test
+    func testParseNetworkRejectsConflictingScopedDNSAliases() throws {
+        #expect {
+            _ = try Parser.network("backend,dns-alias=database:db,dns-alias=DATABASE:redis")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("network DNS alias 'DATABASE' maps to both 'db' and 'redis'")
+        }
+    }
+
+    @Test
+    func testParseNetworkRejectsMalformedScopedDNSAliases() throws {
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=database")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=:db")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=database:")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=bad_alias:db")
+        }
+    }
+
+    @Test
     func testParseNetworkWithMACAddressHyphenSeparator() throws {
         let result = try Parser.network("backend,mac=02-42-ac-11-00-02")
         #expect(result.name == "backend")

@@ -34,17 +34,25 @@ struct RuntimeDNSResolver: Sendable {
     typealias NetworkLookup = @Sendable (String) async throws -> [RuntimeDNSAddress]
     typealias Upstream = @Sendable (Message, Data, [String]) async throws -> Data
 
+    struct ScopedAlias: Sendable {
+        let target: String
+        let lookup: NetworkLookup
+    }
+
+    private let scopedAliases: [String: ScopedAlias]
     private let networkLookups: [NetworkLookup]
     private let upstreamNameservers: [String]
     private let upstream: Upstream
     private let log: Logger?
 
     init(
+        scopedAliases: [String: ScopedAlias] = [:],
         networkLookups: [NetworkLookup],
         upstreamNameservers: [String],
         log: Logger? = nil,
         upstream: @escaping Upstream = RuntimeDNSUpstream.resolve
     ) {
+        self.scopedAliases = scopedAliases
         self.networkLookups = networkLookups
         self.upstreamNameservers = upstreamNameservers
         self.upstream = upstream
@@ -72,6 +80,7 @@ struct RuntimeDNSResolver: Sendable {
         do {
             let handler = StandardQueryValidator(
                 handler: RuntimeNetworkDNSHandler(
+                    scopedAliases: scopedAliases,
                     lookups: networkLookups
                 ))
             if let response = try await handler.answer(query: query) {
@@ -84,6 +93,11 @@ struct RuntimeDNSResolver: Sendable {
             log?.debug("DNS query failed", metadata: ["error": "\(error)"])
             return Self.errorResponse(query: query, returnCode: .serverFailure)
         }
+    }
+
+    static func canonicalHostname(_ hostname: String) -> String {
+        let canonical = hostname.hasSuffix(".") ? String(hostname.dropLast()) : hostname
+        return canonical.lowercased()
     }
 
     private static func validate(response: Data, query: Message) throws -> Data {
@@ -148,6 +162,7 @@ struct RuntimeDNSResolver: Sendable {
 }
 
 private struct RuntimeNetworkDNSHandler: DNSHandler {
+    let scopedAliases: [String: RuntimeDNSResolver.ScopedAlias]
     let lookups: [RuntimeDNSResolver.NetworkLookup]
 
     func answer(query: Message) async throws -> Message? {
@@ -160,52 +175,72 @@ private struct RuntimeNetworkDNSHandler: DNSHandler {
             return nil
         }
 
-        for lookup in lookups {
-            let addresses = try await lookup(question.name)
-            guard !addresses.isEmpty else {
-                continue
-            }
-            let offset = Int(query.id) % addresses.count
-            let orderedAddresses = Array(addresses[offset...] + addresses[..<offset])
-
-            let answers: [any ResourceRecord]
-            switch question.type {
-            case .host:
-                answers = orderedAddresses.map {
-                    HostRecord(name: question.name, ttl: 5, ip: $0.ipv4)
-                }
-            case .host6:
-                answers = orderedAddresses.compactMap {
-                    guard let ipv6 = $0.ipv6 else {
-                        return nil
-                    }
-                    return HostRecord(name: question.name, ttl: 5, ip: ipv6)
-                }
-                guard !answers.isEmpty else {
-                    return Message(
-                        id: query.id,
-                        type: .response,
-                        recursionDesired: query.recursionDesired,
-                        recursionAvailable: true,
-                        returnCode: .noError,
-                        questions: query.questions
-                    )
-                }
-            default:
-                return nil
-            }
-
-            return Message(
-                id: query.id,
-                type: .response,
-                recursionDesired: query.recursionDesired,
-                recursionAvailable: true,
-                returnCode: .noError,
-                questions: query.questions,
-                answers: answers
+        if let scopedAlias = scopedAliases[RuntimeDNSResolver.canonicalHostname(question.name)] {
+            let addresses = try await scopedAlias.lookup(scopedAlias.target)
+            return answer(
+                query: query,
+                question: question,
+                addresses: addresses,
+                emptyReturnCode: .nonExistentDomain
             )
         }
+
+        for lookup in lookups {
+            let addresses = try await lookup(question.name)
+            if let response = answer(query: query, question: question, addresses: addresses) {
+                return response
+            }
+        }
         return nil
+    }
+
+    private func answer(
+        query: Message,
+        question: Question,
+        addresses: [RuntimeDNSAddress],
+        emptyReturnCode: ReturnCode? = nil
+    ) -> Message? {
+        guard !addresses.isEmpty else {
+            return emptyReturnCode.map {
+                Message(
+                    id: query.id,
+                    type: .response,
+                    recursionDesired: query.recursionDesired,
+                    recursionAvailable: true,
+                    returnCode: $0,
+                    questions: query.questions
+                )
+            }
+        }
+        let offset = Int(query.id) % addresses.count
+        let orderedAddresses = Array(addresses[offset...] + addresses[..<offset])
+
+        let answers: [any ResourceRecord]
+        switch question.type {
+        case .host:
+            answers = orderedAddresses.map {
+                HostRecord(name: question.name, ttl: 5, ip: $0.ipv4)
+            }
+        case .host6:
+            answers = orderedAddresses.compactMap {
+                guard let ipv6 = $0.ipv6 else {
+                    return nil
+                }
+                return HostRecord(name: question.name, ttl: 5, ip: ipv6)
+            }
+        default:
+            return nil
+        }
+
+        return Message(
+            id: query.id,
+            type: .response,
+            recursionDesired: query.recursionDesired,
+            recursionAvailable: true,
+            returnCode: .noError,
+            questions: query.questions,
+            answers: answers
+        )
     }
 }
 

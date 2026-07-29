@@ -344,6 +344,7 @@ public actor RuntimeService {
                 if config.dns != nil {
                     try await self.startDNSProxy(
                         container: container,
+                        networkConfigurations: config.networks,
                         upstreamNameservers: upstreamNameservers
                     )
                 }
@@ -1270,13 +1271,20 @@ public actor RuntimeService {
 
     private func startDNSProxy(
         container: LinuxContainer,
+        networkConfigurations: [AttachmentConfiguration],
         upstreamNameservers: [String]
     ) async throws {
-        let listener = try await container.withVirtualMachineInstance { vm in
-            try vm.listen(DNSProxyProtocol.hostVsockPort)
+        guard networkBindings.count == networkConfigurations.count else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "network binding count does not match the configured attachments"
+            )
         }
-        let lookups: [RuntimeDNSResolver.NetworkLookup] = networkBindings.map { binding in
-            { hostname in
+
+        var scopedAliases: [String: RuntimeDNSResolver.ScopedAlias] = [:]
+        var lookups: [RuntimeDNSResolver.NetworkLookup] = []
+        for (binding, configuration) in zip(networkBindings, networkConfigurations) {
+            let lookup: RuntimeDNSResolver.NetworkLookup = { hostname in
                 let attachments = try await binding.client.lookupAll(
                     hostname: hostname,
                     on: binding.session
@@ -1288,12 +1296,41 @@ public actor RuntimeService {
                     )
                 }
             }
+            lookups.append(lookup)
+
+            for (alias, target) in configuration.options.scopedDNSAliases {
+                let canonicalAlias = RuntimeDNSResolver.canonicalHostname(alias)
+                let canonicalTarget = RuntimeDNSResolver.canonicalHostname(target)
+                guard !canonicalAlias.isEmpty, !canonicalTarget.isEmpty else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "network scoped DNS aliases require non-empty alias and target hostnames"
+                    )
+                }
+                if let existing = scopedAliases[canonicalAlias] {
+                    guard RuntimeDNSResolver.canonicalHostname(existing.target) == canonicalTarget else {
+                        throw ContainerizationError(
+                            .invalidArgument,
+                            message: "network scoped DNS alias '\(alias)' maps to multiple target hostnames"
+                        )
+                    }
+                    continue
+                }
+                scopedAliases[canonicalAlias] = RuntimeDNSResolver.ScopedAlias(
+                    target: target,
+                    lookup: lookup
+                )
+            }
         }
         let resolver = RuntimeDNSResolver(
+            scopedAliases: scopedAliases,
             networkLookups: lookups,
             upstreamNameservers: upstreamNameservers,
             log: log
         )
+        let listener = try await container.withVirtualMachineInstance { vm in
+            try vm.listen(DNSProxyProtocol.hostVsockPort)
+        }
         let proxy = RuntimeDNSProxy(
             listener: listener,
             resolver: resolver,

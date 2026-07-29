@@ -25,6 +25,67 @@ import Testing
 @testable import ContainerRuntimeLinuxServer
 
 struct RuntimeDNSProxyTests {
+    @Test func resolvesScopedAliasThroughItsTargetLookup() async throws {
+        let capture = NetworkLookupCapture(addresses: [
+            RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil)
+        ])
+        let resolver = RuntimeDNSResolver(
+            scopedAliases: [
+                "database": RuntimeDNSResolver.ScopedAlias(
+                    target: "db",
+                    lookup: { hostname in
+                        await capture.lookup(hostname)
+                    }
+                )
+            ],
+            networkLookups: [{ _ in throw TestError.unexpectedLookup }],
+            upstreamNameservers: [],
+            upstream: unexpectedUpstream
+        )
+
+        let expectedAddress = try IPv4Address("192.168.64.2")
+        let response = await resolver.resolve(try query(name: "DaTaBaSe.", type: .host))
+        let expected = try Message(
+            id: 0x1234,
+            type: .response,
+            recursionDesired: true,
+            recursionAvailable: true,
+            returnCode: .noError,
+            questions: [Question(name: "DaTaBaSe.", type: .host)],
+            answers: [
+                HostRecord(name: "DaTaBaSe.", ttl: 5, ip: expectedAddress)
+            ]
+        ).serialize()
+
+        #expect(response == expected)
+        #expect(await capture.hostnames == ["db"])
+    }
+
+    @Test func missingScopedAliasTargetDoesNotLeakToOtherResolvers() async throws {
+        let upstream = UpstreamCapture(response: Data())
+        let resolver = RuntimeDNSResolver(
+            scopedAliases: [
+                "database": RuntimeDNSResolver.ScopedAlias(
+                    target: "db",
+                    lookup: { _ in [] }
+                )
+            ],
+            networkLookups: [{ _ in throw TestError.unexpectedLookup }],
+            upstreamNameservers: [],
+            upstream: { query, request, nameservers in
+                await upstream.resolve(query, request, nameservers: nameservers)
+            }
+        )
+
+        let response = try Message(
+            deserialize: await resolver.resolve(try query(name: "database.", type: .host))
+        )
+
+        #expect(response.returnCode == .nonExistentDomain)
+        #expect(response.answers.isEmpty)
+        #expect(await upstream.callCount == 0)
+    }
+
     @Test func resolvesIPv4FromFirstAttachedNetwork() async throws {
         let request = try query(name: "web.", type: .host)
         let resolver = RuntimeDNSResolver(
@@ -417,6 +478,20 @@ private actor UpstreamCapture {
         callCount += 1
         self.nameservers = nameservers
         return response
+    }
+}
+
+private actor NetworkLookupCapture {
+    private let addresses: [RuntimeDNSAddress]
+    private(set) var hostnames: [String] = []
+
+    init(addresses: [RuntimeDNSAddress]) {
+        self.addresses = addresses
+    }
+
+    func lookup(_ hostname: String) -> [RuntimeDNSAddress] {
+        hostnames.append(hostname)
+        return addresses
     }
 }
 

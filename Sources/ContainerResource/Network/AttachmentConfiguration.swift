@@ -38,6 +38,12 @@ public struct AttachmentOptions: Codable, Sendable {
     /// Additional DNS names that resolve to this attachment.
     public let aliases: [String]
 
+    /// DNS aliases visible only from the container that owns this attachment.
+    ///
+    /// Keys are queried aliases and values are target hostnames resolved on
+    /// this attachment's network.
+    public let scopedDNSAliases: [String: String]
+
     /// The MAC address associated with the attachment (optional).
     public let macAddress: MACAddress?
 
@@ -59,6 +65,7 @@ public struct AttachmentOptions: Codable, Sendable {
     public init(
         hostname: String,
         aliases: [String] = [],
+        scopedDNSAliases: [String: String] = [:],
         macAddress: MACAddress? = nil,
         mtu: UInt32? = nil,
         guestInterfaceName: String? = nil,
@@ -68,6 +75,7 @@ public struct AttachmentOptions: Codable, Sendable {
     ) {
         self.hostname = hostname
         self.aliases = aliases
+        self.scopedDNSAliases = scopedDNSAliases
         self.macAddress = macAddress
         self.mtu = mtu
         self.guestInterfaceName = guestInterfaceName
@@ -79,6 +87,7 @@ public struct AttachmentOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case hostname
         case aliases
+        case scopedDNSAliases
         case macAddress
         case mtu
         case guestInterfaceName
@@ -91,6 +100,7 @@ public struct AttachmentOptions: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         hostname = try container.decode(String.self, forKey: .hostname)
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        scopedDNSAliases = try container.decodeIfPresent([String: String].self, forKey: .scopedDNSAliases) ?? [:]
         macAddress = try container.decodeIfPresent(MACAddress.self, forKey: .macAddress)
         mtu = try container.decodeIfPresent(UInt32.self, forKey: .mtu)
         guestInterfaceName = try container.decodeIfPresent(String.self, forKey: .guestInterfaceName)

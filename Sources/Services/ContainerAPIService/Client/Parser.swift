@@ -2095,6 +2095,7 @@ public struct Parser {
     public struct ParsedNetwork {
         public let name: String
         public let aliases: [String]
+        public let scopedDNSAliases: [String: String]
         public let macAddress: String?
         public let mtu: UInt32?
         public let guestInterfaceName: String?
@@ -2105,6 +2106,7 @@ public struct Parser {
         public init(
             name: String,
             aliases: [String] = [],
+            scopedDNSAliases: [String: String] = [:],
             macAddress: String? = nil,
             mtu: UInt32? = nil,
             guestInterfaceName: String? = nil,
@@ -2114,6 +2116,7 @@ public struct Parser {
         ) {
             self.name = name
             self.aliases = aliases
+            self.scopedDNSAliases = scopedDNSAliases
             self.macAddress = macAddress
             self.mtu = mtu
             self.guestInterfaceName = guestInterfaceName
@@ -2124,8 +2127,8 @@ public struct Parser {
     }
 
     /// Parse network attachment with optional properties
-    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]][,ip=IPv4][,ip6=IPv6]
-    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0,ip=198.51.100.8,ip6=2001:db8::8"
+    /// Format: network_name[,alias=NAME][,dns-alias=ALIAS:TARGET][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]][,ip=IPv4][,ip6=IPv6]
+    /// Example: "backend,alias=api,dns-alias=database:db,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0,ip=198.51.100.8,ip6=2001:db8::8"
     public static func network(_ networkSpec: String) throws -> ParsedNetwork {
         guard !networkSpec.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "network specification cannot be empty")
@@ -2143,6 +2146,7 @@ public struct Parser {
         }
 
         var aliases: [String] = []
+        var scopedDNSAliases: [String: String] = [:]
         var macAddress: String?
         var mtu: UInt32?
         var guestInterfaceName: String?
@@ -2177,6 +2181,28 @@ public struct Parser {
                 if !aliases.contains(alias) {
                     aliases.append(alias)
                 }
+            case "dns-alias":
+                let mapping = value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                guard mapping.count == 2,
+                    let alias = try hostname(String(mapping[0]), option: "network DNS alias"),
+                    let target = try hostname(String(mapping[1]), option: "network DNS alias target")
+                else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "invalid network DNS alias '\(value)': expected ALIAS:TARGET"
+                    )
+                }
+                let canonicalAlias = alias.lowercased()
+                if let existing = scopedDNSAliases[canonicalAlias] {
+                    guard existing.caseInsensitiveCompare(target) == .orderedSame else {
+                        throw ContainerizationError(
+                            .invalidArgument,
+                            message: "network DNS alias '\(alias)' maps to both '\(existing)' and '\(target)'"
+                        )
+                    }
+                    continue
+                }
+                scopedDNSAliases[canonicalAlias] = target
             case "mac":
                 if value.isEmpty {
                     throw ContainerizationError(
@@ -2207,7 +2233,7 @@ public struct Parser {
             default:
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "unknown network property '\(key)'. Available properties: address, alias, ip, ip6, mac, mtu, interface"
+                    message: "unknown network property '\(key)'. Available properties: address, alias, dns-alias, ip, ip6, mac, mtu, interface"
                 )
             }
         }
@@ -2215,6 +2241,7 @@ public struct Parser {
         return ParsedNetwork(
             name: networkName,
             aliases: aliases,
+            scopedDNSAliases: scopedDNSAliases,
             macAddress: macAddress,
             mtu: mtu,
             guestInterfaceName: guestInterfaceName,
