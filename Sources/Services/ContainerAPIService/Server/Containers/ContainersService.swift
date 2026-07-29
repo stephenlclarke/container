@@ -436,33 +436,37 @@ public actor ContainersService {
         await publishContainerEvent(action: "create", snapshot: createdSnapshot)
     }
 
-    /// Returns network attachment names that are already reserved on the same network.
+    /// Returns primary hostnames that are already reserved on the same network.
     ///
-    /// Network hostnames and aliases identify attachments within a network, so the same
-    /// name is valid when it belongs to distinct networks.
+    /// Primary hostnames identify one attachment. Aliases intentionally may resolve to
+    /// multiple attachments, including an attachment whose primary hostname matches.
     static func conflictingNetworkNames(
         existingAttachments: [[AttachmentConfiguration]],
         requestedAttachments: [AttachmentConfiguration]
     ) -> [String] {
-        var namesByNetwork = [String: Set<String>]()
+        var primaryHostnamesByNetwork = [String: Set<String>]()
 
         for attachments in existingAttachments {
             for attachment in attachments {
-                namesByNetwork[attachment.network, default: []].formUnion(
-                    [attachment.options.hostname] + attachment.options.aliases
-                )
+                let hostname = normalizedNetworkName(attachment.options.hostname)
+                primaryHostnamesByNetwork[attachment.network, default: []].insert(hostname)
             }
         }
 
-        var conflictingNames = Set<String>()
+        var conflictingHostnames = Set<String>()
         for attachment in requestedAttachments {
-            let names = Set([attachment.options.hostname] + attachment.options.aliases)
-            let reservedNames = namesByNetwork[attachment.network, default: []]
-            conflictingNames.formUnion(reservedNames.intersection(names))
-            namesByNetwork[attachment.network, default: []].formUnion(names)
+            let hostname = normalizedNetworkName(attachment.options.hostname)
+            if !primaryHostnamesByNetwork[attachment.network, default: []].insert(hostname).inserted {
+                conflictingHostnames.insert(hostname)
+            }
         }
 
-        return conflictingNames.sorted()
+        return conflictingHostnames.sorted()
+    }
+
+    private static func normalizedNetworkName(_ name: String) -> String {
+        let name = name.hasSuffix(".") ? String(name.dropLast()) : name
+        return name.lowercased()
     }
 
     /// Bootstrap the init process of the container.

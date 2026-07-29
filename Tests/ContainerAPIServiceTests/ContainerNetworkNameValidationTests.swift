@@ -32,7 +32,7 @@ struct ContainerNetworkNameValidationTests {
         )
     }
 
-    @Test func rejectsHostnameAndAliasConflictsOnTheSameNetwork() {
+    @Test func allowsAliasesToSharePrimaryAndAliasNamesOnTheSameNetwork() {
         let existing = [[attachment(network: "frontend", hostname: "api", aliases: ["web"])]]
         let requested = [attachment(network: "frontend", hostname: "worker", aliases: ["api", "web"])]
 
@@ -40,15 +40,27 @@ struct ContainerNetworkNameValidationTests {
             ContainersService.conflictingNetworkNames(
                 existingAttachments: existing,
                 requestedAttachments: requested
-            ) == ["api", "web"]
+            ).isEmpty
         )
     }
 
-    @Test func rejectsDuplicateNamesInOneRequestedNetworkOnly() {
+    @Test func rejectsDuplicatePrimaryHostnamesOnTheSameNetwork() {
+        let existing = [[attachment(network: "frontend", hostname: "api", aliases: ["web"])]]
+        let requested = [attachment(network: "frontend", hostname: "API.")]
+
+        #expect(
+            ContainersService.conflictingNetworkNames(
+                existingAttachments: existing,
+                requestedAttachments: requested
+            ) == ["api"]
+        )
+    }
+
+    @Test func rejectsDuplicatePrimaryHostnamesInOneRequestedNetworkOnly() {
         let requested = [
             attachment(network: "frontend", hostname: "api"),
-            attachment(network: "backend", hostname: "api"),
-            attachment(network: "frontend", hostname: "worker", aliases: ["api"]),
+            attachment(network: "backend", hostname: "API"),
+            attachment(network: "frontend", hostname: "Api."),
         ]
 
         #expect(
