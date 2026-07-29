@@ -133,24 +133,25 @@ struct AttachmentAllocatorTest {
         #expect(try await allocator.lookup(hostname: "api.internal") == allocatedAddress)
     }
 
-    @Test func testAliasConflictThrows() async throws {
+    @Test func testSharedAliasReturnsEveryAllocationInAddressOrder() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 
-        _ = try await allocator.allocate(hostname: "api", aliases: ["web"])
+        let first = try await allocator.allocate(hostname: "api-1", aliases: ["api"])
+        let second = try await allocator.allocate(hostname: "api-2", aliases: ["api"])
 
-        await #expect(throws: Error.self) {
-            _ = try await allocator.allocate(hostname: "worker", aliases: ["web"])
-        }
+        #expect(try await allocator.lookupAll(hostname: "api") == [first, second].sorted())
+        #expect(try await allocator.lookup(hostname: "api") == min(first, second))
     }
 
-    @Test func testHostnameCannotReuseExistingAlias() async throws {
+    @Test func testPrimaryHostnameCanShareAnExistingAlias() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 
-        _ = try await allocator.allocate(hostname: "api", aliases: ["web"])
+        let first = try await allocator.allocate(hostname: "api", aliases: ["web"])
+        let second = try await allocator.allocate(hostname: "web")
 
-        await #expect(throws: Error.self) {
-            _ = try await allocator.allocate(hostname: "web")
-        }
+        #expect(try await allocator.lookupAll(hostname: "web") == [first, second].sorted())
+        #expect(try await allocator.lookupPrimary(hostname: "web") == second)
+        #expect(try await allocator.lookupPrimary(hostname: "api") == first)
     }
 
     @Test func testDuplicateAliasMapsToSingleAllocation() async throws {
@@ -202,6 +203,18 @@ struct AttachmentAllocatorTest {
         #expect(deallocatedAddress == allocatedAddress)
         #expect(try await allocator.lookup(hostname: "api") == nil)
         #expect(try await allocator.lookup(hostname: "web") == nil)
+    }
+
+    @Test func testDeallocatingOneSharedAliasOwnerKeepsTheOther() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let first = try await allocator.allocate(hostname: "api-1", aliases: ["api"])
+        let second = try await allocator.allocate(hostname: "api-2", aliases: ["api"])
+
+        #expect(try await allocator.deallocate(hostname: "api-1") == first)
+        #expect(try await allocator.lookupAll(hostname: "api") == [second])
+        #expect(try await allocator.lookup(hostname: "api-1") == nil)
+        #expect(try await allocator.lookup(hostname: "api-2") == second)
     }
 
     @Test func testDeallocateNonExistentHostname() async throws {

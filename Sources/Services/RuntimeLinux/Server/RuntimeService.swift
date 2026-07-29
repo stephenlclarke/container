@@ -1277,18 +1277,16 @@ public actor RuntimeService {
         }
         let lookups: [RuntimeDNSResolver.NetworkLookup] = networkBindings.map { binding in
             { hostname in
-                guard
-                    let attachment = try await binding.client.lookup(
-                        hostname: hostname,
-                        on: binding.session
-                    )
-                else {
-                    return nil
-                }
-                return RuntimeDNSAddress(
-                    ipv4: attachment.ipv4Address.address,
-                    ipv6: attachment.ipv6Address?.address
+                let attachments = try await binding.client.lookupAll(
+                    hostname: hostname,
+                    on: binding.session
                 )
+                return attachments.map { attachment in
+                    RuntimeDNSAddress(
+                        ipv4: attachment.ipv4Address.address,
+                        ipv6: attachment.ipv6Address?.address
+                    )
+                }
             }
         }
         let resolver = RuntimeDNSResolver(

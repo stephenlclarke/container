@@ -31,7 +31,7 @@ struct RuntimeDNSAddress: Sendable, Equatable {
 }
 
 struct RuntimeDNSResolver: Sendable {
-    typealias NetworkLookup = @Sendable (String) async throws -> RuntimeDNSAddress?
+    typealias NetworkLookup = @Sendable (String) async throws -> [RuntimeDNSAddress]
     typealias Upstream = @Sendable (Message, Data, [String]) async throws -> Data
 
     private let networkLookups: [NetworkLookup]
@@ -161,16 +161,27 @@ private struct RuntimeNetworkDNSHandler: DNSHandler {
         }
 
         for lookup in lookups {
-            guard let address = try await lookup(question.name) else {
+            let addresses = try await lookup(question.name)
+            guard !addresses.isEmpty else {
                 continue
             }
+            let offset = Int(query.id) % addresses.count
+            let orderedAddresses = Array(addresses[offset...] + addresses[..<offset])
 
             let answers: [any ResourceRecord]
             switch question.type {
             case .host:
-                answers = [HostRecord(name: question.name, ttl: 5, ip: address.ipv4)]
+                answers = orderedAddresses.map {
+                    HostRecord(name: question.name, ttl: 5, ip: $0.ipv4)
+                }
             case .host6:
-                guard let ipv6 = address.ipv6 else {
+                answers = orderedAddresses.compactMap {
+                    guard let ipv6 = $0.ipv6 else {
+                        return nil
+                    }
+                    return HostRecord(name: question.name, ttl: 5, ip: ipv6)
+                }
+                guard !answers.isEmpty else {
                     return Message(
                         id: query.id,
                         type: .response,
@@ -180,7 +191,6 @@ private struct RuntimeNetworkDNSHandler: DNSHandler {
                         questions: query.questions
                     )
                 }
-                answers = [HostRecord(name: question.name, ttl: 5, ip: ipv6)]
             default:
                 return nil
             }

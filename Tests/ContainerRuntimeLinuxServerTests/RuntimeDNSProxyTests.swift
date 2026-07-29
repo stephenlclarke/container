@@ -30,10 +30,10 @@ struct RuntimeDNSProxyTests {
         let resolver = RuntimeDNSResolver(
             networkLookups: [
                 { _ in
-                    RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil)
+                    [RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil)]
                 },
                 { _ in
-                    RuntimeDNSAddress(ipv4: try IPv4Address("192.168.65.2"), ipv6: nil)
+                    [RuntimeDNSAddress(ipv4: try IPv4Address("192.168.65.2"), ipv6: nil)]
                 },
             ],
             upstreamNameservers: [],
@@ -60,12 +60,75 @@ struct RuntimeDNSProxyTests {
         #expect(response == expected)
     }
 
+    @Test func resolvesEveryIPv4AddressForASharedAlias() async throws {
+        let request = try query(name: "api.", type: .host)
+        let resolver = RuntimeDNSResolver(
+            networkLookups: [
+                { _ in
+                    [
+                        RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil),
+                        RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.3"), ipv6: nil),
+                    ]
+                }
+            ],
+            upstreamNameservers: [],
+            upstream: unexpectedUpstream
+        )
+
+        let response = await resolver.resolve(request)
+        let expected = try Message(
+            id: 0x1234,
+            type: .response,
+            recursionDesired: true,
+            recursionAvailable: true,
+            returnCode: .noError,
+            questions: [Question(name: "api.", type: .host)],
+            answers: [
+                HostRecord(name: "api.", ttl: 5, ip: try IPv4Address("192.168.64.2")),
+                HostRecord(name: "api.", ttl: 5, ip: try IPv4Address("192.168.64.3")),
+            ]
+        ).serialize()
+
+        #expect(response == expected)
+    }
+
+    @Test func rotatesSharedAliasAnswersByTransactionID() async throws {
+        let resolver = RuntimeDNSResolver(
+            networkLookups: [
+                { _ in
+                    [
+                        RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil),
+                        RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.3"), ipv6: nil),
+                    ]
+                }
+            ],
+            upstreamNameservers: [],
+            upstream: unexpectedUpstream
+        )
+
+        let response = await resolver.resolve(try query(id: 0x1235, name: "api.", type: .host))
+        let expected = try Message(
+            id: 0x1235,
+            type: .response,
+            recursionDesired: true,
+            recursionAvailable: true,
+            returnCode: .noError,
+            questions: [Question(name: "api.", type: .host)],
+            answers: [
+                HostRecord(name: "api.", ttl: 5, ip: try IPv4Address("192.168.64.3")),
+                HostRecord(name: "api.", ttl: 5, ip: try IPv4Address("192.168.64.2")),
+            ]
+        ).serialize()
+
+        #expect(response == expected)
+    }
+
     @Test func returnsNoDataForKnownIPv4OnlyHostname() async throws {
         let request = try query(name: "web.", type: .host6)
         let resolver = RuntimeDNSResolver(
             networkLookups: [
                 { _ in
-                    RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil)
+                    [RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil)]
                 }
             ],
             upstreamNameservers: [],
@@ -83,10 +146,12 @@ struct RuntimeDNSProxyTests {
         let resolver = RuntimeDNSResolver(
             networkLookups: [
                 { _ in
-                    RuntimeDNSAddress(
-                        ipv4: try IPv4Address("192.168.64.2"),
-                        ipv6: try IPv6Address("fd00::2")
-                    )
+                    [
+                        RuntimeDNSAddress(
+                            ipv4: try IPv4Address("192.168.64.2"),
+                            ipv6: try IPv6Address("fd00::2")
+                        )
+                    ]
                 }
             ],
             upstreamNameservers: [],
@@ -125,7 +190,7 @@ struct RuntimeDNSProxyTests {
         ).serialize()
         let capture = UpstreamCapture(response: expected)
         let resolver = RuntimeDNSResolver(
-            networkLookups: [{ _ in nil }],
+            networkLookups: [{ _ in [] }],
             upstreamNameservers: ["1.1.1.1", "2606:4700:4700::1111"],
             upstream: { query, request, nameservers in
                 await capture.resolve(query, request, nameservers: nameservers)
@@ -298,7 +363,7 @@ struct RuntimeDNSProxyTests {
         let resolver = RuntimeDNSResolver(
             networkLookups: [
                 { _ in
-                    RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil)
+                    [RuntimeDNSAddress(ipv4: try IPv4Address("192.168.64.2"), ipv6: nil)]
                 }
             ],
             upstreamNameservers: [],
@@ -325,9 +390,13 @@ struct RuntimeDNSProxyTests {
         #expect(response.returnCode == .noError)
     }
 
-    private func query(name: String, type: ResourceRecordType) throws -> Data {
+    private func query(
+        id: UInt16 = 0x1234,
+        name: String,
+        type: ResourceRecordType
+    ) throws -> Data {
         try Message(
-            id: 0x1234,
+            id: id,
             type: .query,
             recursionDesired: true,
             questions: [Question(name: name, type: type)]

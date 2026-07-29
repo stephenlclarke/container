@@ -406,8 +406,12 @@ let package = Package(
         .testTarget(
             name: "ContainerNetworkServerTests",
             dependencies: [
+                .product(name: "Logging", package: "swift-log"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
+                "ContainerNetworkClient",
+                "ContainerResource",
                 "ContainerNetworkServer",
+                "ContainerXPC",
             ]
         ),
         .target(

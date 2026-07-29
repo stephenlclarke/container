@@ -96,30 +96,38 @@ extension NetworkClient {
     }
 
     public func lookup(hostname: String) async throws -> Attachment? {
+        try await lookupAll(hostname: hostname).first
+    }
+
+    /// Look up every matching attachment for a hostname or shared alias.
+    public func lookupAll(hostname: String) async throws -> [Attachment] {
         let client = createClient()
-        return try await lookup(hostname: hostname) { request in
+        return try await lookupAll(hostname: hostname) { request in
             try await client.send(request)
         }
     }
 
     /// Look up an attachment over an existing network-helper session.
     public func lookup(hostname: String, on session: XPCClientSession) async throws -> Attachment? {
-        try await lookup(hostname: hostname) { request in
+        try await lookupAll(hostname: hostname, on: session).first
+    }
+
+    /// Look up every matching attachment over an existing network-helper session.
+    public func lookupAll(hostname: String, on session: XPCClientSession) async throws -> [Attachment] {
+        try await lookupAll(hostname: hostname) { request in
             try await session.send(request)
         }
     }
 
-    private func lookup(
+    private func lookupAll(
         hostname: String,
         send: (XPCMessage) async throws -> XPCMessage
-    ) async throws -> Attachment? {
+    ) async throws -> [Attachment] {
         let request = XPCMessage(route: NetworkRoutes.lookup.rawValue)
         request.set(key: NetworkKeys.hostname.rawValue, value: hostname)
 
         let response = try await send(request)
-        return try response.dataNoCopy(key: NetworkKeys.attachment.rawValue).map {
-            try JSONDecoder().decode(Attachment.self, from: $0)
-        }
+        return try response.attachments()
     }
 
     private func createClient() -> XPCClient {
@@ -128,6 +136,17 @@ extension NetworkClient {
 }
 
 extension XPCMessage {
+    /// Decode all lookup results, including the singular response used by older servers.
+    public func attachments() throws -> [Attachment] {
+        if let data = self.dataNoCopy(key: NetworkKeys.attachments.rawValue) {
+            return try JSONDecoder().decode([Attachment].self, from: data)
+        }
+        guard let data = self.dataNoCopy(key: NetworkKeys.attachment.rawValue) else {
+            return []
+        }
+        return [try JSONDecoder().decode(Attachment.self, from: data)]
+    }
+
     public func additionalData() -> XPCMessage? {
         guard let additionalData = xpc_dictionary_get_dictionary(self.underlying, NetworkKeys.additionalData.rawValue) else {
             return nil

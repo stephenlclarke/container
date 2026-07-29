@@ -35,4 +35,16 @@ public protocol NetworkService: Sendable {
 
     /// Return the attachment for a hostname if it is registered with the network.
     func lookup(hostname: String) async throws -> Attachment?
+
+    /// Return every attachment registered for a hostname or shared alias.
+    func lookupAll(hostname: String) async throws -> [Attachment]
+}
+
+extension NetworkService {
+    public func lookupAll(hostname: String) async throws -> [Attachment] {
+        guard let attachment = try await lookup(hostname: hostname) else {
+            return []
+        }
+        return [attachment]
+    }
 }

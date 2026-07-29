@@ -21,7 +21,7 @@ actor AttachmentAllocator {
     private let allocator: any AddressAllocator<UInt32>
     private let dynamicAllocator: (any AddressAllocator<UInt32>)?
     private let dynamicRange: ClosedRange<UInt32>?
-    private var hostnames: [String: UInt32] = [:]
+    private var hostnames: [String: Set<UInt32>] = [:]
     private var primaryHostnames: [String: UInt32] = [:]
     private var namesByIndex: [UInt32: Set<String>] = [:]
 
@@ -80,11 +80,6 @@ actor AttachmentAllocator {
             try reserveAliases(aliases, for: index)
             return index
         }
-        let conflictingNames = names.filter { hostnames[$0] != nil }.sorted()
-        guard conflictingNames.isEmpty else {
-            throw ContainerizationError(.exists, message: "hostname(s) already exist: \(conflictingNames)")
-        }
-
         let index: UInt32
         if let requestedIndex {
             try allocator.reserve(requestedIndex)
@@ -97,7 +92,7 @@ actor AttachmentAllocator {
             index = try allocator.allocate()
         }
         for name in names {
-            hostnames[name] = index
+            hostnames[name, default: []].insert(index)
         }
         primaryHostnames[hostname] = index
         namesByIndex[index] = names
@@ -109,15 +104,18 @@ actor AttachmentAllocator {
     @discardableResult
     func deallocate(hostname: String) async throws -> UInt32? {
         let hostname = try Self.normalized(hostname: hostname)
-        guard let index = hostnames[hostname] else {
+        guard let index = primaryHostnames[hostname] else {
             return nil
         }
 
         let names = namesByIndex.removeValue(forKey: index) ?? [hostname]
         for name in names {
-            hostnames.removeValue(forKey: name)
-            primaryHostnames.removeValue(forKey: name)
+            hostnames[name]?.remove(index)
+            if hostnames[name]?.isEmpty == true {
+                hostnames.removeValue(forKey: name)
+            }
         }
+        primaryHostnames.removeValue(forKey: hostname)
         try allocator.release(index)
         try releaseDynamic(index)
         return index
@@ -125,17 +123,25 @@ actor AttachmentAllocator {
 
     /// Retrieve the allocator index for a hostname.
     func lookup(hostname: String) async throws -> UInt32? {
+        try await lookupAll(hostname: hostname).first
+    }
+
+    /// Retrieve the allocator index only when the name is a primary hostname.
+    func lookupPrimary(hostname: String) async throws -> UInt32? {
         let hostname = try Self.normalized(hostname: hostname)
-        return hostnames[hostname]
+        return primaryHostnames[hostname]
+    }
+
+    /// Retrieve all allocator indexes registered for a hostname or shared alias.
+    func lookupAll(hostname: String) async throws -> [UInt32] {
+        let hostname = try Self.normalized(hostname: hostname)
+        return hostnames[hostname, default: []].sorted()
     }
 
     private func reserveAliases(_ aliases: [String], for index: UInt32) throws {
         var names = namesByIndex[index] ?? []
         for alias in Set(try aliases.map(Self.normalized(hostname:))).sorted() {
-            if let existing = hostnames[alias], existing != index {
-                throw ContainerizationError(.exists, message: "hostname(s) already exist: [\"\(alias)\"]")
-            }
-            hostnames[alias] = index
+            hostnames[alias, default: []].insert(index)
             names.insert(alias)
         }
         namesByIndex[index] = names

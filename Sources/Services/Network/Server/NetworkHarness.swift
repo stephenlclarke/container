@@ -67,11 +67,13 @@ public actor NetworkHarness: Sendable {
     public func lookup(_ message: XPCMessage) async throws -> XPCMessage {
         let hostname = try message.hostname()
         let reply = message.reply()
-        guard let attachment = try await service.lookup(hostname: hostname) else {
+        let attachments = try await service.lookupAll(hostname: hostname)
+        guard let attachment = attachments.first else {
             return reply
         }
 
         try reply.setAttachment(attachment)
+        try reply.setAttachments(attachments)
         return reply
     }
 }
@@ -84,6 +86,11 @@ extension XPCMessage {
     fileprivate func setAttachment(_ attachment: Attachment) throws {
         let data = try JSONEncoder().encode(attachment)
         self.set(key: NetworkKeys.attachment.rawValue, value: data)
+    }
+
+    fileprivate func setAttachments(_ attachments: [Attachment]) throws {
+        let data = try JSONEncoder().encode(attachments)
+        self.set(key: NetworkKeys.attachments.rawValue, value: data)
     }
 
     fileprivate func setStatus(_ status: NetworkStatus) throws {

@@ -120,7 +120,7 @@ public actor DefaultNetworkService: NetworkService {
         let requestedIndex = try requestedIPv4Address.map {
             try allocatableIPv4Index($0, subnet: status.ipv4Subnet, gateway: status.ipv4Gateway)
         }
-        let existingIndex = try await allocator.lookup(hostname: hostname)
+        let existingIndex = try await allocator.lookupPrimary(hostname: hostname)
         let effectiveMACAddress: MACAddress
         if let existingIndex {
             guard let existingMACAddress = macAddresses[existingIndex] else {
@@ -210,6 +210,11 @@ public actor DefaultNetworkService: NetworkService {
 
     @Sendable
     public func lookup(hostname: String) async throws -> Attachment? {
+        try await lookupAll(hostname: hostname).first
+    }
+
+    @Sendable
+    public func lookupAll(hostname: String) async throws -> [Attachment] {
         log.debug("enter", metadata: ["func": "\(#function)"])
         defer { log.debug("exit", metadata: ["func": "\(#function)"]) }
 
@@ -217,31 +222,36 @@ public actor DefaultNetworkService: NetworkService {
             throw ContainerizationError(.invalidState, message: "network \(network.id) must be running")
         }
 
-        // Invariant: hostname -> index if and only if index -> MAC address
-        let index = try await allocator.lookup(hostname: hostname)
-        guard let index else {
-            return nil
+        // Invariant: hostname -> indexes if and only if every index has a MAC address.
+        let indexes = try await allocator.lookupAll(hostname: hostname)
+        var attachments: [Attachment] = []
+        attachments.reserveCapacity(indexes.count)
+        for index in indexes {
+            guard let macAddress = macAddresses[index] else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "missing MAC address for network attachment '\(hostname)' at index \(index)"
+                )
+            }
+            attachments.append(
+                try attachment(
+                    status: status,
+                    hostname: hostname,
+                    aliases: [],
+                    index: index,
+                    macAddress: macAddress,
+                    ipv6Address: ipv6Addresses[index]
+                )
+            )
         }
-        guard let macAddress = macAddresses[index] else {
-            return nil
-        }
-
-        let attachment = try attachment(
-            status: status,
-            hostname: hostname,
-            aliases: [],
-            index: index,
-            macAddress: macAddress,
-            ipv6Address: ipv6Addresses[index]
-        )
         log.debug(
-            "lookup attachment",
+            "lookup attachments",
             metadata: [
                 "hostname": "\(hostname)",
-                "address": "\(IPv4Address(index))",
+                "addresses": "\(attachments.map(\.ipv4Address.address.description).joined(separator: ","))",
             ])
 
-        return attachment
+        return attachments
     }
 
     private func allocatableIPv4Index(_ address: IPv4Address, subnet: CIDRv4, gateway: IPv4Address) throws -> UInt32 {
