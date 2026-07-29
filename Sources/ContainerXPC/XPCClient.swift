@@ -98,31 +98,43 @@ extension XPCClient {
     /// Send the provided message to the service.
     @discardableResult
     public func send(_ message: XPCMessage, responseTimeout: Duration? = nil) async throws -> XPCMessage {
-        try await withCheckedThrowingContinuation { continuation in
-            let result = XPCResponseResult(continuation)
+        let result = XPCResponseResult()
 
-            if let responseTimeout {
-                let route = message.string(key: XPCMessage.routeKey) ?? "nil"
-                let timeoutTask = Task.detached {
-                    try? await Task.sleep(for: responseTimeout)
-                    _ = result.resume(
-                        .failure(
-                            ContainerizationError(
-                                .timeout,
-                                message: "XPC timeout for request to \(self.service)/\(route)"
-                            )))
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                guard result.storeContinuation(continuation) else {
+                    return
                 }
-                result.setTimeoutTask(timeoutTask)
-            }
 
-            xpc_connection_send_message_with_reply(self.connection, message.underlying, nil) { reply in
-                do {
-                    let message = try self.parseReply(reply)
-                    _ = result.resume(.success(message))
-                } catch {
-                    _ = result.resume(.failure(error))
+                if let responseTimeout {
+                    let route = message.string(key: XPCMessage.routeKey) ?? "nil"
+                    let timeoutTask = Task.detached {
+                        do {
+                            try await Task.sleep(for: responseTimeout)
+                        } catch {
+                            return
+                        }
+                        _ = result.resume(
+                            .failure(
+                                ContainerizationError(
+                                    .timeout,
+                                    message: "XPC timeout for request to \(self.service)/\(route)"
+                                )))
+                    }
+                    result.setTimeoutTask(timeoutTask)
+                }
+
+                xpc_connection_send_message_with_reply(self.connection, message.underlying, nil) { reply in
+                    do {
+                        let message = try self.parseReply(reply)
+                        _ = result.resume(.success(message))
+                    } catch {
+                        _ = result.resume(.failure(error))
+                    }
                 }
             }
+        } onCancel: {
+            _ = result.resume(.failure(CancellationError()))
         }
     }
 
@@ -148,19 +160,39 @@ extension XPCClient {
     }
 }
 
-private final class XPCResponseResult: @unchecked Sendable {
+/// Resume-once bridge shared by task cancellation, request timeout, and the XPC reply callback.
+final class XPCResponseResult: @unchecked Sendable {
     private let lock = NSLock()
-    private let continuation: CheckedContinuation<XPCMessage, any Error>
+    private var continuation: CheckedContinuation<XPCMessage, any Error>?
+    private var pendingResult: Result<XPCMessage, any Error>?
     private var timeoutTask: Task<Void, Never>?
-    private var resumed = false
+    private var resolved = false
 
-    init(_ continuation: CheckedContinuation<XPCMessage, any Error>) {
+    func storeContinuation(_ continuation: CheckedContinuation<XPCMessage, any Error>) -> Bool {
+        lock.lock()
+        if resolved {
+            guard let result = pendingResult else {
+                lock.unlock()
+                continuation.resume(
+                    throwing: ContainerizationError(
+                        .invalidState,
+                        message: "XPC request completed without a result"
+                    ))
+                return false
+            }
+            pendingResult = nil
+            lock.unlock()
+            continuation.resume(with: result)
+            return false
+        }
         self.continuation = continuation
+        lock.unlock()
+        return true
     }
 
     func setTimeoutTask(_ task: Task<Void, Never>) {
         lock.lock()
-        if resumed {
+        if resolved {
             lock.unlock()
             task.cancel()
             return
@@ -171,17 +203,22 @@ private final class XPCResponseResult: @unchecked Sendable {
 
     func resume(_ result: Result<XPCMessage, any Error>) -> Bool {
         lock.lock()
-        guard !resumed else {
+        guard !resolved else {
             lock.unlock()
             return false
         }
-        resumed = true
+        resolved = true
+        let continuation = continuation
+        self.continuation = nil
+        if continuation == nil {
+            pendingResult = result
+        }
         let timeoutTask = timeoutTask
         self.timeoutTask = nil
         lock.unlock()
 
         timeoutTask?.cancel()
-        continuation.resume(with: result)
+        continuation?.resume(with: result)
         return true
     }
 }

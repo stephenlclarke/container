@@ -143,6 +143,21 @@ struct XPCClientTests {
     }
 
     @Test
+    func responseResultDeliversCancellationBeforeContinuationStorage() async throws {
+        let result = XPCResponseResult()
+        #expect(result.resume(.failure(CancellationError())))
+
+        do {
+            _ = try await withCheckedThrowingContinuation { continuation in
+                #expect(!result.storeContinuation(continuation))
+            }
+            Issue.record("expected the pending cancellation to be delivered")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
+    @Test
     func responseTimeoutHandlesMessagesWithoutRoute() async throws {
         let server = AnonymousXPCServer()
         defer { server.close() }
@@ -181,6 +196,60 @@ struct XPCClientTests {
         } catch let error as ContainerizationError {
             #expect(error.code == .timeout)
         }
+
+        let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
+        #expect(response.string(key: "result") == "ok")
+    }
+
+    @Test
+    func lateReplyAfterResponseTimeoutIsIgnored() async throws {
+        let server = AnonymousXPCServer()
+        defer { server.close() }
+
+        let client = server.makeClient()
+        let request = Task {
+            try await client.send(XPCMessage(route: "hang"), responseTimeout: .milliseconds(100))
+        }
+        try await server.waitForPendingRequest(timeout: .seconds(1))
+
+        do {
+            _ = try await request.value
+            Issue.record("expected send to time out")
+        } catch let error as ContainerizationError {
+            #expect(error.code == .timeout)
+        }
+
+        #expect(server.replyToPendingRequests())
+        try await Task.sleep(for: .milliseconds(50))
+
+        let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
+        #expect(response.string(key: "result") == "ok")
+    }
+
+    @Test
+    func callerCancellationReturnsWithinBoundAndIgnoresLateReply() async throws {
+        let server = AnonymousXPCServer()
+        defer { server.close() }
+
+        let client = server.makeClient()
+        let request = Task {
+            try await client.send(XPCMessage(route: "hang"), responseTimeout: .seconds(2))
+        }
+        try await server.waitForPendingRequest(timeout: .seconds(1))
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        request.cancel()
+
+        do {
+            _ = try await request.value
+            Issue.record("expected send to be cancelled")
+        } catch is CancellationError {
+            #expect(start.duration(to: clock.now) < .seconds(1))
+        }
+
+        #expect(server.replyToPendingRequests())
+        try await Task.sleep(for: .milliseconds(50))
 
         let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
         #expect(response.string(key: "result") == "ok")
@@ -240,6 +309,35 @@ struct XPCClientTests {
 
         client.close()
         try await probe.wait(timeout: .seconds(1))
+    }
+
+    @Test
+    func serverRepliesToUnknownRoutes() async throws {
+        let listener = xpc_connection_create(nil, nil)
+        let server = XPCServer(
+            connection: listener,
+            routes: [:],
+            log: Logger(label: "test.container.xpc.unknown-route")
+        )
+        let serverTask = Task {
+            try await server.listen()
+        }
+        defer {
+            serverTask.cancel()
+            xpc_connection_cancel(listener)
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        let endpoint = xpc_endpoint_create(listener)
+        let client = XPCClient(connection: xpc_connection_create_from_endpoint(endpoint), label: "test.container.xpc")
+
+        do {
+            _ = try await client.send(XPCMessage(route: "missing"), responseTimeout: .seconds(1))
+            Issue.record("expected an unknown-route error")
+        } catch let error as ContainerizationError {
+            #expect(error.code == .invalidArgument)
+            #expect(error.message == "unknown route: missing")
+        }
     }
 }
 
@@ -365,6 +463,37 @@ private final class AnonymousXPCServer: @unchecked Sendable {
             connections.removeAll()
             pendingRequests.removeAll()
         }
+    }
+
+    func waitForPendingRequest(timeout: Duration) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if lock.withLock({ !pendingRequests.isEmpty }) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw ContainerizationError(.timeout, message: "server did not receive the XPC request")
+    }
+
+    func replyToPendingRequests() -> Bool {
+        let requests = lock.withLock {
+            let requests = pendingRequests
+            pendingRequests.removeAll()
+            return requests
+        }
+        guard let connection = lock.withLock({ connections.last }) else {
+            return false
+        }
+        for request in requests {
+            guard let reply = xpc_dictionary_create_reply(request) else {
+                continue
+            }
+            xpc_dictionary_set_string(reply, "result", "late")
+            xpc_connection_send_message(connection, reply)
+        }
+        return !requests.isEmpty
     }
 
     private func accept(connection: xpc_connection_t) {
