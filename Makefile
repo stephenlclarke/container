@@ -27,8 +27,8 @@ SWIFT_TEST_FLAGS ?= --no-parallel
 COVERAGE_FLAG ?=
 export RELEASE_VERSION ?= $(shell git describe --tags --always)
 export GIT_COMMIT := $(shell git rev-parse HEAD)
-export CONTAINERIZATION_SOURCE ?= $(shell python3 -c 'import json; pin=next(p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization"); location=pin.get("location", "https://github.com/stephenlclarke/containerization.git"); print(location.removeprefix("https://github.com/").removesuffix(".git"))')
-export CONTAINERIZATION_REF ?= $(shell python3 -c 'import json; state=next(p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization")["state"]; print(state.get("revision") or state.get("branch") or "main")')
+export CONTAINERIZATION_SOURCE ?= $(shell python3 -c 'import json; pin=next((p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization"), {}); location=pin.get("location", "https://github.com/stephenlclarke/containerization.git"); print(location.removeprefix("https://github.com/").removesuffix(".git"))')
+export CONTAINERIZATION_REF ?= $(shell python3 -c 'import json; pin=next((p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization"), {}); state=pin.get("state", {}); print(state.get("revision") or state.get("branch") or "main")')
 
 # Commonly used locations
 SWIFT := "/usr/bin/swift"
