@@ -94,6 +94,16 @@ while IFS= read -r -d '' candidate; do
             "${relative_path}" >&2
         exit 1
     fi
+    if ! grep -Fxq 'Authority=Developer ID Certification Authority' <<<"${signature}"; then
+        printf 'binary does not chain through the Developer ID certification authority: %s\n' \
+            "${relative_path}" >&2
+        exit 1
+    fi
+    if ! grep -Fxq 'Authority=Apple Root CA' <<<"${signature}"; then
+        printf 'binary does not chain to the Apple Root CA: %s\n' \
+            "${relative_path}" >&2
+        exit 1
+    fi
     if ! grep -Eq '^Timestamp=.+' <<<"${signature}"; then
         printf 'binary is missing a secure signing timestamp: %s\n' \
             "${relative_path}" >&2
