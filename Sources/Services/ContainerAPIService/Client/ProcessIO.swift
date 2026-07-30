@@ -16,6 +16,7 @@
 
 import ContainerizationExtras
 import ContainerizationOS
+import Dispatch
 import Foundation
 import Logging
 
@@ -44,6 +45,7 @@ public struct ProcessIO: Sendable {
     public let console: Terminal?
 
     private let detachKeyMatcher: DetachKeyMatcher?
+    private let stdinPump: ProcessInputPump?
 
     public static func create(
         tty: Bool,
@@ -118,35 +120,21 @@ public struct ProcessIO: Sendable {
             stdio[2] = stderr.fileHandleForWriting
         }
 
-        if let stdin {
-            let pin = FileHandle.standardInput
-            let stdinOSFile = OSFile(fd: pin.fileDescriptor)
-            let pipeOSFile = OSFile(fd: stdin.fileHandleForWriting.fileDescriptor)
-            try stdinOSFile.makeNonBlocking()
-            nonisolated(unsafe) let buf = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: Int(getpagesize()))
-
-            pin.readabilityHandler = { _ in
-                Self.streamStdin(
-                    from: stdinOSFile,
-                    to: pipeOSFile,
-                    buffer: buf,
-                    detachKeyMatcher: detachKeyMatcher,
-                ) {
-                    pin.readabilityHandler = nil
-                    buf.deallocate()
-                    try? stdin.fileHandleForWriting.close()
-                } onDetach: {
-                    pin.readabilityHandler = nil
-                    buf.deallocate()
-                    try? stdin.fileHandleForWriting.close()
-                    for pipe in [stdout, stderr].compactMap({ $0 }) {
-                        let reader = pipe.fileHandleForReading
-                        reader.readabilityHandler = nil
-                        try? reader.close()
-                    }
+        let stdinPump = try stdin.map { stdin in
+            let pump = try ProcessInputPump(
+                input: .standardInput,
+                output: stdin.fileHandleForWriting,
+                detachKeyMatcher: detachKeyMatcher
+            ) {
+                for pipe in [stdout, stderr].compactMap({ $0 }) {
+                    let reader = pipe.fileHandleForReading
+                    reader.readabilityHandler = nil
+                    try? reader.close()
                 }
             }
             stdio[0] = stdin.fileHandleForReading
+            pump.start()
+            return pump
         }
 
         var ioTracker: IoTracker? = nil
@@ -161,7 +149,8 @@ public struct ProcessIO: Sendable {
             ioTracker: ioTracker,
             stdio: stdio,
             console: current,
-            detachKeyMatcher: detachKeyMatcher
+            detachKeyMatcher: detachKeyMatcher,
+            stdinPump: stdinPump
         )
     }
 
@@ -284,6 +273,7 @@ public struct ProcessIO: Sendable {
     }
 
     public func close() throws {
+        stdinPump?.stop()
         try console?.reset()
     }
 
@@ -307,16 +297,91 @@ public struct ProcessIO: Sendable {
         }
     }
 
-    static func streamStdin(
-        from: OSFile,
-        to: OSFile,
-        buffer: UnsafeMutableBufferPointer<UInt8>,
+}
+
+/// Drains client stdin away from Foundation's readability callback queue.
+///
+/// The destination write can block while a guest process is producing output.
+/// Using a dedicated serial queue allows the stdout and stderr readability
+/// handlers to keep draining their pipes and prevents full-duplex deadlocks.
+final class ProcessInputPump: @unchecked Sendable {
+    private let inputHandle: FileHandle
+    private let outputHandle: FileHandle
+    private let input: OSFile
+    private let output: OSFile
+    private let detachKeyMatcher: DetachKeyMatcher?
+    private let onDetach: @Sendable () -> Void
+    private let queue: DispatchQueue
+    private let lock = NSLock()
+    private var draining = false
+    private var pending = false
+    private var finished = false
+
+    init(
+        input: FileHandle,
+        output: FileHandle,
         detachKeyMatcher: DetachKeyMatcher? = nil,
-        onErrorOrEOF: () -> Void,
-        onDetach: () -> Void,
-    ) {
-        while true {
-            let (bytesRead, action) = from.read(buffer)
+        onDetach: @escaping @Sendable () -> Void = {},
+        queue: DispatchQueue? = nil
+    ) throws {
+        inputHandle = input
+        outputHandle = output
+        self.input = OSFile(handle: input)
+        self.output = OSFile(handle: output)
+        self.detachKeyMatcher = detachKeyMatcher
+        self.onDetach = onDetach
+        self.queue =
+            queue
+            ?? DispatchQueue(
+                label: "com.apple.container.process-input.\(UUID().uuidString)"
+            )
+        try self.input.makeNonBlocking()
+    }
+
+    func start() {
+        inputHandle.readabilityHandler = { [weak self] _ in
+            self?.scheduleDrain()
+        }
+        scheduleDrain()
+    }
+
+    func stop() {
+        finish(detached: false)
+    }
+
+    private func scheduleDrain() {
+        let shouldDrain = lock.withLock {
+            guard !finished else {
+                return false
+            }
+            if draining {
+                pending = true
+                return false
+            }
+            draining = true
+            return true
+        }
+        guard shouldDrain else {
+            return
+        }
+        queue.async { [weak self] in
+            self?.drain()
+        }
+    }
+
+    private func drain() {
+        guard !isFinished else {
+            return
+        }
+        let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(
+            capacity: Int(getpagesize())
+        )
+        defer {
+            buffer.deallocate()
+            completeDrain()
+        }
+        while !isFinished {
+            let (bytesRead, action) = input.read(buffer)
             if bytesRead > 0 {
                 let view = UnsafeMutableBufferPointer(
                     start: buffer.baseAddress,
@@ -326,38 +391,89 @@ public struct ProcessIO: Sendable {
                 if let detachKeyMatcher {
                     let result = detachKeyMatcher.filter(view)
                     if !result.forwarded.isEmpty {
+                        guard !isFinished else {
+                            return
+                        }
                         var forwarded = result.forwarded
                         let (bytesWritten, _) = forwarded.withUnsafeMutableBufferPointer { output in
-                            to.write(output)
+                            self.output.write(output)
                         }
                         if bytesWritten != result.forwarded.count {
-                            onErrorOrEOF()
+                            finish(detached: false)
                             return
                         }
                     }
                     if result.detached {
-                        onDetach()
+                        finish(detached: true)
                         return
                     }
                     continue
                 }
 
-                let (bytesWritten, _) = to.write(view)
+                guard !isFinished else {
+                    return
+                }
+                let (bytesWritten, _) = output.write(view)
                 if bytesWritten != bytesRead {
-                    onErrorOrEOF()
+                    finish(detached: false)
                     return
                 }
             }
 
             switch action {
             case .error(_), .eof, .brokenPipe:
-                onErrorOrEOF()
+                finish(detached: false)
                 return
             case .again:
                 return
             case .success:
                 break
             }
+        }
+    }
+
+    private func completeDrain() {
+        let shouldDrain = lock.withLock {
+            draining = false
+            guard !finished, pending else {
+                return false
+            }
+            pending = false
+            draining = true
+            return true
+        }
+        if shouldDrain {
+            queue.async { [weak self] in
+                self?.drain()
+            }
+        }
+    }
+
+    private func finish(detached: Bool) {
+        let shouldFinish = lock.withLock {
+            guard !finished else {
+                return false
+            }
+            finished = true
+            return true
+        }
+        guard shouldFinish else {
+            return
+        }
+        inputHandle.readabilityHandler = nil
+        queue.async { [weak self] in
+            self?.closeOutput(detached: detached)
+        }
+    }
+
+    private var isFinished: Bool {
+        lock.withLock { finished }
+    }
+
+    private func closeOutput(detached: Bool) {
+        try? outputHandle.close()
+        if detached {
+            onDetach()
         }
     }
 }
