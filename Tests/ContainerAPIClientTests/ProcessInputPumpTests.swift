@@ -14,6 +14,8 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import Darwin
+import Dispatch
 import Foundation
 import Testing
 
@@ -66,6 +68,47 @@ struct ProcessInputPumpTests {
         pump.stop()
 
         #expect(output.data == payload)
+    }
+
+    @Test
+    func stoppingBeforeQueuedDrainLeavesBufferedInputUnread() throws {
+        let source = Pipe()
+        let destination = Pipe()
+        let drainQueue = DispatchQueue(label: "container.process-input-pump.stop-before-drain")
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseQueue = DispatchSemaphore(value: 0)
+        drainQueue.async {
+            blockerStarted.signal()
+            releaseQueue.wait()
+        }
+        blockerStarted.wait()
+
+        let observerDescriptor = dup(source.fileHandleForReading.fileDescriptor)
+        guard observerDescriptor >= 0 else {
+            throw POSIXError(.EBADF)
+        }
+        let observer = FileHandle(fileDescriptor: observerDescriptor, closeOnDealloc: true)
+        defer {
+            try? observer.close()
+            try? destination.fileHandleForReading.close()
+        }
+
+        let pump = try ProcessInputPump(
+            input: source.fileHandleForReading,
+            output: destination.fileHandleForWriting,
+            queue: drainQueue
+        )
+        pump.start()
+
+        let payload = Data("must not be forwarded after stop".utf8)
+        try source.fileHandleForWriting.write(contentsOf: payload)
+        try source.fileHandleForWriting.close()
+        pump.stop()
+
+        releaseQueue.signal()
+        drainQueue.sync {}
+
+        #expect(observer.availableData == payload)
     }
 }
 
