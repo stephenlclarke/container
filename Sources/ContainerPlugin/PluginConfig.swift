@@ -46,6 +46,9 @@ public struct PluginConfig: Sendable, Codable {
         /// would be accompanied by a CLI plugin that knows how to communicate with the XPC API
         /// given an instance id.
         case network
+        /// A logging plugin publishes a provider control service. Logging
+        /// sessions remain container-scoped and are owned by the API authority.
+        case logging
         /// A core plugin provides an XPC API to manage a given type of resource.
         /// The API server ensures that there exist only a single running instance
         /// of this plugin type. A core plugin can be thought of a singleton whose lifecycle

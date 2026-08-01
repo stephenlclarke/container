@@ -317,6 +317,8 @@ public actor ContainersService {
 
     /// Create a new container from the provided id and configuration.
     public func create(configuration: ContainerConfiguration, kernel: Kernel, options: ContainerCreateOptions, initImage: String? = nil, runtimeData: Data? = nil) async throws {
+        try Self.validateLoggingConfigurationForCreate(configuration.logging)
+
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -434,6 +436,15 @@ public actor ContainersService {
         }
 
         await publishContainerEvent(action: "create", snapshot: createdSnapshot)
+    }
+
+    static func validateLoggingConfigurationForCreate(_ logging: ContainerLogConfiguration) throws {
+        guard logging.isLegacy else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "logging schema version \(logging.schemaVersion ?? 0) is not yet supported for container creation"
+            )
+        }
     }
 
     /// Returns primary hostnames that are already reserved on the same network.

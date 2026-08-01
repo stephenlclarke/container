@@ -50,7 +50,12 @@ extension Application {
                 )
             }
 
-            try Output.emit(Output.renderJSON(containers.map { ManagedContainer($0) }, options: .pretty))
+            try Output.emit(
+                Output.renderJSON(
+                    containers.map { ManagedContainer($0).routineInspection },
+                    options: .pretty
+                )
+            )
         }
     }
 }

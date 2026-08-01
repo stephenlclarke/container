@@ -25,6 +25,13 @@ public enum RuntimeCapability: String, CaseIterable, Codable, Sendable {
     case composeObservation = "io.github.stephenlclarke.container.compose.observation.v1"
 }
 
+/// Known logging-v2 capability contract. It deliberately remains separate
+/// from `RuntimeCapability` until the authoritative runtime is implemented, so
+/// exhaustive consumers cannot mistake a known identifier for advertisement.
+public enum LoggingDriverRuntimeCapabilityContract {
+    public static let identifier = "io.github.stephenlclarke.container.logging-drivers.v1"
+}
+
 /// Machine-readable capability contract emitted by `container system version`.
 public struct RuntimeCapabilityManifest: Codable, Equatable, Sendable {
     public static let currentSchemaVersion = 1

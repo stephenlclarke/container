@@ -129,4 +129,25 @@ struct PluginTest {
         #expect(plugin.hasType(.network))
         #expect(plugin.config.servicesConfig!.defaultArguments == ["start", "with", "params"])
     }
+
+    @Test
+    func loggingServiceUsesTypedMachServiceNamespace() async throws {
+        let plugin = Plugin(
+            binaryURL: URL(filePath: "/usr/local/libexec/container/logger/bin/logger"),
+            config: PluginConfig(
+                abstract: "logging provider",
+                author: nil,
+                servicesConfig: .init(
+                    loadAtBoot: false,
+                    runAtLoad: false,
+                    services: [.init(type: .logging, description: "logging control service")],
+                    defaultArguments: []
+                )
+            )
+        )
+
+        #expect(plugin.hasType(.logging))
+        #expect(plugin.getMachService(type: .logging) == "com.apple.container.logging.logger")
+        #expect(plugin.getMachService(instanceId: "container-id", type: .logging) == "com.apple.container.logging.logger.container-id")
+    }
 }

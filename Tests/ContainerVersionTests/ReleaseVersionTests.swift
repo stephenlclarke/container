@@ -26,6 +26,11 @@ struct ReleaseVersionTests {
 
         #expect(manifest.schemaVersion == 1)
         #expect(identifiers.count == 7)
+        #expect(
+            LoggingDriverRuntimeCapabilityContract.identifier
+                == "io.github.stephenlclarke.container.logging-drivers.v1"
+        )
+        #expect(!identifiers.contains(LoggingDriverRuntimeCapabilityContract.identifier))
         #expect(identifiers == identifiers.sorted())
         #expect(Set(identifiers).count == identifiers.count)
         #expect(identifiers.allSatisfy { $0.hasSuffix(".v1") })

@@ -45,8 +45,8 @@ extension Application {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
             let output =
                 switch format {
-                case .json: try Output.renderJSON(containerSystemConfig)
-                case .toml: try Output.renderTOML(containerSystemConfig)
+                case .json: try Output.renderJSON(containerSystemConfig.routineInspection)
+                case .toml: try Output.renderTOML(containerSystemConfig.routineInspection)
                 }
             Output.emit(output)
         }

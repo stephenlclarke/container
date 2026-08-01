@@ -199,6 +199,77 @@ public struct ContainerConfiguration: Sendable, Codable {
         creationDate = try container.decodeIfPresent(Date.self, forKey: .creationDate) ?? Date(timeIntervalSince1970: 0)
     }
 
+    public func encode(to encoder: any Encoder) throws {
+        try encode(to: encoder, logging: logging)
+    }
+
+    /// Redaction-safe view used by routine native inspection surfaces.
+    public var routineInspection: RoutineInspectionProjection {
+        RoutineInspectionProjection(configuration: self)
+    }
+
+    public struct RoutineInspectionProjection: Encodable, Sendable {
+        private let configuration: ContainerConfiguration
+
+        fileprivate init(configuration: ContainerConfiguration) {
+            self.configuration = configuration
+        }
+
+        public func encode(to encoder: any Encoder) throws {
+            try configuration.encode(
+                to: encoder,
+                logging: configuration.logging.routineInspection
+            )
+        }
+    }
+
+    private func encode<Logging: Encodable>(
+        to encoder: any Encoder,
+        logging: Logging
+    ) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(image, forKey: .image)
+        try container.encode(mounts, forKey: .mounts)
+        try container.encode(publishedPorts, forKey: .publishedPorts)
+        try container.encode(exposedPorts, forKey: .exposedPorts)
+        try container.encode(publishedSockets, forKey: .publishedSockets)
+        try container.encode(labels, forKey: .labels)
+        try container.encode(annotations, forKey: .annotations)
+        try container.encode(sysctls, forKey: .sysctls)
+        try container.encode(networks, forKey: .networks)
+        try container.encodeIfPresent(hostname, forKey: .hostname)
+        try container.encodeIfPresent(domainname, forKey: .domainname)
+        try container.encodeIfPresent(dns, forKey: .dns)
+        try container.encode(hosts, forKey: .hosts)
+        try container.encode(rosetta, forKey: .rosetta)
+        try container.encode(initProcess, forKey: .initProcess)
+        try container.encode(platform, forKey: .platform)
+        try container.encode(resources, forKey: .resources)
+        try container.encode(logging, forKey: .logging)
+        try container.encodeIfPresent(healthCheck, forKey: .healthCheck)
+        try container.encode(runtimeHandler, forKey: .runtimeHandler)
+        try container.encode(virtualization, forKey: .virtualization)
+        try container.encode(ssh, forKey: .ssh)
+        try container.encode(readOnly, forKey: .readOnly)
+        try container.encode(hostNetwork, forKey: .hostNetwork)
+        try container.encode(useInit, forKey: .useInit)
+        try container.encode(hostPIDNamespace, forKey: .hostPIDNamespace)
+        try container.encode(hostCgroupNamespace, forKey: .hostCgroupNamespace)
+        try container.encode(hostIPCNamespace, forKey: .hostIPCNamespace)
+        try container.encode(hostUTSNamespace, forKey: .hostUTSNamespace)
+        try container.encode(privateUserNamespace, forKey: .privateUserNamespace)
+        try container.encode(unconfinedSystemPaths, forKey: .unconfinedSystemPaths)
+        try container.encode(capAdd, forKey: .capAdd)
+        try container.encode(capDrop, forKey: .capDrop)
+        try container.encodeIfPresent(shmSize, forKey: .shmSize)
+        try container.encodeIfPresent(stopSignal, forKey: .stopSignal)
+        try container.encodeIfPresent(maskedPaths, forKey: .maskedPaths)
+        try container.encodeIfPresent(readonlyPaths, forKey: .readonlyPaths)
+        try container.encodeIfPresent(stopTimeoutInSeconds, forKey: .stopTimeoutInSeconds)
+        try container.encode(creationDate, forKey: .creationDate)
+    }
+
     public struct DNSConfiguration: Sendable, Codable {
         public static let defaultNameservers = ["1.1.1.1"]
 

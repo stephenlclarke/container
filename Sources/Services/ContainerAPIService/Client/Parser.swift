@@ -873,14 +873,14 @@ public struct Parser {
 
     /// Parses Docker-compatible local logging flags into the runtime log policy.
     public static func logging(driver: String?, options: [String] = []) throws -> ContainerLogConfiguration {
-        var logging: ContainerLogConfiguration
+        let storage: ContainerLogConfiguration.Storage
         switch driver {
         case nil, "":
-            logging = .default
+            storage = .local
         case "json-file", "local":
-            logging = .default
+            storage = .local
         case "none":
-            logging = ContainerLogConfiguration(storage: .none)
+            storage = .none
         case let driver?:
             throw ContainerizationError(
                 .unsupported,
@@ -889,10 +889,10 @@ public struct Parser {
         }
 
         guard !options.isEmpty else {
-            return logging
+            return ContainerLogConfiguration(storage: storage)
         }
 
-        guard logging.storage == .local else {
+        guard storage == .local else {
             let driverName = driver ?? "local"
             throw ContainerizationError(
                 .unsupported,
@@ -900,13 +900,15 @@ public struct Parser {
             )
         }
 
+        var maxSizeInBytes: UInt64?
+        var maxFileCount: Int?
         for option in options {
             let (key, value) = try Self.logOption(option)
             switch key {
             case "max-size":
-                logging.maxSizeInBytes = try Self.logOptionSizeInBytes(value)
+                maxSizeInBytes = try Self.logOptionSizeInBytes(value)
             case "max-file":
-                logging.maxFileCount = try Self.logOptionFileCount(value)
+                maxFileCount = try Self.logOptionFileCount(value)
             default:
                 throw ContainerizationError(
                     .unsupported,
@@ -915,7 +917,11 @@ public struct Parser {
             }
         }
 
-        return logging
+        return ContainerLogConfiguration(
+            storage: storage,
+            maxSizeInBytes: maxSizeInBytes,
+            maxFileCount: maxFileCount
+        )
     }
 
     private static func logOption(_ option: String) throws -> (key: String, value: String) {

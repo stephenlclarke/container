@@ -97,9 +97,141 @@ struct ConfigurationLoaderTests {
             #expect(!config.kernel.binaryPath.isEmpty)
             #expect(!config.kernel.url.absoluteString.isEmpty)
             #expect(config.kernel.digest == KernelConfig.defaultDigest)
+            #expect(config.logging.driver == "json-file")
+            #expect(config.logging.options.isEmpty)
             #expect(config.network.subnet == nil)
             #expect(config.network.subnetv6 == nil)
             #expect(config.registry.domain == "docker.io")
+        }
+    }
+
+    @Test func loggingDefaultsLoadLosslessOptions() async throws {
+        try await TemporaryStorage.withTempDir { tempDir in
+            let path = tempDir.appending("logging.toml")
+            try Self.writeToml(
+                """
+                [logging]
+                driver = "acme.example/remote"
+                options = [
+                    "empty", "",
+                    "endpoint", "tcp://host:1234?a=b",
+                    "opaque", "01",
+                    "", "empty-name",
+                    "equals=name", "value=with=equals",
+                    "dotted.name", "arbitrary.value"
+                ]
+                """,
+                to: path
+            )
+
+            let config: ContainerSystemConfig = try await ConfigurationLoader.load(configurationFiles: [path])
+            #expect(config.logging.driver == "acme.example/remote")
+            #expect(
+                config.logging.options == [
+                    "empty": "",
+                    "endpoint": "tcp://host:1234?a=b",
+                    "opaque": "01",
+                    "": "empty-name",
+                    "equals=name": "value=with=equals",
+                    "dotted.name": "arbitrary.value",
+                ])
+        }
+    }
+
+    @Test func loggingDefaultsRejectMalformedAndDuplicateOptions() async throws {
+        try await TemporaryStorage.withTempDir { tempDir in
+            for (name, entries) in [
+                ("malformed", "[\"name\"]"),
+                ("duplicate", "[\"key\", \"one\", \"key\", \"two\"]"),
+            ] {
+                let path = tempDir.appending("\(name).toml")
+                try Self.writeToml("[logging]\noptions = \(entries)\n", to: path)
+                await #expect(throws: (any Error).self) {
+                    let _: ContainerSystemConfig = try await ConfigurationLoader.load(configurationFiles: [path])
+                }
+            }
+        }
+    }
+
+    @Test func loggingDefaultsOrdinaryJSONCodableRetainsMapShape() throws {
+        let original = LoggingConfig(
+            driver: "acme.example/remote",
+            options: ["": "empty-name", "equals=name": "value=with=equals", "dotted.name": ""]
+        )
+        let data = try JSONEncoder().encode(original)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let options = try #require(object["options"] as? [String: Any])
+        #expect(options[""] as? String == "empty-name")
+        #expect(options["equals=name"] as? String == "value=with=equals")
+        #expect(options["dotted.name"] as? String == "")
+
+        let decoded = try JSONDecoder().decode(LoggingConfig.self, from: data)
+        #expect(decoded.driver == original.driver)
+        #expect(decoded.options == original.options)
+    }
+
+    @Test func layeredLoggingDriverAndOptionsResolvePerConfigurationKey() async throws {
+        try await TemporaryStorage.withTempDir { tempDir in
+            let user = tempDir.appending("user.toml")
+            let system = tempDir.appending("system.toml")
+            try Self.writeToml("[logging]\ndriver = \"local\"\n", to: user)
+            try Self.writeToml("[logging]\noptions = [\"max-size\", \"10m\"]\n", to: system)
+
+            let config: ContainerSystemConfig = try await ConfigurationLoader.load(
+                configurationFiles: [user, system]
+            )
+            #expect(config.logging.driver == "local")
+            #expect(config.logging.options == ["max-size": "10m"])
+        }
+    }
+
+    @Test func loggingDefaultRoutineProjectionSeparatesProtectedValues() throws {
+        let config = LoggingConfig(options: ["safe": "visible", "future-secret": "hidden"])
+        let hidden = config.routineInspection()
+        #expect(hidden.safeOptions.isEmpty)
+        #expect(hidden.protectedOptionNames == ["future-secret", "safe"])
+        #expect(hidden.protectedOptionCount == 2)
+
+        let selected = config.routineInspection(revealing: ["safe"])
+        #expect(selected.safeOptions == ["safe": "visible"])
+        #expect(selected.protectedOptionNames == ["future-secret"])
+        #expect(selected.protectedOptionCount == 1)
+        let selectedData = try JSONEncoder().encode(selected)
+        let text = String(decoding: selectedData, as: UTF8.self)
+        #expect(!text.contains("hidden"))
+        #expect(!text.contains("<redacted>"))
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(LoggingConfig.self, from: selectedData)
+        }
+
+        let systemData = try JSONEncoder().encode(ContainerSystemConfig(logging: config).routineInspection)
+        let systemText = String(decoding: systemData, as: UTF8.self)
+        #expect(!systemText.contains("visible"))
+        #expect(!systemText.contains("hidden"))
+        #expect(!systemText.contains("<redacted>"))
+        #expect(systemText.contains("protectedOptionNames"))
+        #expect(throws: (any Error).self) {
+            try JSONDecoder().decode(ContainerSystemConfig.self, from: systemData)
+        }
+    }
+
+    @Test func loggingDiagnosticTomlCannotBecomeAuthoritativeConfiguration() async throws {
+        try await TemporaryStorage.withTempDir { tempDir in
+            let path = tempDir.appending("logging-inspection.toml")
+            try Self.writeToml(
+                """
+                [logging]
+                diagnosticKind = "logging-config-inspection-v1"
+                driver = "json-file"
+                protectedOptionNames = ["token"]
+                protectedOptionCount = 1
+                """,
+                to: path
+            )
+
+            await #expect(throws: (any Error).self) {
+                let _: ContainerSystemConfig = try await ConfigurationLoader.load(configurationFiles: [path])
+            }
         }
     }
 
