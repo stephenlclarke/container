@@ -80,6 +80,7 @@ public actor ContainersService {
     private let exitMonitor: ExitMonitor
     private let eventBroadcaster: ContainerEventBroadcaster
     private let containerSystemConfig: ContainerSystemConfig
+    private let logDriverCatalogProvider: any LogDriverCatalogProviding
     private let loggingProtectedOptionsStore: LoggingProtectedOptionsStore
 
     private let lock: AsyncLock
@@ -100,7 +101,10 @@ public actor ContainersService {
         pluginLoader: PluginLoader,
         containerSystemConfig: ContainerSystemConfig,
         log: Logger,
-        debugHelpers: Bool = false
+        debugHelpers: Bool = false,
+        logDriverCatalogProvider: any LogDriverCatalogProviding = StaticLogDriverCatalogProvider(
+            catalog: BuiltinLogDriverDescriptors.current
+        )
     ) throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
         try FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
@@ -127,6 +131,7 @@ public actor ContainersService {
         self.containerRoot = containerRoot
         self.pluginLoader = pluginLoader
         self.containerSystemConfig = containerSystemConfig
+        self.logDriverCatalogProvider = logDriverCatalogProvider
         self.log = log
         self.debugHelpers = debugHelpers
         self.eventBroadcaster = ContainerEventBroadcaster()
@@ -387,10 +392,9 @@ public actor ContainersService {
     ) async throws {
         let loggingPlan: ContainerLoggingCreatePlan
         do {
-            loggingPlan = try Self.prepareLoggingForCreate(
+            loggingPlan = try await prepareLoggingForCreate(
                 configuration: configuration.logging,
-                request: loggingRequest,
-                defaults: containerSystemConfig.logging
+                request: loggingRequest
             )
         } catch {
             throw Self.mapLoggingCreateError(error)
@@ -569,6 +573,19 @@ public actor ContainersService {
             catalog: catalog
         ).prepare(request)
         return .version2(prepared)
+    }
+
+    func prepareLoggingForCreate(
+        configuration: ContainerLogConfiguration,
+        request: ContainerLogRequest?
+    ) async throws -> ContainerLoggingCreatePlan {
+        let catalog = try await logDriverCatalogProvider.logDriverCatalog()
+        return try Self.prepareLoggingForCreate(
+            configuration: configuration,
+            request: request,
+            defaults: containerSystemConfig.logging,
+            catalog: catalog
+        )
     }
 
     func sealLoggingForCreate(
@@ -774,7 +791,7 @@ public actor ContainersService {
         }
     }
 
-    private func validateLoggingForStart(
+    func validateLoggingForStart(
         containerID: String,
         configuration: ContainerLogConfiguration
     ) async throws {
@@ -795,8 +812,9 @@ public actor ContainersService {
             } else {
                 protectedOptions = [:]
             }
+            let catalog = try await logDriverCatalogProvider.logDriverCatalog()
             try ContainerLogStartValidator(
-                catalog: BuiltinLogDriverDescriptors.current
+                catalog: catalog
             ).validate(
                 configuration,
                 authenticatedProtectedOptions: protectedOptions

@@ -982,8 +982,27 @@ public protocol LogDriverCatalogProviding: Sendable {
     func logDriverCatalog() async throws -> LogDriverCatalog
 }
 
-/// Built-in provider descriptors. These contracts do not activate logging v2
-/// or replace the existing writer/read path.
+/// Immutable catalogue source used by the built-in authority and tests.
+///
+/// Dynamic registries can implement ``LogDriverCatalogProviding`` directly;
+/// callers deliberately query the provider again at each create and start
+/// boundary so a staged provider-generation change is revalidated instead of
+/// being hidden behind a process-lifetime snapshot.
+public struct StaticLogDriverCatalogProvider: LogDriverCatalogProviding {
+    private let catalog: LogDriverCatalog
+
+    public init(catalog: LogDriverCatalog) {
+        self.catalog = catalog
+    }
+
+    public func logDriverCatalog() async throws -> LogDriverCatalog {
+        catalog
+    }
+}
+
+/// Built-in core descriptors used when no dynamic provider registry is wired.
+/// A production registry appends provider-backed descriptors without changing
+/// these canonical core contracts.
 public enum BuiltinLogDriverDescriptors {
     public static let coreProvider = LogDriverProviderIdentity(
         id: "com.apple.container.logging.core",

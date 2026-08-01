@@ -29,6 +29,83 @@ import Testing
 @testable import ContainerPlugin
 
 struct ContainerLoggingAuthorityIntegrationTests {
+    @Test func injectedCatalogIsRequeriedAtCreateAndStartBoundaries() async throws {
+        try await withTemporaryRoot { root in
+            let descriptor = try testProviderDescriptor()
+            let catalog = try LogDriverCatalog(
+                descriptors: BuiltinLogDriverDescriptors.current.descriptors + [descriptor]
+            )
+            let provider = RecordingLogDriverCatalogProvider(catalog: catalog)
+            let service = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: provider
+            )
+
+            let plan = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(
+                    driver: "test-remote-alias",
+                    options: ["endpoint": "collector.example:1234"]
+                )
+            )
+            let sealed = try await service.sealLoggingForCreate(
+                containerID: "catalog-boundaries",
+                plan: plan
+            )
+            let resolved = try #require(sealed.configuration.resolved)
+            #expect(resolved.driver == descriptor.driver)
+            #expect(resolved.providerIdentity == descriptor.providerIdentity)
+            #expect(resolved.providerGenerationAtResolution == descriptor.providerGeneration)
+            #expect(resolved.readPolicy.source == .dualCache)
+
+            try await service.validateLoggingForStart(
+                containerID: "catalog-boundaries",
+                configuration: sealed.configuration
+            )
+            #expect(await provider.requestCount == 2)
+        }
+    }
+
+    @Test func providerGenerationChangeBetweenCreateAndStartFailsClosed() async throws {
+        try await withTemporaryRoot { root in
+            let createDescriptor = try testProviderDescriptor(providerGeneration: 7)
+            let startDescriptor = try testProviderDescriptor(providerGeneration: 8)
+            let createCatalog = try LogDriverCatalog(
+                descriptors: BuiltinLogDriverDescriptors.current.descriptors + [createDescriptor]
+            )
+            let startCatalog = try LogDriverCatalog(
+                descriptors: BuiltinLogDriverDescriptors.current.descriptors + [startDescriptor]
+            )
+            let provider = RecordingLogDriverCatalogProvider(
+                catalogs: [createCatalog, startCatalog]
+            )
+            let service = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: provider
+            )
+            let plan = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(driver: createDescriptor.driver)
+            )
+            let sealed = try await service.sealLoggingForCreate(
+                containerID: "changed-provider-generation",
+                plan: plan
+            )
+
+            let error = await #expect(throws: ContainerizationError.self) {
+                try await service.validateLoggingForStart(
+                    containerID: "changed-provider-generation",
+                    configuration: sealed.configuration
+                )
+            }
+            #expect(error?.code == .invalidState)
+            #expect(error?.message.contains("provider generation") == true)
+            #expect(await provider.requestCount == 2)
+        }
+    }
+
     @Test func sealedCreateConfigurationIsIdenticalAcrossRuntimeAndSnapshotPersistence() async throws {
         try await withTemporaryRoot { root in
             let secret = "DO_NOT_EXPOSE_THIS_VALUE"
@@ -238,7 +315,10 @@ struct ContainerLoggingAuthorityIntegrationTests {
 
     private func makeService(
         appRoot: URL,
-        includeRuntime: Bool
+        includeRuntime: Bool,
+        logDriverCatalogProvider: any LogDriverCatalogProviding = StaticLogDriverCatalogProvider(
+            catalog: BuiltinLogDriverDescriptors.current
+        )
     ) throws -> ContainersService {
         try ContainersService(
             appRoot: appRoot,
@@ -247,7 +327,38 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 includeRuntime: includeRuntime
             ),
             containerSystemConfig: ContainerSystemConfig(),
-            log: Logger(label: "ContainerLoggingAuthorityIntegrationTests")
+            log: Logger(label: "ContainerLoggingAuthorityIntegrationTests"),
+            logDriverCatalogProvider: logDriverCatalogProvider
+        )
+    }
+
+    private func testProviderDescriptor(
+        providerGeneration: UInt64 = 7
+    ) throws -> LogDriverDescriptor {
+        try LogDriverDescriptor(
+            driver: "test-remote",
+            aliases: ["test-remote-alias"],
+            providerIdentity: LogDriverProviderIdentity(
+                id: "test.logging.provider",
+                version: "1",
+                kind: .native
+            ),
+            providerGeneration: providerGeneration,
+            placement: .macOSHost,
+            trust: .builtIn,
+            options: [
+                LogDriverOptionDescriptor(name: "endpoint", valueKind: .string)
+            ],
+            capabilities: try LogDriverCapabilities(
+                deliveryModes: [.blocking, .nonBlocking],
+                nativeRead: false,
+                readFilters: [],
+                supportsDualCache: true,
+                supportsDockerPluginProtocol: false,
+                requiresDeliverySession: true,
+                logPathVisibility: .none,
+                fileDefaults: nil
+            )
         )
     }
 
@@ -341,6 +452,28 @@ struct ContainerLoggingAuthorityIntegrationTests {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         try await operation(root)
+    }
+}
+
+private actor RecordingLogDriverCatalogProvider: LogDriverCatalogProviding {
+    private var catalogs: [LogDriverCatalog]
+    private(set) var requestCount = 0
+
+    init(catalog: LogDriverCatalog) {
+        self.catalogs = [catalog]
+    }
+
+    init(catalogs: [LogDriverCatalog]) {
+        precondition(!catalogs.isEmpty)
+        self.catalogs = catalogs
+    }
+
+    func logDriverCatalog() async throws -> LogDriverCatalog {
+        requestCount += 1
+        if catalogs.count > 1 {
+            return catalogs.removeFirst()
+        }
+        return catalogs[0]
     }
 }
 
