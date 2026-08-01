@@ -500,6 +500,8 @@ public actor DockerPluginLogReader: ContainerLogReader {
     private var closeInProgress = false
     private var closeWaiters = [CheckedContinuation<Void, Never>]()
     private var readInProgress = false
+    private var explicitlyCancelled = false
+    private var sinceGate: Date?
 
     private init(
         stream: any DockerPluginResponseStream,
@@ -509,6 +511,7 @@ public actor DockerPluginLogReader: ContainerLogReader {
         self.stream = stream
         self.request = request
         self.processGeneration = processGeneration
+        sinceGate = request.since
     }
 
     public static func open(
@@ -546,9 +549,14 @@ public actor DockerPluginLogReader: ContainerLogReader {
             try await nextWhileHoldingOperation()
         } onCancel: {
             Task {
-                await self.closeImmediately()
+                await self.cancel()
             }
         }
+    }
+
+    public func cancel() async {
+        explicitlyCancelled = true
+        await closeImmediately()
     }
 
     public func close() async {
@@ -581,6 +589,9 @@ public actor DockerPluginLogReader: ContainerLogReader {
                 )
                 try Task.checkCancellation()
                 guard !ended else {
+                    if explicitlyCancelled {
+                        throw ContainerLogReaderError.cancelled
+                    }
                     throw ContainerLogReaderError.alreadyEnded
                 }
                 guard let chunk = nextChunk else {
@@ -597,11 +608,17 @@ public actor DockerPluginLogReader: ContainerLogReader {
             }
         } catch is CancellationError {
             await closeImmediately()
+            if explicitlyCancelled, !Task.isCancelled {
+                throw ContainerLogReaderError.cancelled
+            }
             throw CancellationError()
         } catch let error as DockerPluginProtocolError {
             if Task.isCancelled {
                 await closeImmediately()
                 throw CancellationError()
+            }
+            if explicitlyCancelled {
+                throw ContainerLogReaderError.cancelled
             }
             await closeImmediately()
             throw error
@@ -609,6 +626,9 @@ public actor DockerPluginLogReader: ContainerLogReader {
             if Task.isCancelled {
                 await closeImmediately()
                 throw CancellationError()
+            }
+            if explicitlyCancelled {
+                throw ContainerLogReaderError.cancelled
             }
             if ended {
                 throw ContainerLogReaderError.alreadyEnded
@@ -642,8 +662,11 @@ public actor DockerPluginLogReader: ContainerLogReader {
 
     private func filter(_ entry: DockerPluginLogEntry) throws -> FilteredEntry {
         let timestamp = try Self.timestamp(entry.timeNano)
-        if let since = request.since, timestamp < (try Self.timestamp(since)) {
-            return .skip
+        if let sinceGate {
+            guard timestamp >= (try Self.timestamp(sinceGate)) else {
+                return .skip
+            }
+            self.sinceGate = nil
         }
         if let until = request.until, timestamp > (try Self.timestamp(until)) {
             return .endOfStream

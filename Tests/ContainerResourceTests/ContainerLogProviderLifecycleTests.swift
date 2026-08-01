@@ -486,6 +486,8 @@ private actor FakeReader: ContainerLogReader {
     func next() async throws -> ContainerLogReaderEventV1 {
         .endOfStream
     }
+
+    func cancel() async {}
 }
 
 private actor FakeProvider: ContainerLogDriverProvider {

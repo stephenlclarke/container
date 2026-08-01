@@ -228,6 +228,41 @@ struct ContainerLogNativeReaderTests {
         }
     }
 
+    @Test
+    func bufferedReaderRejectsConcurrentCallAndTaskCancellationEndsIt() async throws {
+        let gate = NativeReaderAsyncGate()
+        let reader: any ContainerLogReader = ContainerLogBufferedReader(
+            records: [
+                try ContainerLogReadRecordV1(
+                    stream: .stdout,
+                    timestamp: ContainerLogTimestamp(
+                        secondsSinceUnixEpoch: 1,
+                        nanoseconds: 0
+                    ),
+                    data: Data("buffered\n".utf8),
+                    sequence: 1
+                )
+            ],
+            nextCallAdmitted: { await gate.block() }
+        )
+        let first = Task {
+            try await reader.next()
+        }
+        await gate.waitUntilEntered()
+
+        await #expect(throws: ContainerLogReaderError.concurrentReadNotSupported) {
+            try await reader.next()
+        }
+        first.cancel()
+        await gate.release()
+        await #expect(throws: CancellationError.self) {
+            try await first.value
+        }
+        await #expect(throws: ContainerLogReaderError.alreadyEnded) {
+            try await reader.next()
+        }
+    }
+
     private func drain(
         _ reader: any ContainerLogReader
     ) async throws -> [ContainerLogReadRecordV1] {
@@ -351,4 +386,44 @@ private struct NativeReaderFixture {
 
 private enum NativeReaderFixtureError: Error {
     case canonicalTemporaryDirectory(Int32)
+}
+
+private actor NativeReaderAsyncGate {
+    private var entered = false
+    private var released = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func block() async {
+        entered = true
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+        guard !released else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func waitUntilEntered() async {
+        guard !entered else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            enteredWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters {
+            waiter.resume()
+        }
+    }
 }

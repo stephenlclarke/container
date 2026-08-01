@@ -471,4 +471,13 @@ package struct ContainerLogRuntimeCapture: @unchecked Sendable {
         try? stdout?.close()
         try? stderr?.close()
     }
+
+    package func makeReader(
+        request: ContainerLogReadRequest
+    ) throws -> any ContainerLogReader {
+        guard let session else {
+            throw ContainerLogReaderError.configuredDriverDoesNotSupportReading
+        }
+        return try session.makeReader(request: request)
+    }
 }

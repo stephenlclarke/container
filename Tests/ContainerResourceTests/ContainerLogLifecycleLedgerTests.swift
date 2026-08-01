@@ -642,6 +642,8 @@ private actor LifecycleFakeReader: ContainerLogReader {
     func next() async throws -> ContainerLogReaderEventV1 {
         .endOfStream
     }
+
+    func cancel() async {}
 }
 
 private actor FakeLifecycleProvider: ContainerLogDriverProvider {

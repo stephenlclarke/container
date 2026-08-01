@@ -66,6 +66,7 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
     private let processGeneration: UInt64
     private let attributes: [String: String]
     private let observationProvider: @Sendable () -> ContainerLogObservation
+    private let readCoordinator: ContainerLogCanonicalReadCoordinator?
     private let delivery: Delivery
     private var state: State
 
@@ -76,6 +77,12 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
         processGeneration: UInt64,
         initialSequence: UInt64 = 1,
         attributes: [String: String] = [:],
+        maximumLiveReaderBufferSizeInBytes: Int = ContainerLogCanonicalReadCoordinator
+            .defaultMaximumLiveBufferedBytes,
+        maximumAggregateReaderBufferSizeInBytes: Int = ContainerLogCanonicalReadCoordinator
+            .defaultMaximumAggregateBufferedBytes,
+        maximumConcurrentReaders: Int = ContainerLogCanonicalReadCoordinator
+            .defaultMaximumConcurrentReaders,
         observationProvider: @escaping @Sendable () -> ContainerLogObservation = {
             ContainerLogObservation.now()
         }
@@ -113,13 +120,28 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
         self.processGeneration = processGeneration
         self.attributes = attributes
         self.observationProvider = observationProvider
+
+        let effectiveDestination: any ContainerLogRecordDestination
+        if let readableDestination = destination as? any ContainerLogCanonicalReadDestination {
+            let coordinator = ContainerLogCanonicalReadCoordinator(
+                destination: readableDestination,
+                maximumLiveBufferedBytes: maximumLiveReaderBufferSizeInBytes,
+                maximumAggregateBufferedBytes: maximumAggregateReaderBufferSizeInBytes,
+                maximumConcurrentReaders: maximumConcurrentReaders
+            )
+            readCoordinator = coordinator
+            effectiveDestination = coordinator
+        } else {
+            readCoordinator = nil
+            effectiveDestination = destination
+        }
         switch deliveryConfiguration.effectiveMode {
         case .blocking:
-            delivery = .blocking(destination)
+            delivery = .blocking(effectiveDestination)
         case .nonBlocking:
             delivery = .nonBlocking(
                 ContainerLogNonBlockingDelivery(
-                    destination: destination,
+                    destination: effectiveDestination,
                     capacityInBytes: deliveryConfiguration.effectiveMaxBufferSizeInBytes
                         ?? LogDeliveryConfiguration.defaultNonBlockingBufferSizeInBytes
                 ))
@@ -164,6 +186,18 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
                 closeLocked(stream)
             }
         }
+    }
+
+    /// Opens an atomic historical-plus-live reader on this exact generation.
+    /// Records become visible only after the configured destination accepts
+    /// them, including when delivery itself is non-blocking.
+    package func makeReader(
+        request: ContainerLogReadRequest
+    ) throws -> any ContainerLogReader {
+        guard let readCoordinator else {
+            throw ContainerLogReaderError.configuredDriverDoesNotSupportReading
+        }
+        return try readCoordinator.makeReader(request: request)
     }
 
     package var snapshot: ContainerLogRecordSessionSnapshot {

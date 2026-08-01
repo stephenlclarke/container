@@ -444,6 +444,73 @@ struct DockerPluginAdapterTests {
         #expect(await responseStream.closeCount == 1)
     }
 
+    @Test func protocolCancellationInterruptsPendingPluginRead() async throws {
+        let responseStream = CancellableDockerPluginTestResponseStream()
+        let transport = DockerPluginTestTransport(stream: responseStream)
+        let reader: any ContainerLogReader = try await DockerPluginLogReader.open(
+            client: DockerPluginProtocolClient(transport: transport),
+            capabilities: DockerPluginCapabilities(readLogs: true),
+            info: dockerPluginTestInfo(),
+            request: ContainerLogReadRequest(follow: true)
+        )
+        let read = Task { try await reader.next() }
+        await responseStream.waitUntilReading()
+
+        await reader.cancel()
+
+        await #expect(throws: ContainerLogReaderError.cancelled) {
+            try await read.value
+        }
+        #expect(await responseStream.closeCount == 1)
+    }
+
+    @Test func sinceGateKeepsLaterTimestampRegressionsVisible() async throws {
+        let entries = [
+            DockerPluginLogEntry(
+                source: "stdout",
+                timeNano: 9_000_000_000,
+                line: Data("before".utf8),
+                partial: false,
+                partialMetadata: nil
+            ),
+            DockerPluginLogEntry(
+                source: "stdout",
+                timeNano: 12_000_000_000,
+                line: Data("qualifying".utf8),
+                partial: false,
+                partialMetadata: nil
+            ),
+            DockerPluginLogEntry(
+                source: "stdout",
+                timeNano: 8_000_000_000,
+                line: Data("regressed".utf8),
+                partial: false,
+                partialMetadata: nil
+            ),
+        ]
+        let wire = try entries.reduce(into: Data()) { data, entry in
+            data.append(try DockerPluginLogEntryCodec.encodeFrame(entry))
+        }
+        let responseStream = DockerPluginTestResponseStream(chunks: [wire])
+        let reader = try await DockerPluginLogReader.open(
+            client: DockerPluginProtocolClient(
+                transport: DockerPluginTestTransport(stream: responseStream)
+            ),
+            capabilities: DockerPluginCapabilities(readLogs: true),
+            info: dockerPluginTestInfo(),
+            request: ContainerLogReadRequest(
+                follow: true,
+                since: Date(timeIntervalSince1970: 10)
+            )
+        )
+
+        let first = try await reader.next()
+        let second = try await reader.next()
+        #expect(first.record?.data == Data("qualifying".utf8))
+        #expect(second.record?.data == Data("regressed".utf8))
+        #expect(try await reader.next() == .endOfStream)
+    }
+
     @Test func concurrentReaderPullIsRejectedWithoutQueuing() async throws {
         let responseStream = CancellableDockerPluginTestResponseStream()
         let transport = DockerPluginTestTransport(stream: responseStream)
@@ -464,6 +531,15 @@ struct DockerPluginAdapterTests {
         await #expect(throws: CancellationError.self) {
             try await first.value
         }
+    }
+}
+
+extension ContainerLogReaderEventV1 {
+    fileprivate var record: ContainerLogReadRecordV1? {
+        guard case .record(let record) = self else {
+            return nil
+        }
+        return record
     }
 }
 

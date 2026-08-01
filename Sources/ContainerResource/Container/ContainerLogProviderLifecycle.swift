@@ -222,6 +222,25 @@ public enum ContainerLogReaderError: Error, Equatable, Sendable {
     case activeReaderRequired
     /// A consumer called `next()` after the reader's single terminal event.
     case alreadyEnded
+    /// A consumer issued a second pull while its previous pull was outstanding.
+    case concurrentReadNotSupported
+    /// The runtime already owns the maximum number of retained readers for one
+    /// active logging generation.
+    case readerLimitExceeded(maximumReaders: Int)
+    /// A historical snapshot cannot fit in the coordinator's remaining
+    /// retained-byte budget.
+    case historyBufferLimitExceeded(maximumBufferedBytes: Int)
+    /// Retaining another live record would exceed the byte budget shared by
+    /// every reader on the active logging generation.
+    case aggregateBufferLimitExceeded(maximumBufferedBytes: Int)
+    /// The consumer did not drain live records within the reader's fixed bound.
+    /// The writer is never blocked or allowed to grow memory without limit.
+    case consumerTooSlow(maximumBufferedBytes: Int)
+    /// The native reader was explicitly detached before its terminal event.
+    case cancelled
+    /// Persistence succeeded, but the driver-specific public presentation could
+    /// not be constructed. This fails the reader without failing the workload.
+    case presentationFailed
 }
 
 /// One driver-neutral historical-read record.
@@ -1070,6 +1089,8 @@ public enum ContainerLogReaderEventV1: Equatable, Sendable {
 
 public protocol ContainerLogReader: Sendable {
     func next() async throws -> ContainerLogReaderEventV1
+    /// Detaches the reader and interrupts an outstanding `next()` call.
+    func cancel() async
 }
 
 public protocol ContainerLogDriverSession: Sendable {

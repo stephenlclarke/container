@@ -205,25 +205,94 @@ package enum ContainerLogNativeReaderFactory {
     }
 }
 
-package actor ContainerLogBufferedReader: ContainerLogReader {
-    private let records: [ContainerLogReadRecordV1]
+package final class ContainerLogBufferedReader: ContainerLogReader, @unchecked Sendable {
+    private let lock = NSLock()
+    private let nextCallAdmitted: (@Sendable () async -> Void)?
+    private var records: [ContainerLogReadRecordV1]
     private var index = 0
     private var terminalEmitted = false
+    private var nextInFlight = false
+    private var cancelled = false
 
-    package init(records: [ContainerLogReadRecordV1]) {
+    package init(
+        records: [ContainerLogReadRecordV1],
+        nextCallAdmitted: (@Sendable () async -> Void)? = nil
+    ) {
         self.records = records
+        self.nextCallAdmitted = nextCallAdmitted
     }
 
     package func next() async throws -> ContainerLogReaderEventV1 {
-        guard !terminalEmitted else {
-            throw ContainerLogReaderError.alreadyEnded
+        try beginNext()
+        defer { finishNext() }
+
+        return try await withTaskCancellationHandler {
+            do {
+                if let nextCallAdmitted {
+                    await nextCallAdmitted()
+                }
+                try Task.checkCancellation()
+                return try lock.withLock {
+                    guard !cancelled else {
+                        throw ContainerLogReaderError.cancelled
+                    }
+                    guard !terminalEmitted else {
+                        throw ContainerLogReaderError.alreadyEnded
+                    }
+                    if index < records.count {
+                        let record = records[index]
+                        index += 1
+                        if index >= 1_024, index * 2 >= records.count {
+                            records.removeFirst(index)
+                            index = 0
+                        }
+                        return .record(record)
+                    }
+                    records.removeAll(keepingCapacity: false)
+                    index = 0
+                    terminalEmitted = true
+                    return .endOfStream
+                }
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                throw error
+            }
+        } onCancel: {
+            self.cancelImmediately()
         }
-        if index < records.count {
-            defer { index += 1 }
-            return .record(records[index])
+    }
+
+    package func cancel() async {
+        cancelImmediately()
+    }
+
+    private func beginNext() throws {
+        try lock.withLock {
+            guard !cancelled else {
+                throw ContainerLogReaderError.alreadyEnded
+            }
+            guard !nextInFlight else {
+                throw ContainerLogReaderError.concurrentReadNotSupported
+            }
+            nextInFlight = true
         }
-        terminalEmitted = true
-        return .endOfStream
+    }
+
+    private func finishNext() {
+        lock.withLock {
+            precondition(nextInFlight)
+            nextInFlight = false
+        }
+    }
+
+    private func cancelImmediately() {
+        lock.withLock {
+            cancelled = true
+            records.removeAll(keepingCapacity: false)
+            index = 0
+        }
     }
 }
 
