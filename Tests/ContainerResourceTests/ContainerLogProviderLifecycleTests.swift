@@ -302,6 +302,86 @@ struct ContainerLogProviderLifecycleTests {
         #expect(!isEncodable(receipt))
     }
 
+    @Test func readRecordsPreservePresentationBytesAndEnforceBounds() throws {
+        let timestamp = try ContainerLogTimestamp(secondsSinceUnixEpoch: 12, nanoseconds: 34)
+        let presentation = Data([0x00, 0xff, UInt8(ascii: "\n")])
+        let record = try ContainerLogReadRecordV1(
+            stream: .stderr,
+            timestamp: timestamp,
+            data: presentation,
+            attributes: ["label": "value"],
+            sequence: 7,
+            processGeneration: 9
+        )
+
+        #expect(record.data == presentation)
+        #expect(record.stream == ContainerLogStream.stderr)
+        #expect(record.timestamp == timestamp)
+        #expect(record.attributes == ["label": "value"])
+        #expect(record.sequence == 7)
+        #expect(record.processGeneration == 9)
+        #expect(ContainerLogReaderEventV1.record(record) == .record(record))
+
+        #expect(
+            throws: ContainerLogReadRecordError.dataTooLarge(
+                maximumBytes: ContainerLogReadRecordV1.maximumDataBytes
+            )
+        ) {
+            try ContainerLogReadRecordV1(
+                stream: .stdout,
+                timestamp: timestamp,
+                data: Data(
+                    repeating: 0x41,
+                    count: ContainerLogReadRecordV1.maximumDataBytes + 1
+                ),
+                sequence: 1
+            )
+        }
+        #expect(throws: ContainerLogReadRecordError.invalidSequence) {
+            try ContainerLogReadRecordV1(
+                stream: .stdout,
+                timestamp: timestamp,
+                data: Data(),
+                sequence: 0
+            )
+        }
+        #expect(throws: ContainerLogReadRecordError.invalidProcessGeneration) {
+            try ContainerLogReadRecordV1(
+                stream: .stdout,
+                timestamp: timestamp,
+                data: Data(),
+                sequence: 1,
+                processGeneration: 0
+            )
+        }
+        #expect(throws: ContainerLogReadRecordError.tooManyAttributes) {
+            try ContainerLogReadRecordV1(
+                stream: .stdout,
+                timestamp: timestamp,
+                data: Data(),
+                attributes: Dictionary(
+                    uniqueKeysWithValues: (0...ContainerLogRecordV2.maximumAttributeCount)
+                        .map { ("key-\($0)", "value") }
+                ),
+                sequence: 1
+            )
+        }
+        #expect(throws: ContainerLogReadRecordError.attributesTooLarge) {
+            try ContainerLogReadRecordV1(
+                stream: .stdout,
+                timestamp: timestamp,
+                data: Data(),
+                attributes: [
+                    "key": String(
+                        repeating: "x",
+                        count: ContainerLogRecordV2.maximumAttributeUTF8Bytes
+                    )
+                ],
+                sequence: 1
+            )
+        }
+    }
+
     @Test func neutralSessionReaderAndProviderProtocolsAreUsable() async throws {
         let provider = FakeProvider()
         let request = try makeStartRequest()

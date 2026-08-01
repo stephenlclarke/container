@@ -201,6 +201,75 @@ public struct ContainerLogReadRequest: Codable, Equatable, Sendable {
     }
 }
 
+public enum ContainerLogReadRecordError: Error, Equatable, Sendable {
+    case dataTooLarge(maximumBytes: Int)
+    case invalidSequence
+    case invalidProcessGeneration
+    case tooManyAttributes
+    case attributesTooLarge
+}
+
+/// One driver-neutral historical-read record.
+///
+/// `data` contains the exact presentation bytes the logs API must emit. This
+/// is deliberately distinct from ``ContainerLogRecordV2``: Docker's public
+/// json-file representation does not retain partial IDs or ordinals, so
+/// reconstructing a writer-side record would invent metadata and could add a
+/// line feed to a non-final partial chunk.
+public struct ContainerLogReadRecordV1: Equatable, Sendable {
+    public static let maximumDataBytes = ContainerLogRecordSplitterV1.maximumSupportedRecordBytes + 1
+
+    public let stream: ContainerLogStream
+    public let timestamp: ContainerLogTimestamp
+    public let data: Data
+    public let attributes: [String: String]
+    public let sequence: UInt64
+    public let processGeneration: UInt64?
+
+    public init(
+        stream: ContainerLogStream,
+        timestamp: ContainerLogTimestamp,
+        data: Data,
+        attributes: [String: String] = [:],
+        sequence: UInt64,
+        processGeneration: UInt64? = nil
+    ) throws {
+        guard data.count <= Self.maximumDataBytes else {
+            throw ContainerLogReadRecordError.dataTooLarge(
+                maximumBytes: Self.maximumDataBytes
+            )
+        }
+        guard sequence > 0 else {
+            throw ContainerLogReadRecordError.invalidSequence
+        }
+        if let processGeneration, processGeneration == 0 {
+            throw ContainerLogReadRecordError.invalidProcessGeneration
+        }
+        guard attributes.count <= ContainerLogRecordV2.maximumAttributeCount else {
+            throw ContainerLogReadRecordError.tooManyAttributes
+        }
+        var attributeBytes = 0
+        for (key, value) in attributes {
+            let (entryBytes, entryOverflow) = key.utf8.count.addingReportingOverflow(value.utf8.count)
+            let (newTotal, totalOverflow) = attributeBytes.addingReportingOverflow(entryBytes)
+            guard
+                !entryOverflow,
+                !totalOverflow,
+                newTotal <= ContainerLogRecordV2.maximumAttributeUTF8Bytes
+            else {
+                throw ContainerLogReadRecordError.attributesTooLarge
+            }
+            attributeBytes = newTotal
+        }
+        self.stream = stream
+        self.timestamp = timestamp
+        self.data = data
+        self.attributes = attributes
+        self.sequence = sequence
+        self.processGeneration = processGeneration
+    }
+}
+
 /// Private provider material deliberately lacking `Codable`, textual, and
 /// generic persistence conformances.
 public struct LogDriverOpaqueEffectTokenV1: Sendable, CustomStringConvertible,
@@ -980,7 +1049,7 @@ public struct StartedLogDriverReaderV1: Sendable {
 /// One bounded event from a driver-neutral reader. A reader yields records one
 /// at a time and then exactly one terminal event.
 public enum ContainerLogReaderEventV1: Equatable, Sendable {
-    case record(ContainerLogRecordV2)
+    case record(ContainerLogReadRecordV1)
     case endOfStream
 }
 
