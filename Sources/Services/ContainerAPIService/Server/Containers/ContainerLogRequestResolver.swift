@@ -327,7 +327,7 @@ struct ContainerLogRequestResolver: Sendable {
 
         let maxBufferSize: UInt64?
         if let value = options["max-buffer-size"] {
-            guard let parsed = ContainerLogOptionContractValidator.parseSize(value, allowingZero: true) else {
+            guard let parsed = ContainerLogOptionValueParser.sizeInBytes(value, allowingZero: true) else {
                 throw invalidOption(
                     driver: descriptor.driver,
                     name: "max-buffer-size",
@@ -380,7 +380,7 @@ struct ContainerLogRequestResolver: Sendable {
     private static func validateCacheOption(name: String, value: String, driver: String) throws {
         switch name {
         case "cache-disabled":
-            guard value.isEmpty || ContainerLogOptionContractValidator.parseBoolean(value) != nil else {
+            guard value.isEmpty || ContainerLogOptionValueParser.boolean(value) != nil else {
                 throw invalidOption(driver: driver, name: name, reason: "expected a boolean")
             }
         case "cache-compress", "cache-max-file", "cache-max-size":
@@ -402,7 +402,7 @@ struct ContainerLogRequestResolver: Sendable {
         if value.isEmpty {
             return false
         }
-        guard let parsed = ContainerLogOptionContractValidator.parseBoolean(value) else {
+        guard let parsed = ContainerLogOptionValueParser.boolean(value) else {
             throw invalidOption(driver: driver, name: name, reason: "expected a boolean")
         }
         return parsed

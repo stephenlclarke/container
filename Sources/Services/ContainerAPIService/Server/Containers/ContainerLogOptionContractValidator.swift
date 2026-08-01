@@ -33,7 +33,7 @@ enum ContainerLogOptionContractValidator {
         case .string, .commaSeparatedNames, .tagTemplate:
             return
         case .boolean:
-            guard parseBoolean(value) != nil else {
+            guard ContainerLogOptionValueParser.boolean(value) != nil else {
                 throw invalidOption(driver: driver, name: option.name, reason: "expected a boolean")
             }
         case .positiveInteger:
@@ -41,7 +41,12 @@ enum ContainerLogOptionContractValidator {
                 throw invalidOption(driver: driver, name: option.name, reason: "expected a positive integer")
             }
         case .size:
-            guard parseSize(value, allowingZero: option.name == "max-buffer-size") != nil else {
+            guard
+                ContainerLogOptionValueParser.sizeInBytes(
+                    value,
+                    allowingZero: option.name == "max-buffer-size"
+                ) != nil
+            else {
                 throw invalidOption(driver: driver, name: option.name, reason: "expected a valid byte size")
             }
         case .regularExpression:
@@ -71,111 +76,6 @@ enum ContainerLogOptionContractValidator {
                 )
             }
         }
-    }
-
-    static func parseBoolean(_ value: String) -> Bool? {
-        switch value {
-        case "1", "t", "T", "TRUE", "true", "True": true
-        case "0", "f", "F", "FALSE", "false", "False": false
-        default: nil
-        }
-    }
-
-    static func parseSize(_ input: String, allowingZero: Bool) -> UInt64? {
-        guard let separator = input.lastIndex(where: isDockerSizeSeparator) else {
-            return nil
-        }
-
-        let numberText: Substring
-        let suffixText: Substring
-        if input[separator] == " " {
-            numberText = input[..<separator]
-            suffixText = input[input.index(after: separator)...]
-        } else {
-            numberText = input[...separator]
-            suffixText = input[input.index(after: separator)...]
-        }
-        guard
-            let number = parseGoFloat(String(numberText)),
-            number.isFinite,
-            allowingZero ? number >= 0 : number > 0
-        else {
-            return nil
-        }
-
-        let suffix = suffixText.lowercased()
-        guard suffix.utf8.count <= 3 else {
-            return nil
-        }
-
-        let multiplier: Double
-        switch suffix {
-        case "", "b":
-            multiplier = 1
-        case "k", "kb", "kib":
-            multiplier = 1024
-        case "m", "mb", "mib":
-            multiplier = 1024 * 1024
-        case "g", "gb", "gib":
-            multiplier = 1024 * 1024 * 1024
-        case "t", "tb", "tib":
-            multiplier = 1024 * 1024 * 1024 * 1024
-        case "p", "pb", "pib":
-            multiplier = 1024 * 1024 * 1024 * 1024 * 1024
-        default:
-            return nil
-        }
-        let bytes = number * multiplier
-        // go-units returns int64. Keep the conversion below 2^63 because
-        // Double(Int64.max) rounds up to that boundary.
-        guard bytes.isFinite, bytes < 9_223_372_036_854_775_808 else {
-            return nil
-        }
-        let result = UInt64(Int64(bytes))
-        guard allowingZero || result > 0 else {
-            return nil
-        }
-        return result
-    }
-
-    private static func isDockerSizeSeparator(_ character: Character) -> Bool {
-        character == "." || character == " " || character.wholeNumberValue != nil
-    }
-
-    private static func parseGoFloat(_ input: String) -> Double? {
-        guard input.contains("_") else {
-            return Double(input)
-        }
-
-        let characters = Array(input)
-        guard characters.first != "_", characters.last != "_" else {
-            return nil
-        }
-        let isHex = input.drop(while: { $0 == "+" || $0 == "-" }).lowercased().hasPrefix("0x")
-        for index in characters.indices where characters[index] == "_" {
-            guard index > characters.startIndex, index < characters.index(before: characters.endIndex) else {
-                return nil
-            }
-            let previous = characters[characters.index(before: index)]
-            let next = characters[characters.index(after: index)]
-            let validPrevious =
-                isASCIIDigit(previous)
-                || (isHex && (isASCIIHexDigit(previous) || previous.lowercased() == "x"))
-            let validNext = isASCIIDigit(next) || (isHex && isASCIIHexDigit(next))
-            guard validPrevious, validNext else {
-                return nil
-            }
-        }
-        return Double(input.replacingOccurrences(of: "_", with: ""))
-    }
-
-    private static func isASCIIDigit(_ character: Character) -> Bool {
-        character >= "0" && character <= "9"
-    }
-
-    private static func isASCIIHexDigit(_ character: Character) -> Bool {
-        isASCIIDigit(character)
-            || (character.lowercased() >= "a" && character.lowercased() <= "f")
     }
 
     private static func invalidOption(

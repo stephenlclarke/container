@@ -293,7 +293,7 @@ struct ContainerLogStartValidator: Sendable {
         let defaultCompress = descriptor.capabilities.fileDefaults?.compress ?? false
         let compress: Bool
         if let value = options["compress"] {
-            guard let parsed = ContainerLogOptionContractValidator.parseBoolean(value) else {
+            guard let parsed = ContainerLogOptionValueParser.boolean(value) else {
                 // The scalar validation above normally owns this error. Keep
                 // the helper total when called with a custom descriptor.
                 throw ContainerLogResolutionError.invalidOption(
