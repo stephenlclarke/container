@@ -63,14 +63,7 @@ public struct ContainerClient: Sendable {
             request.set(key: .kernel, value: kdata)
             request.set(key: .containerOptions, value: odata)
 
-            if let loggingRequest {
-                let loggingData = try JSONEncoder().encode(loggingRequest)
-                guard loggingData.count <= ContainerLogRequest.maximumEncodedTransportBytes else {
-                    throw ContainerizationError(
-                        .invalidArgument,
-                        message: "logging request exceeds the encoded byte limit"
-                    )
-                }
+            if let loggingData = try Self.encodedLoggingRequest(loggingRequest) {
                 request.set(key: .containerLogRequest, value: loggingData)
             }
 
@@ -92,6 +85,24 @@ public struct ContainerClient: Sendable {
                 cause: error
             )
         }
+    }
+
+    /// Encodes the optional authority request independently from the legacy
+    /// configuration field. Keeping this boundary narrow makes omission and
+    /// transport-size behavior directly testable without opening an XPC
+    /// connection.
+    static func encodedLoggingRequest(_ loggingRequest: ContainerLogRequest?) throws -> Data? {
+        guard let loggingRequest else {
+            return nil
+        }
+        let loggingData = try JSONEncoder().encode(loggingRequest)
+        guard loggingData.count <= ContainerLogRequest.maximumEncodedTransportBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "logging request exceeds the encoded byte limit"
+            )
+        }
+        return loggingData
     }
 
     /// List containers matching the given filters.

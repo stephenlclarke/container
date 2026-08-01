@@ -878,8 +878,8 @@ public struct Parser {
         options: [String] = []
     ) throws -> ContainerLogRequest {
         var optionMap: [String: String] = [:]
-        for option in options {
-            let (key, value) = try Self.logOption(option)
+        for (index, option) in options.enumerated() {
+            let (key, value) = try Self.logRequestOption(option, index: index)
             optionMap[key] = value
         }
         return ContainerLogRequest(driver: driver, options: optionMap)
@@ -951,6 +951,21 @@ public struct Parser {
             throw ContainerizationError(.invalidArgument, message: "invalid log option '\(option)' (expected key=value)")
         }
         return (key, value)
+    }
+
+    /// Splits a v2 option without interpreting its driver-specific value. The
+    /// authority owns value validation, including whether an empty value is
+    /// meaningful. Errors identify only the input position so protected values
+    /// cannot be reflected into diagnostics.
+    private static func logRequestOption(_ option: String, index: Int) throws -> (key: String, value: String) {
+        let parts = option.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid log option at position \(index + 1) (expected key=value with a non-empty key)"
+            )
+        }
+        return (String(parts[0]), String(parts[1]))
     }
 
     private static func logOptionSizeInBytes(_ value: String) throws -> UInt64 {

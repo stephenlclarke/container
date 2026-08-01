@@ -63,7 +63,17 @@ extension Application {
         @Argument(parsing: .captureForPassthrough, help: "Container init process arguments")
         var arguments: [String] = []
 
+        var loggingRequest: ContainerLogRequest {
+            get throws {
+                try Parser.loggingRequest(
+                    driver: managementFlags.logDriver,
+                    options: managementFlags.logOpt
+                )
+            }
+        }
+
         public func run() async throws {
+            let loggingRequest = try self.loggingRequest
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
             var exitCode: Int32 = 127
             let id = Utility.createContainerID(name: self.managementFlags.name)
@@ -104,6 +114,7 @@ extension Application {
                 resource: resourceFlags,
                 registry: registryFlags,
                 imageFetch: imageFetchFlags,
+                loggingRequest: loggingRequest,
                 containerSystemConfig: containerSystemConfig,
                 progressUpdate: progress.handler,
                 log: log
@@ -120,6 +131,7 @@ extension Application {
             let runtimeData = try LinuxRuntimeData.encoded(from: managementFlags)
             try await client.create(
                 configuration: ck.0,
+                loggingRequest: loggingRequest,
                 options: options,
                 kernel: ck.1,
                 initImage: ck.2,

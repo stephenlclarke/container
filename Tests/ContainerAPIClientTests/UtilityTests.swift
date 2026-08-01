@@ -24,6 +24,33 @@ import Testing
 
 struct UtilityTests {
 
+    @Test("A v2 logging request bypasses the legacy driver projection")
+    func loggingV2UsesLegacyCompatibilityPlaceholder() throws {
+        let request = ContainerLogRequest(
+            driver: "acme.example/remote",
+            options: ["advanced-option": "value"]
+        )
+
+        let configuration = try Utility.loggingConfiguration(
+            request: request,
+            legacyDriver: "acme.example/remote",
+            legacyOptions: ["advanced-option=value"]
+        )
+
+        #expect(configuration == .default)
+    }
+
+    @Test("An absent v2 logging request retains legacy compatibility behavior")
+    func absentLoggingV2RequestUsesLegacyProjection() throws {
+        let configuration = try Utility.loggingConfiguration(
+            request: nil,
+            legacyDriver: "none",
+            legacyOptions: []
+        )
+
+        #expect(configuration.storage == .none)
+    }
+
     @Test("Parse simple key-value pairs")
     func testSimpleKeyValuePairs() {
         let result = Utility.parseKeyValuePairs(["key1=value1", "key2=value2"])

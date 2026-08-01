@@ -118,6 +118,7 @@ public struct Utility {
         resource: Flags.Resource,
         registry: Flags.Registry,
         imageFetch: Flags.ImageFetch,
+        loggingRequest: ContainerLogRequest? = nil,
         containerSystemConfig: ContainerSystemConfig,
         progressUpdate: @escaping ProgressUpdateHandler,
         log: Logger
@@ -205,7 +206,11 @@ public struct Utility {
             defaultCPUs: containerSystemConfig.container.cpus,
             defaultMemory: containerSystemConfig.container.memory
         )
-        config.logging = try Parser.logging(driver: management.logDriver, options: management.logOpt)
+        config.logging = try Self.loggingConfiguration(
+            request: loggingRequest,
+            legacyDriver: management.logDriver,
+            legacyOptions: management.logOpt
+        )
         config.healthCheck = try Parser.healthCheck(
             command: management.healthCommand,
             interval: management.healthInterval,
@@ -359,6 +364,19 @@ public struct Utility {
         }
 
         return (config, kernel, management.initImage)
+    }
+
+    /// Keeps the legacy configuration field readable for old API callers
+    /// while ensuring a present v2 request remains the sole authority input.
+    static func loggingConfiguration(
+        request: ContainerLogRequest?,
+        legacyDriver: String?,
+        legacyOptions: [String]
+    ) throws -> ContainerLogConfiguration {
+        guard request == nil else {
+            return .default
+        }
+        return try Parser.logging(driver: legacyDriver, options: legacyOptions)
     }
 
     static func getAttachmentConfigurations(

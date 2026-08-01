@@ -1533,6 +1533,24 @@ struct ParserTest {
     }
 
     @Test
+    func testTypedLogRequestPreservesEmptyAndEmbeddedEqualsValues() throws {
+        let request = try Parser.loggingRequest(
+            driver: "acme.example/remote",
+            options: [
+                "template=",
+                "endpoint=https://logs.example/path?token=a=b",
+            ]
+        )
+
+        #expect(
+            request.options == [
+                "endpoint": "https://logs.example/path?token=a=b",
+                "template": "",
+            ]
+        )
+    }
+
+    @Test
     func testTypedLogRequestPreservesOmittedAndEmptyDriver() throws {
         let omitted = try Parser.loggingRequest(driver: nil)
         let empty = try Parser.loggingRequest(driver: "")
@@ -1549,6 +1567,20 @@ struct ParserTest {
         )
 
         #expect(request.options == ["max-file": "5"])
+    }
+
+    @Test
+    func testTypedLogRequestMalformedOptionErrorDoesNotEchoRawMaterial() throws {
+        let marker = "DO_NOT_ECHO_THIS_LOGGING_SECRET"
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.loggingRequest(
+                driver: "splunk",
+                options: ["mode=blocking", "=\(marker)"]
+            )
+        }
+
+        #expect(error?.message == "invalid log option at position 2 (expected key=value with a non-empty key)")
+        #expect(!String(describing: error).contains(marker))
     }
 
     @Test
