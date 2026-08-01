@@ -87,6 +87,28 @@ struct ContainerLogDeliveryTests {
     }
 
     @Test
+    func zeroPayloadQueueDoesNotConsumeDockerOversizedAllowance() throws {
+        let destination = BlockingRecordDestination()
+        let delivery = try ContainerLogNonBlockingDelivery(
+            destination: destination,
+            capacityInBytes: 1,
+            maximumQueuedRecordCount: 4
+        )
+
+        #expect(try delivery.enqueue(record("", sequence: 1)) == .enqueued)
+        try destination.waitUntilWriteStarted()
+        #expect(try delivery.enqueue(record("", sequence: 2)) == .enqueued)
+        #expect(try delivery.enqueue(record("oversized", sequence: 3)) == .enqueued)
+        #expect(try delivery.enqueue(record("", sequence: 4)) == .dropped)
+
+        destination.releaseWrites()
+        try delivery.close()
+
+        #expect(destination.payloads == ["", "", "oversized"])
+        #expect(delivery.snapshot.payloadLimitDroppedRecordCount == 1)
+    }
+
+    @Test
     func validatesMaximumQueuedRecordCountAtConstruction() {
         let destination = ScriptedRecordDestination()
 
@@ -163,6 +185,23 @@ struct ContainerLogDeliveryTests {
     }
 
     @Test
+    func closeFailureIsStableAndObservable() throws {
+        let destination = ScriptedRecordDestination(closeFails: true)
+        let delivery = ContainerLogNonBlockingDelivery(destination: destination)
+
+        #expect(throws: DestinationError.scripted) {
+            try delivery.close()
+        }
+        #expect(throws: DestinationError.scripted) {
+            try delivery.close()
+        }
+
+        #expect(delivery.snapshot.closeFailureCount == 1)
+        #expect(delivery.snapshot.closed)
+        #expect(destination.closeCount == 1)
+    }
+
+    @Test
     func releasingIdleDeliveryClosesDestination() throws {
         let destination = ScriptedRecordDestination()
         var delivery: ContainerLogNonBlockingDelivery? = ContainerLogNonBlockingDelivery(
@@ -211,7 +250,7 @@ struct ContainerLogDeliveryTests {
     }
 }
 
-private enum DestinationError: Error {
+private enum DestinationError: Error, Equatable {
     case scripted
     case timeout
 }
@@ -219,11 +258,13 @@ private enum DestinationError: Error {
 private final class ScriptedRecordDestination: ContainerLogRecordDestination, @unchecked Sendable {
     private let condition = NSCondition()
     private let failingSequences: Set<UInt64>
+    private let closeFails: Bool
     private var storedAttemptedSequences: [UInt64] = []
     private var storedCloseCount = 0
 
-    init(failingSequences: Set<UInt64> = []) {
+    init(failingSequences: Set<UInt64> = [], closeFails: Bool = false) {
         self.failingSequences = failingSequences
+        self.closeFails = closeFails
     }
 
     func write(_ record: ContainerLogRecordV2) throws {
@@ -236,11 +277,14 @@ private final class ScriptedRecordDestination: ContainerLogRecordDestination, @u
         }
     }
 
-    func close() {
+    func close() throws {
         condition.lock()
         storedCloseCount += 1
         condition.broadcast()
         condition.unlock()
+        if closeFails {
+            throw DestinationError.scripted
+        }
     }
 
     var attemptedSequences: [UInt64] {

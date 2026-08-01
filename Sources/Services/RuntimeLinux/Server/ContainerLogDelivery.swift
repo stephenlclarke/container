@@ -40,6 +40,7 @@ package struct ContainerLogDeliverySnapshot: Equatable, Sendable {
     package let recordLimitDroppedRecordCount: UInt64
     package let deliveredRecordCount: UInt64
     package let deliveryFailureCount: UInt64
+    package let closeFailureCount: UInt64
     package let discardedDuringCloseCount: UInt64
     package let queuedRecordCount: Int
     package let queuedPayloadBytes: UInt64
@@ -83,6 +84,7 @@ package final class ContainerLogNonBlockingDelivery: @unchecked Sendable {
     private var recordLimitDroppedRecordCount: UInt64 = 0
     private var deliveredRecordCount: UInt64 = 0
     private var deliveryFailureCount: UInt64 = 0
+    private var closeFailureCount: UInt64 = 0
     private var discardedDuringCloseCount: UInt64 = 0
 
     package init(
@@ -124,7 +126,11 @@ package final class ContainerLogNonBlockingDelivery: @unchecked Sendable {
             condition.unlock()
             throw ContainerLogDeliveryError.payloadByteCountOverflow
         }
-        if queuedRecordCount > 0, prospectiveBytes > capacityInBytes {
+        // Moby's ring decides emptiness from its byte counter. Zero-payload
+        // records therefore do not consume the one-oversized-record allowance;
+        // the independent record ceiling below is our bounded metadata-flood
+        // extension and must not alter that byte-accounting decision.
+        if queuedPayloadBytes > 0, prospectiveBytes > capacityInBytes {
             increment(&droppedRecordCount)
             increment(&payloadLimitDroppedRecordCount)
             condition.signal()
@@ -212,6 +218,9 @@ package final class ContainerLogNonBlockingDelivery: @unchecked Sendable {
             try destination.close()
         } catch {
             terminalError = error
+            condition.withLock {
+                increment(&closeFailureCount)
+            }
         }
 
         condition.withLock {
@@ -233,6 +242,7 @@ package final class ContainerLogNonBlockingDelivery: @unchecked Sendable {
                 recordLimitDroppedRecordCount: recordLimitDroppedRecordCount,
                 deliveredRecordCount: deliveredRecordCount,
                 deliveryFailureCount: deliveryFailureCount,
+                closeFailureCount: closeFailureCount,
                 discardedDuringCloseCount: discardedDuringCloseCount,
                 queuedRecordCount: queuedRecordCount,
                 queuedPayloadBytes: queuedPayloadBytes,
