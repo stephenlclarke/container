@@ -32,6 +32,17 @@ import Logging
 import SystemPackage
 
 public actor ContainersService {
+    enum ContainerLoggingCreatePlan: Sendable {
+        case legacy(ContainerLogConfiguration)
+        case version2(PreparedContainerLogResolution)
+    }
+
+    struct SealedContainerLogging: Sendable {
+        let configuration: ContainerLogConfiguration
+        let protectedReference: LoggingProtectedOptionsReference?
+        let protectedBinding: LoggingProtectedOptionsBinding?
+    }
+
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var client: RuntimeClient? = nil
@@ -58,6 +69,8 @@ public actor ContainersService {
     private static let machServicePrefix = "com.apple.container"
     private static let launchdDomainString = try! ServiceManager.getDomainString()
     private static let logTailReadChunkSize = UInt64(32 * 1024)
+    static let loggingProtectedOptionsDirectoryName = "logging-protected-options"
+    private static let loggingLeaseGeneration: UInt64 = 1
 
     private let log: Logger
     private let debugHelpers: Bool
@@ -67,6 +80,7 @@ public actor ContainersService {
     private let exitMonitor: ExitMonitor
     private let eventBroadcaster: ContainerEventBroadcaster
     private let containerSystemConfig: ContainerSystemConfig
+    private let loggingProtectedOptionsStore: LoggingProtectedOptionsStore
 
     private let lock: AsyncLock
     private var containers: [String: ContainerState]
@@ -90,6 +104,24 @@ public actor ContainersService {
     ) throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
         try FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
+        let containers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
+        let retainedProtectedObjectIDs = Self.loggingProtectedObjectIDsAtBoot(
+            root: containerRoot,
+            log: log
+        )
+        let protectedStoreRoot = appRoot.appendingPathComponent(Self.loggingProtectedOptionsDirectoryName)
+        let loggingProtectedOptionsStore: LoggingProtectedOptionsStore
+        if let retainedProtectedObjectIDs {
+            loggingProtectedOptionsStore = try LoggingProtectedOptionsStore(
+                rootURL: protectedStoreRoot,
+                retainingObjectIDs: retainedProtectedObjectIDs
+            )
+        } else {
+            // An unreadable durable container may still own an object. Leave
+            // every object in place until ownership can be proved at a later
+            // boot instead of turning configuration damage into secret loss.
+            loggingProtectedOptionsStore = try LoggingProtectedOptionsStore(rootURL: protectedStoreRoot)
+        }
         self.exitMonitor = ExitMonitor(log: log)
         self.lock = AsyncLock(log: log)
         self.containerRoot = containerRoot
@@ -99,7 +131,8 @@ public actor ContainersService {
         self.debugHelpers = debugHelpers
         self.eventBroadcaster = ContainerEventBroadcaster()
         self.runtimePlugins = pluginLoader.findPlugins().filter { $0.hasType(.runtime) }
-        self.containers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
+        self.loggingProtectedOptionsStore = loggingProtectedOptionsStore
+        self.containers = containers
     }
 
     public func setNetworksService(_ service: NetworksService) async {
@@ -179,6 +212,34 @@ public actor ContainersService {
             }
         }
         return results
+    }
+
+    static func loggingProtectedObjectIDsAtBoot(root: URL, log: Logger) -> Set<String>? {
+        guard
+            let directories = try? FileManager.default.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: [.isDirectoryKey]
+            )
+        else {
+            return nil
+        }
+
+        var objectIDs = Set<String>()
+        for directory in directories where directory.isDirectory {
+            do {
+                let (configuration, _) = try Self.getContainerConfiguration(at: directory)
+                if let objectID = configuration.logging.resolved?.protectedOptionReference?.objectID {
+                    objectIDs.insert(objectID)
+                }
+            } catch {
+                log.warning(
+                    "unable to inspect durable container logging reference during reconciliation",
+                    metadata: ["path": "\(directory.path)"]
+                )
+                return nil
+            }
+        }
+        return objectIDs
     }
 
     /// List containers matching the given filters.
@@ -324,8 +385,16 @@ public actor ContainersService {
         initImage: String? = nil,
         runtimeData: Data? = nil
     ) async throws {
-        try Self.validateLoggingRequestForCreate(loggingRequest)
-        try Self.validateLoggingConfigurationForCreate(configuration.logging)
+        let loggingPlan: ContainerLoggingCreatePlan
+        do {
+            loggingPlan = try Self.prepareLoggingForCreate(
+                configuration: configuration.logging,
+                request: loggingRequest,
+                defaults: containerSystemConfig.logging
+            )
+        } catch {
+            throw Self.mapLoggingCreateError(error)
+        }
 
         log.debug(
             "ContainersService: enter",
@@ -401,6 +470,7 @@ public actor ContainersService {
             )
             let initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
 
+            var sealedLogging: SealedContainerLogging?
             do {
                 self.log.debug(
                     "create snapshot",
@@ -410,6 +480,14 @@ public actor ContainersService {
                     ])
                 let containerImage = ClientImage(description: configuration.image)
                 let imageFs = try await options.rootFsOverride == nil ? containerImage.getCreateSnapshot(platform: configuration.platform) : nil
+
+                let logging = try await self.sealLoggingForCreate(
+                    containerID: configuration.id,
+                    plan: loggingPlan
+                )
+                sealedLogging = logging
+                var authoritativeConfiguration = configuration
+                authoritativeConfiguration.logging = logging.configuration
 
                 self.log.debug(
                     "configure runtime",
@@ -422,7 +500,7 @@ public actor ContainersService {
                     path: path,
                     initialFilesystem: initFilesystem,
                     kernel: kernel,
-                    containerConfiguration: configuration,
+                    containerConfiguration: authoritativeConfiguration,
                     containerRootFilesystem: imageFs,
                     options: options,
                     runtimeData: runtimeData
@@ -431,7 +509,7 @@ public actor ContainersService {
                 try runtimeConfig.writeRuntimeConfiguration()
 
                 let snapshot = ContainerSnapshot(
-                    configuration: configuration,
+                    configuration: authoritativeConfiguration,
                     status: .stopped,
                     networks: [],
                     startedDate: nil
@@ -439,6 +517,27 @@ public actor ContainersService {
                 await self.setContainerState(configuration.id, ContainerState(snapshot: snapshot), context: context)
                 return snapshot
             } catch {
+                if let sealedLogging {
+                    let bundle = ContainerResource.Bundle(path: path)
+                    let bundleRemoved: Bool
+                    if FileManager.default.fileExists(atPath: path.path) {
+                        do {
+                            try bundle.delete()
+                            bundleRemoved = true
+                        } catch {
+                            bundleRemoved = false
+                            self.log.warning(
+                                "failed to remove container bundle after create failure",
+                                metadata: ["id": "\(configuration.id)"]
+                            )
+                        }
+                    } else {
+                        bundleRemoved = true
+                    }
+                    if bundleRemoved {
+                        await self.rollbackSealedLogging(sealedLogging)
+                    }
+                }
                 throw error
             }
         }
@@ -449,19 +548,116 @@ public actor ContainersService {
     static func validateLoggingConfigurationForCreate(_ logging: ContainerLogConfiguration) throws {
         guard logging.isLegacy else {
             throw ContainerizationError(
-                .unsupported,
-                message: "logging schema version \(logging.schemaVersion ?? 0) is not yet supported for container creation"
+                .invalidArgument,
+                message: "authority-resolved logging configuration requires a structured logging request"
             )
         }
     }
 
-    static func validateLoggingRequestForCreate(_ request: ContainerLogRequest?) throws {
-        guard request == nil else {
-            throw ContainerizationError(
-                .unsupported,
-                message: "logging schema version 2 is not yet supported for container creation"
+    static func prepareLoggingForCreate(
+        configuration: ContainerLogConfiguration,
+        request: ContainerLogRequest?,
+        defaults: LoggingConfig,
+        catalog: LogDriverCatalog = BuiltinLogDriverDescriptors.current
+    ) throws -> ContainerLoggingCreatePlan {
+        guard let request else {
+            try validateLoggingConfigurationForCreate(configuration)
+            return .legacy(configuration)
+        }
+        let prepared = try ContainerLogRequestResolver(
+            defaults: defaults,
+            catalog: catalog
+        ).prepare(request)
+        return .version2(prepared)
+    }
+
+    func sealLoggingForCreate(
+        containerID: String,
+        plan: ContainerLoggingCreatePlan
+    ) async throws -> SealedContainerLogging {
+        switch plan {
+        case .legacy(let configuration):
+            return SealedContainerLogging(
+                configuration: configuration,
+                protectedReference: nil,
+                protectedBinding: nil
+            )
+        case .version2(let prepared):
+            let binding = LoggingProtectedOptionsBinding(
+                containerID: containerID,
+                prepared: prepared,
+                leaseGeneration: Self.loggingLeaseGeneration
+            )
+            var reference: LoggingProtectedOptionsReference?
+            do {
+                if !prepared.protectedOptions.isEmpty {
+                    let values = prepared.protectedOptions.withValues { $0 }
+                    reference = try await loggingProtectedOptionsStore.store(
+                        values,
+                        boundTo: binding
+                    )
+                }
+                let configuration = try prepared.finalizedConfiguration(
+                    protectedReference: reference,
+                    leaseGeneration: Self.loggingLeaseGeneration
+                )
+                return SealedContainerLogging(
+                    configuration: configuration,
+                    protectedReference: reference,
+                    protectedBinding: reference == nil ? nil : binding
+                )
+            } catch {
+                if let reference {
+                    try? await loggingProtectedOptionsStore.delete(reference, boundTo: binding)
+                }
+                throw Self.mapLoggingCreateError(error)
+            }
+        }
+    }
+
+    func rollbackSealedLogging(_ sealed: SealedContainerLogging) async {
+        guard
+            let reference = sealed.protectedReference,
+            let binding = sealed.protectedBinding
+        else {
+            return
+        }
+        do {
+            try await loggingProtectedOptionsStore.delete(reference, boundTo: binding)
+        } catch {
+            log.warning("failed to roll back protected logging options after container create failure")
+            guard
+                let retainedObjectIDs = Self.loggingProtectedObjectIDsAtBoot(
+                    root: containerRoot,
+                    log: log
+                )
+            else {
+                return
+            }
+            do {
+                try await loggingProtectedOptionsStore.reconcile(
+                    retainingObjectIDs: retainedObjectIDs
+                )
+            } catch {
+                log.warning("protected logging rollback will retry at authority boot")
+            }
+        }
+    }
+
+    static func mapLoggingCreateError(_ error: any Error) -> ContainerizationError {
+        if let error = error as? ContainerizationError {
+            return error
+        }
+        if let error = error as? ContainerLogResolutionError {
+            return ContainerizationError(
+                .invalidArgument,
+                message: "invalid logging configuration: \(error.description)"
             )
         }
+        return ContainerizationError(
+            .internalError,
+            message: "failed to persist authoritative logging configuration"
+        )
     }
 
     /// Returns primary hostnames that are already reserved on the same network.
@@ -529,6 +725,10 @@ public actor ContainersService {
 
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let (config, _) = try Self.getContainerConfiguration(at: path)
+            try await self.validateLoggingForStart(
+                containerID: id,
+                configuration: config.logging
+            )
 
             var networkBootstrapInfos = [NetworkBootstrapInfo]()
             for n in config.networks {
@@ -572,6 +772,65 @@ public actor ContainersService {
                 throw error
             }
         }
+    }
+
+    private func validateLoggingForStart(
+        containerID: String,
+        configuration: ContainerLogConfiguration
+    ) async throws {
+        guard !configuration.isLegacy else {
+            return
+        }
+        do {
+            let protectedOptions: [String: String]
+            if let reference = configuration.resolved?.protectedOptionReference {
+                let binding = try LoggingProtectedOptionsBinding(
+                    containerID: containerID,
+                    configuration: configuration
+                )
+                protectedOptions = try await loggingProtectedOptionsStore.load(
+                    reference,
+                    boundTo: binding
+                )
+            } else {
+                protectedOptions = [:]
+            }
+            try ContainerLogStartValidator(
+                catalog: BuiltinLogDriverDescriptors.current
+            ).validate(
+                configuration,
+                authenticatedProtectedOptions: protectedOptions
+            )
+        } catch {
+            throw Self.mapLoggingStartError(error)
+        }
+    }
+
+    static func mapLoggingStartError(_ error: any Error) -> ContainerizationError {
+        if let error = error as? ContainerLogStartValidationError {
+            return ContainerizationError(
+                .invalidState,
+                message: "container logging configuration is not valid for start: \(error.description)"
+            )
+        }
+        if let error = error as? ContainerLogResolutionError {
+            return ContainerizationError(
+                .invalidState,
+                message: "container logging configuration is not valid for start: \(error.description)"
+            )
+        }
+        if error is LoggingProtectedOptionsStoreError
+            || error is LoggingProtectedOptionsBindingError
+        {
+            return ContainerizationError(
+                .invalidState,
+                message: "protected container logging options failed authentication"
+            )
+        }
+        return ContainerizationError(
+            .invalidState,
+            message: "container logging configuration is not valid for start"
+        )
     }
 
     /// Attach client standard streams to a running container's init process.
@@ -2126,18 +2385,18 @@ public actor ContainersService {
         await self.exitMonitor.stopTracking(id: id)
         let path = try Self.containerPath(root: self.containerRoot, id: id)
 
-        // Try to get config for service deregistration
-        // Don't fail if bundle is incomplete
+        // Try to get config for service deregistration and protected logging
+        // cleanup. Runtime configuration is the durable source before the
+        // runtime has materialized a full bundle.
         var config: ContainerConfiguration?
         let bundle = ContainerResource.Bundle(path: path)
         do {
-            config = try bundle.configuration
+            config = try Self.getContainerConfiguration(at: path).0
         } catch {
             self.log.warning(
                 "failed to read bundle configuration during cleanup for container",
                 metadata: [
-                    "id": "\(id)",
-                    "error": "\(error)",
+                    "id": "\(id)"
                 ])
         }
 
@@ -2152,19 +2411,71 @@ public actor ContainersService {
             try? ServiceManager.deregister(fullServiceLabel: label)
         }
 
-        // Always try to delete the bundle directory, even if it's incomplete
+        let protectedCleanup:
+            (
+                reference: LoggingProtectedOptionsReference,
+                binding: LoggingProtectedOptionsBinding
+            )?
+        if let logging = config?.logging,
+            let reference = logging.resolved?.protectedOptionReference,
+            let binding = try? LoggingProtectedOptionsBinding(
+                containerID: id,
+                configuration: logging
+            )
+        {
+            protectedCleanup = (reference, binding)
+        } else {
+            protectedCleanup = nil
+        }
+
+        // The durable bundle must disappear before its protected child. If
+        // deletion fails, keep both the in-memory state and protected object so
+        // a retry sees the same stopped container configuration.
         do {
             try bundle.delete()
         } catch {
             self.log.warning(
                 "failed to delete bundle for container",
                 metadata: [
-                    "id": "\(id)",
-                    "error": "\(error)",
+                    "id": "\(id)"
                 ])
+            throw error
         }
 
         self.containers.removeValue(forKey: id)
+
+        guard let protectedCleanup else {
+            return
+        }
+        do {
+            try await loggingProtectedOptionsStore.delete(
+                protectedCleanup.reference,
+                boundTo: protectedCleanup.binding
+            )
+        } catch {
+            self.log.warning(
+                "protected logging options remain queued for orphan reconciliation",
+                metadata: ["id": "\(id)"]
+            )
+            guard
+                let retainedObjectIDs = Self.loggingProtectedObjectIDsAtBoot(
+                    root: containerRoot,
+                    log: log
+                )
+            else {
+                return
+            }
+            do {
+                try await loggingProtectedOptionsStore.reconcile(
+                    retainingObjectIDs: retainedObjectIDs
+                )
+            } catch {
+                self.log.warning(
+                    "protected logging orphan reconciliation will retry at authority boot",
+                    metadata: ["id": "\(id)"]
+                )
+            }
+        }
     }
 
     private func cleanUp(id: String, context: AsyncLock.Context) async throws {

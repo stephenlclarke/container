@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerPersistence
 import ContainerResource
 import ContainerizationError
 import Testing
@@ -22,13 +23,25 @@ import Testing
 
 struct ContainerLoggingCreateValidationTests {
     @Test func legacyLoggingRemainsAcceptedAtCreateBoundary() throws {
-        try ContainersService.validateLoggingConfigurationForCreate(.default)
-        try ContainersService.validateLoggingConfigurationForCreate(
-            ContainerLogConfiguration(storage: .none)
+        let expected = ContainerLogConfiguration(
+            storage: .none,
+            maxSizeInBytes: 4096,
+            maxFileCount: 7
         )
+        let plan = try ContainersService.prepareLoggingForCreate(
+            configuration: expected,
+            request: nil,
+            defaults: LoggingConfig()
+        )
+
+        guard case .legacy(let actual) = plan else {
+            Issue.record("legacy create produced a logging-v2 plan")
+            return
+        }
+        #expect(actual == expected)
     }
 
-    @Test func v2LoggingIsRejectedAtCreateBoundaryBeforeRuntimeWork() throws {
+    @Test func requestOmissionRejectsInjectedResolvedState() throws {
         let resolved = try ResolvedContainerLogConfiguration(
             leaseGeneration: 1,
             driver: "json-file",
@@ -44,21 +57,73 @@ struct ContainerLoggingCreateValidationTests {
         )
 
         let error = #expect(throws: ContainerizationError.self) {
-            try ContainersService.validateLoggingConfigurationForCreate(logging)
-        }
-        #expect(error?.code == .unsupported)
-        #expect(error?.message == "logging schema version 2 is not yet supported for container creation")
-    }
-
-    @Test func typedLoggingRequestIsRejectedAtCreateBoundaryBeforeRuntimeWork() throws {
-        try ContainersService.validateLoggingRequestForCreate(nil)
-
-        let error = #expect(throws: ContainerizationError.self) {
-            try ContainersService.validateLoggingRequestForCreate(
-                ContainerLogRequest(driver: "json-file")
+            _ = try ContainersService.prepareLoggingForCreate(
+                configuration: logging,
+                request: nil,
+                defaults: LoggingConfig()
             )
         }
-        #expect(error?.code == .unsupported)
-        #expect(error?.message == "logging schema version 2 is not yet supported for container creation")
+        #expect(error?.code == .invalidArgument)
+        #expect(error?.message == "authority-resolved logging configuration requires a structured logging request")
+    }
+
+    @Test func structuredRequestIsAuthoritativeOverLegacyConfiguration() throws {
+        let request = ContainerLogRequest(
+            driver: "local",
+            options: ["max-file": "7", "max-size": "8m"]
+        )
+        let plan = try ContainersService.prepareLoggingForCreate(
+            configuration: ContainerLogConfiguration(
+                storage: .none,
+                maxSizeInBytes: 1,
+                maxFileCount: 1
+            ),
+            request: request,
+            defaults: LoggingConfig(driver: "json-file", options: ["max-file": "2"])
+        )
+
+        guard case .version2(let prepared) = plan else {
+            Issue.record("structured request produced a legacy logging plan")
+            return
+        }
+        #expect(prepared.requestedDriver == "local")
+        #expect(prepared.descriptor.driver == "local")
+        #expect(prepared.safeOptions == ["max-file": "7", "max-size": "8m"])
+    }
+
+    @Test func invalidStructuredRequestWinsBeforeLegacyFieldValidationAndRedactsValues() throws {
+        let protectedValue = "DO_NOT_EXPOSE_THIS_VALUE"
+        do {
+            _ = try ContainersService.prepareLoggingForCreate(
+                configuration: try injectedV2Configuration(),
+                request: ContainerLogRequest(
+                    driver: "json-file",
+                    options: ["unknown-option": protectedValue]
+                ),
+                defaults: LoggingConfig()
+            )
+            Issue.record("invalid structured request was accepted")
+        } catch {
+            let mapped = ContainersService.mapLoggingCreateError(error)
+            #expect(mapped.code == .invalidArgument)
+            #expect(mapped.message.contains("unknown-option"))
+            #expect(!mapped.message.contains(protectedValue))
+        }
+    }
+
+    private func injectedV2Configuration() throws -> ContainerLogConfiguration {
+        let descriptor = try #require(BuiltinLogDriverDescriptors.current.descriptor(named: "none"))
+        return try ContainerLogConfiguration(
+            requested: ContainerLogRequest(driver: "none"),
+            resolved: ResolvedContainerLogConfiguration(
+                leaseGeneration: 1,
+                driver: descriptor.driver,
+                delivery: try LogDeliveryConfiguration(),
+                readPolicy: LogReadPolicy(source: .unavailable),
+                providerIdentity: descriptor.providerIdentity,
+                providerGenerationAtResolution: descriptor.providerGeneration,
+                contractDigest: descriptor.optionContractDigest
+            )
+        )
     }
 }

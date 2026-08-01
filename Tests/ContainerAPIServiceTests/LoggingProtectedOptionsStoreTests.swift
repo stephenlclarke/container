@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerPersistence
 import ContainerResource
 import CryptoKit
 import Darwin
@@ -348,6 +349,77 @@ struct LoggingProtectedOptionsStoreTests {
         }
     }
 
+    @Test func authorityBindingRejectsCrossContainerReferenceSubstitutionWithoutLeakingValues() async throws {
+        try await Self.withTemporaryParent { parent in
+            let root = parent.appendingPathComponent("store", isDirectory: true)
+            let store = try Self.makeStore(root: root, seed: 83)
+            let protectedValue = "DO_NOT_EXPOSE_THIS_VALUE"
+            let prepared = try ContainerLogRequestResolver(
+                defaults: LoggingConfig(),
+                catalog: BuiltinLogDriverDescriptors.current
+            ).prepare(
+                ContainerLogRequest(
+                    driver: "none",
+                    options: ["opaque": protectedValue]
+                )
+            )
+            let firstBinding = LoggingProtectedOptionsBinding(
+                containerID: "first",
+                prepared: prepared,
+                leaseGeneration: 1
+            )
+            let secondBinding = LoggingProtectedOptionsBinding(
+                containerID: "second",
+                prepared: prepared,
+                leaseGeneration: 1
+            )
+            let reference = try await store.store(
+                ["opaque": protectedValue],
+                boundTo: firstBinding
+            )
+            let configuration = try prepared.finalizedConfiguration(
+                protectedReference: reference
+            )
+            let reconstructedBinding = try LoggingProtectedOptionsBinding(
+                containerID: "first",
+                configuration: configuration
+            )
+
+            #expect(reconstructedBinding == firstBinding)
+            #expect(
+                try await store.load(reference, boundTo: reconstructedBinding)
+                    == ["opaque": protectedValue]
+            )
+            let loadError = await #expect(throws: LoggingProtectedOptionsStoreError.integrityMismatch) {
+                try await store.load(reference, boundTo: secondBinding)
+            }
+            #expect(!String(describing: loadError).contains(protectedValue))
+
+            await #expect(throws: LoggingProtectedOptionsStoreError.integrityMismatch) {
+                try await store.delete(reference, boundTo: secondBinding)
+            }
+            #expect(FileManager.default.fileExists(atPath: Self.objectURL(root: root, objectID: reference.objectID).path))
+        }
+    }
+
+    @Test func reconciliationRetainsDurableReferencesAndRemovesOrphansAndCrashTemps() async throws {
+        try await Self.withTemporaryParent { parent in
+            let root = parent.appendingPathComponent("store", isDirectory: true)
+            let store = try Self.makeStore(root: root, seed: 89)
+            let retained = try await store.store(["retained": "value"])
+            let orphan = try await store.store(["orphan": "value"])
+            let crashTemp = root.appendingPathComponent(".logging-options.tmp.crash-remnant")
+            try Data("temporary".utf8).write(to: crashTemp)
+
+            try await store.reconcile(retainingObjectIDs: [retained.objectID])
+
+            #expect(FileManager.default.fileExists(atPath: Self.objectURL(root: root, objectID: retained.objectID).path))
+            #expect(!FileManager.default.fileExists(atPath: Self.objectURL(root: root, objectID: orphan.objectID).path))
+            #expect(!FileManager.default.fileExists(atPath: crashTemp.path))
+            #expect(try await store.load(retained) == ["retained": "value"])
+        }
+    }
+
     private static func makeStore(root: URL, seed: UInt8) throws -> LoggingProtectedOptionsStore {
         let random = DeterministicRandom(seed: seed)
         return try LoggingProtectedOptionsStore(
@@ -365,9 +437,15 @@ struct LoggingProtectedOptionsStoreTests {
 
     private static func reference(objectID: String, payload: Data, key: Data) -> LoggingProtectedOptionsReference {
         let domain = Data("container.logging.protected-options.v1\u{0}".utf8)
+        let context = Data("unbound-test-context-v1".utf8)
         var authenticated = Data()
         authenticated.append(domain)
         authenticated.append(Data(objectID.utf8))
+        var contextLength = UInt32(context.count).bigEndian
+        Swift.withUnsafeBytes(of: &contextLength) {
+            authenticated.append(contentsOf: $0)
+        }
+        authenticated.append(context)
         authenticated.append(payload)
         let code = HMAC<SHA256>.authenticationCode(
             for: authenticated,

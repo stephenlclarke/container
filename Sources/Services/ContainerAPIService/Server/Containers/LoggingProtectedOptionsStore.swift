@@ -30,6 +30,7 @@ enum LoggingProtectedOptionsStoreError: Error, Equatable, Sendable {
         case createRoot
         case openRoot
         case openKey
+        case readDirectory
         case createTemporaryFile
         case read
         case write
@@ -63,6 +64,7 @@ actor LoggingProtectedOptionsStore {
     static let maximumOptionNameBytes = 16 * 1_024
     static let maximumOptionValueBytes = 1 * 1_024 * 1_024
     static let maximumEncodedBytes = 4 * 1_024 * 1_024
+    static let maximumAuthenticationContextBytes = 4 * 1_024 * 1_024
 
     static let keyFileName = ".logging-protected-options.key"
     static let objectFilePrefix = "logging-options-"
@@ -75,6 +77,7 @@ actor LoggingProtectedOptionsStore {
     private static let maximumPublicationAttempts = 8
     private static let fileMagic = Data("CLOGOPT1".utf8)
     private static let authenticationDomain = Data("container.logging.protected-options.v1\u{0}".utf8)
+    private static let unboundAuthenticationContext = Data("unbound-test-context-v1".utf8)
 
     private let rootDescriptor: Int32
     private let keyData: Data
@@ -82,6 +85,15 @@ actor LoggingProtectedOptionsStore {
 
     init(rootURL: URL) throws {
         try self.init(rootURL: rootURL, _testingRandomBytes: Self.secureRandomBytes)
+    }
+
+    init(rootURL: URL, retainingObjectIDs: Set<String>) throws {
+        try self.init(rootURL: rootURL, _testingRandomBytes: Self.secureRandomBytes)
+        try Self.reconcile(
+            rootDescriptor: rootDescriptor,
+            keyData: keyData,
+            retainingObjectIDs: retainingObjectIDs
+        )
     }
 
     /// Randomness injection remains module-internal and exists only so tests
@@ -107,6 +119,23 @@ actor LoggingProtectedOptionsStore {
     }
 
     func store(_ options: [String: String]) throws -> LoggingProtectedOptionsReference {
+        try store(options, authenticationContext: Self.unboundAuthenticationContext)
+    }
+
+    func store(
+        _ options: [String: String],
+        boundTo binding: LoggingProtectedOptionsBinding
+    ) throws -> LoggingProtectedOptionsReference {
+        try store(options, authenticationContext: binding.canonicalData())
+    }
+
+    private func store(
+        _ options: [String: String],
+        authenticationContext: Data
+    ) throws -> LoggingProtectedOptionsReference {
+        guard authenticationContext.count <= Self.maximumAuthenticationContextBytes else {
+            throw LoggingProtectedOptionsStoreError.boundsExceeded
+        }
         try validateStoreBoundary()
 
         for _ in 0..<Self.maximumPublicationAttempts {
@@ -119,6 +148,7 @@ actor LoggingProtectedOptionsStore {
                     integrityDigest: Self.integrityDigest(
                         encoded: encoded,
                         objectID: objectID,
+                        authenticationContext: authenticationContext,
                         keyData: keyData
                     )
                 )
@@ -130,12 +160,30 @@ actor LoggingProtectedOptionsStore {
     }
 
     func load(_ reference: LoggingProtectedOptionsReference) throws -> [String: String] {
+        try load(reference, authenticationContext: Self.unboundAuthenticationContext)
+    }
+
+    func load(
+        _ reference: LoggingProtectedOptionsReference,
+        boundTo binding: LoggingProtectedOptionsBinding
+    ) throws -> [String: String] {
+        try load(reference, authenticationContext: binding.canonicalData())
+    }
+
+    private func load(
+        _ reference: LoggingProtectedOptionsReference,
+        authenticationContext: Data
+    ) throws -> [String: String] {
+        guard authenticationContext.count <= Self.maximumAuthenticationContextBytes else {
+            throw LoggingProtectedOptionsStoreError.boundsExceeded
+        }
         let validatedReference = try Self.validate(reference: reference)
         try validateStoreBoundary()
         let encoded = try readObject(objectID: validatedReference.objectID)
         let authenticatedData = Self.authenticatedData(
             encoded: encoded,
-            objectID: validatedReference.objectID
+            objectID: validatedReference.objectID,
+            authenticationContext: authenticationContext
         )
         let key = SymmetricKey(data: keyData)
         guard
@@ -153,9 +201,23 @@ actor LoggingProtectedOptionsStore {
     /// Removes only the validated object named by `reference`. Repeating the
     /// exact deletion after the object is gone succeeds without side effects.
     func delete(_ reference: LoggingProtectedOptionsReference) throws {
+        try delete(reference, authenticationContext: Self.unboundAuthenticationContext)
+    }
+
+    func delete(
+        _ reference: LoggingProtectedOptionsReference,
+        boundTo binding: LoggingProtectedOptionsBinding
+    ) throws {
+        try delete(reference, authenticationContext: binding.canonicalData())
+    }
+
+    private func delete(
+        _ reference: LoggingProtectedOptionsReference,
+        authenticationContext: Data
+    ) throws {
         let validatedReference = try Self.validate(reference: reference)
         do {
-            _ = try load(reference)
+            _ = try load(reference, authenticationContext: authenticationContext)
         } catch LoggingProtectedOptionsStoreError.notFound {
             return
         }
@@ -174,10 +236,66 @@ actor LoggingProtectedOptionsStore {
         try Self.synchronizeDirectory(rootDescriptor)
     }
 
+    /// Removes unpublished crash remnants and protected objects that no
+    /// durable container configuration references. The object itself is the
+    /// recovery record, so a failed post-bundle cleanup is retried here at the
+    /// next authority boot without needing a second mutable ledger.
+    func reconcile(retainingObjectIDs: Set<String>) throws {
+        try Self.reconcile(
+            rootDescriptor: rootDescriptor,
+            keyData: keyData,
+            retainingObjectIDs: retainingObjectIDs
+        )
+    }
+
+    private static func reconcile(
+        rootDescriptor: Int32,
+        keyData: Data,
+        retainingObjectIDs: Set<String>
+    ) throws {
+        try validateStoreBoundary(rootDescriptor: rootDescriptor, keyData: keyData)
+        let entries = try Self.directoryEntries(rootDescriptor: rootDescriptor)
+        var removedAny = false
+        for name in entries {
+            let remove: Bool
+            if let objectID = Self.objectID(fileName: name) {
+                remove = !retainingObjectIDs.contains(objectID)
+            } else {
+                remove =
+                    name.hasPrefix(".logging-options.tmp.")
+                    || name.hasPrefix(".logging-options.key.tmp.")
+            }
+            guard remove else {
+                continue
+            }
+            let result = name.withCString {
+                Darwin.unlinkat(rootDescriptor, $0, 0)
+            }
+            if result != 0 {
+                let code = errno
+                if code == ENOENT {
+                    continue
+                }
+                throw LoggingProtectedOptionsStoreError.ioFailure(.delete, code)
+            }
+            removedAny = true
+        }
+        if removedAny {
+            try Self.synchronizeDirectory(rootDescriptor)
+        }
+    }
+
     private func validateStoreBoundary() throws {
-        try Self.validateDirectoryDescriptor(rootDescriptor)
-        let onDiskKey = try Self.loadExistingKey(rootDescriptor: rootDescriptor)
-        guard Self.timingSafeEqual(keyData, onDiskKey) else {
+        try Self.validateStoreBoundary(rootDescriptor: rootDescriptor, keyData: keyData)
+    }
+
+    private static func validateStoreBoundary(
+        rootDescriptor: Int32,
+        keyData: Data
+    ) throws {
+        try validateDirectoryDescriptor(rootDescriptor)
+        let onDiskKey = try loadExistingKey(rootDescriptor: rootDescriptor)
+        guard timingSafeEqual(keyData, onDiskKey) else {
             throw LoggingProtectedOptionsStoreError.invalidMetadata(.key)
         }
     }
@@ -278,6 +396,22 @@ actor LoggingProtectedOptionsStore {
 
     private static func objectFileName(objectID: String) -> String {
         objectFilePrefix + objectID + objectFileSuffix
+    }
+
+    private static func objectID(fileName: String) -> String? {
+        guard
+            fileName.hasPrefix(objectFilePrefix),
+            fileName.hasSuffix(objectFileSuffix)
+        else {
+            return nil
+        }
+        let start = fileName.index(fileName.startIndex, offsetBy: objectFilePrefix.count)
+        let end = fileName.index(fileName.endIndex, offsetBy: -objectFileSuffix.count)
+        guard start <= end else {
+            return nil
+        }
+        let objectID = String(fileName[start..<end])
+        return isValidObjectID(objectID) ? objectID : nil
     }
 
     private static func validate(
@@ -408,19 +542,40 @@ actor LoggingProtectedOptionsStore {
         return options
     }
 
-    private static func integrityDigest(encoded: Data, objectID: String, keyData: Data) -> String {
+    private static func integrityDigest(
+        encoded: Data,
+        objectID: String,
+        authenticationContext: Data,
+        keyData: Data
+    ) -> String {
         let authenticationCode = HMAC<SHA256>.authenticationCode(
-            for: authenticatedData(encoded: encoded, objectID: objectID),
+            for: authenticatedData(
+                encoded: encoded,
+                objectID: objectID,
+                authenticationContext: authenticationContext
+            ),
             using: SymmetricKey(data: keyData)
         )
         return "hmac-sha256:\(hex(authenticationCode))"
     }
 
-    private static func authenticatedData(encoded: Data, objectID: String) -> Data {
+    private static func authenticatedData(
+        encoded: Data,
+        objectID: String,
+        authenticationContext: Data
+    ) -> Data {
         var authenticated = Data()
-        authenticated.reserveCapacity(authenticationDomain.count + objectIDCharacterCount + encoded.count)
+        authenticated.reserveCapacity(
+            authenticationDomain.count
+                + objectIDCharacterCount
+                + MemoryLayout<UInt32>.size
+                + authenticationContext.count
+                + encoded.count
+        )
         authenticated.append(authenticationDomain)
         authenticated.append(Data(objectID.utf8))
+        authenticated.appendBigEndian(UInt32(authenticationContext.count))
+        authenticated.append(authenticationContext)
         authenticated.append(encoded)
         return authenticated
     }
@@ -671,6 +826,37 @@ actor LoggingProtectedOptionsStore {
         else {
             throw LoggingProtectedOptionsStoreError.invalidMetadata(component)
         }
+    }
+
+    private static func directoryEntries(rootDescriptor: Int32) throws -> [String] {
+        let duplicate = Darwin.dup(rootDescriptor)
+        guard duplicate >= 0 else {
+            throw LoggingProtectedOptionsStoreError.ioFailure(.readDirectory, errno)
+        }
+        guard let directory = Darwin.fdopendir(duplicate) else {
+            let code = errno
+            Darwin.close(duplicate)
+            throw LoggingProtectedOptionsStoreError.ioFailure(.readDirectory, code)
+        }
+        defer { Darwin.closedir(directory) }
+
+        var names: [String] = []
+        errno = 0
+        while let entry = Darwin.readdir(directory) {
+            let name = withUnsafePointer(to: entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(MAXNAMLEN) + 1) {
+                    String(cString: $0)
+                }
+            }
+            if name != ".", name != ".." {
+                names.append(name)
+            }
+            errno = 0
+        }
+        guard errno == 0 else {
+            throw LoggingProtectedOptionsStoreError.ioFailure(.readDirectory, errno)
+        }
+        return names
     }
 
     private static func readExactFile(
