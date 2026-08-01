@@ -197,10 +197,19 @@ public actor RuntimeService {
             let dynamicEnv = try message.dynamicEnv()
 
             let bundle = ContainerResource.Bundle(path: self.root)
-            try bundle.createLogFile()
-
             let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: self.root)
             var config = try bundle.configuration
+            let loggingPlan = try ContainerLogRuntimePlan(configuration: config)
+            let loggingCapture = try loggingPlan.activate(
+                bundle: bundle,
+                terminal: config.initProcess.terminal
+            )
+            var loggingCaptureNeedsClose = true
+            defer {
+                if loggingCaptureNeedsClose {
+                    loggingCapture.close()
+                }
+            }
 
             var kernel = try bundle.kernel
             // Built-in defaults keyed by arg name. Each is applied only if the user did not already
@@ -288,18 +297,17 @@ public actor RuntimeService {
             }
 
             let stdio = message.stdio()
-            let containerLogWriter = try Self.containerLogWriter(bundle: bundle, logging: config.logging)
             let stdin = stdio[0].map(AttachableInput.init)
             let stdout = AttachableOutput(
                 initial: stdio[1],
-                persistent: containerLogWriter?.writer(for: .stdout)
+                persistent: loggingCapture.stdout
             )
 
             let stderr: AttachableOutput? =
                 if !config.initProcess.terminal {
                     AttachableOutput(
                         initial: stdio[2],
-                        persistent: containerLogWriter?.writer(for: .stderr)
+                        persistent: loggingCapture.stderr
                     )
                 } else {
                     nil
@@ -334,10 +342,12 @@ public actor RuntimeService {
                 config: config,
                 attachments: attachments,
                 bundle: bundle,
-                io: ContainerStdio(input: stdin, stdout: stdout, stderr: stderr)
+                io: ContainerStdio(input: stdin, stdout: stdout, stderr: stderr),
+                logging: loggingCapture
             )
             await self.setContainer(ctrInfo)
             await self.setNetworkBindings(bindings)
+            loggingCaptureNeedsClose = false
 
             do {
                 try await container.create()
@@ -1925,19 +1935,21 @@ extension XPCMessage {
 }
 
 extension ContainerResource.Bundle {
-    func createLogFile() throws {
-        try createLogFile(at: self.containerLog)
-        try createLogFile(at: self.containerLogRecords)
+    func createLegacyLogFiles() throws {
+        try createLegacyLogFileIfAbsent(at: self.containerLog)
+        try createLegacyLogFileIfAbsent(at: self.containerLogRecords)
     }
 
-    private func createLogFile(at path: URL) throws {
-        // Create the log file we'll write stdio to.
-        // O_TRUNC resolves a log delay issue on restarted containers by force-updating internal state
-        let fd = Darwin.open(path.path, O_CREAT | O_RDONLY | O_TRUNC, 0o644)
-        guard fd > 0 else {
-            throw POSIXError(.init(rawValue: errno)!)
+    private func createLegacyLogFileIfAbsent(at path: URL) throws {
+        // Legacy containers retain their raw/sidecar history across restart.
+        // The append-mode legacy writer owns all later mutation.
+        let fd = Darwin.open(path.path, O_CREAT | O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0o644)
+        guard fd >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        close(fd)
+        guard Darwin.close(fd) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 }
 
@@ -2199,6 +2211,7 @@ extension RuntimeService {
         let attachments: [Attachment]
         let bundle: ContainerResource.Bundle
         let io: ContainerStdio
+        let logging: ContainerLogRuntimeCapture
     }
 
     private struct ContainerStdio {

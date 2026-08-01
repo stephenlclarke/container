@@ -18,6 +18,9 @@ import ContainerResource
 import Foundation
 
 extension ContainerResource.Bundle {
+    public static let jsonFileLogName = "json.log"
+    public static let nativeLocalLogName = "local.bin"
+
     /// The pathname for the workload log file.
     public var containerLog: URL {
         path.appendingPathComponent("stdio.log")
@@ -26,5 +29,28 @@ extension ContainerResource.Bundle {
     /// The pathname for timestamped workload log records.
     public var containerLogRecords: URL {
         path.appendingPathComponent("stdio.jsonl")
+    }
+
+    /// Private root for logging-v2 controller state and canonical stores.
+    public var containerLoggingV2: URL {
+        path.appendingPathComponent("logging-v2", isDirectory: true)
+    }
+
+    /// Public-path-capable canonical `json-file` store directory.
+    public var containerJSONFileLogDirectory: URL {
+        containerLoggingV2.appendingPathComponent("json-file", isDirectory: true)
+    }
+
+    public var containerJSONFileLog: URL {
+        containerJSONFileLogDirectory.appendingPathComponent(Self.jsonFileLogName)
+    }
+
+    /// Private canonical `local` store directory.
+    public var containerNativeLocalLogDirectory: URL {
+        containerLoggingV2.appendingPathComponent("local", isDirectory: true)
+    }
+
+    public var containerNativeLocalLog: URL {
+        containerNativeLocalLogDirectory.appendingPathComponent(Self.nativeLocalLogName)
     }
 }
