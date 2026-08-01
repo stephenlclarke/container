@@ -893,6 +893,50 @@ struct NativeLocalLogStoreTests {
     }
 
     @Test
+    func asyncCompressionFailureIsInspectableAndRetainsSafeRotations() throws {
+        let fixture = try NativeLocalLogFixture()
+        defer { fixture.remove() }
+        let store = try NativeLocalLogStore(
+            directoryURL: fixture.logDirectory,
+            activeFileName: fixture.activeFileName,
+            configuration: try NativeLocalLogConfiguration(
+                maximumFileSize: 1,
+                maximumFileCount: 3,
+                compress: true
+            ),
+            hooks: NativeLocalLogStoreHooks(
+                compressionWillStart: {
+                    throw NativeLocalLogError.io(.read, EIO)
+                }
+            )
+        )
+        try store.write(ordinaryRecord(payload: Data("first".utf8), sequence: 1))
+        try store.write(ordinaryRecord(payload: Data("second".utf8), sequence: 2))
+        try store.write(ordinaryRecord(payload: Data("third".utf8), sequence: 3))
+        try store.close()
+
+        let snapshot = store.snapshot
+        #expect(snapshot.closed)
+        #expect(!snapshot.writePoisoned)
+        #expect(!snapshot.compressionRunning)
+        #expect(snapshot.successfulCompressionCount == 0)
+        #expect(snapshot.compressionFailureCount == 2)
+        #expect(
+            snapshot.lastCompressionFailure
+                == NativeLocalLogCompressionFailure(
+                    stage: .preparation,
+                    error: .io(.read, EIO)
+                )
+        )
+        #expect(FileManager.default.fileExists(atPath: fixture.rotationURL(2).path))
+        #expect(FileManager.default.fileExists(atPath: fixture.rotationURL(1).path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.rotationURL(1, compressed: true).path))
+        let result = try store.makeReader().read(NativeLocalLogReadRequest())
+        #expect(result.records.map(\.sequence) == [1, 2, 3])
+        #expect(result.issues.isEmpty)
+    }
+
+    @Test
     func asyncCompressionStartsAfterReplacementActiveAndFencesNextRotation() async throws {
         let fixture = try NativeLocalLogFixture()
         defer { fixture.remove() }

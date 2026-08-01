@@ -32,7 +32,7 @@ package struct NativeLocalLogStoreHooks: Sendable {
     package let writeWillAcquireCoordinatorLock: (@Sendable () -> Void)?
     package let writeEncodedFrame: (@Sendable (Data, Int32) throws -> Void)?
     package let rollbackFailedWrite: (@Sendable (Int32, UInt64) -> Bool)?
-    package let compressionWillStart: (@Sendable () -> Void)?
+    package let compressionWillStart: (@Sendable () throws -> Void)?
     package let compressionWaitDidBegin: (@Sendable () -> Void)?
     package let rotationCheckpoint: (@Sendable (NativeLocalLogRotationCheckpoint) throws -> Void)?
 
@@ -42,7 +42,7 @@ package struct NativeLocalLogStoreHooks: Sendable {
         writeWillAcquireCoordinatorLock: (@Sendable () -> Void)? = nil,
         writeEncodedFrame: (@Sendable (Data, Int32) throws -> Void)? = nil,
         rollbackFailedWrite: (@Sendable (Int32, UInt64) -> Bool)? = nil,
-        compressionWillStart: (@Sendable () -> Void)? = nil,
+        compressionWillStart: (@Sendable () throws -> Void)? = nil,
         compressionWaitDidBegin: (@Sendable () -> Void)? = nil,
         rotationCheckpoint: (@Sendable (NativeLocalLogRotationCheckpoint) throws -> Void)? = nil
     ) {
@@ -57,6 +57,25 @@ package struct NativeLocalLogStoreHooks: Sendable {
     }
 }
 
+package enum NativeLocalLogCompressionFailureStage: String, Equatable, Sendable {
+    case preparation
+    case publication
+}
+
+package struct NativeLocalLogCompressionFailure: Equatable, Sendable {
+    package let stage: NativeLocalLogCompressionFailureStage
+    package let error: NativeLocalLogError
+}
+
+package struct NativeLocalLogStoreSnapshot: Equatable, Sendable {
+    package let closed: Bool
+    package let writePoisoned: Bool
+    package let compressionRunning: Bool
+    package let successfulCompressionCount: UInt64
+    package let compressionFailureCount: UInt64
+    package let lastCompressionFailure: NativeLocalLogCompressionFailure?
+}
+
 private final class NativeLocalLogCoordinator: @unchecked Sendable {
     let writerLock = NSLock()
     let filesystemLock = NSLock()
@@ -66,6 +85,9 @@ private final class NativeLocalLogCoordinator: @unchecked Sendable {
 
     private let compressionCondition = NSCondition()
     private var compressionRunning = false
+    private var successfulCompressionCount: UInt64 = 0
+    private var compressionFailureCount: UInt64 = 0
+    private var lastCompressionFailure: NativeLocalLogCompressionFailure?
 
     init(activeSize: UInt64, hooks: NativeLocalLogStoreHooks) {
         activePhysicalSize = activeSize
@@ -89,10 +111,34 @@ private final class NativeLocalLogCoordinator: @unchecked Sendable {
         compressionCondition.unlock()
     }
 
-    func finishCompression() {
+    func finishCompression(failure: NativeLocalLogCompressionFailure?) {
         compressionCondition.withLock {
+            if let failure {
+                if compressionFailureCount < .max {
+                    compressionFailureCount += 1
+                }
+                lastCompressionFailure = failure
+            } else if successfulCompressionCount < .max {
+                successfulCompressionCount += 1
+            }
             compressionRunning = false
             compressionCondition.broadcast()
+        }
+    }
+
+    func compressionSnapshot() -> (
+        running: Bool,
+        successCount: UInt64,
+        failureCount: UInt64,
+        lastFailure: NativeLocalLogCompressionFailure?
+    ) {
+        compressionCondition.withLock {
+            (
+                compressionRunning,
+                successfulCompressionCount,
+                compressionFailureCount,
+                lastCompressionFailure
+            )
         }
     }
 }
@@ -262,6 +308,20 @@ package final class NativeLocalLogStore: @unchecked Sendable {
         )
     }
 
+    package var snapshot: NativeLocalLogStoreSnapshot {
+        coordinator.writerLock.withLock {
+            let compression = coordinator.compressionSnapshot()
+            return NativeLocalLogStoreSnapshot(
+                closed: closed,
+                writePoisoned: writePoisoned,
+                compressionRunning: compression.running,
+                successfulCompressionCount: compression.successCount,
+                compressionFailureCount: compression.failureCount,
+                lastCompressionFailure: compression.lastFailure
+            )
+        }
+    }
+
     private func rotate() throws {
         coordinator.waitForCompression()
         let transaction = NativeLocalRotationTransaction(
@@ -360,14 +420,15 @@ package final class NativeLocalLogStore: @unchecked Sendable {
     private func scheduleCompression(named sourceName: String) {
         coordinator.beginCompression()
         compressionQueue.async { [self] in
-            defer { coordinator.finishCompression() }
-            coordinator.hooks.compressionWillStart?()
+            var failure: NativeLocalLogCompressionFailure?
+            defer { coordinator.finishCompression(failure: failure) }
 
             let compressedName = "\(sourceName).gz"
             let temporaryName = "\(compressedName).tmp.\(UUID().uuidString)"
             var source = Int32(-1)
             var destination = Int32(-1)
             var published = false
+            var failureStage = NativeLocalLogCompressionFailureStage.preparation
             defer {
                 if source >= 0 {
                     Darwin.close(source)
@@ -384,6 +445,7 @@ package final class NativeLocalLogStore: @unchecked Sendable {
             }
 
             do {
+                try coordinator.hooks.compressionWillStart?()
                 try coordinator.filesystemLock.withLock {
                     guard try directory.fileExists(named: sourceName) else {
                         return
@@ -403,6 +465,7 @@ package final class NativeLocalLogStore: @unchecked Sendable {
                 }
                 destination = -1
 
+                failureStage = .publication
                 try coordinator.filesystemLock.withLock {
                     try directory.removeFileIfPresent(named: compressedName)
                     try directory.renameFile(from: temporaryName, to: compressedName)
@@ -412,6 +475,10 @@ package final class NativeLocalLogStore: @unchecked Sendable {
                     published = true
                 }
             } catch {
+                failure = NativeLocalLogCompressionFailure(
+                    stage: failureStage,
+                    error: error as? NativeLocalLogError ?? .compressionFailed
+                )
                 return
             }
         }
