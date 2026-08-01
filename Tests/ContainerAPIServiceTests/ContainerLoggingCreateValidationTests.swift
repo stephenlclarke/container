@@ -49,4 +49,16 @@ struct ContainerLoggingCreateValidationTests {
         #expect(error?.code == .unsupported)
         #expect(error?.message == "logging schema version 2 is not yet supported for container creation")
     }
+
+    @Test func typedLoggingRequestIsRejectedAtCreateBoundaryBeforeRuntimeWork() throws {
+        try ContainersService.validateLoggingRequestForCreate(nil)
+
+        let error = #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateLoggingRequestForCreate(
+                ContainerLogRequest(driver: "json-file")
+            )
+        }
+        #expect(error?.code == .unsupported)
+        #expect(error?.message == "logging schema version 2 is not yet supported for container creation")
+    }
 }

@@ -316,7 +316,15 @@ public actor ContainersService {
     }
 
     /// Create a new container from the provided id and configuration.
-    public func create(configuration: ContainerConfiguration, kernel: Kernel, options: ContainerCreateOptions, initImage: String? = nil, runtimeData: Data? = nil) async throws {
+    public func create(
+        configuration: ContainerConfiguration,
+        loggingRequest: ContainerLogRequest? = nil,
+        kernel: Kernel,
+        options: ContainerCreateOptions,
+        initImage: String? = nil,
+        runtimeData: Data? = nil
+    ) async throws {
+        try Self.validateLoggingRequestForCreate(loggingRequest)
         try Self.validateLoggingConfigurationForCreate(configuration.logging)
 
         log.debug(
@@ -443,6 +451,15 @@ public actor ContainersService {
             throw ContainerizationError(
                 .unsupported,
                 message: "logging schema version \(logging.schemaVersion ?? 0) is not yet supported for container creation"
+            )
+        }
+    }
+
+    static func validateLoggingRequestForCreate(_ request: ContainerLogRequest?) throws {
+        guard request == nil else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "logging schema version 2 is not yet supported for container creation"
             )
         }
     }

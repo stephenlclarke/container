@@ -146,7 +146,7 @@ struct PreparedContainerLogResolution: Sendable, CustomStringConvertible, Custom
 /// Resolves immutable logging intent at the Container authority boundary.
 /// Compose and other clients provide only ``ContainerLogRequest``.
 struct ContainerLogRequestResolver: Sendable {
-    static let maximumEncodedRequestBytes = 2 * 1024 * 1024
+    static let maximumEncodedRequestBytes = ContainerLogRequest.maximumEncodedTransportBytes
     static let defaultCacheMaxSizeInBytes: UInt64 = 20 * 1024 * 1024
     static let defaultCacheMaxFileCount = 5
     static let defaultCacheCompress = true

@@ -30,6 +30,8 @@ public enum XPCKeys: String {
     case processIdentifier
     /// Container configuration key.
     case containerConfig
+    /// Lossless logging request resolved by the Container authority.
+    case containerLogRequest
     /// Container options key.
     case containerOptions
     /// Opaque runtime-specific data.

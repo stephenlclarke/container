@@ -40,6 +40,7 @@ private func decodeCurrentSchemaVersion<Key: CodingKey>(
 /// option names, and option values remain untouched for authority resolution.
 public struct ContainerLogRequest: Codable, Equatable, Sendable {
     public static let currentSchemaVersion: UInt32 = 1
+    public static let maximumEncodedTransportBytes = 2 * 1024 * 1024
 
     public let schemaVersion: UInt32
     public var driver: String?

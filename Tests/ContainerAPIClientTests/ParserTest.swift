@@ -1512,6 +1512,46 @@ struct ParserTest {
     }
 
     @Test
+    func testTypedLogRequestPreservesDriverAndAllOptions() throws {
+        let request = try Parser.loggingRequest(
+            driver: "syslog",
+            options: [
+                "mode=non-blocking",
+                "syslog-address=tcp+tls://host:6514",
+                "syslog-tls-key=/protected/key.pem",
+            ]
+        )
+
+        #expect(request.driver == "syslog")
+        #expect(
+            request.options == [
+                "mode": "non-blocking",
+                "syslog-address": "tcp+tls://host:6514",
+                "syslog-tls-key": "/protected/key.pem",
+            ]
+        )
+    }
+
+    @Test
+    func testTypedLogRequestPreservesOmittedAndEmptyDriver() throws {
+        let omitted = try Parser.loggingRequest(driver: nil)
+        let empty = try Parser.loggingRequest(driver: "")
+
+        #expect(omitted.driver == nil)
+        #expect(empty.driver == "")
+    }
+
+    @Test
+    func testTypedLogRequestUsesLastRepeatedOption() throws {
+        let request = try Parser.loggingRequest(
+            driver: "local",
+            options: ["max-file=2", "max-file=5"]
+        )
+
+        #expect(request.options == ["max-file": "5"])
+    }
+
+    @Test
     func testLogDriverParserDefaultsToLocal() throws {
         let logging = try Parser.logging(driver: nil)
 

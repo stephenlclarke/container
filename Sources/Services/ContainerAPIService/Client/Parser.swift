@@ -871,7 +871,22 @@ public struct Parser {
         return !value.isEmpty && value.allSatisfy { allowedAccess.contains($0) }
     }
 
-    /// Parses Docker-compatible local logging flags into the runtime log policy.
+    /// Parses logging flags without resolving driver identity or option
+    /// semantics. The Container authority performs that work at create.
+    public static func loggingRequest(
+        driver: String?,
+        options: [String] = []
+    ) throws -> ContainerLogRequest {
+        var optionMap: [String: String] = [:]
+        for option in options {
+            let (key, value) = try Self.logOption(option)
+            optionMap[key] = value
+        }
+        return ContainerLogRequest(driver: driver, options: optionMap)
+    }
+
+    /// Parses the pre-v2 local logging policy for source-compatible callers.
+    /// New create paths use ``loggingRequest(driver:options:)`` instead.
     public static func logging(driver: String?, options: [String] = []) throws -> ContainerLogConfiguration {
         let storage: ContainerLogConfiguration.Storage
         switch driver {

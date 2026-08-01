@@ -245,9 +245,37 @@ public struct ContainersHarness: Sendable {
 
         let initImage = message.string(key: .initImage)
         let runtimeData = message.dataNoCopy(key: .runtimeData)
+        let loggingRequest = try Self.loggingRequest(from: message)
 
-        try await service.create(configuration: config, kernel: kernel, options: options, initImage: initImage, runtimeData: runtimeData)
+        try await service.create(
+            configuration: config,
+            loggingRequest: loggingRequest,
+            kernel: kernel,
+            options: options,
+            initImage: initImage,
+            runtimeData: runtimeData
+        )
         return message.reply()
+    }
+
+    static func loggingRequest(from message: XPCMessage) throws -> ContainerLogRequest? {
+        guard let loggingData = message.dataNoCopy(key: .containerLogRequest) else {
+            return nil
+        }
+        guard loggingData.count <= ContainerLogRequestResolver.maximumEncodedRequestBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "logging request exceeds the encoded byte limit"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ContainerLogRequest.self, from: loggingData)
+        } catch {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "logging request is not a valid versioned request"
+            )
+        }
     }
 
     @Sendable

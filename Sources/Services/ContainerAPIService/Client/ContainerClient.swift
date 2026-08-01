@@ -47,6 +47,7 @@ public struct ContainerClient: Sendable {
     /// Create a new container with the given configuration.
     public func create(
         configuration: ContainerConfiguration,
+        loggingRequest: ContainerLogRequest? = nil,
         options: ContainerCreateOptions = .default,
         kernel: Kernel,
         initImage: String? = nil,
@@ -61,6 +62,17 @@ public struct ContainerClient: Sendable {
             request.set(key: .containerConfig, value: data)
             request.set(key: .kernel, value: kdata)
             request.set(key: .containerOptions, value: odata)
+
+            if let loggingRequest {
+                let loggingData = try JSONEncoder().encode(loggingRequest)
+                guard loggingData.count <= ContainerLogRequest.maximumEncodedTransportBytes else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "logging request exceeds the encoded byte limit"
+                    )
+                }
+                request.set(key: .containerLogRequest, value: loggingData)
+            }
 
             if let initImage {
                 request.set(key: .initImage, value: initImage)
