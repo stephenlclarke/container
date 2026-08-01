@@ -20,6 +20,7 @@ import Foundation
 extension ContainerResource.Bundle {
     public static let jsonFileLogName = "json.log"
     public static let nativeLocalLogName = "local.bin"
+    public static let nativeLogCacheName = "cache.bin"
 
     /// The pathname for the workload log file.
     public var containerLog: URL {
@@ -52,5 +53,14 @@ extension ContainerResource.Bundle {
 
     public var containerNativeLocalLog: URL {
         containerNativeLocalLogDirectory.appendingPathComponent(Self.nativeLocalLogName)
+    }
+
+    /// Private canonical local cache used only for non-reader drivers.
+    public var containerNativeLogCacheDirectory: URL {
+        containerLoggingV2.appendingPathComponent("cache", isDirectory: true)
+    }
+
+    public var containerNativeLogCache: URL {
+        containerNativeLogCacheDirectory.appendingPathComponent(Self.nativeLogCacheName)
     }
 }

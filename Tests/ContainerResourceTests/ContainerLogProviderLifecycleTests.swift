@@ -232,8 +232,19 @@ struct ContainerLogProviderLifecycleTests {
             try JSONDecoder().decode(LogDriverReaderOpenRequestV1.self, from: encoded(object))
         }
 
-        #expect(throws: LogDriverLifecycleContractError.invalidReadRequest("tail must be non-negative")) {
+        #expect(
+            throws: LogDriverLifecycleContractError.invalidReadRequest(
+                "tail must be between zero and \(ContainerLogReadRequest.maximumTail)"
+            )
+        ) {
             try ContainerLogReadRequest(tail: -1)
+        }
+        #expect(
+            throws: LogDriverLifecycleContractError.invalidReadRequest(
+                "tail must be between zero and \(ContainerLogReadRequest.maximumTail)"
+            )
+        ) {
+            try ContainerLogReadRequest(tail: ContainerLogReadRequest.maximumTail + 1)
         }
         #expect(throws: LogDriverLifecycleContractError.invalidReadRequest("since must be finite")) {
             try ContainerLogReadRequest(since: Date(timeIntervalSinceReferenceDate: .infinity))

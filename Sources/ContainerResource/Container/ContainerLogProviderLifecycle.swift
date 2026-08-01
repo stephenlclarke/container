@@ -122,6 +122,7 @@ private enum LogDriverProviderLifecycleValidation {
 public struct ContainerLogReadRequest: Codable, Equatable, Sendable {
     public static let currentSchemaVersion: UInt32 = 1
     public static let maximumEncodedTransportBytes = 16 * 1024
+    public static let maximumTail = 100_000
 
     public let schemaVersion: UInt32
     public let stdout: Bool
@@ -155,8 +156,10 @@ public struct ContainerLogReadRequest: Codable, Equatable, Sendable {
         timestamps: Bool = false,
         details: Bool = false
     ) throws {
-        if let tail, tail < 0 {
-            throw LogDriverLifecycleContractError.invalidReadRequest("tail must be non-negative")
+        if let tail, !(0...Self.maximumTail).contains(tail) {
+            throw LogDriverLifecycleContractError.invalidReadRequest(
+                "tail must be between zero and \(Self.maximumTail)"
+            )
         }
         if let since, !since.timeIntervalSinceReferenceDate.isFinite {
             throw LogDriverLifecycleContractError.invalidReadRequest("since must be finite")
@@ -207,6 +210,18 @@ public enum ContainerLogReadRecordError: Error, Equatable, Sendable {
     case invalidProcessGeneration
     case tooManyAttributes
     case attributesTooLarge
+}
+
+/// Stable failures shared by native, provider, Compose, and Engine readers.
+public enum ContainerLogReaderError: Error, Equatable, Sendable {
+    /// Docker's public error category for a driver without a native reader or
+    /// enabled local cache.
+    case configuredDriverDoesNotSupportReading
+    /// A static adapter was asked to continue an active stream. The authority
+    /// must route that request through the live, generation-fenced reader.
+    case activeReaderRequired
+    /// A consumer called `next()` after the reader's single terminal event.
+    case alreadyEnded
 }
 
 /// One driver-neutral historical-read record.
