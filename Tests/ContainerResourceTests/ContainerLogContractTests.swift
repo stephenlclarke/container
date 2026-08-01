@@ -415,7 +415,9 @@ struct ContainerLogContractTests {
         #expect(local.capabilities.fileDefaults == LogDriverFileDefaults(maxSizeInBytes: 20 * 1024 * 1024, maxFileCount: 5, compress: true))
         #expect(json.optionContractDigest != local.optionContractDigest)
         let mode = try #require(json.options.first { $0.name == "mode" })
-        #expect(mode.allowedValues == ["blocking", "non-blocking"])
+        #expect(mode.allowedValues == ["", "blocking", "non-blocking"])
+        #expect(json.options.first { $0.name == "compress" }?.validationPhase == .start)
+        #expect(json.options.first { $0.name == "max-size" }?.validationPhase == .start)
         #expect(
             json.crossOptionConstraints == [
                 LogDriverCrossOptionConstraint(

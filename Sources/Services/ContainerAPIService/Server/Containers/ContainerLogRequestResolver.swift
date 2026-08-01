@@ -361,7 +361,7 @@ struct ContainerLogRequestResolver: Sendable {
         }
 
         let requestedMode: LogDeliveryConfiguration.Mode?
-        if let value = options["mode"] {
+        if let value = options["mode"], !value.isEmpty {
             guard let mode = LogDeliveryConfiguration.Mode(rawValue: value) else {
                 throw invalidOption(driver: descriptor.driver, name: "mode", reason: "value is not allowed")
             }
@@ -412,48 +412,27 @@ struct ContainerLogRequestResolver: Sendable {
         guard !disabled else {
             return try LogReadPolicy(source: .unavailable)
         }
-        let maxSize = try cacheSize(
-            name: "cache-max-size",
-            options: options,
-            defaultValue: defaultCacheMaxSizeInBytes,
-            driver: descriptor.driver
-        )
-        let maxFileCount = try cachePositiveInteger(
-            name: "cache-max-file",
-            options: options,
-            defaultValue: defaultCacheMaxFileCount,
-            driver: descriptor.driver
-        )
-        let compress = try cacheBoolean(
-            name: "cache-compress",
-            options: options,
-            defaultValue: defaultCacheCompress,
-            driver: descriptor.driver
-        )
+        // Docker Engine 29.2.1 retains these three cache-prefixed values but
+        // does not pass them to the local cache parser. Preserve the exact
+        // request in safeOptions while applying the engine's fixed defaults.
         return try LogReadPolicy(
             source: .dualCache,
             cache: LogCacheConfiguration(
-                maxSizeInBytes: maxSize,
-                maxFileCount: maxFileCount,
-                compress: compress
+                maxSizeInBytes: defaultCacheMaxSizeInBytes,
+                maxFileCount: defaultCacheMaxFileCount,
+                compress: defaultCacheCompress
             )
         )
     }
 
     private static func validateCacheOption(name: String, value: String, driver: String) throws {
         switch name {
-        case "cache-disabled", "cache-compress":
-            guard parseBoolean(value) != nil else {
+        case "cache-disabled":
+            guard value.isEmpty || parseBoolean(value) != nil else {
                 throw invalidOption(driver: driver, name: name, reason: "expected a boolean")
             }
-        case "cache-max-file":
-            guard let count = Int(value), count > 0 else {
-                throw invalidOption(driver: driver, name: name, reason: "expected a positive integer")
-            }
-        case "cache-max-size":
-            guard parseSize(value, allowingZero: false) != nil else {
-                throw invalidOption(driver: driver, name: name, reason: "expected a positive byte size")
-            }
+        case "cache-compress", "cache-max-file", "cache-max-size":
+            return
         default:
             preconditionFailure("unhandled cache option contract")
         }
@@ -468,95 +447,116 @@ struct ContainerLogRequestResolver: Sendable {
         guard let value = options[name] else {
             return defaultValue
         }
+        if value.isEmpty {
+            return false
+        }
         guard let parsed = parseBoolean(value) else {
             throw invalidOption(driver: driver, name: name, reason: "expected a boolean")
         }
         return parsed
     }
 
-    private static func cacheSize(
-        name: String,
-        options: [String: String],
-        defaultValue: UInt64,
-        driver: String
-    ) throws -> UInt64 {
-        guard let value = options[name] else {
-            return defaultValue
-        }
-        guard let parsed = parseSize(value, allowingZero: false) else {
-            throw invalidOption(driver: driver, name: name, reason: "expected a positive byte size")
-        }
-        return parsed
-    }
-
-    private static func cachePositiveInteger(
-        name: String,
-        options: [String: String],
-        defaultValue: Int,
-        driver: String
-    ) throws -> Int {
-        guard let value = options[name] else {
-            return defaultValue
-        }
-        guard let parsed = Int(value), parsed > 0 else {
-            throw invalidOption(driver: driver, name: name, reason: "expected a positive integer")
-        }
-        return parsed
-    }
-
     private static func parseBoolean(_ value: String) -> Bool? {
-        switch value.lowercased() {
-        case "true": true
-        case "false": false
+        switch value {
+        case "1", "t", "T", "TRUE", "true", "True": true
+        case "0", "f", "F", "FALSE", "false", "False": false
         default: nil
         }
     }
 
     private static func parseSize(_ input: String, allowingZero: Bool) -> UInt64? {
-        let value = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !value.isEmpty else {
+        guard let separator = input.lastIndex(where: isDockerSizeSeparator) else {
             return nil
         }
-        let unitIndex = value.firstIndex { !$0.isNumber && $0 != "." }
-        let numberText = unitIndex.map { value[..<$0] } ?? Substring(value)
-        let unitText = unitIndex.map { String(value[$0...]) } ?? ""
-        guard let number = Double(numberText), number.isFinite else {
+
+        let numberText: Substring
+        let suffixText: Substring
+        if input[separator] == " " {
+            numberText = input[..<separator]
+            suffixText = input[input.index(after: separator)...]
+        } else {
+            numberText = input[...separator]
+            suffixText = input[input.index(after: separator)...]
+        }
+        guard
+            let number = parseGoFloat(String(numberText)),
+            number.isFinite,
+            allowingZero ? number >= 0 : number > 0
+        else {
             return nil
         }
-        guard allowingZero ? number >= 0 : number > 0 else {
+
+        let suffix = suffixText.lowercased()
+        guard suffix.utf8.count <= 3 else {
             return nil
         }
-        let multipliers: [String: Double] = [
-            "": 1,
-            "b": 1,
-            "k": 1024,
-            "kb": 1024,
-            "kib": 1024,
-            "m": 1024 * 1024,
-            "mb": 1024 * 1024,
-            "mib": 1024 * 1024,
-            "g": 1024 * 1024 * 1024,
-            "gb": 1024 * 1024 * 1024,
-            "gib": 1024 * 1024 * 1024,
-            "t": 1024 * 1024 * 1024 * 1024,
-            "tb": 1024 * 1024 * 1024 * 1024,
-            "tib": 1024 * 1024 * 1024 * 1024,
-            "p": 1024 * 1024 * 1024 * 1024 * 1024,
-            "pb": 1024 * 1024 * 1024 * 1024 * 1024,
-            "pib": 1024 * 1024 * 1024 * 1024 * 1024,
-        ]
-        guard let multiplier = multipliers[unitText] else {
+
+        let multiplier: Double
+        switch suffix {
+        case "", "b":
+            multiplier = 1
+        case "k", "kb", "kib":
+            multiplier = 1024
+        case "m", "mb", "mib":
+            multiplier = 1024 * 1024
+        case "g", "gb", "gib":
+            multiplier = 1024 * 1024 * 1024
+        case "t", "tb", "tib":
+            multiplier = 1024 * 1024 * 1024 * 1024
+        case "p", "pb", "pib":
+            multiplier = 1024 * 1024 * 1024 * 1024 * 1024
+        default:
             return nil
         }
         let bytes = number * multiplier
-        guard bytes.isFinite, bytes <= Double(UInt64.max) else {
+        // go-units returns int64. Keep the conversion below 2^63 because
+        // Double(Int64.max) rounds up to that boundary.
+        guard bytes.isFinite, bytes < 9_223_372_036_854_775_808 else {
             return nil
         }
-        let result = UInt64(bytes)
+        let result = UInt64(Int64(bytes))
         guard allowingZero || result > 0 else {
             return nil
         }
         return result
+    }
+
+    private static func isDockerSizeSeparator(_ character: Character) -> Bool {
+        character == "." || character == " " || character.wholeNumberValue != nil
+    }
+
+    private static func parseGoFloat(_ input: String) -> Double? {
+        guard input.contains("_") else {
+            return Double(input)
+        }
+
+        let characters = Array(input)
+        guard characters.first != "_", characters.last != "_" else {
+            return nil
+        }
+        let isHex = input.drop(while: { $0 == "+" || $0 == "-" }).lowercased().hasPrefix("0x")
+        for index in characters.indices where characters[index] == "_" {
+            guard index > characters.startIndex, index < characters.index(before: characters.endIndex) else {
+                return nil
+            }
+            let previous = characters[characters.index(before: index)]
+            let next = characters[characters.index(after: index)]
+            let validPrevious = isASCIIDigit(previous) || (isHex && (isASCIIHexDigit(previous) || previous.lowercased() == "x"))
+            let validNext = isASCIIDigit(next) || (isHex && isASCIIHexDigit(next))
+            guard validPrevious, validNext else {
+                return nil
+            }
+        }
+        return Double(input.replacingOccurrences(of: "_", with: ""))
+    }
+
+    private static func isASCIIDigit(_ character: Character) -> Bool {
+        character >= "0" && character <= "9"
+    }
+
+    private static func isASCIIHexDigit(_ character: Character) -> Bool {
+        isASCIIDigit(character)
+            || (character.lowercased() >= "a" && character.lowercased() <= "f")
     }
 
     private static func invalidOption(

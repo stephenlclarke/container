@@ -1042,18 +1042,18 @@ public enum BuiltinLogDriverDescriptors {
                 placement: .macOSHost,
                 trust: .builtIn,
                 options: [
-                    LogDriverOptionDescriptor(name: "compress", valueKind: .boolean),
+                    LogDriverOptionDescriptor(name: "compress", valueKind: .boolean, validationPhase: .start),
                     LogDriverOptionDescriptor(name: "env", valueKind: .commaSeparatedNames),
                     LogDriverOptionDescriptor(name: "env-regex", valueKind: .regularExpression, validationPhase: .start),
                     LogDriverOptionDescriptor(name: "labels", valueKind: .commaSeparatedNames),
                     LogDriverOptionDescriptor(name: "labels-regex", valueKind: .regularExpression, validationPhase: .start),
                     LogDriverOptionDescriptor(name: "max-buffer-size", valueKind: .size),
                     LogDriverOptionDescriptor(name: "max-file", valueKind: .positiveInteger, validationPhase: .start),
-                    LogDriverOptionDescriptor(name: "max-size", valueKind: .size),
+                    LogDriverOptionDescriptor(name: "max-size", valueKind: .size, validationPhase: .start),
                     LogDriverOptionDescriptor(
                         name: "mode",
                         valueKind: .string,
-                        allowedValues: ["blocking", "non-blocking"]
+                        allowedValues: ["", "blocking", "non-blocking"]
                     ),
                     LogDriverOptionDescriptor(name: "tag", valueKind: .tagTemplate, validationPhase: .start),
                 ],

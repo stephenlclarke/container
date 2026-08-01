@@ -143,12 +143,17 @@ struct ContainerLogRequestResolverTests {
                 options: ["max-buffer-size": "0", "mode": "non-blocking"]
             )
         )
+        let explicitEmpty = try resolver.prepare(
+            ContainerLogRequest(driver: "json-file", options: ["mode": ""])
+        )
 
         #expect(omitted.delivery.requestedMode == nil)
         #expect(blocking.delivery.requestedMode == .blocking)
         #expect(nonBlocking.delivery.requestedMode == .nonBlocking)
         #expect(nonBlocking.delivery.maxBufferSizeInBytes == 0)
         #expect(nonBlocking.delivery.effectiveMaxBufferSizeInBytes == 0)
+        #expect(explicitEmpty.delivery.requestedMode == nil)
+        #expect(explicitEmpty.safeOptions["mode"] == "")
 
         #expect(throws: ContainerLogResolutionError.self) {
             try resolver.prepare(
@@ -165,22 +170,28 @@ struct ContainerLogRequestResolverTests {
         let deferred = try resolver.prepare(
             ContainerLogRequest(
                 driver: "json-file",
-                options: ["max-file": "not-an-integer"]
+                options: [
+                    "compress": "not-a-boolean",
+                    "max-file": "not-an-integer",
+                    "max-size": "not-a-size",
+                ]
             )
         )
         #expect(deferred.safeOptions["max-file"] == "not-an-integer")
+        #expect(deferred.safeOptions["max-size"] == "not-a-size")
+        #expect(deferred.safeOptions["compress"] == "not-a-boolean")
 
         #expect(throws: ContainerLogResolutionError.self) {
             try resolver.prepare(
                 ContainerLogRequest(
                     driver: "json-file",
-                    options: ["compress": "not-a-boolean"]
+                    options: ["cache-disabled": "not-a-boolean"]
                 )
             )
         }
     }
 
-    @Test func remoteReaderPolicyUsesCacheDefaultsOverridesAndDisable() throws {
+    @Test func remoteReaderPolicyUsesPinnedCacheDefaultsAndDisable() throws {
         let remote = try remoteDescriptor(secretOption: nil)
         let catalog = try LogDriverCatalog(
             descriptors: BuiltinLogDriverDescriptors.current.descriptors + [remote]
@@ -206,9 +217,12 @@ struct ContainerLogRequestResolverTests {
                 ]
             )
         )
-        #expect(overridden.readPolicy.cache?.maxSizeInBytes == 1024 * 1024)
-        #expect(overridden.readPolicy.cache?.maxFileCount == 2)
-        #expect(overridden.readPolicy.cache?.compress == false)
+        #expect(overridden.readPolicy.cache?.maxSizeInBytes == 20 * 1024 * 1024)
+        #expect(overridden.readPolicy.cache?.maxFileCount == 5)
+        #expect(overridden.readPolicy.cache?.compress == true)
+        #expect(overridden.safeOptions["cache-max-size"] == "1m")
+        #expect(overridden.safeOptions["cache-max-file"] == "2")
+        #expect(overridden.safeOptions["cache-compress"] == "false")
 
         let disabled = try resolver.prepare(
             ContainerLogRequest(
@@ -217,6 +231,72 @@ struct ContainerLogRequestResolverTests {
             )
         )
         #expect(disabled.readPolicy.source == .unavailable)
+    }
+
+    @Test func cacheOptionsMatchDockerBooleanAndIgnoredPrefixSemantics() throws {
+        let remote = try remoteDescriptor(secretOption: nil)
+        let catalog = try LogDriverCatalog(
+            descriptors: BuiltinLogDriverDescriptors.current.descriptors + [remote]
+        )
+        let resolver = ContainerLogRequestResolver(defaults: LoggingConfig(), catalog: catalog)
+
+        for value in ["true", "True", "TRUE", "1", "t", "T"] {
+            let prepared = try resolver.prepare(
+                ContainerLogRequest(driver: remote.driver, options: ["cache-disabled": value])
+            )
+            #expect(prepared.readPolicy.source == .unavailable)
+        }
+        for value in ["", "false", "False", "FALSE", "0", "f", "F"] {
+            let prepared = try resolver.prepare(
+                ContainerLogRequest(driver: remote.driver, options: ["cache-disabled": value])
+            )
+            #expect(prepared.readPolicy.source == .dualCache)
+        }
+        #expect(throws: ContainerLogResolutionError.self) {
+            try resolver.prepare(
+                ContainerLogRequest(driver: remote.driver, options: ["cache-disabled": "yes"])
+            )
+        }
+
+        let arbitrary = try resolver.prepare(
+            ContainerLogRequest(
+                driver: remote.driver,
+                options: [
+                    "cache-compress": "not-a-boolean",
+                    "cache-max-file": "not-an-integer",
+                    "cache-max-size": "not-a-size",
+                ]
+            )
+        )
+        #expect(arbitrary.readPolicy.source == .dualCache)
+        #expect(arbitrary.safeOptions["cache-compress"] == "not-a-boolean")
+        #expect(arbitrary.safeOptions["cache-max-file"] == "not-an-integer")
+        #expect(arbitrary.safeOptions["cache-max-size"] == "not-a-size")
+    }
+
+    @Test func maxBufferSizeMatchesDockerGoUnitsGrammar() throws {
+        let resolver = makeResolver()
+        let accepted = ["0", "1", "+1", "01", "1.5k", "1KB", "1KiB", "1 k", "+1m", ".5m", "1e3", "1_0"]
+        for value in accepted {
+            let prepared = try resolver.prepare(
+                ContainerLogRequest(
+                    driver: "json-file",
+                    options: ["max-buffer-size": value, "mode": "non-blocking"]
+                )
+            )
+            #expect(prepared.delivery.maxBufferSizeInBytes != nil)
+        }
+
+        for value in ["", "-1", " 1k ", "nonsense", "1xb", "1__0"] {
+            #expect(throws: ContainerLogResolutionError.self) {
+                try resolver.prepare(
+                    ContainerLogRequest(
+                        driver: "json-file",
+                        options: ["max-buffer-size": value, "mode": "non-blocking"]
+                    )
+                )
+            }
+        }
     }
 
     @Test func providerDeclaredSecretsAreSealedAndSafeValuesRemainVisible() throws {
