@@ -17,7 +17,7 @@
 import Foundation
 
 /// A stable, driver-neutral container output stream identifier.
-public enum ContainerLogStream: String, CaseIterable, Equatable, Sendable {
+public enum ContainerLogStream: String, CaseIterable, Equatable, Hashable, Sendable {
     case stdout
     case stderr
 }

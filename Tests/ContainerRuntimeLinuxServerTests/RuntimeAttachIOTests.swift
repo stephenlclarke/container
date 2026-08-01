@@ -14,7 +14,9 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import Containerization
 import Foundation
+import Synchronization
 import Testing
 
 @testable import ContainerRuntimeLinuxServer
@@ -54,6 +56,25 @@ struct RuntimeAttachIOTests {
     }
 
     @Test
+    func persistentFailureDoesNotSuppressLiveAttachOutput() throws {
+        let attached = Pipe()
+        let observedFailure = Mutex<[AttachableOutputPersistentFailure]>([])
+        let output = AttachableOutput(
+            initial: attached.fileHandleForWriting,
+            persistent: FailingRuntimeWriter(),
+            persistentFailureHandler: { message in
+                observedFailure.withLock { $0.append(message) }
+            }
+        )
+
+        try output.write(Data("still attached\n".utf8))
+        try output.close()
+
+        #expect(try attached.fileHandleForReading.readToEnd() == Data("still attached\n".utf8))
+        #expect(observedFailure.withLock { $0 } == [.write, .close])
+    }
+
+    @Test
     func inputRemainsOpenWhenOneClientEnds() async throws {
         let first = Pipe()
         let second = Pipe()
@@ -70,5 +91,19 @@ struct RuntimeAttachIOTests {
         input.close()
         let finished = await iterator.next()
         #expect(finished == nil)
+    }
+}
+
+private enum ExpectedRuntimeWriterError: Error {
+    case failure
+}
+
+private struct FailingRuntimeWriter: Writer {
+    func write(_ data: Data) throws {
+        throw ExpectedRuntimeWriterError.failure
+    }
+
+    func close() throws {
+        throw ExpectedRuntimeWriterError.failure
     }
 }
