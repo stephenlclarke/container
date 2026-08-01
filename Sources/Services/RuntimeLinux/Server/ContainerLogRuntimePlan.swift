@@ -285,11 +285,20 @@ package enum ContainerLogRuntimePlan: Sendable {
                     throw ContainerLogRuntimePlanError.invalidOption(name)
                 }
             case .size:
+                let parsed =
+                    if name == "max-size" {
+                        ContainerLogOptionValueParser.humanSizeInBytes(
+                            value,
+                            allowingZero: false
+                        )
+                    } else {
+                        ContainerLogOptionValueParser.ramSizeInBytes(
+                            value,
+                            allowingZero: name == "max-buffer-size"
+                        )
+                    }
                 guard
-                    ContainerLogOptionValueParser.sizeInBytes(
-                        value,
-                        allowingZero: name == "max-buffer-size"
-                    ) != nil
+                    parsed != nil
                 else {
                     throw ContainerLogRuntimePlanError.invalidOption(name)
                 }
@@ -321,7 +330,7 @@ package enum ContainerLogRuntimePlan: Sendable {
         }
         let maximumBufferSize: UInt64?
         if let value = options["max-buffer-size"] {
-            guard let parsed = ContainerLogOptionValueParser.sizeInBytes(value, allowingZero: true) else {
+            guard let parsed = ContainerLogOptionValueParser.ramSizeInBytes(value, allowingZero: true) else {
                 throw ContainerLogRuntimePlanError.invalidOption("max-buffer-size")
             }
             maximumBufferSize = parsed
@@ -339,7 +348,7 @@ package enum ContainerLogRuntimePlan: Sendable {
         descriptor: LogDriverDescriptor
     ) throws -> UInt64? {
         if let value = options["max-size"] {
-            guard let parsed = ContainerLogOptionValueParser.sizeInBytes(value, allowingZero: false) else {
+            guard let parsed = ContainerLogOptionValueParser.humanSizeInBytes(value, allowingZero: false) else {
                 throw ContainerLogRuntimePlanError.invalidOption("max-size")
             }
             return parsed

@@ -327,7 +327,7 @@ struct ContainerLogRequestResolver: Sendable {
 
         let maxBufferSize: UInt64?
         if let value = options["max-buffer-size"] {
-            guard let parsed = ContainerLogOptionValueParser.sizeInBytes(value, allowingZero: true) else {
+            guard let parsed = ContainerLogOptionValueParser.ramSizeInBytes(value, allowingZero: true) else {
                 throw invalidOption(
                     driver: descriptor.driver,
                     name: "max-buffer-size",

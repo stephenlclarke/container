@@ -28,9 +28,23 @@ package enum ContainerLogOptionValueParser {
         }
     }
 
-    /// Matches the positive Docker/go-units RAM-size grammar used by the
-    /// logging drivers, including binary unit multipliers and Go float syntax.
-    package static func sizeInBytes(_ input: String, allowingZero: Bool) -> UInt64? {
+    /// Matches Docker/go-units `FromHumanSize`, used by file-driver
+    /// `max-size`. Its SI suffixes are decimal: `4k` is 4,000 bytes.
+    package static func humanSizeInBytes(_ input: String, allowingZero: Bool) -> UInt64? {
+        sizeInBytes(input, allowingZero: allowingZero, unitBase: 1_000)
+    }
+
+    /// Matches Docker/go-units `RAMInBytes`, used by `max-buffer-size` and
+    /// cache ring sizing. Its suffixes are binary: `4k` is 4,096 bytes.
+    package static func ramSizeInBytes(_ input: String, allowingZero: Bool) -> UInt64? {
+        sizeInBytes(input, allowingZero: allowingZero, unitBase: 1_024)
+    }
+
+    private static func sizeInBytes(
+        _ input: String,
+        allowingZero: Bool,
+        unitBase: Double
+    ) -> UInt64? {
         guard
             let first = input.first,
             let last = input.last,
@@ -70,15 +84,15 @@ package enum ContainerLogOptionValueParser {
         case "", "b":
             multiplier = 1
         case "k", "kb", "kib":
-            multiplier = 1024
+            multiplier = unitBase
         case "m", "mb", "mib":
-            multiplier = 1024 * 1024
+            multiplier = unitBase * unitBase
         case "g", "gb", "gib":
-            multiplier = 1024 * 1024 * 1024
+            multiplier = unitBase * unitBase * unitBase
         case "t", "tb", "tib":
-            multiplier = 1024 * 1024 * 1024 * 1024
+            multiplier = unitBase * unitBase * unitBase * unitBase
         case "p", "pb", "pib":
-            multiplier = 1024 * 1024 * 1024 * 1024 * 1024
+            multiplier = unitBase * unitBase * unitBase * unitBase * unitBase
         default:
             return nil
         }

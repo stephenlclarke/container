@@ -41,11 +41,20 @@ enum ContainerLogOptionContractValidator {
                 throw invalidOption(driver: driver, name: option.name, reason: "expected a positive integer")
             }
         case .size:
+            let parsed =
+                if option.name == "max-size" {
+                    ContainerLogOptionValueParser.humanSizeInBytes(
+                        value,
+                        allowingZero: false
+                    )
+                } else {
+                    ContainerLogOptionValueParser.ramSizeInBytes(
+                        value,
+                        allowingZero: option.name == "max-buffer-size"
+                    )
+                }
             guard
-                ContainerLogOptionValueParser.sizeInBytes(
-                    value,
-                    allowingZero: option.name == "max-buffer-size"
-                ) != nil
+                parsed != nil
             else {
                 throw invalidOption(driver: driver, name: option.name, reason: "expected a valid byte size")
             }

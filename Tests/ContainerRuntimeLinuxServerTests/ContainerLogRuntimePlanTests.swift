@@ -129,7 +129,7 @@ struct ContainerLogRuntimePlanTests {
             Issue.record("expected the json-file plan")
             return
         }
-        #expect(jsonConfiguration.maximumFileSize == 2 * 1024 * 1024)
+        #expect(jsonConfiguration.maximumFileSize == 2_000_000)
         #expect(jsonConfiguration.maximumFileCount == 3)
         #expect(!jsonConfiguration.compress)
         #expect(jsonDelivery.effectiveMode == .nonBlocking)
@@ -150,7 +150,7 @@ struct ContainerLogRuntimePlanTests {
             Issue.record("expected the local plan")
             return
         }
-        #expect(localConfiguration.maximumFileSize == 3 * 1024 * 1024)
+        #expect(localConfiguration.maximumFileSize == 3_000_000)
         #expect(localConfiguration.maximumFileCount == 4)
         #expect(!localConfiguration.compress)
         #expect(localDelivery.effectiveMode == .blocking)
@@ -441,7 +441,7 @@ struct ContainerLogRuntimePlanTests {
             mode = nil
         }
         let maximumBufferSize = options["max-buffer-size"].flatMap {
-            ContainerLogOptionValueParser.sizeInBytes($0, allowingZero: true)
+            ContainerLogOptionValueParser.ramSizeInBytes($0, allowingZero: true)
         }
         return try LogDeliveryConfiguration(
             requestedMode: mode,

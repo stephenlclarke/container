@@ -33,7 +33,7 @@ struct ContainerLogOptionValueParserTests {
     }
 
     @Test
-    func matchesDockerGoUnitsSizeGrammar() {
+    func matchesDockerGoUnitsRAMSizeGrammar() {
         let accepted: [(String, UInt64)] = [
             ("1", 1),
             ("+1", 1),
@@ -49,14 +49,22 @@ struct ContainerLogOptionValueParserTests {
         ]
         for (value, expected) in accepted {
             #expect(
-                ContainerLogOptionValueParser.sizeInBytes(value, allowingZero: false)
+                ContainerLogOptionValueParser.ramSizeInBytes(value, allowingZero: false)
                     == expected
             )
         }
 
         for value in ["", "0", "-1", " 1", "1 ", "1k ", "\t1k", "nonsense", "1xb", "1__0"] {
-            #expect(ContainerLogOptionValueParser.sizeInBytes(value, allowingZero: false) == nil)
+            #expect(ContainerLogOptionValueParser.ramSizeInBytes(value, allowingZero: false) == nil)
         }
-        #expect(ContainerLogOptionValueParser.sizeInBytes("0", allowingZero: true) == 0)
+        #expect(ContainerLogOptionValueParser.ramSizeInBytes("0", allowingZero: true) == 0)
+    }
+
+    @Test
+    func distinguishesFileAndRAMSizeMultipliers() {
+        #expect(ContainerLogOptionValueParser.humanSizeInBytes("4k", allowingZero: false) == 4_000)
+        #expect(ContainerLogOptionValueParser.humanSizeInBytes("2MiB", allowingZero: false) == 2_000_000)
+        #expect(ContainerLogOptionValueParser.ramSizeInBytes("4k", allowingZero: false) == 4_096)
+        #expect(ContainerLogOptionValueParser.ramSizeInBytes("2MiB", allowingZero: false) == 2_097_152)
     }
 }
