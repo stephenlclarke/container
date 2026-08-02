@@ -193,6 +193,65 @@ extension RuntimeClient {
         }
     }
 
+    /// Follow raw records from the runtime's retained active logging generation.
+    public func followLogs(
+        request logReadRequest: ContainerLogReadRequest
+    ) async throws -> FileHandle {
+        try await followLogStream(
+            route: .followLogs,
+            request: logReadRequest,
+            description: "logs"
+        )
+    }
+
+    /// Follow structured records from the runtime's retained active logging generation.
+    public func followLogRecords(
+        request logReadRequest: ContainerLogReadRequest
+    ) async throws -> FileHandle {
+        try await followLogStream(
+            route: .followLogRecords,
+            request: logReadRequest,
+            description: "log records"
+        )
+    }
+
+    private func followLogStream(
+        route: RuntimeRoutes,
+        request logReadRequest: ContainerLogReadRequest,
+        description: String
+    ) async throws -> FileHandle {
+        let request = XPCMessage(route: route.rawValue)
+        let encoded = try JSONEncoder().encode(logReadRequest)
+        guard encoded.count <= ContainerLogReadRequest.maximumEncodedTransportBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "log read request exceeds the transport limit"
+            )
+        }
+        request.set(
+            key: RuntimeKeys.logReadRequest.rawValue,
+            value: encoded
+        )
+
+        let response: XPCMessage
+        do {
+            response = try await client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to follow (description) for container \(self.id)",
+                cause: error
+            )
+        }
+        guard let handle = response.fileHandle(key: RuntimeKeys.fd.rawValue) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "runtime returned no (description) stream for container \(self.id)"
+            )
+        }
+        return handle
+    }
+
     public func startProcess(_ id: String) async throws {
         let request = XPCMessage(route: RuntimeRoutes.start.rawValue)
         request.set(key: RuntimeKeys.id.rawValue, value: id)

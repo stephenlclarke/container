@@ -1429,9 +1429,35 @@ public actor ContainersService {
         }
 
         do {
-            _ = try _getContainerState(id: id)
+            let state = try _getContainerState(id: id)
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
+            if !state.snapshot.configuration.logging.isLegacy {
+                if isLiveForLogFollow(id: id) {
+                    do {
+                        let request = try Self.nativeLogReadRequest(
+                            options: options,
+                            follow: true
+                        )
+                        return try await state.getClient().followLogs(
+                            request: request
+                        )
+                    } catch {
+                        guard !isLiveForLogFollow(id: id) else {
+                            throw error
+                        }
+                    }
+                }
+                return Self.logHandle(
+                    for: try Self.nativeLogReader(
+                        bundle: bundle,
+                        configuration: state.snapshot.configuration,
+                        options: options,
+                        includeRotated: true,
+                        follow: true
+                    )
+                )
+            }
             return try Self.followLogFile(for: bundle.containerLog, options: options)
         } catch {
             throw ContainerizationError(
@@ -1564,9 +1590,35 @@ public actor ContainersService {
         }
 
         do {
-            _ = try _getContainerState(id: id)
+            let state = try _getContainerState(id: id)
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
+            if !state.snapshot.configuration.logging.isLegacy {
+                if isLiveForLogFollow(id: id) {
+                    do {
+                        let request = try Self.nativeLogReadRequest(
+                            options: options,
+                            follow: true
+                        )
+                        return try await state.getClient().followLogRecords(
+                            request: request
+                        )
+                    } catch {
+                        guard !isLiveForLogFollow(id: id) else {
+                            throw error
+                        }
+                    }
+                }
+                return Self.logRecordHandle(
+                    for: try Self.nativeLogReader(
+                        bundle: bundle,
+                        configuration: state.snapshot.configuration,
+                        options: options,
+                        includeRotated: true,
+                        follow: true
+                    )
+                )
+            }
             return try Self.followLogRecordFile(
                 for: bundle.containerLogRecords,
                 options: options,
@@ -1606,19 +1658,31 @@ public actor ContainersService {
         bundle: ContainerResource.Bundle,
         configuration: ContainerConfiguration,
         options: ContainerLogOptions,
-        includeRotated: Bool
+        includeRotated: Bool,
+        follow: Bool = false
     ) throws -> any ContainerLogReader {
-        let tail = options.tail.flatMap { $0 < 0 ? nil : $0 }
-        return try ContainerLogNativeReaderFactory.makeReader(
+        try ContainerLogNativeReaderFactory.makeReader(
             bundle: bundle,
             configuration: configuration,
-            request: ContainerLogReadRequest(
-                tail: tail,
-                since: options.since,
-                until: options.until
+            request: Self.nativeLogReadRequest(
+                options: options,
+                follow: follow
             ),
             source: .stoppedContainer,
             includeRotated: includeRotated
+        )
+    }
+
+    private static func nativeLogReadRequest(
+        options: ContainerLogOptions,
+        follow: Bool
+    ) throws -> ContainerLogReadRequest {
+        let tail = options.tail.flatMap { $0 < 0 ? nil : $0 }
+        return try ContainerLogReadRequest(
+            follow: follow,
+            tail: tail,
+            since: options.since,
+            until: options.until
         )
     }
 
@@ -1668,6 +1732,43 @@ public actor ContainersService {
                 return records
             }
         }
+    }
+
+    private nonisolated static func logRecordHandle(
+        for reader: any ContainerLogReader
+    ) -> FileHandle {
+        let pipe = Pipe()
+        let writer = pipe.fileHandleForWriting
+        Task.detached(priority: .utility) {
+            defer { try? writer.close() }
+            let encoder = JSONEncoder()
+            do {
+                while true {
+                    switch try await reader.next() {
+                    case .record(let record):
+                        let encoded = try encoder.encode(
+                            ContainerLogRecord(
+                                timestamp: Date(
+                                    timeIntervalSince1970:
+                                        Double(record.timestamp.secondsSinceUnixEpoch)
+                                        + Double(record.timestamp.nanoseconds)
+                                        / 1_000_000_000
+                                ),
+                                stream: record.stream == .stdout ? .stdout : .stderr,
+                                data: record.data
+                            )
+                        )
+                        try writer.write(contentsOf: encoded)
+                        try writer.write(contentsOf: Data([UInt8(ascii: "\n")]))
+                    case .endOfStream:
+                        return
+                    }
+                }
+            } catch {
+                await reader.cancel()
+            }
+        }
+        return pipe.fileHandleForReading
     }
 
     static func logReplayURLs(for url: URL, includeRotated: Bool) -> [URL] {
@@ -3079,7 +3180,9 @@ public actor ContainersService {
         guard let state = try? _getContainerState(id: id) else {
             return false
         }
-        return state.snapshot.status == .running || state.snapshot.status == .stopping
+        return state.snapshot.status == .running
+            || state.snapshot.status == .paused
+            || state.snapshot.status == .stopping
     }
 
     private static func isInitProcess(id: String, processID: String) -> Bool {

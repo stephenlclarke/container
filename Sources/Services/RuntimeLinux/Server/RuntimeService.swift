@@ -457,6 +457,46 @@ public actor RuntimeService {
         }
     }
 
+    /// Opens a raw stream from the exact active logging generation.
+    @Sendable
+    public func followLogs(_ message: XPCMessage) async throws -> XPCMessage {
+        try openLogStream(message, format: .raw)
+    }
+
+    /// Opens a newline-delimited structured stream from the exact active
+    /// logging generation.
+    @Sendable
+    public func followLogRecords(_ message: XPCMessage) async throws -> XPCMessage {
+        try openLogStream(message, format: .structuredRecords)
+    }
+
+    private func openLogStream(
+        _ message: XPCMessage,
+        format: ContainerLogReaderStreamFormat
+    ) throws -> XPCMessage {
+        guard state == .running || state == .paused || state == .stopping else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "cannot follow logs: container is not running"
+            )
+        }
+        let request = try message.logReadRequest()
+        guard request.follow else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "active log stream requires follow=true"
+            )
+        }
+        let container = try getContainer()
+        let stream = try container.logging.makeStream(
+            request: request,
+            format: format
+        )
+        let reply = message.reply()
+        reply.set(key: RuntimeKeys.fd.rawValue, value: stream)
+        return reply
+    }
+
     /// Get statistics for the container.
     ///
     /// - Parameters:
@@ -1930,6 +1970,30 @@ extension XPCMessage {
         let data = self.dataNoCopy(key: RuntimeKeys.dynamicEnv.rawValue)
         let dynamicEnv = try data.map { try JSONDecoder().decode([String: String].self, from: $0) } ?? [:]
         return dynamicEnv
+    }
+
+    fileprivate func logReadRequest() throws -> ContainerLogReadRequest {
+        guard let data = self.dataNoCopy(key: RuntimeKeys.logReadRequest.rawValue) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "empty log read request"
+            )
+        }
+        guard data.count <= ContainerLogReadRequest.maximumEncodedTransportBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "log read request exceeds the transport limit"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ContainerLogReadRequest.self, from: data)
+        } catch {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid log read request",
+                cause: error
+            )
+        }
     }
 
 }

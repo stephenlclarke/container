@@ -381,6 +381,33 @@ struct ContainerLogsTests {
                     - 1_767_323_045.123_456_7
             ) < 0.000_001
         )
+
+        let followedRawHandle = try await service.followLogs(
+            id: id,
+            options: .default
+        )
+        defer { try? followedRawHandle.close() }
+        let followedRaw = try #require(try followedRawHandle.readToEnd())
+        #expect(followedRaw == Data("canonical\n".utf8))
+
+        let followedRecordHandle = try await service.followLogRecords(
+            id: id,
+            options: .default
+        )
+        defer { try? followedRecordHandle.close() }
+        let followedRecordData = try #require(
+            try followedRecordHandle.readToEnd()
+        )
+        let followedRecords = try logRecords(from: followedRecordData)
+        #expect(followedRecords.count == 1)
+        #expect(followedRecords[0].stream == records[0].stream)
+        #expect(followedRecords[0].data == records[0].data)
+        #expect(
+            abs(
+                followedRecords[0].timestamp.timeIntervalSince1970
+                    - records[0].timestamp.timeIntervalSince1970
+            ) < 0.001
+        )
     }
 
     @Test func staticLogReplayAppliesTailAfterCombiningRotatedFiles() async throws {

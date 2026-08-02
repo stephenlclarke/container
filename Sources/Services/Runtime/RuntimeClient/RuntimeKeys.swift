@@ -39,6 +39,8 @@ public enum RuntimeKeys: String {
     case width
     case height
     case processConfig
+    /// Validated request for the retained active logging reader.
+    case logReadRequest
 
     /// Container statistics
     case statistics

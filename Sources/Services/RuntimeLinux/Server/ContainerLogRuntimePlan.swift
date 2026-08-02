@@ -546,4 +546,15 @@ package struct ContainerLogRuntimeCapture: @unchecked Sendable {
         }
         return try session.makeReader(request: request)
     }
+
+    package func makeStream(
+        request: ContainerLogReadRequest,
+        format: ContainerLogReaderStreamFormat
+    ) throws -> FileHandle {
+        let reader = try makeReader(request: request)
+        return try ContainerLogReaderStream.open(
+            reader: reader,
+            format: format
+        )
+    }
 }

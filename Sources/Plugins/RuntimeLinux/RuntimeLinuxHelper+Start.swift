@@ -104,6 +104,8 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.wait.rawValue: XPCServer.route(server.wait),
                         RuntimeRoutes.start.rawValue: XPCServer.route(server.startProcess),
                         RuntimeRoutes.attach.rawValue: XPCServer.route(server.attach),
+                        RuntimeRoutes.followLogs.rawValue: XPCServer.route(server.followLogs),
+                        RuntimeRoutes.followLogRecords.rawValue: XPCServer.route(server.followLogRecords),
                         RuntimeRoutes.dial.rawValue: XPCServer.route(server.dial),
                         RuntimeRoutes.shutdown.rawValue: XPCServer.route(server.shutdown),
                         RuntimeRoutes.statistics.rawValue: XPCServer.route(server.statistics),
