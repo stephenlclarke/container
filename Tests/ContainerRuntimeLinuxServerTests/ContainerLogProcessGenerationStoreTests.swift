@@ -18,6 +18,7 @@ import Darwin
 import Foundation
 import Testing
 
+@testable import ContainerResource
 @testable import ContainerRuntimeLinuxServer
 
 struct ContainerLogProcessGenerationStoreTests {
@@ -28,10 +29,12 @@ struct ContainerLogProcessGenerationStoreTests {
                 directoryURL: directory
             )
             #expect(try store?.next() == 1)
+            #expect(try store?.current() == 1)
             #expect(try store?.next() == 2)
             store = nil
 
             let reopened = try ContainerLogProcessGenerationStore(directoryURL: directory)
+            #expect(try reopened.current() == 2)
             #expect(try reopened.next() == 3)
         }
     }

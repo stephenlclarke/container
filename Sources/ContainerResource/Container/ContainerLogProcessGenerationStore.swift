@@ -119,6 +119,22 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
         }
     }
 
+    /// Returns the last durably allocated generation without advancing it.
+    ///
+    /// The API authority allocates a remote-provider generation before
+    /// bootstrapping the runtime. The runtime then reads that exact value when
+    /// opening the matching local cache, so both destinations label one
+    /// process generation identically without a second allocation.
+    package func current() throws -> UInt64 {
+        try Self.processLock.withLock {
+            try Self.validateDirectoryDescriptor(directoryDescriptor)
+            let allocationLockDescriptor = try acquireAllocationLock()
+            defer { Darwin.close(allocationLockDescriptor) }
+            try removeInterruptedTemporaryFiles()
+            return try readCurrentGeneration()
+        }
+    }
+
     private func acquireAllocationLock() throws -> Int32 {
         try Self.openLockFile(directoryDescriptor: directoryDescriptor, exclusive: true)
     }
