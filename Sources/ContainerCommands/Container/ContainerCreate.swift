@@ -66,7 +66,13 @@ extension Application {
         }
 
         public func run() async throws {
-            let loggingRequest = try self.loggingRequest
+            try await run(loggingRequest: loggingRequest)
+        }
+
+        /// Creates a container with an authority logging request supplied by a
+        /// trusted in-process client instead of exposing protected values in a
+        /// child-process argument vector.
+        public func run(loggingRequest: ContainerLogRequest) async throws {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
             let progressConfig = try ProgressConfig(
                 showTasks: true,
