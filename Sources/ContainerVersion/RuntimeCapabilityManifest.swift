@@ -23,13 +23,7 @@ public enum RuntimeCapability: String, CaseIterable, Codable, Sendable {
     case composeLifecycle = "io.github.stephenlclarke.container.compose.lifecycle.v1"
     case composeNetworkScopedAliases = "io.github.stephenlclarke.container.compose.network-scoped-aliases.v1"
     case composeObservation = "io.github.stephenlclarke.container.compose.observation.v1"
-}
-
-/// Known logging-v2 capability contract. It deliberately remains separate
-/// from `RuntimeCapability` until the authoritative runtime is implemented, so
-/// exhaustive consumers cannot mistake a known identifier for advertisement.
-public enum LoggingDriverRuntimeCapabilityContract {
-    public static let identifier = "io.github.stephenlclarke.container.logging-drivers.v1"
+    case loggingDrivers = "io.github.stephenlclarke.container.logging-drivers.v1"
 }
 
 /// Machine-readable capability contract emitted by `container system version`.
