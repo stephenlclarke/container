@@ -66,7 +66,7 @@ extension APIServer {
                 let pluginLoader = try initializePluginLoader(log: log)
 
                 try await initializePlugins(pluginLoader: pluginLoader, log: log, routes: &routes, debug: debug)
-                let containersService = try initializeContainersService(
+                let containersService = try await initializeContainersService(
                     pluginLoader: pluginLoader,
                     containerSystemConfig: containerSystemConfig,
                     log: log,
@@ -278,17 +278,21 @@ extension APIServer {
             containerSystemConfig: ContainerSystemConfig,
             log: Logger,
             routes: inout [XPCRoute: XPCServer.RouteHandler]
-        ) throws -> ContainersService {
+        ) async throws -> ContainersService {
             log.info("initializing containers service")
 
             // TODO: Remove when we convert ContainersService to FilePath
             let appRootURL = URL(fileURLWithPath: appRoot.string)
+            let remoteLogDriverPlane =
+                try await AuthorityRemoteLogDriverPlane
+                .create(appRoot: appRootURL)
             let service = try ContainersService(
                 appRoot: appRootURL,
                 pluginLoader: pluginLoader,
                 containerSystemConfig: containerSystemConfig,
                 log: log,
-                debugHelpers: debug
+                debugHelpers: debug,
+                remoteLogDriverPlane: remoteLogDriverPlane
             )
             let harness = ContainersHarness(service: service, log: log)
 

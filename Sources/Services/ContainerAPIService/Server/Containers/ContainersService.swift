@@ -81,6 +81,7 @@ public actor ContainersService {
     private let eventBroadcaster: ContainerEventBroadcaster
     private let containerSystemConfig: ContainerSystemConfig
     private let logDriverCatalogProvider: any LogDriverCatalogProviding
+    private let remoteLogDriverPlane: AuthorityRemoteLogDriverPlane?
     private let loggingProtectedOptionsStore: LoggingProtectedOptionsStore
 
     private let lock: AsyncLock
@@ -104,7 +105,8 @@ public actor ContainersService {
         debugHelpers: Bool = false,
         logDriverCatalogProvider: any LogDriverCatalogProviding = StaticLogDriverCatalogProvider(
             catalog: BuiltinLogDriverDescriptors.current
-        )
+        ),
+        remoteLogDriverPlane: AuthorityRemoteLogDriverPlane? = nil
     ) throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
         try FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
@@ -131,7 +133,10 @@ public actor ContainersService {
         self.containerRoot = containerRoot
         self.pluginLoader = pluginLoader
         self.containerSystemConfig = containerSystemConfig
-        self.logDriverCatalogProvider = logDriverCatalogProvider
+        self.logDriverCatalogProvider =
+            remoteLogDriverPlane
+            ?? logDriverCatalogProvider
+        self.remoteLogDriverPlane = remoteLogDriverPlane
         self.log = log
         self.debugHelpers = debugHelpers
         self.eventBroadcaster = ContainerEventBroadcaster()
@@ -742,10 +747,12 @@ public actor ContainersService {
 
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let (config, _) = try Self.getContainerConfiguration(at: path)
-            try await self.validateLoggingForStart(
-                containerID: id,
-                configuration: config.logging
-            )
+            let authenticatedProtectedOptions =
+                try await self
+                .validateLoggingForStart(
+                    containerID: id,
+                    configuration: config.logging
+                )
 
             var networkBootstrapInfos = [NetworkBootstrapInfo]()
             for n in config.networks {
@@ -756,6 +763,21 @@ public actor ContainersService {
             }
 
             do {
+                let runtimeStdio: [FileHandle?]
+                if let remoteLogDriverPlane = self.remoteLogDriverPlane {
+                    runtimeStdio =
+                        try await remoteLogDriverPlane
+                        .prepareBootstrap(
+                            containerID: id,
+                            bundle: ContainerResource.Bundle(path: path),
+                            configuration: config,
+                            authenticatedProtectedOptions:
+                                authenticatedProtectedOptions,
+                            stdio: stdio
+                        )
+                } else {
+                    runtimeStdio = stdio
+                }
                 try Self.registerService(
                     plugin: self.runtimePlugins.first { $0.name == config.runtimeHandler }!,
                     loader: self.pluginLoader,
@@ -769,7 +791,14 @@ public actor ContainersService {
                     id: id,
                     runtime: runtime
                 )
-                try await runtimeClient.bootstrap(stdio: stdio, networkBootstrapInfos: networkBootstrapInfos, dynamicEnv: dynamicEnv)
+                try await runtimeClient.bootstrap(
+                    stdio: runtimeStdio,
+                    networkBootstrapInfos: networkBootstrapInfos,
+                    dynamicEnv: dynamicEnv
+                )
+                try await self.remoteLogDriverPlane?.bootstrapSucceeded(
+                    containerID: id
+                )
 
                 try await self.exitMonitor.registerProcess(
                     id: id,
@@ -786,6 +815,9 @@ public actor ContainersService {
 
                 await self.exitMonitor.stopTracking(id: id)
                 try? ServiceManager.deregister(fullServiceLabel: label)
+                try? await self.remoteLogDriverPlane?.abortBootstrap(
+                    containerID: id
+                )
                 throw error
             }
         }
@@ -794,9 +826,9 @@ public actor ContainersService {
     func validateLoggingForStart(
         containerID: String,
         configuration: ContainerLogConfiguration
-    ) async throws {
+    ) async throws -> [String: String] {
         guard !configuration.isLegacy else {
-            return
+            return [:]
         }
         do {
             let protectedOptions: [String: String]
@@ -819,6 +851,7 @@ public actor ContainersService {
                 configuration,
                 authenticatedProtectedOptions: protectedOptions
             )
+            return protectedOptions
         } catch {
             throw Self.mapLoggingStartError(error)
         }
@@ -967,6 +1000,9 @@ public actor ContainersService {
             }
 
             do {
+                try await self.remoteLogDriverPlane?.activate(
+                    containerID: id
+                )
                 let log = self.log
                 let waitFunc: ExitMonitor.WaitHandler = {
                     log.info("registering container with exit monitor")
@@ -1007,6 +1043,7 @@ public actor ContainersService {
                 await self.stopHealthCheckMonitor(id: id)
                 await self.exitMonitor.stopTracking(id: id)
                 try? await client.stop(options: ContainerStopOptions.default)
+                try? await self.remoteLogDriverPlane?.close(containerID: id)
                 throw error
             }
         }
@@ -2288,6 +2325,18 @@ public actor ContainersService {
                 ])
         }
 
+        do {
+            try await self.remoteLogDriverPlane?.close(containerID: id)
+        } catch {
+            self.log.error(
+                "failed to close remote logging provider session",
+                metadata: [
+                    "id": "\(id)",
+                    "error": "\(error)",
+                ]
+            )
+        }
+
         state.snapshot.status = .stopped
         state.snapshot.networks = []
         state.snapshot.health = nil
@@ -2428,6 +2477,7 @@ public actor ContainersService {
             )
             try? ServiceManager.deregister(fullServiceLabel: label)
         }
+        try await self.remoteLogDriverPlane?.close(containerID: id)
 
         let protectedCleanup:
             (

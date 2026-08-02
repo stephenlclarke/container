@@ -59,7 +59,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             #expect(resolved.providerGenerationAtResolution == descriptor.providerGeneration)
             #expect(resolved.readPolicy.source == .dualCache)
 
-            try await service.validateLoggingForStart(
+            _ = try await service.validateLoggingForStart(
                 containerID: "catalog-boundaries",
                 configuration: sealed.configuration
             )
