@@ -141,19 +141,26 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             ledger: ledger,
             protectedEffects: protectedEffects
         )
+        let options = try Self.mergedOptions(
+            resolved: resolved,
+            protected: authenticatedProtectedOptions
+        )
+        let semanticDigest = try Self.semanticDigest(
+            containerID: containerID,
+            configuration: configuration.logging
+        )
         try await controller.reconcilePendingEffectRemovals()
         try await reconcilePriorRuns(
             ledger: ledger,
-            controller: controller
+            controller: controller,
+            configuration: configuration,
+            options: options,
+            semanticDigest: semanticDigest
         )
 
         let processGeneration = try ContainerLogProcessGenerationStore(
             directoryURL: bundle.containerLoggingV2
         ).next()
-        let semanticDigest = try Self.semanticDigest(
-            containerID: containerID,
-            configuration: configuration.logging
-        )
         let identityDigest = Self.sha256Hex(
             Data(
                 "\(containerID)\u{0}\(resolved.leaseGeneration)\u{0}\(processGeneration)"
@@ -171,10 +178,6 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             providerID: resolved.providerIdentity.id,
             providerGeneration: resolved.providerGenerationAtResolution,
             candidateSandboxGeneration: nil
-        )
-        let options = try Self.mergedOptions(
-            resolved: resolved,
-            protected: authenticatedProtectedOptions
         )
         try await registerConfiguration(
             request: request,
@@ -389,7 +392,10 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
 
     private func reconcilePriorRuns(
         ledger: ContainerLogLifecycleLedgerV1,
-        controller: ContainerLogLifecycleControllerV1
+        controller: ContainerLogLifecycleControllerV1,
+        configuration: ContainerConfiguration,
+        options: [String: String],
+        semanticDigest: String
     ) async throws {
         let snapshot = await ledger.snapshot()
         for cleanup in snapshot.detachedCleanups
@@ -410,7 +416,43 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             )
         }
         for record in snapshot.writerOperations {
-            if let activation = record.result.activation,
+            if record.result == .reserved
+                || record.result == .startRecoveryRequired
+            {
+                guard
+                    record.request.semanticRequestDigest == semanticDigest,
+                    let selection = await providers.registry.selection(
+                        providerID: record.request.providerID,
+                        generation: record.request.providerGeneration
+                    )
+                else {
+                    throw AuthorityRemoteLogDriverPlaneError
+                        .incompleteConfiguration
+                }
+                try await registerConfiguration(
+                    request: record.request,
+                    options: options,
+                    configuration: configuration
+                )
+                do {
+                    _ = try await controller.prepareWriter(
+                        record.request,
+                        using: selection.provider
+                    )
+                    _ = try await controller.closePreparedWriter(
+                        record.request,
+                        using: selection.provider
+                    )
+                    _ = try await providers.configurations.unregister(
+                        record.request
+                    )
+                } catch {
+                    _ = try? await providers.configurations.unregister(
+                        record.request
+                    )
+                    throw error
+                }
+            } else if let activation = record.result.activation,
                 activation.state != .closed,
                 activation.state != .tombstoned
             {
@@ -633,11 +675,22 @@ private final class AuthorityRemoteLogEventLoopOwner: @unchecked Sendable {
     }
 }
 
-private actor AuthorityRemoteLogDelivery {
+package struct AuthorityRemoteLogDeliveryMetrics: Equatable, Sendable {
+    package let queuedRecords: Int
+    package let queuedBytes: UInt64
+    package let droppedRecords: UInt64
+    package let writeFailures: UInt64
+}
+
+package actor AuthorityRemoteLogDelivery {
     private let session: any ContainerLogDriverSession
     private let mode: LogDeliveryConfiguration.Mode
     private let capacity: UInt64
-    private var queue = [ContainerLogRecordV2]()
+    // A moving head avoids Array.removeFirst's O(n) copy for every record.
+    // Consumed optional slots release payload storage immediately; occasional
+    // compaction keeps the backing allocation proportional to the live queue.
+    private var queue = [ContainerLogRecordV2?]()
+    private var queueHead = 0
     private var queuedBytes: UInt64 = 0
     private var worker: Task<Void, Never>?
     private var closing = false
@@ -670,15 +723,19 @@ private actor AuthorityRemoteLogDelivery {
         }
 
         let size = Self.recordSize(record)
-        guard
-            size <= capacity,
-            queuedBytes <= capacity - size
-        else {
+        if size > capacity {
+            // Docker admits one oversized message when the queue is otherwise
+            // empty, then applies drop-new while that message is in flight.
+            guard queueHead == queue.count, worker == nil else {
+                increment(&droppedRecords)
+                return
+            }
+        } else if queuedBytes > capacity - size {
             increment(&droppedRecords)
             return
         }
         queue.append(record)
-        queuedBytes += size
+        queuedBytes = size > capacity ? capacity : queuedBytes + size
         if worker == nil {
             worker = Task { await self.drain() }
         }
@@ -692,23 +749,59 @@ private actor AuthorityRemoteLogDelivery {
         try await session.flush(deadline: deadline)
     }
 
+    package func metrics() -> AuthorityRemoteLogDeliveryMetrics {
+        AuthorityRemoteLogDeliveryMetrics(
+            queuedRecords: queue.count - queueHead,
+            queuedBytes: queuedBytes,
+            droppedRecords: droppedRecords,
+            writeFailures: writeFailures
+        )
+    }
+
     private func drain() async {
-        while !queue.isEmpty {
-            let record = queue.removeFirst()
-            queuedBytes -= Self.recordSize(record)
+        while queueHead < queue.count {
+            guard let record = queue[queueHead] else {
+                queueHead += 1
+                continue
+            }
+            queue[queueHead] = nil
+            queueHead += 1
+            let size = Self.recordSize(record)
+            queuedBytes = size >= queuedBytes ? 0 : queuedBytes - size
             do {
                 try await session.write(record)
             } catch {
                 increment(&writeFailures)
             }
+            compactQueueIfNeeded()
         }
+        queue.removeAll(keepingCapacity: true)
+        queueHead = 0
         worker = nil
     }
 
+    private func compactQueueIfNeeded() {
+        guard queueHead >= 1_024, queueHead >= queue.count / 2 else {
+            return
+        }
+        queue.removeFirst(queueHead)
+        queueHead = 0
+    }
+
     private static func recordSize(_ record: ContainerLogRecordV2) -> UInt64 {
-        var bytes = UInt64(record.payload.count + 128)
+        let base = record.payload.count.addingReportingOverflow(128)
+        guard !base.overflow else {
+            return UInt64.max
+        }
+        var bytes = UInt64(base.partialValue)
         for (key, value) in record.attributes {
-            let entry = UInt64(key.utf8.count + value.utf8.count)
+            let entryBytes = key.utf8.count.addingReportingOverflow(
+                value.utf8.count
+            )
+            guard !entryBytes.overflow else {
+                return UInt64.max
+            }
+            let entry = UInt64(entryBytes.partialValue)
             let addition = bytes.addingReportingOverflow(entry)
             if addition.overflow {
                 return UInt64.max
