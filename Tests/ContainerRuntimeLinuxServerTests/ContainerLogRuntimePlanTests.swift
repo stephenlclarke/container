@@ -155,6 +155,50 @@ struct ContainerLogRuntimePlanTests {
         #expect(!localConfiguration.compress)
         #expect(localDelivery.effectiveMode == .blocking)
         #expect(localAttributes.isEmpty)
+
+        let forwarded = try ContainerLogRuntimePlan(
+            configuration: try remoteLoggingV2Configuration()
+        )
+        guard case .authorityForwarded(nil, let forwardedAttributes) = forwarded else {
+            Issue.record("expected the authority-forwarded plan")
+            return
+        }
+        #expect(forwardedAttributes.isEmpty)
+    }
+
+    @Test
+    func authorityForwardedActivationUsesReservedGenerationForDualCache() throws {
+        let fixture = try RuntimePlanFixture()
+        defer { fixture.remove() }
+        let cache = try LogCacheConfiguration(
+            maxSizeInBytes: 1_000_000,
+            maxFileCount: 2,
+            compress: false
+        )
+        let plan = try ContainerLogRuntimePlan(
+            configuration: try remoteLoggingV2Configuration(
+                readPolicy: LogReadPolicy(source: .dualCache, cache: cache)
+            )
+        )
+
+        let generationStore = try ContainerLogProcessGenerationStore(
+            directoryURL: fixture.bundle.containerLoggingV2
+        )
+        #expect(try generationStore.next() == 1)
+        let capture = try plan.activate(bundle: fixture.bundle, terminal: false)
+        #expect(capture.publicLogPath == nil)
+        try #require(capture.stdout).write(Data("cached\n".utf8))
+        capture.close()
+
+        let reader = try NativeLocalLogReader(
+            directoryURL: fixture.bundle.containerNativeLogCacheDirectory,
+            activeFileName: ContainerResource.Bundle.nativeLogCacheName,
+            maximumFileCount: 2
+        )
+        let result = try reader.read(NativeLocalLogReadRequest())
+        #expect(result.records.map(\.payload) == [Data("cached".utf8)])
+        #expect(result.records.map(\.processGeneration) == [1])
+        #expect(try generationStore.current() == 1)
     }
 
     @Test
@@ -423,6 +467,33 @@ struct ContainerLogRuntimePlanTests {
         var configuration = testConfiguration(environment: environment)
         configuration.labels = labels
         configuration.logging = logging
+        return configuration
+    }
+
+    private func remoteLoggingV2Configuration(
+        readPolicy: LogReadPolicy? = nil
+    ) throws -> ContainerConfiguration {
+        let driver = "syslog"
+        let provider = LogDriverProviderIdentity(
+            id: "com.apple.container.logging.providers.syslog",
+            version: "1",
+            kind: .native
+        )
+        let resolved = try ResolvedContainerLogConfiguration(
+            leaseGeneration: 1,
+            driver: driver,
+            safeOptions: [:],
+            delivery: LogDeliveryConfiguration(),
+            readPolicy: try readPolicy ?? LogReadPolicy(source: .unavailable),
+            providerIdentity: provider,
+            providerGenerationAtResolution: 1,
+            contractDigest: "sha256:remote-contract"
+        )
+        var configuration = testConfiguration()
+        configuration.logging = try ContainerLogConfiguration(
+            requested: ContainerLogRequest(driver: driver),
+            resolved: resolved
+        )
         return configuration
     }
 

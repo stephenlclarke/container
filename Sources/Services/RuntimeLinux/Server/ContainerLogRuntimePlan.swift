@@ -44,6 +44,10 @@ package enum ContainerLogRuntimePlan: Sendable {
         delivery: LogDeliveryConfiguration,
         attributes: [String: String]
     )
+    case authorityForwarded(
+        cache: LogCacheConfiguration?,
+        attributes: [String: String]
+    )
 
     private static let cacheOptionNames: Set<String> = [
         "cache-compress",
@@ -70,21 +74,34 @@ package enum ContainerLogRuntimePlan: Sendable {
         guard
             let requested = logging.requested,
             let resolved = logging.resolved,
-            resolved.leaseGeneration > 0,
-            let descriptor = BuiltinLogDriverDescriptors.current.descriptor(named: resolved.driver),
-            descriptor.driver == resolved.driver,
-            descriptor.providerIdentity == resolved.providerIdentity,
-            descriptor.providerGeneration == resolved.providerGenerationAtResolution,
-            descriptor.optionContractDigest == resolved.contractDigest
+            resolved.leaseGeneration > 0
         else {
             throw ContainerLogRuntimePlanError.incompleteConfiguration
         }
-        if let requestedDriver = requested.driver, !requestedDriver.isEmpty {
+        let descriptor = BuiltinLogDriverDescriptors.current.descriptor(
+            named: resolved.driver
+        )
+        if resolved.providerIdentity.kind == .core {
             guard
-                BuiltinLogDriverDescriptors.current.descriptor(named: requestedDriver)?.driver
-                    == resolved.driver
+                let descriptor,
+                descriptor.driver == resolved.driver,
+                descriptor.providerIdentity == resolved.providerIdentity,
+                descriptor.providerGeneration
+                    == resolved.providerGenerationAtResolution,
+                descriptor.optionContractDigest == resolved.contractDigest
             else {
-                throw ContainerLogRuntimePlanError.invalidContract
+                throw ContainerLogRuntimePlanError.incompleteConfiguration
+            }
+        }
+        if let requestedDriver = requested.driver, !requestedDriver.isEmpty {
+            if resolved.providerIdentity.kind == .core {
+                guard
+                    BuiltinLogDriverDescriptors.current.descriptor(
+                        named: requestedDriver
+                    )?.driver == resolved.driver
+                else {
+                    throw ContainerLogRuntimePlanError.invalidContract
+                }
             }
         }
 
@@ -100,6 +117,7 @@ package enum ContainerLogRuntimePlan: Sendable {
 
         case "json-file", "local":
             guard
+                let descriptor,
                 resolved.protectedOptionNames.isEmpty,
                 resolved.protectedOptionReference == nil,
                 resolved.readPolicy == (try LogReadPolicy(source: .direct))
@@ -160,9 +178,23 @@ package enum ContainerLogRuntimePlan: Sendable {
             }
 
         default:
-            // Provider-backed drivers are activated by the provider controller,
-            // never silently collapsed onto a core file writer.
-            throw ContainerLogRuntimePlanError.unsupportedDriver(resolved.driver)
+            guard
+                resolved.providerIdentity.kind != .core,
+                resolved.providerGenerationAtResolution > 0,
+                !resolved.contractDigest.isEmpty,
+                resolved.readPolicy.source == .unavailable
+                    || resolved.readPolicy.source == .dualCache
+            else {
+                throw ContainerLogRuntimePlanError.invalidContract
+            }
+            self = .authorityForwarded(
+                cache: resolved.readPolicy.cache,
+                attributes: try Self.selectedAttributes(
+                    options: resolved.safeOptions,
+                    labels: configuration.labels,
+                    environment: configuration.initProcess.environment
+                )
+            )
         }
     }
 
@@ -220,6 +252,39 @@ package enum ContainerLogRuntimePlan: Sendable {
             return try Self.capture(
                 destination: store,
                 delivery: delivery,
+                terminal: terminal,
+                processGeneration: generation,
+                attributes: attributes,
+                publicLogPath: nil
+            )
+
+        case .authorityForwarded(nil, _):
+            return ContainerLogRuntimeCapture(
+                stdout: nil,
+                stderr: nil,
+                session: nil,
+                publicLogPath: nil
+            )
+
+        case .authorityForwarded(let cache?, let attributes):
+            let generation = try ContainerLogProcessGenerationStore(
+                directoryURL: bundle.containerLoggingV2
+            ).current()
+            guard generation > 0 else {
+                throw ContainerLogRuntimePlanError.incompleteConfiguration
+            }
+            let store = try NativeLocalLogStore(
+                directoryURL: bundle.containerNativeLogCacheDirectory,
+                activeFileName: ContainerResource.Bundle.nativeLogCacheName,
+                configuration: try NativeLocalLogConfiguration(
+                    maximumFileSize: cache.maxSizeInBytes,
+                    maximumFileCount: cache.maxFileCount,
+                    compress: cache.compress
+                )
+            )
+            return try Self.capture(
+                destination: store,
+                delivery: LogDeliveryConfiguration(),
                 terminal: terminal,
                 processGeneration: generation,
                 attributes: attributes,
