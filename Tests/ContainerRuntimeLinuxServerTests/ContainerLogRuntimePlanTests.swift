@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerLoggingStorage
 import ContainerResource
 import Containerization
 import Darwin

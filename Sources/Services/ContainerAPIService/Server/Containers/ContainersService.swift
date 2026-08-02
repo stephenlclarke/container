@@ -16,6 +16,7 @@
 
 import CVersion
 import ContainerAPIClient
+import ContainerLoggingStorage
 import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
@@ -1367,9 +1368,24 @@ public actor ContainersService {
         // first try and get the container state so we get a nicer error message
         // (container foo not found) however.
         do {
-            _ = try _getContainerState(id: id)
+            let state = try _getContainerState(id: id)
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
+            if !state.snapshot.configuration.logging.isLegacy {
+                let reader = try Self.nativeLogReader(
+                    bundle: bundle,
+                    configuration: state.snapshot.configuration,
+                    options: options,
+                    includeRotated: replay.includeRotated
+                )
+                return [
+                    Self.logHandle(for: reader),
+                    Self.applyLogOptions(
+                        to: try FileHandle(forReadingFrom: bundle.bootlog),
+                        options: options
+                    ),
+                ]
+            }
             let handles = [
                 try Self.logHandle(for: bundle.containerLog, options: options, replay: replay),
                 Self.applyLogOptions(to: try FileHandle(forReadingFrom: bundle.bootlog), options: options),
@@ -1449,9 +1465,18 @@ public actor ContainersService {
         }
 
         do {
-            _ = try _getContainerState(id: id)
+            let state = try _getContainerState(id: id)
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
+            if !state.snapshot.configuration.logging.isLegacy {
+                let reader = try Self.nativeLogReader(
+                    bundle: bundle,
+                    configuration: state.snapshot.configuration,
+                    options: options,
+                    includeRotated: replay.includeRotated
+                )
+                return try await Self.logRecords(from: reader)
+            }
             let data = try Self.logData(from: Self.logReplayURLs(for: bundle.containerLogRecords, includeRotated: replay.includeRotated))
             return try Self.filteredLogRecords(data, options: options)
         } catch {
@@ -1482,9 +1507,31 @@ public actor ContainersService {
         }
 
         do {
-            _ = try _getContainerState(id: id)
+            let state = try _getContainerState(id: id)
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
+            if !state.snapshot.configuration.logging.isLegacy {
+                let reader = try Self.nativeLogReader(
+                    bundle: bundle,
+                    configuration: state.snapshot.configuration,
+                    options: .default,
+                    includeRotated: false
+                )
+                let records = try await Self.logRecords(from: reader)
+                var data = Data()
+                let encoder = JSONEncoder()
+                for record in records {
+                    data.append(try encoder.encode(record))
+                    data.append(UInt8(ascii: "\n"))
+                }
+                guard let handle = Self.temporaryFileHandle(containing: data) else {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "failed to create a native log record handle"
+                    )
+                }
+                return handle
+            }
             return try FileHandle(forReadingFrom: bundle.containerLogRecords)
         } catch {
             throw ContainerizationError(
@@ -1553,6 +1600,74 @@ public actor ContainersService {
             return Self.applyLogOptions(to: try FileHandle(forReadingFrom: url), options: options)
         }
         return replayHandle
+    }
+
+    private static func nativeLogReader(
+        bundle: ContainerResource.Bundle,
+        configuration: ContainerConfiguration,
+        options: ContainerLogOptions,
+        includeRotated: Bool
+    ) throws -> any ContainerLogReader {
+        let tail = options.tail.flatMap { $0 < 0 ? nil : $0 }
+        return try ContainerLogNativeReaderFactory.makeReader(
+            bundle: bundle,
+            configuration: configuration,
+            request: ContainerLogReadRequest(
+                tail: tail,
+                since: options.since,
+                until: options.until
+            ),
+            source: .stoppedContainer,
+            includeRotated: includeRotated
+        )
+    }
+
+    private nonisolated static func logHandle(
+        for reader: any ContainerLogReader
+    ) -> FileHandle {
+        let pipe = Pipe()
+        let writer = pipe.fileHandleForWriting
+        Task.detached(priority: .utility) {
+            defer { try? writer.close() }
+            do {
+                while true {
+                    switch try await reader.next() {
+                    case .record(let record):
+                        try writer.write(contentsOf: record.data)
+                    case .endOfStream:
+                        return
+                    }
+                }
+            } catch {
+                await reader.cancel()
+            }
+        }
+        return pipe.fileHandleForReading
+    }
+
+    private static func logRecords(
+        from reader: any ContainerLogReader
+    ) async throws -> [ContainerLogRecord] {
+        var records = [ContainerLogRecord]()
+        while true {
+            switch try await reader.next() {
+            case .record(let record):
+                records.append(
+                    ContainerLogRecord(
+                        timestamp: Date(
+                            timeIntervalSince1970:
+                                Double(record.timestamp.secondsSinceUnixEpoch)
+                                + Double(record.timestamp.nanoseconds)
+                                / 1_000_000_000
+                        ),
+                        stream: record.stream == .stdout ? .stdout : .stderr,
+                        data: record.data
+                    )
+                )
+            case .endOfStream:
+                return records
+            }
+        }
     }
 
     static func logReplayURLs(for url: URL, includeRotated: Bool) -> [URL] {

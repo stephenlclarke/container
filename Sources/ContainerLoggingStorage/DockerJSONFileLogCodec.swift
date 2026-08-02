@@ -17,6 +17,7 @@
 import ContainerResource
 import Foundation
 
+/// Stable failures shared by the canonical Docker json-file codec and store.
 package enum DockerJSONFileLogError: Error, Equatable, Sendable {
     case invalidActiveFileName
     case invalidConfiguration

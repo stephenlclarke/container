@@ -17,6 +17,7 @@
 import ContainerResource
 import Foundation
 
+/// Stable failures shared by the private native local codec and store.
 package enum NativeLocalLogError: Error, Equatable, Sendable {
     case invalidActiveFileName
     case invalidConfiguration

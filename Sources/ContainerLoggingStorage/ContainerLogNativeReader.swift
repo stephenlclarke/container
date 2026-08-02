@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerRuntimeClient
 import Darwin
 import Foundation
 
@@ -29,7 +30,7 @@ package enum ContainerLogNativeReaderFactoryError: Error, Equatable, Sendable {
     case legacyIO(Int32)
 }
 
-/// Routes one historical-read request to the immutable configured source.
+/// Routes one historical-read request to its immutable configured source.
 ///
 /// Stopped-container follow is deliberately suppressed, matching Docker's
 /// temporary stopped-reader behavior. Active follow must use the retained
@@ -39,7 +40,8 @@ package enum ContainerLogNativeReaderFactory {
         bundle: ContainerResource.Bundle,
         configuration: ContainerConfiguration,
         request: ContainerLogReadRequest,
-        source: LoggingReaderSourceV1
+        source: LoggingReaderSourceV1,
+        includeRotated: Bool = true
     ) throws -> any ContainerLogReader {
         if configuration.logging.isLegacy {
             guard configuration.logging.storage == .local else {
@@ -49,7 +51,8 @@ package enum ContainerLogNativeReaderFactory {
             return try bufferedLegacyReader(
                 bundle: bundle,
                 logging: configuration.logging,
-                request: request
+                request: request,
+                includeRotated: includeRotated
             )
         }
 
@@ -65,7 +68,8 @@ package enum ContainerLogNativeReaderFactory {
             return try bufferedLegacyReader(
                 bundle: bundle,
                 logging: configuration.logging,
-                request: request
+                request: request,
+                includeRotated: includeRotated
             )
 
         case .dualCache:
@@ -81,7 +85,7 @@ package enum ContainerLogNativeReaderFactory {
             let reader = try NativeLocalLogReader(
                 directoryURL: bundle.containerNativeLogCacheDirectory,
                 activeFileName: ContainerResource.Bundle.nativeLogCacheName,
-                maximumFileCount: cache.maxFileCount
+                maximumFileCount: includeRotated ? cache.maxFileCount : 1
             )
             return try bufferedLocalReader(reader, request: request)
 
@@ -89,33 +93,21 @@ package enum ContainerLogNativeReaderFactory {
             switch resolved.driver {
             case "json-file":
                 try requireStaticRead(source: source, request: request)
-                guard
-                    case .jsonFile(let storeConfiguration, _, _) = try ContainerLogRuntimePlan(
-                        configuration: configuration
-                    )
-                else {
-                    throw ContainerLogNativeReaderFactoryError.incompleteConfiguration
-                }
+                let maximumFileCount = try maximumFileCount(resolved: resolved)
                 let reader = try DockerJSONFileLogReader(
                     directoryURL: bundle.containerJSONFileLogDirectory,
                     activeFileName: ContainerResource.Bundle.jsonFileLogName,
-                    maximumFileCount: storeConfiguration.maximumFileCount
+                    maximumFileCount: includeRotated ? maximumFileCount : 1
                 )
                 return try bufferedJSONFileReader(reader, request: request)
 
             case "local":
                 try requireStaticRead(source: source, request: request)
-                guard
-                    case .local(let storeConfiguration, _, _) = try ContainerLogRuntimePlan(
-                        configuration: configuration
-                    )
-                else {
-                    throw ContainerLogNativeReaderFactoryError.incompleteConfiguration
-                }
+                let maximumFileCount = try maximumFileCount(resolved: resolved)
                 let reader = try NativeLocalLogReader(
                     directoryURL: bundle.containerNativeLocalLogDirectory,
                     activeFileName: ContainerResource.Bundle.nativeLocalLogName,
-                    maximumFileCount: storeConfiguration.maximumFileCount
+                    maximumFileCount: includeRotated ? maximumFileCount : 1
                 )
                 return try bufferedLocalReader(reader, request: request)
 
@@ -125,6 +117,32 @@ package enum ContainerLogNativeReaderFactory {
                 )
             }
         }
+    }
+
+    private static func maximumFileCount(
+        resolved: ResolvedContainerLogConfiguration
+    ) throws -> Int {
+        if let requested = resolved.safeOptions["max-file"] {
+            guard let count = Int(requested), count > 0 else {
+                throw ContainerLogNativeReaderFactoryError
+                    .incompleteConfiguration
+            }
+            return count
+        }
+        guard
+            let descriptor = BuiltinLogDriverDescriptors.current.descriptor(
+                named: resolved.driver
+            ),
+            descriptor.providerIdentity == resolved.providerIdentity,
+            descriptor.providerGeneration
+                == resolved.providerGenerationAtResolution,
+            descriptor.optionContractDigest == resolved.contractDigest,
+            let count = descriptor.capabilities.fileDefaults?.maxFileCount
+        else {
+            throw ContainerLogNativeReaderFactoryError
+                .incompleteConfiguration
+        }
+        return count
     }
 
     private static func requireStaticRead(
@@ -194,12 +212,13 @@ package enum ContainerLogNativeReaderFactory {
     private static func bufferedLegacyReader(
         bundle: ContainerResource.Bundle,
         logging: ContainerLogConfiguration,
-        request: ContainerLogReadRequest
+        request: ContainerLogReadRequest,
+        includeRotated: Bool
     ) throws -> ContainerLogBufferedReader {
         let reader = try ContainerLegacyLogReader(
             directoryURL: bundle.path,
             activeFileName: bundle.containerLogRecords.lastPathComponent,
-            maximumFileCount: logging.maxFileCount ?? 1
+            maximumFileCount: includeRotated ? logging.maxFileCount ?? 1 : 1
         )
         return ContainerLogBufferedReader(records: try reader.read(request))
     }

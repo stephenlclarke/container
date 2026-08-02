@@ -19,6 +19,7 @@ import Darwin
 import Foundation
 import Testing
 
+@testable import ContainerLoggingStorage
 @testable import ContainerRuntimeLinuxServer
 
 @Suite(.serialized)

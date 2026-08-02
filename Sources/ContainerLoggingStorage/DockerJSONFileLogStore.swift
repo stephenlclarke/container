@@ -19,7 +19,7 @@ import ContainerResource
 import Darwin
 import Foundation
 
-/// A single-representation Docker json-file writer.
+/// A single-representation canonical Docker json-file writer.
 ///
 /// The supplied directory is a dedicated logging directory. It is created as
 /// mode 0700 when absent and opened component-by-component with `O_NOFOLLOW`.

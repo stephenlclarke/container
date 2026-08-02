@@ -19,6 +19,7 @@ import ContainerResource
 import Darwin
 import Foundation
 
+/// Durable rotation checkpoints exposed to deterministic storage tests.
 package enum NativeLocalLogRotationCheckpoint: Sendable {
     case replacementSynchronized
     case activeExchanged

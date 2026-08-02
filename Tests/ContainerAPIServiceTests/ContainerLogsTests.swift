@@ -19,11 +19,13 @@ import ContainerPersistence
 import ContainerResource
 import ContainerXPC
 import ContainerizationOCI
+import Darwin
 import Foundation
 import Logging
 import Testing
 
 @testable import ContainerAPIService
+@testable import ContainerLoggingStorage
 @testable import ContainerPlugin
 
 struct ContainerLogsTests {
@@ -305,6 +307,80 @@ struct ContainerLogsTests {
 
         #expect(String(data: stdio, encoding: .utf8) == "oldest\nolder\nnewer\nactive\n")
         #expect(String(data: boot, encoding: .utf8) == "boot\n")
+    }
+
+    @Test func version2LogsReadCanonicalJSONFileStorage() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent("container-v2-log-read-test-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let id = "test-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(
+            path: containerRoot.appendingPathComponent(id)
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.containerLoggingV2,
+            withIntermediateDirectories: true
+        )
+        for directory in [tempURL, containerRoot, bundle.path, bundle.containerLoggingV2] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: directory.path
+            )
+        }
+        var configuration = testConfiguration(id: id)
+        configuration.logging = try version2JSONFileConfiguration()
+        try bundle.set(configuration: configuration)
+        let store = try DockerJSONFileLogStore(
+            directoryURL: bundle.containerJSONFileLogDirectory,
+            activeFileName: ContainerResource.Bundle.jsonFileLogName,
+            configuration: DockerJSONFileLogConfiguration()
+        )
+        try store.write(
+            ContainerLogRecordV2(
+                stream: .stdout,
+                observation: ContainerLogObservation(
+                    wallClock: try ContainerLogTimestamp(
+                        secondsSinceUnixEpoch: 1_767_323_045,
+                        nanoseconds: 123_456_789
+                    ),
+                    monotonicInstant: ContinuousClock().now
+                ),
+                payload: Data("canonical".utf8),
+                partial: nil,
+                sequence: 1,
+                processGeneration: 1
+            )
+        )
+        try store.close()
+        try Data("boot\n".utf8).write(to: bundle.bootlog)
+
+        let service = try service(
+            appRoot: tempURL,
+            logLabel: "container-v2-log-read-test"
+        )
+        let handles = try await service.logs(id: id, options: .default)
+        defer {
+            for handle in handles {
+                try? handle.close()
+            }
+        }
+        let raw = try #require(try handles[0].readToEnd())
+        #expect(raw == Data("canonical\n".utf8))
+
+        let records = try await service.logRecords(id: id)
+        #expect(records.count == 1)
+        #expect(records[0].stream == .stdout)
+        #expect(records[0].data == Data("canonical\n".utf8))
+        #expect(
+            abs(
+                records[0].timestamp.timeIntervalSince1970
+                    - 1_767_323_045.123_456_7
+            ) < 0.000_001
+        )
     }
 
     @Test func staticLogReplayAppliesTailAfterCombiningRotatedFiles() async throws {
@@ -816,6 +892,35 @@ struct ContainerLogsTests {
             rlimits: []
         )
         return ContainerConfiguration(id: id, image: image, process: process)
+    }
+
+    private func version2JSONFileConfiguration() throws -> ContainerLogConfiguration {
+        let descriptor = try #require(
+            BuiltinLogDriverDescriptors.current.descriptor(named: "json-file")
+        )
+        return try ContainerLogConfiguration(
+            requested: ContainerLogRequest(driver: "json-file"),
+            resolved: ResolvedContainerLogConfiguration(
+                leaseGeneration: 1,
+                driver: "json-file",
+                delivery: LogDeliveryConfiguration(),
+                readPolicy: LogReadPolicy(source: .direct),
+                providerIdentity: descriptor.providerIdentity,
+                providerGenerationAtResolution: descriptor.providerGeneration,
+                contractDigest: descriptor.optionContractDigest
+            )
+        )
+    }
+
+    private func canonicalTemporaryDirectory() throws -> URL {
+        let path = FileManager.default.temporaryDirectory.path
+        let pointer = path.withCString { Darwin.realpath($0, nil) }
+        let canonical = try #require(pointer)
+        defer { free(canonical) }
+        return URL(
+            fileURLWithPath: String(cString: canonical),
+            isDirectory: true
+        )
     }
 
     private func pluginLoader(appRoot: URL) throws -> PluginLoader {

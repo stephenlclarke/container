@@ -264,6 +264,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "CVersion",
                 "ContainerAPIClient",
+                "ContainerLoggingStorage",
                 "ContainerNetworkClient",
                 "ContainerPersistence",
                 "ContainerPlugin",
@@ -287,6 +288,7 @@ let package = Package(
                 "ContainerAPIClient",
                 "ContainerAPIService",
                 "ContainerLoggingProviders",
+                "ContainerLoggingStorage",
                 "ContainerResource",
                 "DockerSemanticHelper",
                 "ContainerRuntimeLinuxClient",
@@ -475,6 +477,7 @@ let package = Package(
                 "ContainerNetworkClient",
                 "ContainerOS",
                 "ContainerPersistence",
+                "ContainerLoggingStorage",
                 "ContainerResource",
                 "ContainerRuntimeClient",
                 "ContainerRuntimeLinuxClient",
@@ -484,12 +487,22 @@ let package = Package(
             ],
             path: "Sources/Services/RuntimeLinux/Server"
         ),
+        .target(
+            name: "ContainerLoggingStorage",
+            dependencies: [
+                "ContainerResource",
+                "ContainerRuntimeClient",
+            ],
+            path: "Sources/ContainerLoggingStorage",
+            linkerSettings: [.linkedLibrary("compression")]
+        ),
         .testTarget(
             name: "ContainerRuntimeLinuxServerTests",
             dependencies: [
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "NIOPosix", package: "swift-nio"),
+                "ContainerLoggingStorage",
                 "ContainerResource",
                 "ContainerRuntimeLinuxServer",
                 "DNSServer",
