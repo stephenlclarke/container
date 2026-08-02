@@ -72,24 +72,39 @@ extension Application {
         /// Creates a container with an authority logging request supplied by a
         /// trusted in-process client instead of exposing protected values in a
         /// child-process argument vector.
-        public func run(loggingRequest: ContainerLogRequest) async throws {
+        public func run(
+            loggingRequest: ContainerLogRequest,
+            emitsCLIOutput: Bool = true
+        ) async throws {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
-            let progressConfig = try ProgressConfig(
-                showTasks: true,
-                showItems: true,
-                ignoreSmallSize: true,
-                totalTasks: 3
-            )
-            let progress = ProgressBar(config: progressConfig)
-            defer {
-                progress.finish()
+            let progress: ProgressBar?
+            if emitsCLIOutput {
+                progress = ProgressBar(
+                    config: try ProgressConfig(
+                        showTasks: true,
+                        showItems: true,
+                        ignoreSmallSize: true,
+                        totalTasks: 3
+                    ))
+            } else {
+                progress = nil
             }
-            progress.start()
+            defer {
+                progress?.finish()
+            }
+            progress?.start()
 
             let id = Utility.createContainerID(name: self.managementFlags.name)
 
             guard ManagedContainer.nameValid(id) else {
                 throw ContainerizationError(.invalidArgument, message: "container ID \(id) is not a valid container ID")
+            }
+
+            let progressUpdate: ProgressUpdateHandler
+            if let progress {
+                progressUpdate = progress.handler
+            } else {
+                progressUpdate = { _ in }
             }
 
             let ck = try await Utility.containerConfigFromFlags(
@@ -103,7 +118,7 @@ extension Application {
                 imageFetch: imageFetchFlags,
                 loggingRequest: loggingRequest,
                 containerSystemConfig: containerSystemConfig,
-                progressUpdate: progress.handler,
+                progressUpdate: progressUpdate,
                 log: log
             )
 
@@ -139,9 +154,11 @@ extension Application {
                         .internalError, message: "failed to create cidfile at \(path): \(errno)")
                 }
             }
-            progress.finish()
+            progress?.finish()
 
-            print(id)
+            if emitsCLIOutput {
+                print(id)
+            }
         }
     }
 }
