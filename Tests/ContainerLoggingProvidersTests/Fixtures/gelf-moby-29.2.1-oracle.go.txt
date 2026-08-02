@@ -1,0 +1,55 @@
+package main
+
+import (
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
+	"encoding/base64"
+	"fmt"
+)
+
+func main() {
+	payload := []byte(`{"version":"1.1","host":"host","short_message":"hello","timestamp":1.234,"level":6,"_tag":"tag"}`)
+	fmt.Printf("none=%s\n", base64.StdEncoding.EncodeToString(payload))
+
+	var gzipBuffer bytes.Buffer
+	gzipWriter, err := gzip.NewWriterLevel(&gzipBuffer, 1)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := gzipWriter.Write(payload); err != nil {
+		panic(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		panic(err)
+	}
+	fmt.Printf("gzip=%s\n", base64.StdEncoding.EncodeToString(gzipBuffer.Bytes()))
+
+	var zlibBuffer bytes.Buffer
+	zlibWriter, err := zlib.NewWriterLevel(&zlibBuffer, 1)
+	if err != nil {
+		panic(err)
+	}
+	if _, err := zlibWriter.Write(payload); err != nil {
+		panic(err)
+	}
+	if err := zlibWriter.Close(); err != nil {
+		panic(err)
+	}
+	fmt.Printf("zlib=%s\n", base64.StdEncoding.EncodeToString(zlibBuffer.Bytes()))
+
+	timestamps := [][2]int64{
+		{-1_000_000_000 + 234_999_999, 0},
+		{-1_000_000_000 + 234_000_000, 0},
+		{-1_000_000_000 + 999_999_999, 0},
+		{-1_000_000_000 + 999_000_000, 0},
+		{999_999, 0},
+		{1_234_999, 0},
+		{9_223_372_036_854_775_807, 0},
+		{-9_223_372_036_854_775_808, 0},
+	}
+	for _, timestamp := range timestamps {
+		milliseconds := timestamp[0] / 1_000_000
+		fmt.Printf("timestamp=%d => %.3f\n", milliseconds, float64(milliseconds)/1000.0)
+	}
+}

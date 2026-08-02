@@ -472,6 +472,12 @@ struct ContainerLogContractTests {
         )
         mutations.append(try Self.copyDescriptor(base, placement: .engineLinuxSandbox))
         mutations.append(try Self.copyDescriptor(base, trust: .approved))
+        mutations.append(
+            try Self.copyDescriptor(
+                base,
+                createValidationProfile: .dockerGELF29_2_1
+            )
+        )
         mutations.append(try Self.copyDescriptor(base, acceptsUnknownOptions: true))
 
         let changedOptionKinds = base.options.map { option in
@@ -571,6 +577,14 @@ struct ContainerLogContractTests {
         var encoded = try #require(
             try JSONSerialization.jsonObject(with: JSONEncoder().encode(base)) as? [String: Any]
         )
+        encoded.removeValue(forKey: "createValidationProfile")
+        let legacyDecoded = try JSONDecoder().decode(
+            LogDriverDescriptor.self,
+            from: JSONSerialization.data(withJSONObject: encoded)
+        )
+        #expect(legacyDecoded.createValidationProfile == .standard)
+        #expect(legacyDecoded.optionContractDigest == base.optionContractDigest)
+
         encoded["trust"] = LogDriverTrust.approved.rawValue
         #expect(throws: LogDriverContractError.self) {
             try JSONDecoder().decode(
@@ -705,6 +719,7 @@ struct ContainerLogContractTests {
         suppliedDigest: String? = nil,
         options: [LogDriverOptionDescriptor]? = nil,
         crossOptionConstraints: [LogDriverCrossOptionConstraint]? = nil,
+        createValidationProfile: LogDriverCreateValidationProfile? = nil,
         acceptsUnknownOptions: Bool? = nil,
         capabilities: LogDriverCapabilities? = nil
     ) throws -> LogDriverDescriptor {
@@ -718,6 +733,7 @@ struct ContainerLogContractTests {
             optionContractDigest: suppliedDigest,
             options: options ?? descriptor.options,
             crossOptionConstraints: crossOptionConstraints ?? descriptor.crossOptionConstraints,
+            createValidationProfile: createValidationProfile ?? descriptor.createValidationProfile,
             acceptsUnknownOptions: acceptsUnknownOptions ?? descriptor.acceptsUnknownOptions,
             capabilities: capabilities ?? descriptor.capabilities
         )

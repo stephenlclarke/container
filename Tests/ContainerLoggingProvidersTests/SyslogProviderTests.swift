@@ -5,7 +5,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     https://www.apache.org/licenses/LICENSE-2.0
+//   https://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -42,6 +42,15 @@ struct SyslogProviderTests {
             descriptor.options.first(where: { $0.name == "syslog-tls-skip-verify" })?.valueKind
                 == .string
         )
+        for name in [
+            "cache-compress", "cache-max-file", "cache-max-size", "env", "env-regex", "labels",
+            "labels-regex",
+        ] {
+            #expect(
+                descriptor.options.first(where: { $0.name == name })?.valueKind
+                    == .string
+            )
+        }
     }
 
     @Test func startReplayReconcileFenceAndCloseUseOneGenerationFencedEffect() async throws {

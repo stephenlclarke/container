@@ -107,6 +107,10 @@ struct SyslogMessageEncoderTests {
         #expect(clock.callCount == 0)
     }
 
+    @Test func systemClockUsesTheMaintainedEngineUTCZone() {
+        #expect(SystemSyslogClock().now().timeZoneSecondsFromGMT == 0)
+    }
+
     @Test func rejectsRecordsLargerThanTheAuthoritySplitterBound() throws {
         let encoder = SyslogMessageEncoder(
             configuration: try configuration(format: .unix),
@@ -132,13 +136,13 @@ struct SyslogMessageEncoderTests {
     ) throws -> SyslogDriverConfiguration {
         let endpoint: SyslogEndpoint =
             tls
-            ? .tcpTLS(SyslogNetworkAddress(host: "logs.example", port: "6514"))
-            : .tcp(SyslogNetworkAddress(host: "logs.example", port: "514"))
+            ? .tcpTLS(SyslogNetworkAddress(host: "logs.example", port: 6_514))
+            : .tcp(SyslogNetworkAddress(host: "logs.example", port: 514))
         return try SyslogDriverConfiguration(
             endpoint: endpoint,
             facility: SyslogFacility(number: 3),
             format: format,
-            tag: "0123456789ab",
+            tag: Data("0123456789ab".utf8),
             hostname: "engine-host",
             processID: 4_242,
             tls: tls

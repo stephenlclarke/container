@@ -34,14 +34,19 @@ public enum SyslogLogDriverContract {
                 placement: .macOSHost,
                 trust: .signed,
                 options: [
-                    LogDriverOptionDescriptor(name: "cache-compress", valueKind: .boolean, validationPhase: .start),
+                    // Moby retains these cache-prefixed values verbatim but
+                    // does not validate or apply them to the fixed local cache.
+                    LogDriverOptionDescriptor(name: "cache-compress", valueKind: .string),
                     LogDriverOptionDescriptor(name: "cache-disabled", valueKind: .boolean),
-                    LogDriverOptionDescriptor(name: "cache-max-file", valueKind: .positiveInteger),
-                    LogDriverOptionDescriptor(name: "cache-max-size", valueKind: .size),
-                    LogDriverOptionDescriptor(name: "env", valueKind: .commaSeparatedNames),
-                    LogDriverOptionDescriptor(name: "env-regex", valueKind: .regularExpression),
-                    LogDriverOptionDescriptor(name: "labels", valueKind: .commaSeparatedNames),
-                    LogDriverOptionDescriptor(name: "labels-regex", valueKind: .regularExpression),
+                    LogDriverOptionDescriptor(name: "cache-max-file", valueKind: .string),
+                    LogDriverOptionDescriptor(name: "cache-max-size", valueKind: .string),
+                    // Syslog accepts these generic metadata keys but never
+                    // asks Moby to expand them, so even invalid regex text is
+                    // accepted at both create and start.
+                    LogDriverOptionDescriptor(name: "env", valueKind: .string),
+                    LogDriverOptionDescriptor(name: "env-regex", valueKind: .string),
+                    LogDriverOptionDescriptor(name: "labels", valueKind: .string),
+                    LogDriverOptionDescriptor(name: "labels-regex", valueKind: .string),
                     LogDriverOptionDescriptor(name: "max-buffer-size", valueKind: .size),
                     LogDriverOptionDescriptor(
                         name: "mode",

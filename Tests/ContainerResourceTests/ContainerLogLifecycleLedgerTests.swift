@@ -5,7 +5,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//   https://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -420,6 +420,219 @@ struct ContainerLogLifecycleLedgerTests {
         #expect(await effects.contains(effectID: request.readerSessionID) == false)
     }
 
+    @Test(
+        arguments: EffectRemovalTestPath.allCases,
+        EffectRemovalFailureBoundary.allCases
+    )
+    func terminalEffectRemovalJournalSurvivesBothCrashBoundaries(
+        path: EffectRemovalTestPath,
+        boundary: EffectRemovalFailureBoundary
+    ) async throws {
+        let persistence = InMemoryContainerLogLifecycleLedgerPersistenceV1()
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: controllerID,
+            persistence: persistence
+        )
+        let events = LifecycleEventRecorder()
+        let effects = FakeProtectedLoggingEffectStore(events: events)
+        let effectID = path.effectID
+        let binding = try ProtectedLoggingEffectBindingV1(
+            effectID: effectID,
+            owningControllerID: controllerID,
+            providerID: providerID,
+            providerGeneration: 1
+        )
+        let reference = try await effects.seal(
+            LogDriverOpaqueEffectTokenV1(validating: Data("journal-secret".utf8)),
+            binding: binding
+        )
+        try await installTerminalEffectRemoval(
+            path: path,
+            reference: reference,
+            ledger: ledger
+        )
+
+        let committed = await ledger.snapshot()
+        let pending = try #require(committed.pendingEffectRemovals.first)
+        #expect(committed.pendingEffectRemovals.count == 1)
+        #expect(pending.effectTokenReference == reference)
+        #expect(pending.kind == path.kind)
+        await effects.failNextRemoval(at: boundary)
+
+        let controller = ContainerLogLifecycleControllerV1(
+            ledger: ledger,
+            protectedEffects: effects
+        )
+        await #expect(throws: LifecycleTestError.responseLost) {
+            try await controller.reconcilePendingEffectRemovals()
+        }
+        #expect(await ledger.snapshot().pendingEffectRemovals == [pending])
+        #expect(
+            await effects.contains(effectID: effectID)
+                == (boundary == .beforeDeletion)
+        )
+
+        let reopenedLedger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: controllerID,
+            persistence: persistence
+        )
+        #expect(await reopenedLedger.snapshot().pendingEffectRemovals == [pending])
+        let restartedController = ContainerLogLifecycleControllerV1(
+            ledger: reopenedLedger,
+            protectedEffects: effects
+        )
+        if boundary == .beforeDeletion {
+            try await replayTerminalEffectRemoval(
+                path: path,
+                ledger: reopenedLedger,
+                controller: restartedController,
+                provider: FakeLifecycleProvider(events: events)
+            )
+        } else {
+            try await restartedController.reconcilePendingEffectRemovals()
+        }
+        #expect(await reopenedLedger.snapshot().pendingEffectRemovals.isEmpty)
+        #expect(await effects.contains(effectID: effectID) == false)
+        try await assertTerminalOutcome(path: path, ledger: reopenedLedger)
+    }
+
+    private func installTerminalEffectRemoval(
+        path: EffectRemovalTestPath,
+        reference: ProtectedLoggingEffectReferenceV1,
+        ledger: ContainerLogLifecycleLedgerV1
+    ) async throws {
+        switch path {
+        case .writerCandidate:
+            let request = try writerRequest(sessionID: path.ownerID)
+            _ = try await ledger.reserveWriter(request)
+            _ = try await ledger.recordWriterPreparation(
+                writerPreparation(request, reference: reference),
+                for: request
+            )
+            _ = try await ledger.markWriterCandidateClosing(for: request)
+            _ = try await ledger.completeWriterCandidate(for: request)
+        case .writerSession:
+            let request = try writerRequest(sessionID: path.ownerID)
+            _ = try await ledger.reserveWriter(request)
+            _ = try await ledger.recordWriterPreparation(
+                writerPreparation(request, reference: reference),
+                for: request
+            )
+            let active = try await ledger.commitWriterActivation(for: request)
+            let draining = try await ledger.beginWriterDrain(active)
+            _ = try await ledger.completeWriterClose(draining)
+        case .detachedCleanup:
+            let request = try writerRequest(sessionID: "detached-writer")
+            _ = try await ledger.reserveWriter(request)
+            _ = try await ledger.recordWriterPreparation(
+                writerPreparation(request, reference: reference),
+                for: request
+            )
+            let active = try await ledger.commitWriterActivation(for: request)
+            let draining = try await ledger.beginWriterDrain(active)
+            let cleanup = try await ledger.transferWriterToDetachedCleanup(
+                draining,
+                cleanupID: path.ownerID,
+                writerFenceReceiptDigest: "sha256:fence"
+            )
+            _ = try await ledger.completeDetachedCleanup(
+                cleanup,
+                providerCloseOutcomeDigest: "sha256:cleanup-closed"
+            )
+        case .readerCandidate:
+            let request = try readerRequest(
+                readerSessionID: path.ownerID,
+                source: .stoppedContainer
+            )
+            _ = try await ledger.reserveReader(request)
+            _ = try await ledger.recordReaderPreparation(
+                readerPreparation(request, reference: reference),
+                for: request
+            )
+            _ = try await ledger.markReaderCandidateClosing(for: request)
+            _ = try await ledger.completeReaderCandidate(for: request)
+        case .readerSession:
+            let request = try readerRequest(
+                readerSessionID: path.ownerID,
+                source: .stoppedContainer
+            )
+            _ = try await ledger.reserveReader(request)
+            _ = try await ledger.recordReaderPreparation(
+                readerPreparation(request, reference: reference),
+                for: request
+            )
+            let active = try await ledger.commitReaderSession(for: request)
+            let closing = try await ledger.beginReaderClose(active)
+            _ = try await ledger.completeReaderClose(
+                closing,
+                terminalOutcomeDigest: "sha256:reader-closed"
+            )
+        }
+    }
+
+    private func assertTerminalOutcome(
+        path: EffectRemovalTestPath,
+        ledger: ContainerLogLifecycleLedgerV1
+    ) async throws {
+        switch path {
+        case .writerCandidate:
+            let request = try writerRequest(sessionID: path.ownerID)
+            #expect(try await ledger.writerOperation(for: request)?.result == .candidateClosed)
+        case .writerSession:
+            let session = try #require(await ledger.writerActivation(sessionID: path.ownerID))
+            #expect(session.state == .closed)
+            #expect(session.closeDisposition == .complete)
+        case .detachedCleanup:
+            let cleanup = try #require(await ledger.detachedCleanup(cleanupID: path.ownerID))
+            #expect(cleanup.state == .complete)
+            #expect(cleanup.providerCloseOutcomeDigest == "sha256:cleanup-closed")
+        case .readerCandidate:
+            let request = try readerRequest(
+                readerSessionID: path.ownerID,
+                source: .stoppedContainer
+            )
+            #expect(try await ledger.readerOperation(for: request)?.result == .candidateClosed)
+        case .readerSession:
+            let session = try #require(await ledger.readerSession(readerSessionID: path.ownerID))
+            #expect(session.state == .closed)
+            #expect(session.terminalOutcomeDigest == "sha256:reader-closed")
+        }
+    }
+
+    private func replayTerminalEffectRemoval(
+        path: EffectRemovalTestPath,
+        ledger: ContainerLogLifecycleLedgerV1,
+        controller: ContainerLogLifecycleControllerV1,
+        provider: FakeLifecycleProvider
+    ) async throws {
+        switch path {
+        case .writerCandidate:
+            _ = try await controller.closePreparedWriter(
+                writerRequest(sessionID: path.ownerID),
+                using: provider
+            )
+        case .writerSession:
+            let session = try #require(await ledger.writerActivation(sessionID: path.ownerID))
+            _ = try await controller.closeWriter(session, using: provider)
+        case .detachedCleanup:
+            let cleanup = try #require(await ledger.detachedCleanup(cleanupID: path.ownerID))
+            _ = try await controller.runDetachedCleanup(cleanup, using: provider)
+        case .readerCandidate:
+            _ = try await controller.closePreparedReader(
+                readerRequest(
+                    readerSessionID: path.ownerID,
+                    source: .stoppedContainer
+                ),
+                using: provider
+            )
+        case .readerSession:
+            let session = try #require(
+                await ledger.readerSession(readerSessionID: path.ownerID)
+            )
+            _ = try await controller.closeReader(session, using: provider)
+        }
+    }
+
     private func writerRequest(
         operationGeneration: UInt64 = 1,
         semanticRequestDigest: String = "sha256:writer-request",
@@ -542,6 +755,35 @@ private enum LifecycleTestError: Error {
     case protectedEffectMissing
 }
 
+enum EffectRemovalFailureBoundary: String, CaseIterable, Sendable {
+    case beforeDeletion
+    case afterDeletion
+}
+
+enum EffectRemovalTestPath: String, CaseIterable, Sendable {
+    case writerCandidate
+    case writerSession
+    case detachedCleanup
+    case readerCandidate
+    case readerSession
+
+    var kind: LoggingEffectRemovalKindV1 {
+        switch self {
+        case .writerCandidate: .writerCandidate
+        case .writerSession: .writerSession
+        case .detachedCleanup: .detachedCleanup
+        case .readerCandidate: .readerCandidate
+        case .readerSession: .readerSession
+        }
+    }
+
+    var ownerID: String { "removal-owner-\(rawValue)" }
+
+    var effectID: String {
+        self == .detachedCleanup ? "detached-writer" : ownerID
+    }
+}
+
 private actor LifecycleEventRecorder {
     private(set) var values: [String] = []
 
@@ -577,6 +819,7 @@ private actor FakeProtectedLoggingEffectStore: ProtectedLoggingEffectStoreV1 {
 
     private let events: LifecycleEventRecorder
     private var entries: [Entry] = []
+    private var nextRemovalFailure: EffectRemovalFailureBoundary?
 
     init(events: LifecycleEventRecorder) {
         self.events = events
@@ -619,12 +862,24 @@ private actor FakeProtectedLoggingEffectStore: ProtectedLoggingEffectStoreV1 {
         _ reference: ProtectedLoggingEffectReferenceV1,
         binding: ProtectedLoggingEffectBindingV1
     ) async throws {
+        if nextRemovalFailure == .beforeDeletion {
+            nextRemovalFailure = nil
+            throw LifecycleTestError.responseLost
+        }
         guard let index = entries.firstIndex(where: { $0.binding == binding }) else {
             return
         }
         try reference.validateExactReference(entries[index].reference)
         entries.remove(at: index)
         await events.append("effect.remove")
+        if nextRemovalFailure == .afterDeletion {
+            nextRemovalFailure = nil
+            throw LifecycleTestError.responseLost
+        }
+    }
+
+    func failNextRemoval(at boundary: EffectRemovalFailureBoundary) {
+        nextRemovalFailure = boundary
     }
 
     func contains(effectID: String) -> Bool {

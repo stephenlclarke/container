@@ -14,7 +14,6 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import Darwin
 import Foundation
 import NIOCore
 import NIOPosix
@@ -85,14 +84,17 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
         var lastError: (any Error)?
         for path in paths {
             do {
-                return try await connectUnixDatagram(path: path)
+                return try await connectUnixDatagram(path: Data(path.utf8))
             } catch {
                 lastError = error
             }
         }
         for path in paths {
             do {
-                return try await connectUnixStream(path: path, timeout: timeout)
+                return try await connectUnixStream(
+                    path: Data(path.utf8),
+                    timeout: timeout
+                )
             } catch {
                 lastError = error
             }
@@ -105,7 +107,14 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
         tls: SyslogTLSConfiguration?,
         timeout: Duration
     ) async throws -> any SyslogTransport {
-        let port = try Self.resolvePort(address.port, protocolName: "tcp")
+        let host: String
+        do {
+            host = try DockerSocketAddress.host(address.host)
+        } catch {
+            throw SyslogProviderError.malformedAddress(
+                "network host is not valid UTF-8"
+            )
+        }
         let bootstrap = ClientBootstrap(group: eventLoopGroup)
             .connectTimeout(timeout.nioTimeAmount)
 
@@ -120,10 +129,7 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
                     "could not load configured TLS material"
                 )
             }
-            // TLS SNI only permits DNS names. With a literal IP, NIOSSL's
-            // nil hostname path deliberately verifies the leaf IP SAN against
-            // the connected socket address, matching Go's tls.Dial behavior.
-            let serverHostname = Self.tlsServerHostname(for: address.host)
+            let requestedIdentity = host
             let promise = eventLoopGroup.next().makePromise(of: Void.self)
             let completion = TLSHandshakeCompletion(promise: promise)
             handshakeCompletion = completion
@@ -131,11 +137,19 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
                 channel.eventLoop.makeCompletedFuture {
                     let handler = try NIOSSLClientHandler(
                         context: context,
-                        serverHostname: serverHostname
+                        serverHostname: DockerGoTLSIdentityVerifier.serverHostname(
+                            for: requestedIdentity
+                        )
                     )
                     try channel.pipeline.syncOperations.addHandler(handler)
                     try channel.pipeline.syncOperations.addHandler(
-                        TLSHandshakeObserver(completion: completion)
+                        TLSHandshakeObserver(
+                            completion: completion,
+                            tlsHandler: handler,
+                            requestedIdentity: tls.skipServerVerification
+                                ? nil
+                                : requestedIdentity
+                        )
                     )
                 }
             }
@@ -147,7 +161,10 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
         do {
             let channel =
                 try await configuredBootstrap
-                .connect(host: address.host.isEmpty ? "localhost" : address.host, port: port)
+                .connect(
+                    host: host.isEmpty ? "localhost" : host,
+                    port: Int(address.port)
+                )
                 .get()
             if let handshakeCompletion {
                 do {
@@ -177,13 +194,13 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
     }
 
     private func connectUnixStream(
-        path: String,
+        path: Data,
         timeout: Duration
     ) async throws -> any SyslogTransport {
         do {
             let channel = try await ClientBootstrap(group: eventLoopGroup)
                 .connectTimeout(timeout.nioTimeAmount)
-                .connect(unixDomainSocketPath: path)
+                .connect(to: try Self.unixSocketAddress(path))
                 .get()
             return NIOConnectedSyslogTransport(channel: channel)
         } catch ChannelError.connectTimeout {
@@ -194,19 +211,26 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
     private func connectDatagram(
         address: SyslogNetworkAddress
     ) async throws -> any SyslogTransport {
-        let port = try Self.resolvePort(address.port, protocolName: "udp")
-        let host = address.host.isEmpty ? "localhost" : address.host
+        let decodedHost: String
+        do {
+            decodedHost = try DockerSocketAddress.host(address.host)
+        } catch {
+            throw SyslogProviderError.malformedAddress(
+                "network host is not valid UTF-8"
+            )
+        }
+        let host = decodedHost.isEmpty ? "localhost" : decodedHost
         let channel = try await DatagramBootstrap(group: eventLoopGroup)
-            .connect(host: host, port: port)
+            .connect(host: host, port: Int(address.port))
             .get()
         return NIOConnectedSyslogTransport(channel: channel)
     }
 
     private func connectUnixDatagram(
-        path: String
+        path: Data
     ) async throws -> any SyslogTransport {
         let channel = try await DatagramBootstrap(group: eventLoopGroup)
-            .connect(unixDomainSocketPath: path)
+            .connect(to: try Self.unixSocketAddress(path))
             .get()
         return NIOConnectedSyslogTransport(channel: channel)
     }
@@ -216,18 +240,11 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
     ) throws -> NIOSSLContext {
         var configuration = TLSConfiguration.makeClientConfiguration()
         configuration.minimumTLSVersion = .tlsv12
-        configuration.cipherSuites = [
-            "ECDHE-ECDSA-AES256-GCM-SHA384",
-            "ECDHE-RSA-AES256-GCM-SHA384",
-            "ECDHE-ECDSA-AES128-GCM-SHA256",
-            "ECDHE-RSA-AES128-GCM-SHA256",
-            "ECDHE-ECDSA-CHACHA20-POLY1305",
-            "ECDHE-RSA-CHACHA20-POLY1305",
-        ].joined(separator: ":")
+        configuration.cipherSuites = dockerTLS12CipherSuites.joined(separator: ":")
         configuration.certificateVerification =
             options.skipServerVerification
             ? .none
-            : .fullVerification
+            : .noHostnameVerification
 
         if !options.skipServerVerification, !options.caCertificatePath.isEmpty {
             configuration.additionalTrustRoots = [.file(options.caCertificatePath)]
@@ -248,42 +265,22 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
         return try NIOSSLContext(configuration: configuration)
     }
 
-    private static func resolvePort(
-        _ value: String,
-        protocolName: String
-    ) throws -> Int {
-        if let port = Int(value), (0...65_535).contains(port) {
-            return port
-        }
-        guard !value.isEmpty else {
-            throw SyslogProviderError.malformedAddress("empty port")
-        }
-        return try serviceLock.withLock {
-            guard let service = getservbyname(value, protocolName) else {
-                throw SyslogProviderError.malformedAddress("unknown service port")
-            }
-            return Int(UInt16(bigEndian: UInt16(truncatingIfNeeded: service.pointee.s_port)))
+    private static func unixSocketAddress(_ path: Data) throws -> SocketAddress {
+        do {
+            return try DockerSocketAddress.unix(path: path)
+        } catch {
+            throw SyslogProviderError.malformedAddress(
+                "invalid Unix socket path"
+            )
         }
     }
 
-    private static func tlsServerHostname(for host: String) -> String? {
-        guard !host.isEmpty else {
-            return nil
-        }
-
-        let addressWithoutScope = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
-        var ipv4 = in_addr()
-        if addressWithoutScope.withCString({ inet_pton(AF_INET, $0, &ipv4) }) == 1 {
-            return nil
-        }
-        var ipv6 = in6_addr()
-        if addressWithoutScope.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 {
-            return nil
-        }
-        return host
-    }
-
-    private static let serviceLock = NSLock()
+    static let dockerTLS12CipherSuites = [
+        "ECDHE-ECDSA-AES256-GCM-SHA384",
+        "ECDHE-RSA-AES256-GCM-SHA384",
+        "ECDHE-ECDSA-AES128-GCM-SHA256",
+        "ECDHE-RSA-AES128-GCM-SHA256",
+    ]
 }
 
 /// `ClientBootstrap.connect` completes before a TLS handshake does. Moby's
@@ -292,9 +289,17 @@ private final class TLSHandshakeObserver: ChannelInboundHandler, @unchecked Send
     typealias InboundIn = Any
 
     private let completion: TLSHandshakeCompletion
+    private let tlsHandler: NIOSSLHandler
+    private let requestedIdentity: String?
 
-    init(completion: TLSHandshakeCompletion) {
+    init(
+        completion: TLSHandshakeCompletion,
+        tlsHandler: NIOSSLHandler,
+        requestedIdentity: String?
+    ) {
         self.completion = completion
+        self.tlsHandler = tlsHandler
+        self.requestedIdentity = requestedIdentity
     }
 
     func userInboundEventTriggered(
@@ -304,6 +309,21 @@ private final class TLSHandshakeObserver: ChannelInboundHandler, @unchecked Send
         if let event = event as? TLSUserEvent,
             case .handshakeCompleted = event
         {
+            if let requestedIdentity {
+                guard
+                    let certificate = tlsHandler.peerCertificate,
+                    DockerGoTLSIdentityVerifier.matches(
+                        requestedIdentity,
+                        certificate: certificate
+                    )
+                else {
+                    completion.complete(
+                        .failure(SyslogProviderError.tlsIdentityVerificationFailed)
+                    )
+                    context.close(promise: nil)
+                    return
+                }
+            }
             completion.complete(.success(()))
         }
         context.fireUserInboundEventTriggered(event)
@@ -376,14 +396,15 @@ private actor NIOConnectedSyslogTransport: SyslogTransport {
         guard let channel else {
             return
         }
-        self.channel = nil
-        try await channel.close()
+        channel.close(mode: .all, promise: nil)
+        try await channel.closeFuture
             .bounded(
                 by: timeout,
                 timeoutError: SyslogProviderError.closeTimedOut,
                 closing: channel
             )
             .get()
+        self.channel = nil
     }
 }
 

@@ -124,8 +124,10 @@ public actor SyslogDriverSession: ContainerLogDriverSession {
         )
     }
 
-    public func currentState() -> SyslogSessionState {
-        state
+    public func currentState() async -> SyslogSessionState {
+        await acquireOperation()
+        defer { releaseOperation() }
+        return state
     }
 
     private func close(
@@ -140,12 +142,11 @@ public actor SyslogDriverSession: ContainerLogDriverSession {
             }
             return
         }
-        state = terminalState
-        let current = transport
-        transport = nil
-        if let current {
+        if let current = transport {
             try await current.close(timeout: timeout)
         }
+        transport = nil
+        state = terminalState
     }
 
     private func acquireOperation() async {

@@ -87,6 +87,7 @@ let package = Package(
         .library(name: "ContainerNetworkServer", targets: ["ContainerNetworkServer"]),
         .library(name: "ContainerNetworkVmnetServer", targets: ["ContainerNetworkVmnetServer"]),
         .library(name: "ContainerResource", targets: ["ContainerResource"]),
+        .library(name: "DockerSemanticHelper", targets: ["DockerSemanticHelper"]),
         .library(name: "ContainerLoggingProviders", targets: ["ContainerLoggingProviders"]),
         .library(name: "ContainerTestSupport", targets: ["ContainerTestSupport"]),
         .library(name: "ContainerLog", targets: ["ContainerLog"]),
@@ -265,6 +266,7 @@ let package = Package(
                 "ContainerPersistence",
                 "ContainerPlugin",
                 "ContainerResource",
+                "DockerSemanticHelper",
                 "ContainerRuntimeClient",
                 "ContainerVersion",
                 "ContainerXPC",
@@ -281,6 +283,7 @@ let package = Package(
                 "ContainerAPIClient",
                 "ContainerAPIService",
                 "ContainerResource",
+                "DockerSemanticHelper",
                 "ContainerRuntimeLinuxClient",
                 "ContainerRuntimeClient",
                 "ContainerXPC",
@@ -516,6 +519,20 @@ let package = Package(
             ]
         ),
         .target(
+            name: "CSemanticHelperProcess",
+            path: "Sources/CSemanticHelperProcess",
+            publicHeadersPath: "include"
+        ),
+        .target(
+            name: "DockerSemanticHelper",
+            dependencies: ["CSemanticHelperProcess"],
+            linkerSettings: [.linkedFramework("Security")]
+        ),
+        .testTarget(
+            name: "DockerSemanticHelperTests",
+            dependencies: ["DockerSemanticHelper"]
+        ),
+        .target(
             name: "ContainerLoggingProviders",
             dependencies: [
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -523,6 +540,7 @@ let package = Package(
                 .product(name: "NIOTLS", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 "ContainerResource",
+                "DockerSemanticHelper",
             ]
         ),
         .testTarget(

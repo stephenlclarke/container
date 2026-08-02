@@ -30,7 +30,7 @@ enum ContainerLogOptionContractValidator {
             throw invalidOption(driver: driver, name: option.name, reason: "value is not allowed")
         }
         switch option.valueKind {
-        case .string, .commaSeparatedNames, .tagTemplate:
+        case .string, .commaSeparatedNames, .providerRegularExpression, .tagTemplate:
             return
         case .boolean:
             guard ContainerLogOptionValueParser.boolean(value) != nil else {

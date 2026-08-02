@@ -5,7 +5,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     http://www.apache.org/licenses/LICENSE-2.0
+//   https://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -20,6 +20,7 @@ public enum ContainerLogLifecycleLedgerLimitsV1 {
     public static let maximumWriterOperations = 4_096
     public static let maximumReaderOperations = 4_096
     public static let maximumDetachedCleanups = 4_096
+    public static let maximumPendingEffectRemovals = 4_096
     public static let maximumSnapshotBytes = 16 * 1024 * 1024
 }
 
@@ -682,6 +683,7 @@ public struct ContainerLogLifecycleLedgerSnapshotV1: Codable, Equatable, Sendabl
     public let writerOperations: [LoggingWriterOperationRecordV1]
     public let detachedCleanups: [LoggingDetachedCleanupV1]
     public let readerOperations: [LoggingReaderOperationRecordV1]
+    public let pendingEffectRemovals: [LoggingEffectRemovalPendingV1]
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion
@@ -689,13 +691,15 @@ public struct ContainerLogLifecycleLedgerSnapshotV1: Codable, Equatable, Sendabl
         case writerOperations
         case detachedCleanups
         case readerOperations
+        case pendingEffectRemovals
     }
 
     public init(
         owningControllerID: String,
         writerOperations: [LoggingWriterOperationRecordV1] = [],
         detachedCleanups: [LoggingDetachedCleanupV1] = [],
-        readerOperations: [LoggingReaderOperationRecordV1] = []
+        readerOperations: [LoggingReaderOperationRecordV1] = [],
+        pendingEffectRemovals: [LoggingEffectRemovalPendingV1] = []
     ) throws {
         try ContainerLogLifecycleLedgerValidation.identifier(
             owningControllerID,
@@ -717,6 +721,15 @@ public struct ContainerLogLifecycleLedgerSnapshotV1: Codable, Equatable, Sendabl
             throw ContainerLogLifecycleLedgerError.capacityExceeded(
                 collection: "detachedCleanups",
                 maximum: ContainerLogLifecycleLedgerLimitsV1.maximumDetachedCleanups
+            )
+        }
+        guard
+            pendingEffectRemovals.count
+                <= ContainerLogLifecycleLedgerLimitsV1.maximumPendingEffectRemovals
+        else {
+            throw ContainerLogLifecycleLedgerError.capacityExceeded(
+                collection: "pendingEffectRemovals",
+                maximum: ContainerLogLifecycleLedgerLimitsV1.maximumPendingEffectRemovals
             )
         }
 
@@ -743,12 +756,20 @@ public struct ContainerLogLifecycleLedgerSnapshotV1: Codable, Equatable, Sendabl
                 try session.validateEffectReference(owningControllerID: owningControllerID)
             }
         }
+        try Self.validatePendingEffectRemovals(
+            pendingEffectRemovals,
+            writerOperations: writerOperations,
+            detachedCleanups: detachedCleanups,
+            readerOperations: readerOperations,
+            owningControllerID: owningControllerID
+        )
 
         self.schemaVersion = Self.currentSchemaVersion
         self.owningControllerID = owningControllerID
         self.writerOperations = writerOperations
         self.detachedCleanups = detachedCleanups
         self.readerOperations = readerOperations
+        self.pendingEffectRemovals = pendingEffectRemovals
     }
 
     public init(from decoder: any Decoder) throws {
@@ -777,7 +798,11 @@ public struct ContainerLogLifecycleLedgerSnapshotV1: Codable, Equatable, Sendabl
             readerOperations: container.decode(
                 [LoggingReaderOperationRecordV1].self,
                 forKey: .readerOperations
-            )
+            ),
+            pendingEffectRemovals: container.decodeIfPresent(
+                [LoggingEffectRemovalPendingV1].self,
+                forKey: .pendingEffectRemovals
+            ) ?? []
         )
     }
 
@@ -859,6 +884,138 @@ public struct ContainerLogLifecycleLedgerSnapshotV1: Codable, Equatable, Sendabl
             else {
                 throw ContainerLogLifecycleLedgerError.corruptSnapshot(
                     "detached cleanup has no matching deadline-fenced writer"
+                )
+            }
+        }
+    }
+
+    private static func validatePendingEffectRemovals(
+        _ removals: [LoggingEffectRemovalPendingV1],
+        writerOperations: [LoggingWriterOperationRecordV1],
+        detachedCleanups: [LoggingDetachedCleanupV1],
+        readerOperations: [LoggingReaderOperationRecordV1],
+        owningControllerID: String
+    ) throws {
+        for (index, removal) in removals.enumerated() {
+            guard
+                !removals[..<index].contains(where: {
+                    $0.kind == removal.kind && $0.ownerID == removal.ownerID
+                }),
+                !removals[..<index].contains(where: {
+                    $0.effectTokenReference == removal.effectTokenReference
+                })
+            else {
+                throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                    "duplicate protected-effect removal"
+                )
+            }
+
+            let reference = removal.effectTokenReference
+            switch (removal.kind, removal.terminalOutcome) {
+            case (.writerCandidate, .writerCandidateClosed):
+                guard
+                    let record = writerOperations.first(where: {
+                        $0.request.sessionID == removal.ownerID
+                    }),
+                    case .candidateClosed = record.result
+                else {
+                    throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                        "writer-candidate removal has no matching terminal operation"
+                    )
+                }
+                try reference.validateBinding(
+                    ProtectedLoggingEffectBindingV1(
+                        effectID: record.request.sessionID,
+                        owningControllerID: owningControllerID,
+                        providerID: record.request.providerID,
+                        providerGeneration: record.request.providerGeneration
+                    )
+                )
+            case (.writerSession, .writerClosed(let disposition)):
+                guard
+                    let activation = writerOperations.compactMap(\.result.activation).first(where: {
+                        $0.sessionID == removal.ownerID
+                    }),
+                    activation.state == .closed || activation.state == .tombstoned,
+                    activation.closeDisposition == disposition
+                else {
+                    throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                        "writer-session removal has no matching terminal outcome"
+                    )
+                }
+                try reference.validateBinding(
+                    ProtectedLoggingEffectBindingV1(
+                        effectID: activation.sessionID,
+                        owningControllerID: owningControllerID,
+                        providerID: activation.providerID,
+                        providerGeneration: activation.providerGeneration
+                    )
+                )
+            case (
+                .detachedCleanup,
+                .detachedCleanupCompleted(let providerCloseOutcomeDigest)
+            ):
+                guard
+                    let cleanup = detachedCleanups.first(where: {
+                        $0.cleanupID == removal.ownerID
+                    }),
+                    cleanup.state == .complete || cleanup.state == .tombstoned,
+                    cleanup.providerCloseOutcomeDigest == providerCloseOutcomeDigest
+                else {
+                    throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                        "detached-cleanup removal has no matching terminal outcome"
+                    )
+                }
+                try reference.validateBinding(
+                    ProtectedLoggingEffectBindingV1(
+                        effectID: cleanup.sessionID,
+                        owningControllerID: owningControllerID,
+                        providerID: cleanup.providerID,
+                        providerGeneration: cleanup.providerGeneration
+                    )
+                )
+            case (.readerCandidate, .readerCandidateClosed):
+                guard
+                    let record = readerOperations.first(where: {
+                        $0.request.readerSessionID == removal.ownerID
+                    }),
+                    case .candidateClosed = record.result
+                else {
+                    throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                        "reader-candidate removal has no matching terminal operation"
+                    )
+                }
+                try reference.validateBinding(
+                    ProtectedLoggingEffectBindingV1(
+                        effectID: record.request.readerSessionID,
+                        owningControllerID: owningControllerID,
+                        providerID: record.request.providerID,
+                        providerGeneration: record.request.providerGeneration
+                    )
+                )
+            case (.readerSession, .readerClosed(let terminalOutcomeDigest)):
+                guard
+                    let session = readerOperations.compactMap(\.result.session).first(where: {
+                        $0.readerSessionID == removal.ownerID
+                    }),
+                    session.state == .closed || session.state == .tombstoned,
+                    session.terminalOutcomeDigest == terminalOutcomeDigest
+                else {
+                    throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                        "reader-session removal has no matching terminal outcome"
+                    )
+                }
+                try reference.validateBinding(
+                    ProtectedLoggingEffectBindingV1(
+                        effectID: session.readerSessionID,
+                        owningControllerID: owningControllerID,
+                        providerID: session.providerID,
+                        providerGeneration: session.providerGeneration
+                    )
+                )
+            default:
+                throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                    "protected-effect removal kind and outcome do not match"
                 )
             }
         }
@@ -960,6 +1117,38 @@ public actor ContainerLogLifecycleLedgerV1 {
         currentSnapshot.readerOperations.first(where: {
             $0.request.readerSessionID == readerSessionID
         })?.result.session
+    }
+
+    public func pendingEffectRemoval(
+        kind: LoggingEffectRemovalKindV1,
+        ownerID: String
+    ) -> LoggingEffectRemovalPendingV1? {
+        currentSnapshot.pendingEffectRemovals.first(where: {
+            $0.kind == kind && $0.ownerID == ownerID
+        })
+    }
+
+    public func acknowledgeEffectRemoval(
+        _ expected: LoggingEffectRemovalPendingV1
+    ) async throws {
+        guard
+            let index = currentSnapshot.pendingEffectRemovals.firstIndex(of: expected)
+        else {
+            if currentSnapshot.pendingEffectRemovals.contains(where: {
+                $0.kind == expected.kind && $0.ownerID == expected.ownerID
+            }) {
+                throw ContainerLogLifecycleLedgerError.staleSession
+            }
+            return
+        }
+        var removals = currentSnapshot.pendingEffectRemovals
+        removals.remove(at: index)
+        try await persist(
+            writerOperations: currentSnapshot.writerOperations,
+            detachedCleanups: currentSnapshot.detachedCleanups,
+            readerOperations: currentSnapshot.readerOperations,
+            pendingEffectRemovals: removals
+        )
     }
 
     public func reserveWriter(
@@ -1104,22 +1293,42 @@ public actor ContainerLogLifecycleLedgerV1 {
     public func completeWriterCandidate(
         for request: LogDriverStartRequestV1
     ) async throws -> LoggingWriterOperationRecordV1 {
-        try await replaceWriterOperation(for: request) { record in
-            switch record.result {
-            case .prepared, .candidateClosing, .candidateRecoveryRequired:
-                return try LoggingWriterOperationRecordV1(
-                    request: request,
-                    result: .candidateClosed
-                )
-            case .candidateClosed:
-                return record
-            default:
-                throw Self.invalidTransition(
-                    expected: "prepared or closed candidate",
-                    actual: record.result.kindName
-                )
-            }
+        let located = try findWriterOperation(for: request)
+        guard let index = located.index, let record = located.record else {
+            throw ContainerLogLifecycleLedgerError.staleSession
         }
+        let reference: ProtectedLoggingEffectReferenceV1
+        switch record.result {
+        case .prepared(let preparation), .candidateClosing(let preparation),
+            .candidateRecoveryRequired(let preparation):
+            reference = preparation.effectTokenReference
+        case .candidateClosed:
+            return record
+        default:
+            throw Self.invalidTransition(
+                expected: "prepared or closed candidate",
+                actual: record.result.kindName
+            )
+        }
+        let terminal = try LoggingWriterOperationRecordV1(
+            request: request,
+            result: .candidateClosed
+        )
+        let removal = try LoggingEffectRemovalPendingV1(
+            kind: .writerCandidate,
+            ownerID: request.sessionID,
+            effectTokenReference: reference,
+            terminalOutcome: .writerCandidateClosed
+        )
+        var operations = currentSnapshot.writerOperations
+        operations[index] = terminal
+        try await persist(
+            writerOperations: operations,
+            detachedCleanups: currentSnapshot.detachedCleanups,
+            readerOperations: currentSnapshot.readerOperations,
+            pendingEffectRemovals: currentSnapshot.pendingEffectRemovals + [removal]
+        )
+        return terminal
     }
 
     public func commitWriterActivation(
@@ -1241,24 +1450,41 @@ public actor ContainerLogLifecycleLedgerV1 {
     public func completeWriterClose(
         _ expected: LoggingSessionActivationV1
     ) async throws -> LoggingSessionActivationV1 {
-        try await replaceWriterActivation(expected) { activation in
-            switch activation.state {
-            case .draining:
-                return try Self.writerActivation(
-                    copying: activation,
-                    reference: nil,
-                    disposition: .complete,
-                    state: .closed
-                )
-            case .closed where activation.closeDisposition == .complete:
-                return activation
-            default:
-                throw Self.invalidTransition(
-                    expected: "draining",
-                    actual: activation.state.rawValue
-                )
-            }
+        let located = try locateWriterActivation(expected)
+        let activation = expected
+        if activation.state == .closed, activation.closeDisposition == .complete {
+            return activation
         }
+        guard activation.state == .draining, let reference = activation.effectTokenReference else {
+            throw Self.invalidTransition(
+                expected: "draining",
+                actual: activation.state.rawValue
+            )
+        }
+        let closed = try Self.writerActivation(
+            copying: activation,
+            reference: nil,
+            disposition: .complete,
+            state: .closed
+        )
+        let removal = try LoggingEffectRemovalPendingV1(
+            kind: .writerSession,
+            ownerID: activation.sessionID,
+            effectTokenReference: reference,
+            terminalOutcome: .writerClosed(.complete)
+        )
+        var operations = currentSnapshot.writerOperations
+        operations[located.index] = try LoggingWriterOperationRecordV1(
+            request: located.record.request,
+            result: .activated(closed)
+        )
+        try await persist(
+            writerOperations: operations,
+            detachedCleanups: currentSnapshot.detachedCleanups,
+            readerOperations: currentSnapshot.readerOperations,
+            pendingEffectRemovals: currentSnapshot.pendingEffectRemovals + [removal]
+        )
+        return closed
     }
 
     public func transferWriterToDetachedCleanup(
@@ -1374,24 +1600,54 @@ public actor ContainerLogLifecycleLedgerV1 {
             providerCloseOutcomeDigest,
             field: "providerCloseOutcomeDigest"
         )
-        return try await replaceDetachedCleanup(expected) { cleanup in
-            switch cleanup.state {
-            case .pending, .recoveryRequired:
-                return try Self.detachedCleanup(
-                    copying: cleanup,
-                    reference: nil,
-                    outcome: providerCloseOutcomeDigest,
-                    state: .complete
-                )
-            case .complete where cleanup.providerCloseOutcomeDigest == providerCloseOutcomeDigest:
-                return cleanup
-            default:
-                throw Self.invalidTransition(
-                    expected: "unfinished or identical complete cleanup",
-                    actual: cleanup.state.rawValue
-                )
-            }
+        guard
+            let index = currentSnapshot.detachedCleanups.firstIndex(where: {
+                $0.cleanupID == expected.cleanupID
+            })
+        else {
+            throw ContainerLogLifecycleLedgerError.staleSession
         }
+        let cleanup = currentSnapshot.detachedCleanups[index]
+        guard cleanup == expected else {
+            throw ContainerLogLifecycleLedgerError.staleSession
+        }
+        if cleanup.state == .complete,
+            cleanup.providerCloseOutcomeDigest == providerCloseOutcomeDigest
+        {
+            return cleanup
+        }
+        guard
+            cleanup.state == .pending || cleanup.state == .recoveryRequired,
+            let reference = cleanup.effectTokenReference
+        else {
+            throw Self.invalidTransition(
+                expected: "unfinished or identical complete cleanup",
+                actual: cleanup.state.rawValue
+            )
+        }
+        let completed = try Self.detachedCleanup(
+            copying: cleanup,
+            reference: nil,
+            outcome: providerCloseOutcomeDigest,
+            state: .complete
+        )
+        let removal = try LoggingEffectRemovalPendingV1(
+            kind: .detachedCleanup,
+            ownerID: cleanup.cleanupID,
+            effectTokenReference: reference,
+            terminalOutcome: .detachedCleanupCompleted(
+                providerCloseOutcomeDigest: providerCloseOutcomeDigest
+            )
+        )
+        var cleanups = currentSnapshot.detachedCleanups
+        cleanups[index] = completed
+        try await persist(
+            writerOperations: currentSnapshot.writerOperations,
+            detachedCleanups: cleanups,
+            readerOperations: currentSnapshot.readerOperations,
+            pendingEffectRemovals: currentSnapshot.pendingEffectRemovals + [removal]
+        )
+        return completed
     }
 
     public func tombstoneDetachedCleanup(
@@ -1542,22 +1798,42 @@ public actor ContainerLogLifecycleLedgerV1 {
     public func completeReaderCandidate(
         for request: LogDriverReaderOpenRequestV1
     ) async throws -> LoggingReaderOperationRecordV1 {
-        try await replaceReaderOperation(for: request) { record in
-            switch record.result {
-            case .prepared, .candidateClosing, .candidateRecoveryRequired:
-                return try LoggingReaderOperationRecordV1(
-                    request: request,
-                    result: .candidateClosed
-                )
-            case .candidateClosed:
-                return record
-            default:
-                throw Self.invalidTransition(
-                    expected: "prepared or closed reader candidate",
-                    actual: record.result.kindName
-                )
-            }
+        let located = try findReaderOperation(for: request)
+        guard let index = located.index, let record = located.record else {
+            throw ContainerLogLifecycleLedgerError.staleSession
         }
+        let reference: ProtectedLoggingEffectReferenceV1
+        switch record.result {
+        case .prepared(let preparation), .candidateClosing(let preparation),
+            .candidateRecoveryRequired(let preparation):
+            reference = preparation.effectTokenReference
+        case .candidateClosed:
+            return record
+        default:
+            throw Self.invalidTransition(
+                expected: "prepared or closed reader candidate",
+                actual: record.result.kindName
+            )
+        }
+        let terminal = try LoggingReaderOperationRecordV1(
+            request: request,
+            result: .candidateClosed
+        )
+        let removal = try LoggingEffectRemovalPendingV1(
+            kind: .readerCandidate,
+            ownerID: request.readerSessionID,
+            effectTokenReference: reference,
+            terminalOutcome: .readerCandidateClosed
+        )
+        var operations = currentSnapshot.readerOperations
+        operations[index] = terminal
+        try await persist(
+            writerOperations: currentSnapshot.writerOperations,
+            detachedCleanups: currentSnapshot.detachedCleanups,
+            readerOperations: operations,
+            pendingEffectRemovals: currentSnapshot.pendingEffectRemovals + [removal]
+        )
+        return terminal
     }
 
     public func commitReaderSession(
@@ -1669,24 +1945,53 @@ public actor ContainerLogLifecycleLedgerV1 {
             terminalOutcomeDigest,
             field: "terminalOutcomeDigest"
         )
-        return try await replaceReaderSession(expected) { session in
-            switch session.state {
-            case .closing:
-                return try Self.readerSession(
-                    copying: session,
-                    reference: nil,
-                    outcome: terminalOutcomeDigest,
-                    state: .closed
-                )
-            case .closed where session.terminalOutcomeDigest == terminalOutcomeDigest:
-                return session
-            default:
-                throw Self.invalidTransition(
-                    expected: "closing",
-                    actual: session.state.rawValue
-                )
-            }
+        guard
+            let index = currentSnapshot.readerOperations.firstIndex(where: {
+                $0.request.readerSessionID == expected.readerSessionID
+            }), let session = currentSnapshot.readerOperations[index].result.session
+        else {
+            throw ContainerLogLifecycleLedgerError.staleSession
         }
+        guard session == expected else {
+            throw ContainerLogLifecycleLedgerError.staleSession
+        }
+        if session.state == .closed,
+            session.terminalOutcomeDigest == terminalOutcomeDigest
+        {
+            return session
+        }
+        guard session.state == .closing, let reference = session.effectTokenReference else {
+            throw Self.invalidTransition(
+                expected: "closing",
+                actual: session.state.rawValue
+            )
+        }
+        let closed = try Self.readerSession(
+            copying: session,
+            reference: nil,
+            outcome: terminalOutcomeDigest,
+            state: .closed
+        )
+        let removal = try LoggingEffectRemovalPendingV1(
+            kind: .readerSession,
+            ownerID: session.readerSessionID,
+            effectTokenReference: reference,
+            terminalOutcome: .readerClosed(
+                terminalOutcomeDigest: terminalOutcomeDigest
+            )
+        )
+        var operations = currentSnapshot.readerOperations
+        operations[index] = try LoggingReaderOperationRecordV1(
+            request: currentSnapshot.readerOperations[index].request,
+            result: .activated(closed)
+        )
+        try await persist(
+            writerOperations: currentSnapshot.writerOperations,
+            detachedCleanups: currentSnapshot.detachedCleanups,
+            readerOperations: operations,
+            pendingEffectRemovals: currentSnapshot.pendingEffectRemovals + [removal]
+        )
+        return closed
     }
 
     public func tombstoneReader(
@@ -1930,7 +2235,8 @@ public actor ContainerLogLifecycleLedgerV1 {
     private func persist(
         writerOperations: [LoggingWriterOperationRecordV1],
         detachedCleanups: [LoggingDetachedCleanupV1],
-        readerOperations: [LoggingReaderOperationRecordV1]
+        readerOperations: [LoggingReaderOperationRecordV1],
+        pendingEffectRemovals: [LoggingEffectRemovalPendingV1]? = nil
     ) async throws {
         guard !persistenceFailed else {
             throw ContainerLogLifecycleLedgerError.corruptSnapshot(
@@ -1941,7 +2247,9 @@ public actor ContainerLogLifecycleLedgerV1 {
             owningControllerID: owningControllerID,
             writerOperations: writerOperations,
             detachedCleanups: detachedCleanups,
-            readerOperations: readerOperations
+            readerOperations: readerOperations,
+            pendingEffectRemovals: pendingEffectRemovals
+                ?? currentSnapshot.pendingEffectRemovals
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]

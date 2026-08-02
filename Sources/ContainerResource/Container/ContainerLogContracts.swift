@@ -492,7 +492,20 @@ public enum LogDriverOptionValueKind: String, Codable, Equatable, Sendable {
     case size
     case commaSeparatedNames
     case regularExpression
+    /// The provider owns an exact regular-expression dialect that the
+    /// authority cannot safely approximate with Swift Regex.
+    case providerRegularExpression
     case tagTemplate
+}
+
+/// Selects a side-effect-free, driver-specific create grammar when scalar
+/// option descriptors cannot express relationships such as an address scheme
+/// controlling which companion options are legal.
+public enum LogDriverCreateValidationProfile: String, Codable, Equatable, Sendable {
+    case standard
+    case dockerFluentd29_2_1 = "docker-fluentd-29.2.1"
+    case dockerGELF29_2_1 = "docker-gelf-29.2.1"
+    case dockerSyslog29_2_1 = "docker-syslog-29.2.1"
 }
 
 public struct LogDriverOptionDescriptor: Codable, Equatable, Sendable {
@@ -685,6 +698,7 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
     public let optionContractDigest: String
     public let options: [LogDriverOptionDescriptor]
     public let crossOptionConstraints: [LogDriverCrossOptionConstraint]
+    public let createValidationProfile: LogDriverCreateValidationProfile
     public let acceptsUnknownOptions: Bool
     public let capabilities: LogDriverCapabilities
 
@@ -698,6 +712,7 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
         optionContractDigest: String? = nil,
         options: [LogDriverOptionDescriptor],
         crossOptionConstraints: [LogDriverCrossOptionConstraint] = [],
+        createValidationProfile: LogDriverCreateValidationProfile = .standard,
         acceptsUnknownOptions: Bool = false,
         capabilities: LogDriverCapabilities
     ) throws {
@@ -767,6 +782,7 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
             trust: trust,
             options: normalizedOptions,
             crossOptionConstraints: normalizedConstraints,
+            createValidationProfile: createValidationProfile,
             acceptsUnknownOptions: acceptsUnknownOptions,
             capabilities: capabilities
         )
@@ -787,6 +803,7 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
         self.optionContractDigest = computedDigest
         self.options = normalizedOptions
         self.crossOptionConstraints = normalizedConstraints
+        self.createValidationProfile = createValidationProfile
         self.acceptsUnknownOptions = acceptsUnknownOptions
         self.capabilities = capabilities
     }
@@ -812,6 +829,10 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
                 [LogDriverCrossOptionConstraint].self,
                 forKey: .crossOptionConstraints
             ) ?? [],
+            createValidationProfile: container.decodeIfPresent(
+                LogDriverCreateValidationProfile.self,
+                forKey: .createValidationProfile
+            ) ?? .standard,
             acceptsUnknownOptions: container.decode(Bool.self, forKey: .acceptsUnknownOptions),
             capabilities: container.decode(LogDriverCapabilities.self, forKey: .capabilities)
         )
@@ -828,6 +849,7 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
             trust: trust,
             options: options,
             crossOptionConstraints: crossOptionConstraints,
+            createValidationProfile: createValidationProfile,
             acceptsUnknownOptions: acceptsUnknownOptions,
             capabilities: capabilities
         )
@@ -854,6 +876,7 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
         trust: LogDriverTrust,
         options: [LogDriverOptionDescriptor],
         crossOptionConstraints: [LogDriverCrossOptionConstraint],
+        createValidationProfile: LogDriverCreateValidationProfile,
         acceptsUnknownOptions: Bool,
         capabilities: LogDriverCapabilities
     ) -> String {
@@ -871,6 +894,9 @@ public struct LogDriverDescriptor: Codable, Equatable, Sendable {
         writer.append("provider.kind", providerIdentity.kind.rawValue)
         writer.append("placement", placement.rawValue)
         writer.append("trust", trust.rawValue)
+        if createValidationProfile != .standard {
+            writer.append("createValidationProfile", createValidationProfile.rawValue)
+        }
         writer.append("acceptsUnknownOptions", String(acceptsUnknownOptions))
         writer.append("options.count", String(options.count))
         for (index, option) in options.enumerated() {

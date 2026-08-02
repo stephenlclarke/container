@@ -445,6 +445,194 @@ public struct ProtectedLoggingEffectReferenceV1: Codable, Equatable, Sendable {
     }
 }
 
+/// The lifecycle path that owns one durable protected-effect removal.
+public enum LoggingEffectRemovalKindV1: String, Codable, Equatable, Sendable {
+    case writerCandidate
+    case writerSession
+    case detachedCleanup
+    case readerCandidate
+    case readerSession
+}
+
+/// The exact terminal provider outcome retained until protected removal is
+/// durably acknowledged. Keeping this outcome beside the complete protected
+/// reference makes the terminal transition and cleanup intent one transaction.
+public enum LoggingEffectRemovalTerminalOutcomeV1: Equatable, Sendable {
+    case writerCandidateClosed
+    case writerClosed(LoggingSessionCloseDispositionV1)
+    case detachedCleanupCompleted(providerCloseOutcomeDigest: String)
+    case readerCandidateClosed
+    case readerClosed(terminalOutcomeDigest: String)
+}
+
+extension LoggingEffectRemovalTerminalOutcomeV1: Codable {
+    private enum Kind: String, Codable {
+        case writerCandidateClosed
+        case writerClosed
+        case detachedCleanupCompleted
+        case readerCandidateClosed
+        case readerClosed
+    }
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case kind
+        case writerCloseDisposition
+        case outcomeDigest
+    }
+
+    public init(from decoder: any Decoder) throws {
+        try LogDriverLifecycleValidation.rejectUnknownKeys(
+            from: decoder,
+            allowed: CodingKeys.self,
+            type: "logging effect removal terminal outcome v1"
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .writerCandidateClosed:
+            try Self.requireNoPayload(container)
+            self = .writerCandidateClosed
+        case .writerClosed:
+            guard !container.contains(.outcomeDigest) else {
+                throw Self.unexpectedPayload(in: container)
+            }
+            self = .writerClosed(
+                try container.decode(
+                    LoggingSessionCloseDispositionV1.self,
+                    forKey: .writerCloseDisposition
+                )
+            )
+        case .detachedCleanupCompleted:
+            guard !container.contains(.writerCloseDisposition) else {
+                throw Self.unexpectedPayload(in: container)
+            }
+            let digest = try container.decode(String.self, forKey: .outcomeDigest)
+            try LogDriverLifecycleValidation.digest(
+                digest,
+                field: "providerCloseOutcomeDigest"
+            )
+            self = .detachedCleanupCompleted(providerCloseOutcomeDigest: digest)
+        case .readerCandidateClosed:
+            try Self.requireNoPayload(container)
+            self = .readerCandidateClosed
+        case .readerClosed:
+            guard !container.contains(.writerCloseDisposition) else {
+                throw Self.unexpectedPayload(in: container)
+            }
+            let digest = try container.decode(String.self, forKey: .outcomeDigest)
+            try LogDriverLifecycleValidation.digest(
+                digest,
+                field: "terminalOutcomeDigest"
+            )
+            self = .readerClosed(terminalOutcomeDigest: digest)
+        }
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .writerCandidateClosed:
+            try container.encode(Kind.writerCandidateClosed, forKey: .kind)
+        case .writerClosed(let disposition):
+            try container.encode(Kind.writerClosed, forKey: .kind)
+            try container.encode(disposition, forKey: .writerCloseDisposition)
+        case .detachedCleanupCompleted(let digest):
+            try container.encode(Kind.detachedCleanupCompleted, forKey: .kind)
+            try container.encode(digest, forKey: .outcomeDigest)
+        case .readerCandidateClosed:
+            try container.encode(Kind.readerCandidateClosed, forKey: .kind)
+        case .readerClosed(let digest):
+            try container.encode(Kind.readerClosed, forKey: .kind)
+            try container.encode(digest, forKey: .outcomeDigest)
+        }
+    }
+
+    private static func requireNoPayload(
+        _ container: KeyedDecodingContainer<CodingKeys>
+    ) throws {
+        guard
+            !container.contains(.writerCloseDisposition),
+            !container.contains(.outcomeDigest)
+        else {
+            throw unexpectedPayload(in: container)
+        }
+    }
+
+    private static func unexpectedPayload(
+        in container: KeyedDecodingContainer<CodingKeys>
+    ) -> DecodingError {
+        DecodingError.dataCorrupted(
+            DecodingError.Context(
+                codingPath: container.codingPath,
+                debugDescription: "effect removal outcome contains payload for another kind"
+            )
+        )
+    }
+}
+
+/// Redaction-safe durable transaction record for one protected-effect removal.
+///
+/// `ownerID` identifies the exact lifecycle record named by ``kind``. The
+/// reference contains no raw token material and is retained until the secure
+/// store has durably published its authenticated removal tombstone.
+public struct LoggingEffectRemovalPendingV1: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion: UInt32 = 1
+
+    public let schemaVersion: UInt32
+    public let kind: LoggingEffectRemovalKindV1
+    public let ownerID: String
+    public let effectTokenReference: ProtectedLoggingEffectReferenceV1
+    public let terminalOutcome: LoggingEffectRemovalTerminalOutcomeV1
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion
+        case kind
+        case ownerID
+        case effectTokenReference
+        case terminalOutcome
+    }
+
+    public init(
+        kind: LoggingEffectRemovalKindV1,
+        ownerID: String,
+        effectTokenReference: ProtectedLoggingEffectReferenceV1,
+        terminalOutcome: LoggingEffectRemovalTerminalOutcomeV1
+    ) throws {
+        try LogDriverLifecycleValidation.identifier(ownerID, field: "effectRemovalOwnerID")
+        self.schemaVersion = Self.currentSchemaVersion
+        self.kind = kind
+        self.ownerID = ownerID
+        self.effectTokenReference = effectTokenReference
+        self.terminalOutcome = terminalOutcome
+    }
+
+    public init(from decoder: any Decoder) throws {
+        try LogDriverLifecycleValidation.rejectUnknownKeys(
+            from: decoder,
+            allowed: CodingKeys.self,
+            type: "logging effect removal pending v1"
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        _ = try LogDriverLifecycleValidation.schemaVersion(
+            from: container,
+            forKey: .schemaVersion,
+            expected: Self.currentSchemaVersion,
+            type: "logging effect removal pending"
+        )
+        try self.init(
+            kind: container.decode(LoggingEffectRemovalKindV1.self, forKey: .kind),
+            ownerID: container.decode(String.self, forKey: .ownerID),
+            effectTokenReference: container.decode(
+                ProtectedLoggingEffectReferenceV1.self,
+                forKey: .effectTokenReference
+            ),
+            terminalOutcome: container.decode(
+                LoggingEffectRemovalTerminalOutcomeV1.self,
+                forKey: .terminalOutcome
+            )
+        )
+    }
+}
+
 extension ProtectedLoggingEffectBindingV1 {
     fileprivate init(
         validatedEffectID effectID: String,

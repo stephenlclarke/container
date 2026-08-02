@@ -32,11 +32,16 @@ export CONTAINERIZATION_REF ?= $(shell python3 -c 'import json; pin=next((p for 
 
 # Commonly used locations
 SWIFT := "/usr/bin/swift"
+PYTHON3 ?= python3
 # Shared swift build invocation; callers append --build-tests / --product / etc.
 SWIFT_BUILD = $(SWIFT) build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION)
 DEST_DIR ?= /usr/local/
 ROOT_DIR := $(shell git rev-parse --show-toplevel)
 BUILD_BIN_DIR = $(shell $(SWIFT) build -c $(BUILD_CONFIGURATION) --show-bin-path)
+SEMANTIC_HELPER_BUILD_DIR := $(ROOT_DIR)/.build/container-semantic-helper
+SEMANTIC_HELPER_BINARY := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper
+SEMANTIC_HELPER_MANIFEST := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper.manifest.json
+SEMANTIC_HELPER_BUILD_TOOL := Tools/ContainerSemanticHelper/build.py
 STAGING_DIR := bin/$(BUILD_CONFIGURATION)/staging/
 PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer-unsigned.pkg
 DSYM_DIR := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM
@@ -77,8 +82,24 @@ include Protobuf.Makefile
 all: container
 all: init-block
 
+.PHONY: semantic-helper
+semantic-helper:
+	@echo Building pinned Docker semantic helper...
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) build --output-directory "$(SEMANTIC_HELPER_BUILD_DIR)"
+
+.PHONY: test-semantic-helper
+test-semantic-helper:
+	@echo Testing pinned Docker semantic helper...
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) test --output-directory "$(SEMANTIC_HELPER_BUILD_DIR)"
+
+.PHONY: verify-semantic-helper
+verify-semantic-helper: semantic-helper
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
+		--binary "$(SEMANTIC_HELPER_BINARY)" \
+		--manifest "$(SEMANTIC_HELPER_MANIFEST)"
+
 .PHONY: build
-build:
+build: semantic-helper
 	@echo Building container binaries...
 	@$(SWIFT) --version
 	@$(SWIFT_BUILD)
@@ -89,7 +110,7 @@ build:
 # a distinct target from `build` so `make all test` builds products and tests as
 # two separate steps rather than colliding on a single once-built target.
 # COVERAGE_FLAG instruments the binaries when set by the coverage-* targets.
-build-tests:
+build-tests: test-semantic-helper
 	@echo Building container binaries and tests...
 	@$(SWIFT) --version
 	@$(SWIFT_BUILD) --build-tests $(COVERAGE_FLAG)
@@ -133,7 +154,7 @@ install: installer-pkg
 		$(SUDO) installer -pkg $(PKG_PATH) -target / ; \
 	fi
 
-$(STAGING_DIR):
+$(STAGING_DIR): semantic-helper
 	@echo Installing container binaries from "$(BUILD_BIN_DIR)" into "$(STAGING_DIR)"...
 	@rm -rf "$(STAGING_DIR)"
 	@mkdir -p "$(join $(STAGING_DIR), bin)"
@@ -142,6 +163,7 @@ $(STAGING_DIR):
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/container-core-images/bin)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/helpers)"
 
 	@install "$(BUILD_BIN_DIR)/container" "$(join $(STAGING_DIR), bin/container)"
 	@install "$(BUILD_BIN_DIR)/container-apiserver" "$(join $(STAGING_DIR), bin/container-apiserver)"
@@ -155,6 +177,8 @@ $(STAGING_DIR):
 	@install Sources/Plugins/MachineAPIServer/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/config.toml)"
 	@install Sources/Plugins/MachineAPIServer/Resources/init "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/init)"
 	@install Sources/Plugins/MachineAPIServer/Resources/create-user.sh "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/create-user.sh)"
+	@install "$(SEMANTIC_HELPER_BINARY)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@install -m 0644 "$(SEMANTIC_HELPER_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
 
 	@echo Install update script
 	@install scripts/update-container.sh "$(join $(STAGING_DIR), bin/update-container.sh)"
@@ -170,6 +194,13 @@ installer-pkg: $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-runtime-linux.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
+	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.semantic-helper "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) manifest \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--output "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
 
 	@echo Creating application installer
 	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(PKG_PATH)
@@ -187,6 +218,13 @@ homebrew-package: build $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-runtime-linux.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
+	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.semantic-helper "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) manifest \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--output "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
 	@tar -czf "$(HOMEBREW_ARCHIVE)" -C "$(STAGING_DIR)" .

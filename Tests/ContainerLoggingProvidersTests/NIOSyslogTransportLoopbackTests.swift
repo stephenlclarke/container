@@ -5,7 +5,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     https://www.apache.org/licenses/LICENSE-2.0
+//   https://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,6 +24,17 @@ import Testing
 
 @Suite(.serialized)
 struct NIOSyslogTransportLoopbackTests {
+    @Test func pinsDockerGoConnectionsTLS12CipherSuites() {
+        #expect(
+            NIOSyslogTransportFactory.dockerTLS12CipherSuites == [
+                "ECDHE-ECDSA-AES256-GCM-SHA384",
+                "ECDHE-RSA-AES256-GCM-SHA384",
+                "ECDHE-ECDSA-AES128-GCM-SHA256",
+                "ECDHE-RSA-AES128-GCM-SHA256",
+            ]
+        )
+    }
+
     @Test func sendsExactUDPAndTCPPayloadsOverLoopback() async throws {
         try await withEventLoopGroup { group in
             let udpPromise = group.next().makePromise(of: Data.self)
@@ -39,26 +50,26 @@ struct NIOSyslogTransportLoopbackTests {
             let udpPort = try #require(udpServer.localAddress?.port)
             let udpExpected = try encodedMessage(
                 endpoint: .udp(
-                    SyslogNetworkAddress(host: "127.0.0.1", port: String(udpPort))
+                    SyslogNetworkAddress(host: "127.0.0.1", port: UInt16(udpPort))
                 ),
                 payload: "udp-wire"
             )
             let udpTransport = try await NIOSyslogTransportFactory(eventLoopGroup: group)
                 .connect(
                     to: .udp(
-                        SyslogNetworkAddress(host: "127.0.0.1", port: String(udpPort))
+                        SyslogNetworkAddress(host: "127.0.0.1", port: UInt16(udpPort))
                     ),
                     tls: nil,
                     timeout: .seconds(2)
                 )
             try await udpTransport.write(udpExpected, timeout: .seconds(2))
-            #expect(try await udpPromise.futureResult.get() == udpExpected)
+            #expect(try await udpPromise.futureResult.syslogTestBounded().get() == udpExpected)
             try await udpTransport.close(timeout: .seconds(2))
 
             let tcpPromise = group.next().makePromise(of: Data.self)
             let tcpExpected = try encodedMessage(
                 endpoint: .tcp(
-                    SyslogNetworkAddress(host: "127.0.0.1", port: "0")
+                    SyslogNetworkAddress(host: "127.0.0.1", port: 0)
                 ),
                 payload: "tcp-wire"
             )
@@ -78,13 +89,13 @@ struct NIOSyslogTransportLoopbackTests {
             let tcpTransport = try await NIOSyslogTransportFactory(eventLoopGroup: group)
                 .connect(
                     to: .tcp(
-                        SyslogNetworkAddress(host: "127.0.0.1", port: String(tcpPort))
+                        SyslogNetworkAddress(host: "127.0.0.1", port: UInt16(tcpPort))
                     ),
                     tls: nil,
                     timeout: .seconds(2)
                 )
             try await tcpTransport.write(tcpExpected, timeout: .seconds(2))
-            #expect(try await tcpPromise.futureResult.get() == tcpExpected)
+            #expect(try await tcpPromise.futureResult.syslogTestBounded().get() == tcpExpected)
             try await tcpTransport.close(timeout: .seconds(2))
         }
     }
@@ -102,7 +113,7 @@ struct NIOSyslogTransportLoopbackTests {
         try await withEventLoopGroup { group in
             let streamPath = directory.appendingPathComponent("stream.sock").path
             let streamExpected = try encodedMessage(
-                endpoint: .unixStream(path: streamPath),
+                endpoint: .unixStream(path: Data(streamPath.utf8)),
                 payload: "unix-stream"
             )
             let streamPromise = group.next().makePromise(of: Data.self)
@@ -120,17 +131,17 @@ struct NIOSyslogTransportLoopbackTests {
             defer { streamServer.close(promise: nil) }
             let streamTransport = try await NIOSyslogTransportFactory(eventLoopGroup: group)
                 .connect(
-                    to: .unixStream(path: streamPath),
+                    to: .unixStream(path: Data(streamPath.utf8)),
                     tls: nil,
                     timeout: .seconds(2)
                 )
             try await streamTransport.write(streamExpected, timeout: .seconds(2))
-            #expect(try await streamPromise.futureResult.get() == streamExpected)
+            #expect(try await streamPromise.futureResult.syslogTestBounded().get() == streamExpected)
             try await streamTransport.close(timeout: .seconds(2))
 
             let datagramPath = directory.appendingPathComponent("datagram.sock").path
             let datagramExpected = try encodedMessage(
-                endpoint: .unixDatagram(path: datagramPath),
+                endpoint: .unixDatagram(path: Data(datagramPath.utf8)),
                 payload: "unix-datagram"
             )
             let datagramPromise = group.next().makePromise(of: Data.self)
@@ -148,12 +159,12 @@ struct NIOSyslogTransportLoopbackTests {
             defer { datagramServer.close(promise: nil) }
             let datagramTransport = try await NIOSyslogTransportFactory(eventLoopGroup: group)
                 .connect(
-                    to: .unixDatagram(path: datagramPath),
+                    to: .unixDatagram(path: Data(datagramPath.utf8)),
                     tls: nil,
                     timeout: .seconds(2)
                 )
             try await datagramTransport.write(datagramExpected, timeout: .seconds(2))
-            #expect(try await datagramPromise.futureResult.get() == datagramExpected)
+            #expect(try await datagramPromise.futureResult.syslogTestBounded().get() == datagramExpected)
             try await datagramTransport.close(timeout: .seconds(2))
         }
     }
@@ -166,7 +177,7 @@ struct NIOSyslogTransportLoopbackTests {
         try await withEventLoopGroup { group in
             let expected = try encodedMessage(
                 endpoint: .tcpTLS(
-                    SyslogNetworkAddress(host: "localhost", port: "0")
+                    SyslogNetworkAddress(host: "localhost", port: 0)
                 ),
                 format: .rfc5424Micro,
                 tls: SyslogTLSConfiguration(
@@ -201,7 +212,7 @@ struct NIOSyslogTransportLoopbackTests {
             defer { server.close(promise: nil) }
             let port = try #require(server.localAddress?.port)
             let endpoint = SyslogEndpoint.tcpTLS(
-                SyslogNetworkAddress(host: "localhost", port: String(port))
+                SyslogNetworkAddress(host: "localhost", port: UInt16(port))
             )
             let factory = NIOSyslogTransportFactory(eventLoopGroup: group)
 
@@ -216,14 +227,15 @@ struct NIOSyslogTransportLoopbackTests {
                 timeout: .seconds(2)
             )
             try await verified.write(expected, timeout: .seconds(2))
-            #expect(try await capturePromise.futureResult.get() == expected)
+            #expect(try await capturePromise.futureResult.syslogTestBounded().get() == expected)
             try await verified.close(timeout: .seconds(2))
 
-            // Go omits SNI for an IP literal while still verifying the leaf's
-            // IP SAN. The fixture is valid for both localhost and 127.0.0.1.
+            // Go omits SNI for an IP literal while still verifying the
+            // originally requested IP SAN. The fixture is valid for both
+            // localhost and 127.0.0.1.
             let verifiedIP = try await factory.connect(
                 to: .tcpTLS(
-                    SyslogNetworkAddress(host: "127.0.0.1", port: String(port))
+                    SyslogNetworkAddress(host: "127.0.0.1", port: UInt16(port))
                 ),
                 tls: SyslogTLSConfiguration(
                     caCertificatePath: caPath,
@@ -234,6 +246,26 @@ struct NIOSyslogTransportLoopbackTests {
                 timeout: .seconds(2)
             )
             try await verifiedIP.close(timeout: .seconds(2))
+
+            await #expect(throws: SyslogProviderError.tlsIdentityVerificationFailed) {
+                try await factory.connect(
+                    to: .tcpTLS(
+                        // Darwin resolves this legacy numeric form to
+                        // 127.0.0.1, but modern Go treats the original text as
+                        // a DNS identity. The connection therefore reaches
+                        // the loopback peer while SAN verification must reject
+                        // the unmodified requested identity.
+                        SyslogNetworkAddress(host: "2130706433", port: UInt16(port))
+                    ),
+                    tls: SyslogTLSConfiguration(
+                        caCertificatePath: caPath,
+                        clientCertificatePath: "",
+                        clientPrivateKeyPath: "",
+                        skipServerVerification: false
+                    ),
+                    timeout: .seconds(2)
+                )
+            }
 
             // A self-signed peer is rejected during connect, not deferred to
             // the first log write.
@@ -283,7 +315,7 @@ struct NIOSyslogTransportLoopbackTests {
                         to: .tcpTLS(
                             SyslogNetworkAddress(
                                 host: "127.0.0.1",
-                                port: String(port)
+                                port: UInt16(port)
                             )
                         ),
                         tls: SyslogTLSConfiguration(
@@ -353,6 +385,37 @@ private func tlsServerContext(
         privateKey: .privateKey(key)
     )
     return try NIOSSLContext(configuration: configuration)
+}
+
+private enum SyslogLoopbackTimeout: Error {
+    case elapsed
+}
+
+private final class SyslogTestFutureState: @unchecked Sendable {
+    var completed = false
+}
+
+extension EventLoopFuture where Value: Sendable {
+    fileprivate func syslogTestBounded() -> EventLoopFuture<Value> {
+        let promise = eventLoop.makePromise(of: Value.self)
+        let state = SyslogTestFutureState()
+        let scheduled = eventLoop.scheduleTask(in: .seconds(2)) {
+            guard !state.completed else {
+                return
+            }
+            state.completed = true
+            promise.fail(SyslogLoopbackTimeout.elapsed)
+        }
+        whenComplete { result in
+            guard !state.completed else {
+                return
+            }
+            state.completed = true
+            scheduled.cancel()
+            promise.completeWith(result)
+        }
+        return promise.futureResult
+    }
 }
 
 private final class StreamCaptureHandler: ChannelInboundHandler, @unchecked Sendable {

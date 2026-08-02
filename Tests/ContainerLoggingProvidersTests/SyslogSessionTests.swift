@@ -5,7 +5,7 @@
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
-//     https://www.apache.org/licenses/LICENSE-2.0
+//   https://www.apache.org/licenses/LICENSE-2.0
 //
 // Unless required by applicable law or agreed to in writing, software
 // distributed under the License is distributed on an "AS IS" BASIS,
@@ -114,7 +114,7 @@ struct SyslogSessionTests {
         let first = Task {
             try await session.write(try syslogRecord(payload: Data("first".utf8), sequence: 1))
         }
-        await transport.waitUntilFirstWriteIsBlocked()
+        try await transport.waitUntilFirstWriteIsBlocked()
         let second = Task {
             try await session.write(try syslogRecord(payload: Data("second".utf8), sequence: 2))
         }
@@ -147,6 +147,49 @@ struct SyslogSessionTests {
         #expect(await session.currentState() == .closed)
         #expect(await transport.closeCallCount == 1)
     }
+
+    @Test func closeFailureRemainsActiveAndAnIdenticalRetryCanFinishCleanup() async throws {
+        let transport = RecordingSyslogTransport(closeOutcomes: [
+            .failure(.close),
+            .success,
+        ])
+        let factory = ScriptedSyslogTransportFactory([.transport(transport)])
+        let session = try await makeSession(factory: factory)
+
+        await #expect(throws: SyslogTestFailure.close) {
+            try await session.closeUsingPolicy()
+        }
+        #expect(await session.currentState() == .active)
+        try await session.write(try syslogRecord(payload: Data("still-active".utf8)))
+
+        try await session.closeUsingPolicy()
+        #expect(await session.currentState() == .closed)
+        #expect(await transport.closeCallCount == 2)
+    }
+
+    @Test func reconciliationWaitsUntilCloseHasQuiesced() async throws {
+        let transport = RecordingSyslogTransport(blockFirstClose: true)
+        let factory = ScriptedSyslogTransportFactory([.transport(transport)])
+        let session = try await makeSession(factory: factory)
+        let closeTask = Task {
+            try await session.closeUsingPolicy()
+        }
+        try await transport.waitUntilFirstCloseIsBlocked()
+
+        let probe = SyslogStateProbe()
+        let stateTask = Task {
+            await probe.begin()
+            let state = await session.currentState()
+            await probe.record(state)
+        }
+        try await probe.waitUntilStarted()
+        #expect(await probe.value == nil)
+
+        await transport.releaseFirstClose()
+        try await closeTask.value
+        await stateTask.value
+        #expect(await probe.value == .closed)
+    }
 }
 
 private func makeSession(
@@ -161,7 +204,7 @@ private func makeSession(
 
 func syslogTestConfiguration(
     endpoint: SyslogEndpoint = .tcp(
-        SyslogNetworkAddress(host: "127.0.0.1", port: "514")
+        SyslogNetworkAddress(host: "127.0.0.1", port: 514)
     ),
     format: SyslogMessageFormat = .unix,
     tls: SyslogTLSConfiguration? = nil,
@@ -171,7 +214,7 @@ func syslogTestConfiguration(
         endpoint: endpoint,
         facility: SyslogFacility(number: 3),
         format: format,
-        tag: "0123456789ab",
+        tag: Data("0123456789ab".utf8),
         hostname: "engine-host",
         processID: 4_242,
         tls: tls,
@@ -230,21 +273,32 @@ enum SyslogWriteOutcome: Sendable {
     case failure(SyslogTestFailure)
 }
 
+enum SyslogCloseOutcome: Sendable {
+    case success
+    case failure(SyslogTestFailure)
+}
+
 actor RecordingSyslogTransport: SyslogTransport {
     private(set) var messages = [Data]()
     private(set) var writeTimeouts = [Duration]()
     private(set) var closeTimeouts = [Duration]()
     private var outcomes: [SyslogWriteOutcome]
+    private var closeOutcomes: [SyslogCloseOutcome]
     private var blockFirstWrite: Bool
+    private var blockFirstClose: Bool
     private var blockedWrite: CheckedContinuation<Void, Never>?
-    private var blockedWaiters = [CheckedContinuation<Void, Never>]()
+    private var blockedClose: CheckedContinuation<Void, Never>?
 
     init(
         writeOutcomes: [SyslogWriteOutcome] = [],
-        blockFirstWrite: Bool = false
+        closeOutcomes: [SyslogCloseOutcome] = [],
+        blockFirstWrite: Bool = false,
+        blockFirstClose: Bool = false
     ) {
         self.outcomes = writeOutcomes
+        self.closeOutcomes = closeOutcomes
         self.blockFirstWrite = blockFirstWrite
+        self.blockFirstClose = blockFirstClose
     }
 
     var closeCallCount: Int { closeTimeouts.count }
@@ -256,11 +310,6 @@ actor RecordingSyslogTransport: SyslogTransport {
             await withCheckedContinuation { continuation in
                 if blockFirstWrite {
                     blockedWrite = continuation
-                    let waiters = blockedWaiters
-                    blockedWaiters.removeAll()
-                    for waiter in waiters {
-                        waiter.resume()
-                    }
                 } else {
                     continuation.resume()
                 }
@@ -277,14 +326,31 @@ actor RecordingSyslogTransport: SyslogTransport {
 
     func close(timeout: Duration) async throws {
         closeTimeouts.append(timeout)
-    }
-
-    func waitUntilFirstWriteIsBlocked() async {
-        if blockedWrite != nil {
+        if blockFirstClose, closeTimeouts.count == 1 {
+            await withCheckedContinuation { continuation in
+                if blockFirstClose {
+                    blockedClose = continuation
+                } else {
+                    continuation.resume()
+                }
+            }
+        }
+        guard !closeOutcomes.isEmpty else {
             return
         }
-        await withCheckedContinuation { continuation in
-            blockedWaiters.append(continuation)
+        switch closeOutcomes.removeFirst() {
+        case .success: return
+        case .failure(let error): throw error
+        }
+    }
+
+    func waitUntilFirstWriteIsBlocked() async throws {
+        let deadline = ContinuousClock().now + .seconds(1)
+        while blockedWrite == nil {
+            guard ContinuousClock().now < deadline else {
+                throw SyslogTestFailure.exhausted
+            }
+            try await Task.sleep(for: .milliseconds(1))
         }
     }
 
@@ -293,6 +359,46 @@ actor RecordingSyslogTransport: SyslogTransport {
         let continuation = blockedWrite
         blockedWrite = nil
         continuation?.resume()
+    }
+
+    func waitUntilFirstCloseIsBlocked() async throws {
+        let deadline = ContinuousClock().now + .seconds(1)
+        while blockedClose == nil {
+            guard ContinuousClock().now < deadline else {
+                throw SyslogTestFailure.exhausted
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    func releaseFirstClose() {
+        blockFirstClose = false
+        let continuation = blockedClose
+        blockedClose = nil
+        continuation?.resume()
+    }
+}
+
+private actor SyslogStateProbe {
+    private var started = false
+    private(set) var value: SyslogSessionState?
+
+    func begin() {
+        started = true
+    }
+
+    func waitUntilStarted() async throws {
+        let deadline = ContinuousClock().now + .seconds(1)
+        while !started {
+            guard ContinuousClock().now < deadline else {
+                throw SyslogTestFailure.exhausted
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    func record(_ state: SyslogSessionState) {
+        value = state
     }
 }
 

@@ -57,7 +57,10 @@ public struct SystemSyslogClock: SyslogClock {
         }
         return SyslogClockReading(
             timestamp: timestamp,
-            timeZoneSecondsFromGMT: TimeZone.current.secondsFromGMT(for: date)
+            // The maintained Engine Linux sandbox runs its daemon clock in
+            // UTC. Reading the macOS user's local zone would make identical
+            // records differ from Docker whenever the host is not on UTC.
+            timeZoneSecondsFromGMT: 0
         )
     }
 }
@@ -91,31 +94,39 @@ public struct SyslogMessageEncoder: Sendable {
 
         let reading = clock.now()
         let priority = configuration.facility.priority(for: record.stream)
-        let prefix: String
+        var message = Data()
         switch configuration.format {
         case .unix:
-            prefix =
-                "<\(priority)>\(Self.stamp(reading)) "
-                + "\(configuration.tag)[\(configuration.processID)]: "
+            message.append(Data("<\(priority)>\(Self.stamp(reading)) ".utf8))
+            message.append(configuration.tag)
+            message.append(Data("[\(configuration.processID)]: ".utf8))
         case .rfc3164:
-            prefix =
-                "<\(priority)>\(Self.stamp(reading)) \(configuration.hostname) "
-                + "\(configuration.tag)[\(configuration.processID)]: "
+            message.append(
+                Data(
+                    "<\(priority)>\(Self.stamp(reading)) \(configuration.hostname) "
+                        .utf8
+                )
+            )
+            message.append(configuration.tag)
+            message.append(Data("[\(configuration.processID)]: ".utf8))
         case .rfc5424:
-            prefix = Self.rfc5424Prefix(
-                priority: priority,
-                timestamp: Self.rfc3339(reading, microseconds: false),
-                configuration: configuration
+            message.append(
+                Self.rfc5424Prefix(
+                    priority: priority,
+                    timestamp: Self.rfc3339(reading, microseconds: false),
+                    configuration: configuration
+                )
             )
         case .rfc5424Micro:
-            prefix = Self.rfc5424Prefix(
-                priority: priority,
-                timestamp: Self.rfc3339(reading, microseconds: true),
-                configuration: configuration
+            message.append(
+                Self.rfc5424Prefix(
+                    priority: priority,
+                    timestamp: Self.rfc3339(reading, microseconds: true),
+                    configuration: configuration
+                )
             )
         }
 
-        var message = Data(prefix.utf8)
         message.append(record.payload)
         if record.payload.last != UInt8(ascii: "\n") {
             message.append(UInt8(ascii: "\n"))
@@ -145,9 +156,15 @@ public struct SyslogMessageEncoder: Sendable {
         priority: Int,
         timestamp: String,
         configuration: SyslogDriverConfiguration
-    ) -> String {
-        "<\(priority)>1 \(timestamp) \(configuration.hostname) \(configuration.tag) "
-            + "\(configuration.processID) \(configuration.tag) - "
+    ) -> Data {
+        var result = Data(
+            "<\(priority)>1 \(timestamp) \(configuration.hostname) ".utf8
+        )
+        result.append(configuration.tag)
+        result.append(Data(" \(configuration.processID) ".utf8))
+        result.append(configuration.tag)
+        result.append(Data(" - ".utf8))
+        return result
     }
 
     private static func stamp(_ reading: SyslogClockReading) -> String {

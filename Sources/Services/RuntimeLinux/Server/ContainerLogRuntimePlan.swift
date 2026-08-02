@@ -274,7 +274,7 @@ package enum ContainerLogRuntimePlan: Sendable {
                 throw ContainerLogRuntimePlanError.invalidOption(name)
             }
             switch option.valueKind {
-            case .string, .commaSeparatedNames, .tagTemplate:
+            case .string, .commaSeparatedNames, .providerRegularExpression, .tagTemplate:
                 break
             case .boolean:
                 guard ContainerLogOptionValueParser.boolean(value) != nil else {

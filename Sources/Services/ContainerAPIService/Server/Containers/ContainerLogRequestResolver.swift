@@ -194,6 +194,11 @@ struct ContainerLogRequestResolver: Sendable {
             )
         }
         try Self.validateOptionBounds(effectiveOptions)
+        try ContainerLogDriverCreateProfileValidator.validate(
+            descriptor.createValidationProfile,
+            options: effectiveOptions,
+            driver: descriptor.driver
+        )
 
         let optionDescriptors = Dictionary(uniqueKeysWithValues: descriptor.options.map { ($0.name, $0) })
         var safeOptions: [String: String] = [:]

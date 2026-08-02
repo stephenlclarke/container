@@ -144,6 +144,11 @@ struct ContainerLogStartValidator: Sendable {
             protectedOptions: authenticatedProtectedOptions,
             descriptor: descriptor
         )
+        try ContainerLogDriverCreateProfileValidator.validate(
+            descriptor.createValidationProfile,
+            options: options,
+            driver: descriptor.driver
+        )
         try ContainerLogOptionContractValidator.validateCrossOptionConstraints(
             descriptor.crossOptionConstraints,
             options: options,

@@ -14,52 +14,95 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import DockerSemanticHelper
 import Foundation
 import Testing
 
 @testable import ContainerLoggingProviders
 
+@Suite(.serialized)
 struct SyslogConfigurationTests {
     @Test func parsesEveryMobyAddressSchemeAndDefaultPort() throws {
-        let paths = FakePathInspector(existing: ["/var/run/syslog", "/tmp/syslog.sock"])
+        let semanticService = try semanticService("addresses")
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let streamPath = directory.appendingPathComponent("stream.sock").path
+        let datagramPath = directory.appendingPathComponent("datagram.sock").path
+        try Data().write(to: URL(fileURLWithPath: streamPath))
+        try Data().write(to: URL(fileURLWithPath: datagramPath))
 
-        #expect(try SyslogEndpoint.parse("", pathInspector: paths) == .system)
         #expect(
-            try SyslogEndpoint.parse("udp://127.0.0.1", pathInspector: paths)
-                == .udp(SyslogNetworkAddress(host: "127.0.0.1", port: "514"))
+            try SyslogEndpoint.parse("", semanticService: semanticService)
+                == .system
         )
         #expect(
-            try SyslogEndpoint.parse("tcp://logs.example:1514", pathInspector: paths)
-                == .tcp(SyslogNetworkAddress(host: "logs.example", port: "1514"))
+            try SyslogEndpoint.parse(
+                "udp://127.0.0.1",
+                semanticService: semanticService
+            )
+                == .udp(SyslogNetworkAddress(host: "127.0.0.1", port: 514))
         )
         #expect(
-            try SyslogEndpoint.parse("tcp+tls://[::1]:6514", pathInspector: paths)
-                == .tcpTLS(SyslogNetworkAddress(host: "::1", port: "6514"))
+            try SyslogEndpoint.parse(
+                "tcp://logs.example:1514",
+                semanticService: semanticService
+            )
+                == .tcp(SyslogNetworkAddress(host: "logs.example", port: 1_514))
         )
         #expect(
-            try SyslogEndpoint.parse("unix:///tmp/syslog.sock", pathInspector: paths)
-                == .unixStream(path: "/tmp/syslog.sock")
+            try SyslogEndpoint.parse(
+                "tcp+tls://[::1]:6514",
+                semanticService: semanticService
+            )
+                == .tcpTLS(SyslogNetworkAddress(host: "::1", port: 6_514))
         )
         #expect(
-            try SyslogEndpoint.parse("unixgram:///var/run/syslog", pathInspector: paths)
-                == .unixDatagram(path: "/var/run/syslog")
+            try SyslogEndpoint.parse(
+                "unix://\(streamPath)",
+                semanticService: semanticService
+            )
+                == .unixStream(path: Data(streamPath.utf8))
+        )
+        #expect(
+            try SyslogEndpoint.parse(
+                "unixgram://\(datagramPath)",
+                semanticService: semanticService
+            )
+                == .unixDatagram(path: Data(datagramPath.utf8))
         )
     }
 
-    @Test func rejectsUnsupportedMalformedAndMissingUnixAddresses() {
-        let paths = FakePathInspector(existing: [])
+    @Test func rejectsUnsupportedMalformedAndMissingUnixAddresses() throws {
+        let semanticService = try semanticService("invalid-addresses")
 
-        #expect(throws: SyslogProviderError.unsupportedAddressScheme("")) {
-            try SyslogEndpoint.parse("this is not an uri", pathInspector: paths)
+        #expect(throws: SyslogProviderError.malformedAddress("this is not an uri")) {
+            try SyslogEndpoint.parse(
+                "this is not an uri",
+                semanticService: semanticService
+            )
         }
-        #expect(throws: SyslogProviderError.unsupportedAddressScheme("http")) {
-            try SyslogEndpoint.parse("http://127.0.0.1", pathInspector: paths)
+        #expect(throws: SyslogProviderError.malformedAddress("http://127.0.0.1")) {
+            try SyslogEndpoint.parse(
+                "http://127.0.0.1",
+                semanticService: semanticService
+            )
         }
         #expect(throws: SyslogProviderError.malformedAddress("tcp://2001:db8::1")) {
-            try SyslogEndpoint.parse("tcp://2001:db8::1", pathInspector: paths)
+            try SyslogEndpoint.parse(
+                "tcp://2001:db8::1",
+                semanticService: semanticService
+            )
         }
-        #expect(throws: SyslogProviderError.unixSocketDoesNotExist("/missing")) {
-            try SyslogEndpoint.parse("unix:///missing", pathInspector: paths)
+        #expect(throws: SyslogProviderError.malformedAddress("unix:///missing")) {
+            try SyslogEndpoint.parse(
+                "unix:///missing",
+                semanticService: semanticService
+            )
         }
     }
 
@@ -80,6 +123,7 @@ struct SyslogConfigurationTests {
     }
 
     @Test func resolvesDockerTLSPresenceAndIgnoresTLSOptionsForPlainTransports() throws {
+        let semanticService = try semanticService("tls")
         let info = SyslogContainerInfo(
             containerID: "0123456789abcdef",
             containerName: "/api",
@@ -94,6 +138,7 @@ struct SyslogConfigurationTests {
                 "syslog-tls-skip-verify": "false",
             ],
             info: info,
+            semanticService: semanticService,
             processID: 42
         )
         #expect(tls.tls?.skipServerVerification == true)
@@ -105,12 +150,14 @@ struct SyslogConfigurationTests {
                 "syslog-tls-ca-cert": "/missing.pem",
             ],
             info: info,
+            semanticService: semanticService,
             processID: 42
         )
         #expect(udp.tls == nil)
     }
 
     @Test func tagFieldsAndRegisteredFunctionsMatchDockerContext() throws {
+        let semanticService = try semanticService("tags")
         let info = SyslogContainerInfo(
             containerID: "sha256:0123456789abcdef",
             containerName: "/web",
@@ -123,37 +170,74 @@ struct SyslogConfigurationTests {
             hostname: "engine-host"
         )
 
-        #expect(try SyslogTagTemplate.render("{{.ID}}", info: info) == "0123456789ab")
         #expect(
-            try SyslogTagTemplate.render("{{lower .ImageName}}/{{upper .Name}}", info: info)
-                == "example/web:latest/WEB"
+            try resolvedTag(
+                "{{.ID}}",
+                info: info,
+                semanticService: semanticService
+            ) == Data("sha256:01234".utf8)
         )
         #expect(
-            try SyslogTagTemplate.render("{{index .ContainerLabels \"tier\"}}-{{.DaemonName}}", info: info)
-                == "frontend-containerd"
+            try resolvedTag(
+                "{{lower .ImageName}}/{{upper .Name}}",
+                info: info,
+                semanticService: semanticService
+            ) == Data("example/web:latest/WEB".utf8)
         )
-        #expect(try SyslogTagTemplate.render("{{truncate .FullID 8}}", info: info) == "sha256:0")
         #expect(
-            try SyslogTagTemplate.render("{{json .ContainerLabels}}", info: info)
-                == #"{"tier":"frontend"}"#
+            try resolvedTag(
+                "{{index .ContainerLabels \"tier\"}}-{{.DaemonName}}",
+                info: info,
+                semanticService: semanticService
+            ) == Data("frontend-containerd".utf8)
         )
-        #expect(try SyslogTagTemplate.render(#"{{json "value"}}"#, info: info) == #""value""#)
         #expect(
-            try SyslogTagTemplate.render(
+            try resolvedTag(
+                "{{truncate .FullID 8}}",
+                info: info,
+                semanticService: semanticService
+            ) == Data("sha256:0".utf8)
+        )
+        #expect(
+            try resolvedTag(
+                "{{json .ContainerLabels}}",
+                info: info,
+                semanticService: semanticService
+            ) == Data(#"{"tier":"frontend"}"#.utf8)
+        )
+        #expect(
+            try resolvedTag(
+                #"{{json "value"}}"#,
+                info: info,
+                semanticService: semanticService
+            ) == Data(#""value""#.utf8)
+        )
+        #expect(
+            try resolvedTag(
                 #"{{index .Config "syslog-format"}}"#,
                 info: info,
+                semanticService: semanticService,
                 configuration: ["syslog-format": "rfc5424"]
-            ) == "rfc5424"
+            ) == Data("rfc5424".utf8)
         )
         #expect(throws: SyslogProviderError.invalidTagTemplate("{{.Missing}}")) {
-            try SyslogTagTemplate.render("{{.Missing}}", info: info)
+            try resolvedTag(
+                "{{.Missing}}",
+                info: info,
+                semanticService: semanticService
+            )
         }
         #expect(throws: SyslogProviderError.invalidTagTemplate(#"{{print "ok" "unterminated}}"#)) {
-            try SyslogTagTemplate.render(#"{{print "ok" "unterminated}}"#, info: info)
+            try resolvedTag(
+                #"{{print "ok" "unterminated}}"#,
+                info: info,
+                semanticService: semanticService
+            )
         }
     }
 
     @Test func emptyTagSelectsDockerDefaultInsteadOfAnEmptyApplicationName() throws {
+        let semanticService = try semanticService("default-tag")
         let info = SyslogContainerInfo(
             containerID: "0123456789abcdef",
             containerName: "/api",
@@ -163,19 +247,22 @@ struct SyslogConfigurationTests {
         let omitted = try SyslogDriverConfiguration.resolve(
             options: [:],
             info: info,
+            semanticService: semanticService,
             processID: 42
         )
         let explicitEmpty = try SyslogDriverConfiguration.resolve(
             options: ["tag": ""],
             info: info,
+            semanticService: semanticService,
             processID: 42
         )
 
-        #expect(omitted.tag == "0123456789ab")
+        #expect(omitted.tag == Data("0123456789ab".utf8))
         #expect(explicitEmpty.tag == omitted.tag)
     }
 
     @Test func enforcesProviderBoundsAndConfigurationInvariants() throws {
+        let semanticService = try semanticService("bounds")
         let info = SyslogContainerInfo(containerID: "id", containerName: "name")
         let oversized = String(
             repeating: "x",
@@ -188,7 +275,8 @@ struct SyslogConfigurationTests {
         ) {
             try SyslogDriverConfiguration.resolve(
                 options: ["tag": oversized],
-                info: info
+                info: info,
+                semanticService: semanticService
             )
         }
         #expect(throws: SyslogProviderError.invalidConnectionPolicy) {
@@ -200,7 +288,7 @@ struct SyslogConfigurationTests {
         }
 
         let plain = SyslogEndpoint.tcp(
-            SyslogNetworkAddress(host: "localhost", port: "514")
+            SyslogNetworkAddress(host: "localhost", port: 514)
         )
         #expect(
             throws: SyslogProviderError.invalidTLSConfiguration(
@@ -211,7 +299,7 @@ struct SyslogConfigurationTests {
                 endpoint: plain,
                 facility: SyslogFacility(number: 3),
                 format: .unix,
-                tag: "tag",
+                tag: Data("tag".utf8),
                 hostname: "host",
                 processID: 1,
                 tls: SyslogTLSConfiguration(
@@ -225,27 +313,49 @@ struct SyslogConfigurationTests {
         }
     }
 
-    @Test func rejectsUnknownOptionsAndInvalidFormatsBeforeTransportEffects() {
+    @Test func rejectsUnknownOptionsAndInvalidFormatsBeforeTransportEffects() throws {
+        let semanticService = try semanticService("invalid-options")
         let info = SyslogContainerInfo(containerID: "id", containerName: "name")
         #expect(throws: SyslogProviderError.unknownOption("future-option")) {
             try SyslogDriverConfiguration.resolve(
                 options: ["future-option": "value"],
-                info: info
+                info: info,
+                semanticService: semanticService
             )
         }
         #expect(throws: SyslogProviderError.invalidFormat("RFC5424")) {
             try SyslogDriverConfiguration.resolve(
                 options: ["syslog-format": "RFC5424"],
-                info: info
+                info: info,
+                semanticService: semanticService
             )
         }
     }
-}
 
-private struct FakePathInspector: SyslogPathInspecting {
-    let existing: Set<String>
+    private func resolvedTag(
+        _ template: String,
+        info: SyslogContainerInfo,
+        semanticService: any DockerSemanticServicing,
+        configuration: [String: String] = [:]
+    ) throws -> Data {
+        var options = configuration
+        options["tag"] = template
+        return try SyslogDriverConfiguration.resolve(
+            options: options,
+            info: info,
+            semanticService: semanticService
+        ).tag
+    }
 
-    func pathExists(_ path: String) -> Bool {
-        existing.contains(path)
+    private func semanticService(
+        _ testName: String
+    ) throws -> DockerSemanticHelperClient {
+        try DockerSemanticHelperClient(
+            generation: DockerSemanticHelperGeneration(
+                providerID: "tests.syslog.\(testName)",
+                providerGeneration: 1
+            ),
+            launchConfiguration: .discover()
+        )
     }
 }

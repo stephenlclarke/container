@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import DockerSemanticHelper
 import Foundation
 
 public enum SyslogProviderError: Error, Equatable, Sendable {
@@ -40,27 +41,20 @@ public enum SyslogProviderError: Error, Equatable, Sendable {
     case invalidSessionFence
     case readUnsupported
     case invalidTLSConfiguration(String)
-}
-
-public protocol SyslogPathInspecting: Sendable {
-    func pathExists(_ path: String) -> Bool
-}
-
-public struct FileSystemSyslogPathInspector: SyslogPathInspecting {
-    public init() {}
-
-    public func pathExists(_ path: String) -> Bool {
-        FileManager.default.fileExists(atPath: path)
-    }
+    case tlsIdentityVerificationFailed
 }
 
 public struct SyslogNetworkAddress: Equatable, Sendable {
-    public let host: String
-    public let port: String
+    public let host: Data
+    public let port: UInt16
 
-    public init(host: String, port: String) {
+    public init(host: Data, port: UInt16) {
         self.host = host
         self.port = port
+    }
+
+    public init(host: String, port: UInt16) {
+        self.init(host: Data(host.utf8), port: port)
     }
 }
 
@@ -69,10 +63,8 @@ public enum SyslogEndpoint: Equatable, Sendable {
     case udp(SyslogNetworkAddress)
     case tcp(SyslogNetworkAddress)
     case tcpTLS(SyslogNetworkAddress)
-    case unixStream(path: String)
-    case unixDatagram(path: String)
-
-    public static let defaultPort = "514"
+    case unixStream(path: Data)
+    case unixDatagram(path: Data)
 
     public var usesTLS: Bool {
         if case .tcpTLS = self {
@@ -94,117 +86,50 @@ public enum SyslogEndpoint: Equatable, Sendable {
 
     public static func parse(
         _ address: String,
-        pathInspector: any SyslogPathInspecting = FileSystemSyslogPathInspector()
+        semanticService: any DockerSemanticServicing
     ) throws -> Self {
-        guard !address.isEmpty else {
-            return .system
-        }
-
-        guard let colon = address.firstIndex(of: ":") else {
-            throw SyslogProviderError.unsupportedAddressScheme("")
-        }
-        let scheme = String(address[..<colon])
-        switch scheme {
-        case "unix", "unixgram":
-            let path = try unixPath(in: address, after: colon)
-            guard pathInspector.pathExists(path) else {
-                throw SyslogProviderError.unixSocketDoesNotExist(path)
-            }
-            return scheme == "unix" ? .unixStream(path: path) : .unixDatagram(path: path)
-        case "udp", "tcp", "tcp+tls":
-            let networkAddress = try networkAddress(in: address, after: colon)
-            switch scheme {
-            case "udp": return .udp(networkAddress)
-            case "tcp": return .tcp(networkAddress)
-            default: return .tcpTLS(networkAddress)
-            }
-        default:
-            throw SyslogProviderError.unsupportedAddressScheme(scheme)
-        }
-    }
-
-    private static func unixPath(
-        in address: String,
-        after colon: String.Index
-    ) throws -> String {
-        let remainderStart = address.index(after: colon)
-        let remainder = address[remainderStart...]
-        let encodedPath: Substring
-        if remainder.hasPrefix("//") {
-            let authorityStart = remainder.index(remainder.startIndex, offsetBy: 2)
-            if let slash = remainder[authorityStart...].firstIndex(of: "/") {
-                encodedPath = remainder[slash...]
-            } else {
-                encodedPath = ""
-            }
-        } else {
-            encodedPath = remainder.prefix { $0 != "?" && $0 != "#" }
-        }
-        guard let path = String(encodedPath).removingPercentEncoding else {
+        let resolved: DockerSyslogAddress
+        do {
+            resolved = try semanticService.parseSyslogAddress(
+                Data(address.utf8),
+                timeout: .seconds(2)
+            )
+        } catch let error as DockerSemanticHelperRemoteError
+            where error.category == .parse || error.category == .execute
+        {
             throw SyslogProviderError.malformedAddress(address)
-        }
-        return path
-    }
-
-    private static func networkAddress(
-        in address: String,
-        after colon: String.Index
-    ) throws -> SyslogNetworkAddress {
-        let remainderStart = address.index(after: colon)
-        let remainder = address[remainderStart...]
-        let authority: Substring
-        if remainder.hasPrefix("//") {
-            let authorityStart = remainder.index(remainder.startIndex, offsetBy: 2)
-            authority = remainder[authorityStart...].prefix { character in
-                character != "/" && character != "?" && character != "#"
-            }
-        } else {
-            // Go's net/url treats this as an opaque URL. Moby subsequently
-            // observes an empty Host and applies the default port.
-            authority = ""
-        }
-
-        let hostAndPort = authority.split(separator: "@", omittingEmptySubsequences: false).last ?? ""
-        let host: Substring
-        let port: Substring
-        if hostAndPort.hasPrefix("[") {
-            guard let closingBracket = hostAndPort.firstIndex(of: "]") else {
-                throw SyslogProviderError.malformedAddress(address)
-            }
-            host = hostAndPort[hostAndPort.index(after: hostAndPort.startIndex)..<closingBracket]
-            let suffix = hostAndPort[hostAndPort.index(after: closingBracket)...]
-            if suffix.isEmpty {
-                port = Substring(Self.defaultPort)
-            } else if suffix.first == ":" {
-                port = suffix.dropFirst()
-            } else {
-                throw SyslogProviderError.malformedAddress(address)
-            }
-        } else {
-            let colonCount = hostAndPort.reduce(into: 0) { count, character in
-                if character == ":" {
-                    count += 1
-                }
-            }
-            guard colonCount <= 1 else {
-                throw SyslogProviderError.malformedAddress(address)
-            }
-            if let separator = hostAndPort.lastIndex(of: ":") {
-                host = hostAndPort[..<separator]
-                port = hostAndPort[hostAndPort.index(after: separator)...]
-            } else {
-                host = hostAndPort
-                port = Substring(Self.defaultPort)
-            }
         }
 
         guard
-            let decodedHost = String(host).removingPercentEncoding,
-            let decodedPort = String(port).removingPercentEncoding
+            let networkProtocol = String(
+                data: resolved.networkProtocol,
+                encoding: .utf8
+            )
         else {
-            throw SyslogProviderError.malformedAddress(address)
+            throw DockerSemanticHelperError.protocolViolation
         }
-        return SyslogNetworkAddress(host: decodedHost, port: decodedPort)
+        let networkAddress = SyslogNetworkAddress(
+            host: resolved.host,
+            port: resolved.port
+        )
+        switch networkProtocol {
+        case "":
+            guard
+                address.isEmpty,
+                resolved.address.isEmpty,
+                resolved.host.isEmpty,
+                resolved.port == 0
+            else {
+                throw DockerSemanticHelperError.protocolViolation
+            }
+            return .system
+        case "udp": return .udp(networkAddress)
+        case "tcp": return .tcp(networkAddress)
+        case "tcp+tls": return .tcpTLS(networkAddress)
+        case "unix": return .unixStream(path: resolved.address)
+        case "unixgram": return .unixDatagram(path: resolved.address)
+        default: throw DockerSemanticHelperError.protocolViolation
+        }
     }
 }
 
@@ -374,8 +299,24 @@ public struct SyslogContainerInfo: Equatable, Sendable {
     public var command: String { ([containerEntrypoint] + containerArguments).joined(separator: " ") }
 
     private static func truncatedID(_ identifier: String) -> String {
-        let withoutAlgorithm = identifier.split(separator: ":", maxSplits: 1).last.map(String.init) ?? identifier
-        return String(withoutAlgorithm.prefix(12))
+        String(identifier.prefix(12))
+    }
+
+    var dockerTemplateInfo: DockerLogTemplateInfo {
+        DockerLogTemplateInfo(
+            containerID: containerID,
+            containerName: containerName,
+            containerEntrypoint: containerEntrypoint,
+            containerArguments: containerArguments,
+            containerImageID: containerImageID,
+            containerImageName: containerImageName,
+            containerCreated: containerCreated,
+            containerEnvironment: containerEnvironment,
+            containerLabels: containerLabels,
+            logPath: logPath,
+            daemonName: daemonName,
+            hostname: hostname
+        )
     }
 }
 
@@ -385,7 +326,7 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
     public let endpoint: SyslogEndpoint
     public let facility: SyslogFacility
     public let format: SyslogMessageFormat
-    public let tag: String
+    public let tag: Data
     public let hostname: String
     public let processID: Int32
     public let tls: SyslogTLSConfiguration?
@@ -395,13 +336,13 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
         endpoint: SyslogEndpoint,
         facility: SyslogFacility,
         format: SyslogMessageFormat,
-        tag: String,
+        tag: Data,
         hostname: String,
         processID: Int32,
         tls: SyslogTLSConfiguration?,
         policy: SyslogConnectionPolicy
     ) throws {
-        guard tag.utf8.count <= Self.maximumTagUTF8Bytes else {
+        guard tag.count <= Self.maximumTagUTF8Bytes else {
             throw SyslogProviderError.tagExceedsUTF8Limit(maximumBytes: Self.maximumTagUTF8Bytes)
         }
         guard endpoint.usesTLS == (tls != nil) else {
@@ -420,9 +361,9 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
     public static func resolve(
         options: [String: String],
         info: SyslogContainerInfo,
+        semanticService: any DockerSemanticServicing,
         processID: Int32 = ProcessInfo.processInfo.processIdentifier,
-        policy: SyslogConnectionPolicy = .dockerCompatible,
-        pathInspector: any SyslogPathInspecting = FileSystemSyslogPathInspector()
+        policy: SyslogConnectionPolicy = .dockerCompatible
     ) throws -> Self {
         if let unknown = options.keys.sorted().first(where: { !knownOptionNames.contains($0) }) {
             throw SyslogProviderError.unknownOption(unknown)
@@ -430,16 +371,41 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
 
         let endpoint = try SyslogEndpoint.parse(
             options["syslog-address"] ?? "",
-            pathInspector: pathInspector
+            semanticService: semanticService
         )
         let facility = try SyslogFacility.parse(options["syslog-facility"] ?? "")
         let format = try SyslogMessageFormat.parse(options["syslog-format"] ?? "")
         let requestedTag = options["tag"] ?? ""
-        let tag = try SyslogTagTemplate.render(
-            requestedTag.isEmpty ? "{{.ID}}" : requestedTag,
-            info: info,
-            configuration: options
-        )
+        guard requestedTag.utf8.count <= Self.maximumTagUTF8Bytes else {
+            throw SyslogProviderError.tagExceedsUTF8Limit(
+                maximumBytes: Self.maximumTagUTF8Bytes
+            )
+        }
+        let tag: Data
+        do {
+            tag = try semanticService.renderLogTemplate(
+                template: Data(requestedTag.utf8),
+                info: info.dockerTemplateInfo,
+                configuration: options.map {
+                    DockerSemanticBytePair(key: $0.key, value: $0.value)
+                },
+                timeout: .seconds(2)
+            )
+        } catch let error as DockerSemanticHelperRemoteError
+            where error.category == .parse
+        {
+            throw SyslogProviderError.invalidTagTemplate(requestedTag)
+        } catch let error as DockerSemanticHelperRemoteError
+            where error.category == .outputLimit
+        {
+            throw SyslogProviderError.tagExceedsUTF8Limit(
+                maximumBytes: Self.maximumTagUTF8Bytes
+            )
+        } catch let error as DockerSemanticHelperRemoteError
+            where error.category == .execute
+        {
+            throw SyslogProviderError.invalidTagTemplate(requestedTag)
+        }
         let tls =
             endpoint.usesTLS
             ? SyslogTLSConfiguration(
