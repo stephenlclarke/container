@@ -1,8 +1,8 @@
 <!-- markdownlint-disable MD033 -->
 <h1>
   <img
-    alt="Containerization logo"
-    src="./assets/Containerization-Logo.png"
+    alt="container project icon: the standard three-row container service panel"
+    src="./assets/container-icon.png"
     width="70"
     valign="middle">
   &nbsp;container
