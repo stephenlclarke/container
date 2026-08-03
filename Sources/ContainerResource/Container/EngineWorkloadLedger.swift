@@ -247,7 +247,7 @@ public enum EngineWorkloadOperationPhaseV1: String, Codable, Equatable, Sendable
     case recoveryRequired
 }
 
-public enum EngineWorkloadEffectDomainV1: String, Codable, CaseIterable, Sendable {
+public enum EngineWorkloadEffectDomainV1: String, Codable, CaseIterable, Hashable, Sendable {
     case namespace
     case network
     case volume
@@ -314,6 +314,11 @@ public struct EngineWorkloadEffectV1: Codable, Equatable, Sendable {
             integrityDigest: integrityDigest,
             state: state
         )
+    }
+
+    fileprivate func hasSameReservation(as other: Self) -> Bool {
+        domain == other.domain && leaseID == other.leaseID && leaseGeneration == other.leaseGeneration
+            && effectID == other.effectID && integrityDigest == other.integrityDigest
     }
 }
 
@@ -839,7 +844,9 @@ public actor EngineWorkloadLedgerV1 {
         }
         let reservedEffect = record.state == .removing ? try effect.with(state: .compensating) : effect
         if let existing = operation.effects.first(where: { $0.effectID == reservedEffect.effectID }) {
-            guard existing == reservedEffect else { throw EngineWorkloadLedgerError.duplicateEffect }
+            guard existing.hasSameReservation(as: reservedEffect) else {
+                throw EngineWorkloadLedgerError.duplicateEffect
+            }
             return record
         }
         guard operation.effects.count < EngineWorkloadLedgerLimitsV1.maximumEffectsPerOperation else {
@@ -973,6 +980,24 @@ public actor EngineWorkloadLedgerV1 {
             target: .unknown,
             persistResult: false
         )
+        try EngineWorkloadLedgerValidation.optionalReason(reason)
+        let operation = try record.operation!.replacing(phase: .recoveryRequired)
+        record = try record.replacing(
+            state: .recoveryRequired,
+            transitionRevision: record.transitionRevision + 1,
+            operation: .some(operation),
+            recoveryReason: .some(reason)
+        )
+        try await replacingWorkload(record)
+        return record
+    }
+
+    public func markOperationRecoveryRequired(
+        containerID: String,
+        operationGeneration: UInt64,
+        reason: String
+    ) async throws -> EngineWorkloadRecordV1 {
+        var record = try requireOperation(containerID, operationGeneration: operationGeneration)
         try EngineWorkloadLedgerValidation.optionalReason(reason)
         let operation = try record.operation!.replacing(phase: .recoveryRequired)
         record = try record.replacing(
