@@ -22,7 +22,7 @@ public enum WorkloadPlanResolverError: Error, Equatable, Sendable {
     case recoveryRequired
 }
 
-public struct WorkloadStartContextV1: Equatable, Sendable {
+public struct WorkloadStartContextV1: Codable, Equatable, Sendable {
     public let containerID: String
     public let operationGeneration: UInt64
     public let candidateProcessGeneration: UInt64
@@ -94,7 +94,7 @@ public protocol WorkloadEffectControllerV1: Sendable {
     ) async throws -> WorkloadEffectReceiptV1
 }
 
-public struct WorkloadProcessReceiptV1: Equatable, Sendable {
+public struct WorkloadProcessReceiptV1: Codable, Equatable, Sendable {
     public let containerID: String
     public let operationGeneration: UInt64
     public let processGeneration: UInt64
@@ -116,7 +116,7 @@ public struct WorkloadProcessReceiptV1: Equatable, Sendable {
     }
 }
 
-public enum WorkloadProcessObservationV1: Equatable, Sendable {
+public enum WorkloadProcessObservationV1: Codable, Equatable, Sendable {
     case absent
     case started(WorkloadProcessReceiptV1)
     case unknown

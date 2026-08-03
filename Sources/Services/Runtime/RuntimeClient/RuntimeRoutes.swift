@@ -42,6 +42,21 @@ public enum RuntimeRoutes: String {
     /// Open a vsock connection to a port inside the sandbox.
     case dial = "com.apple.container.runtime/dial"
 
+    // MARK: - Shared Engine Linux sandbox
+
+    /// Boot the single Engine-owned Linux sandbox for an exact generation.
+    case engineSandboxBoot = "com.apple.container.runtime/engineSandbox/boot"
+    /// Observe an exact sandbox boot after an interrupted response.
+    case engineSandboxObserveBoot = "com.apple.container.runtime/engineSandbox/observeBoot"
+    /// Stop the Engine-owned Linux sandbox for an exact generation.
+    case engineSandboxShutdown = "com.apple.container.runtime/engineSandbox/shutdown"
+    /// Observe an exact sandbox shutdown after an interrupted response.
+    case engineSandboxObserveShutdown = "com.apple.container.runtime/engineSandbox/observeShutdown"
+    /// Materialize and start one workload in the Engine-owned Linux sandbox.
+    case engineSandboxStartWorkload = "com.apple.container.runtime/engineSandbox/startWorkload"
+    /// Observe an exact workload start after an interrupted response.
+    case engineSandboxObserveWorkloadStart = "com.apple.container.runtime/engineSandbox/observeWorkloadStart"
+
     // MARK: - Process management
 
     /// Register a new process inside the sandbox (used by exec).

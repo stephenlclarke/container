@@ -56,8 +56,8 @@ public actor RuntimeService {
     private var dnsProxy: RuntimeDNSProxy?
     private var dnsProxyTask: Task<Void, Never>?
 
-    private static let sshAuthSocketGuestPath = "/var/host-services/ssh-auth.sock"
-    private static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
+    static let sshAuthSocketGuestPath = "/var/host-services/ssh-auth.sock"
+    static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
 
     class ExitWaiter {
         public var exitStatus: ExitStatus? = nil
@@ -89,7 +89,7 @@ public actor RuntimeService {
         }
     }
 
-    private static func sshAuthSocketHostUrl(
+    static func sshAuthSocketHostUrl(
         config: ContainerConfiguration,
         dynamicEnv: [String: String] = [:],
         log: Logger? = nil
@@ -1785,7 +1785,7 @@ public actor RuntimeService {
     /// 1. If "ALL" in capDrop, start empty; otherwise start from OCI defaults.
     /// 2. If "ALL" in capAdd, replace with all caps (overriding step 1); otherwise add individual caps.
     /// 3. Remove individual capDrop entries (skipping "ALL" sentinel).
-    private static func effectiveCapabilities(capAdd: [String], capDrop: [String]) throws -> Containerization.LinuxCapabilities {
+    static func effectiveCapabilities(capAdd: [String], capDrop: [String]) throws -> Containerization.LinuxCapabilities {
         // Step 1: Determine base set
         var caps: Set<CapabilityName>
         if capDrop.contains("ALL") {
@@ -1823,7 +1823,7 @@ public actor RuntimeService {
 
     /// Converts the OCI block I/O wire model carried in runtime data into the
     /// containerization API wrapper used by `LinuxContainer.Configuration`.
-    private static func toContainerizationBlockIO(_ oci: ContainerizationOCI.LinuxBlockIO) -> Containerization.LinuxBlockIO {
+    static func toContainerizationBlockIO(_ oci: ContainerizationOCI.LinuxBlockIO) -> Containerization.LinuxBlockIO {
         Containerization.LinuxBlockIO(
             weight: oci.weight,
             leafWeight: oci.leafWeight,

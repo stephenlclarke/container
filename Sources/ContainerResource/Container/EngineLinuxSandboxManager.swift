@@ -19,7 +19,7 @@ public enum EngineLinuxSandboxManagerError: Error, Equatable, Sendable {
     case recoveryRequired
 }
 
-public struct EngineLinuxSandboxBootRequestV1: Equatable, Sendable {
+public struct EngineLinuxSandboxBootRequestV1: Codable, Equatable, Sendable {
     public let sandboxID: String
     public let generation: UInt64
     public let idempotencyKey: String
@@ -41,7 +41,7 @@ public struct EngineLinuxSandboxBootRequestV1: Equatable, Sendable {
     }
 }
 
-public struct EngineLinuxSandboxBootReceiptV1: Equatable, Sendable {
+public struct EngineLinuxSandboxBootReceiptV1: Codable, Equatable, Sendable {
     public let sandboxID: String
     public let generation: UInt64
     public let effectID: String
@@ -63,13 +63,13 @@ public struct EngineLinuxSandboxBootReceiptV1: Equatable, Sendable {
     }
 }
 
-public enum EngineLinuxSandboxBootObservationV1: Equatable, Sendable {
+public enum EngineLinuxSandboxBootObservationV1: Codable, Equatable, Sendable {
     case absent
     case ready(EngineLinuxSandboxBootReceiptV1)
     case unknown
 }
 
-public struct EngineLinuxSandboxShutdownRequestV1: Equatable, Sendable {
+public struct EngineLinuxSandboxShutdownRequestV1: Codable, Equatable, Sendable {
     public let sandboxID: String
     public let generation: UInt64
     public let idempotencyKey: String
@@ -91,7 +91,7 @@ public struct EngineLinuxSandboxShutdownRequestV1: Equatable, Sendable {
     }
 }
 
-public struct EngineLinuxSandboxShutdownReceiptV1: Equatable, Sendable {
+public struct EngineLinuxSandboxShutdownReceiptV1: Codable, Equatable, Sendable {
     public let sandboxID: String
     public let generation: UInt64
     public let effectID: String
@@ -110,7 +110,7 @@ public struct EngineLinuxSandboxShutdownReceiptV1: Equatable, Sendable {
     }
 }
 
-public enum EngineLinuxSandboxShutdownObservationV1: Equatable, Sendable {
+public enum EngineLinuxSandboxShutdownObservationV1: Codable, Equatable, Sendable {
     case absent(EngineLinuxSandboxShutdownReceiptV1)
     case running
     case unknown

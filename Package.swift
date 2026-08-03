@@ -507,6 +507,7 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 "ContainerLoggingStorage",
                 "ContainerResource",
+                "ContainerRuntimeClient",
                 "ContainerRuntimeLinuxServer",
                 "DNSServer",
             ]

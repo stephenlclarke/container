@@ -66,4 +66,7 @@ public enum RuntimeKeys: String {
 
     /// Per-network connection info passed to the runtime so it can allocate directly.
     case networkBootstrapInfos
+
+    /// Codable request or response for the Engine-owned shared sandbox.
+    case engineSandboxPayload
 }
