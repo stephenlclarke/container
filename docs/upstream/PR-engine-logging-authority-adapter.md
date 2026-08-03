@@ -10,8 +10,12 @@
 - Bridge Docker attach to either that canonical replay/follow reader or the
   exact init-process pipes, with Docker detach keys and canonical lifecycle
   events.
-- Start one restart-stable enhanced provider session and advertise only the
-  complete `ContainerAttach` and `ContainerLogs` generated Engine operations.
+- Compose complete Docker `SystemInfo` and `ContainerInspect` documents from
+  the same authority, then overlay only logging-owned fields through the
+  runtime-neutral fail-closed contract.
+- Start one restart-stable enhanced provider session and advertise the complete
+  `ContainerAttach`, `ContainerLogs`, `ContainerInspect`, and `SystemInfo`
+  generated Engine operations.
 
 ## Type of change
 
@@ -22,7 +26,7 @@
 - [x] Protected-option authentication
 - [x] Unit and provider-session integration tests
 - [ ] Public Engine listener installation
-- [ ] Complete `/info` or inspect route composition
+- [x] Complete `/info` and inspect route composition
 - [x] Attach/hijack route advertisement
 - [ ] Compose parser behavior
 
@@ -61,22 +65,32 @@ the canonical service event broadcaster.
 
 `container-apiserver` loads or creates one provider-owned state-root UUID,
 builds an enhanced `container-authority` declaration from Container and
-Containerization revisions plus exact Engine API release 0.2.2, and starts a
+Containerization revisions plus exact Engine API release 0.2.3, and starts a
 private singleton provider socket. Cancellation shuts the provider down.
 
-The fingerprint advertises `engine.route.ContainerAttach` and
-`engine.route.ContainerLogs`. Although the
-logging backend implements the logging projections needed by `/info` and
-inspect, those generated operations cover whole shared responses and cannot be
-advertised until the remaining fields are composed. WebSocket attach and
-resize remain separate operations for the common public gateway and are not
-claimed by this provider declaration.
+The fingerprint advertises `engine.route.ContainerAttach`,
+`engine.route.ContainerLogs`, `engine.route.ContainerInspect`, and
+`engine.route.SystemInfo`. The latter two use the same selected Container
+authority for the complete base document and the logging overlay. The shared
+controller rejects a base missing any non-optional Moby top-level response
+field, so a logging fragment cannot masquerade as a whole route. WebSocket
+attach and resize remain separate operations for the common public gateway and
+are not claimed by this provider declaration.
+
+Container persists effective runtime state but not every original Docker
+request distinction. The response therefore reports the truthful effective
+projection and keeps original Entrypoint-versus-Cmd provenance, durable restart
+count, complete health history, and unavailable endpoint/path identities as
+explicit later lifecycle/API work; it does not invent those values as parity
+evidence.
 
 ## Code map
 
 - `Sources/Services/ContainerAPIService/Server/Containers/ContainerDockerLoggingBackend.swift`
   contains the neutral backend, direct and active-wire readers, runtime attach
   bridge, detach filter, and bounded hijack session.
+- `Sources/Services/ContainerAPIService/Server/Containers/ContainerDockerSharedResponseBackend.swift`
+  constructs the complete authority-owned system and inspect documents.
 - `Sources/Services/ContainerAPIService/Server/Containers/ContainersService.swift`
   exposes the narrow authority projections and exact reader selection.
 - `Sources/ContainerResource/Container/ContainerLogReadRecordWireV1.swift`
@@ -94,7 +108,7 @@ claimed by this provider declaration.
 
 ## Dependency handoff
 
-Container pins `container-engine-api` exactly at 0.2.2. Validation uses the
+Container pins `container-engine-api` exactly at 0.2.3. Validation uses the
 local signed Containerization shared-sandbox worktree because the coordinated
 Containerization upstream wave has not been published. SwiftPM editable state
 is removed after validation; the published Containerization pin remains
@@ -124,7 +138,15 @@ Current development MacBook Pro evidence:
 - signed implementation commit:
   `2d7512c54cfe2fc01d506e08c0300d6f432fd437`;
 - signed attach/hijack implementation commit:
-  `72a76ab596e95fa775593bc3bcbef67135c384e4`.
+  `72a76ab596e95fa775593bc3bcbef67135c384e4`;
+- signed complete-response implementation commit:
+  `9e23d41fc18dde5ae926e0cbdd1f35d8c86fc512`;
+- Engine API 0.2.3 dependency resolves to signed commit
+  `fd6ad4f3736fc1fb1d3b9e43ce51ea01adb7de1a`;
+- the enhanced provider-session integration returns the authority identity,
+  container/image counts, complete inspect state/config/host configuration,
+  resolved logging options, public json-file path, logs, attach frames, and
+  attach/detach events in one passing test.
 
 ## Review checklist
 
@@ -137,6 +159,6 @@ Current development MacBook Pro evidence:
 - [x] Only complete generated Engine operations are advertised.
 - [x] Attach replay/live, stdin/TTY, detach-key, bounded transport, and
   lifecycle-event semantics use one authority path.
-- [ ] Compose whole `/info` and inspect responses before advertising them.
+- [x] Compose whole `/info` and inspect responses before advertising them.
 - [ ] Add WebSocket attach and resize through the common public gateway.
 - [ ] Complete public gateway installation and external-client certification.

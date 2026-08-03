@@ -18,7 +18,7 @@ or nanosecond timestamp presentation.
 ## Required behavior
 
 - Pin the runtime-neutral `container-engine-api` package at exact release
-  `0.2.2`.
+  `0.2.3`.
 - Project `/info` logging fields, inspect `LogConfig`/`LogPath`/TTY, and
   container logs from the existing `ContainersService` authority.
 - Requery the authority-owned driver catalog for every info request.
@@ -33,14 +33,15 @@ or nanosecond timestamp presentation.
 - Start one private provider-session server with a restart-stable state-root
   identity and an enhanced Container authority fingerprint.
 - Advertise only complete generated Engine operations. Shared `/info` and
-  inspect routes must remain unadvertised until their non-logging fields are
-  composed. Attach is advertised only after replay/live handoff, stdin/TTY and
+  inspect routes use one complete authority document and a fail-closed logging
+  overlay; a partial fragment cannot replace either whole route. Attach is
+  advertised only after replay/live handoff, stdin/TTY and
   detach-key handling, bounded hijack transport, and canonical attach/detach
   events are one authority-owned path.
 
 ## Acceptance evidence
 
-- [x] Exact `container-engine-api` 0.2.2 dependency and resolved pin.
+- [x] Exact `container-engine-api` 0.2.3 dependency and resolved pin.
 - [x] Authority-backed default driver and registered-driver projection.
 - [x] Authority-backed resolved inspect options, public json-file path, and TTY.
 - [x] Protected option values are authenticated at the authorized Engine
@@ -62,14 +63,17 @@ or nanosecond timestamp presentation.
 - [x] Canonical `attach` and `detach` events use the existing service event
   broadcaster and immutable authority snapshot.
 - [x] The provider fingerprint declares `engine.route.ContainerAttach` and
-  `engine.route.ContainerLogs`, and no incomplete shared operation.
+  `engine.route.ContainerLogs`.
+- [x] The same authority supplies complete Docker `SystemInfo` and
+  `ContainerInspect` documents, the shared controller verifies Moby's
+  non-optional top-level contract, and only logging-owned fields are overlaid.
+- [x] The provider fingerprint declares `engine.route.SystemInfo` and
+  `engine.route.ContainerInspect` only in complete-response mode.
 - [x] Focused controller/backend, protected-option, active-wire, runtime-stream,
   and provider-session tests pass on the development MacBook Pro.
 
 ## Remaining Engine logging work
 
-- Compose logging projections into the complete shared `SystemInfo` and
-  `ContainerInspect` responses, then advertise those generated operation IDs.
 - Add `ContainerAttachWebsocket` only after the common public gateway owns its
   WebSocket transport. `ContainerAttach` hijack is complete and advertised by
   the enhanced provider.
@@ -102,3 +106,6 @@ only after the complete parity programme is finished.
 - `72a76ab596e95fa775593bc3bcbef67135c384e4` — signed bounded Docker
   attach/hijack, exact-process I/O, detach keys, lifecycle events, route
   advertisement, and focused tests.
+- `9e23d41fc18dde5ae926e0cbdd1f35d8c86fc512` — signed complete `SystemInfo`
+  and `ContainerInspect` authority projection, fail-closed logging composition,
+  exact Engine API 0.2.3 pin, route advertisement, and provider-session tests.
