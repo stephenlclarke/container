@@ -17,6 +17,7 @@
 import ArgumentParser
 import ContainerAPIClient
 import ContainerAPIService
+import ContainerAWSLogsSDKAdapter
 import ContainerLog
 import ContainerPersistence
 import ContainerPlugin
@@ -285,7 +286,10 @@ extension APIServer {
             let appRootURL = URL(fileURLWithPath: appRoot.string)
             let remoteLogDriverPlane =
                 try await AuthorityRemoteLogDriverPlane
-                .create(appRoot: appRootURL)
+                .create(
+                    appRoot: appRootURL,
+                    awsLogsClientFactory: AWSCloudWatchLogsClientFactory()
+                )
             let service = try ContainersService(
                 appRoot: appRootURL,
                 pluginLoader: pluginLoader,

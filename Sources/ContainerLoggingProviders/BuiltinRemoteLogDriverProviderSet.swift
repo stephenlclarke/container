@@ -35,7 +35,8 @@ public enum BuiltinRemoteLogDriverConfigurationError: Error, Equatable,
 /// cannot enter the provider lifecycle ledger or ordinary configuration.
 public actor BuiltinRemoteLogDriverConfigurationRegistry:
     SyslogConfigurationResolving, FluentdConfigurationResolving,
-    GELFConfigurationResolving, SplunkConfigurationResolving
+    GELFConfigurationResolving, SplunkConfigurationResolving,
+    AWSLogsConfigurationResolving
 {
     private enum Entry: Sendable {
         case syslog(
@@ -54,11 +55,16 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             request: LogDriverStartRequestV1,
             binding: SplunkConfigurationBinding
         )
+        case awslogs(
+            request: LogDriverStartRequestV1,
+            binding: AWSLogsConfigurationBinding
+        )
 
         var request: LogDriverStartRequestV1 {
             switch self {
             case .syslog(let request, _), .fluentd(let request, _),
-                .gelf(let request, _), .splunk(let request, _):
+                .gelf(let request, _), .splunk(let request, _),
+                .awslogs(let request, _):
                 request
             }
         }
@@ -69,6 +75,7 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             case .fluentd: "fluentd"
             case .gelf: "gelf"
             case .splunk: "splunk"
+            case .awslogs: "awslogs"
             }
         }
     }
@@ -105,6 +112,13 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
         try register(.splunk(request: request, binding: binding))
     }
 
+    public func register(
+        _ binding: AWSLogsConfigurationBinding,
+        for request: LogDriverStartRequestV1
+    ) throws {
+        try register(.awslogs(request: request, binding: binding))
+    }
+
     /// Removes only the exact request identity. A stale cleanup cannot erase a
     /// later session which happens to reuse the same externally supplied ID.
     @discardableResult
@@ -132,6 +146,21 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
                 BuiltinRemoteLogDriverConfigurationError
                 .contextDriverMismatch(
                     expected: "syslog",
+                    actual: entry.driver
+                )
+        }
+        return binding
+    }
+
+    public func configuration(
+        for request: LogDriverStartRequestV1
+    ) throws -> AWSLogsConfigurationBinding {
+        let entry = try exactEntry(for: request)
+        guard case .awslogs(_, let binding) = entry else {
+            throw
+                BuiltinRemoteLogDriverConfigurationError
+                .contextDriverMismatch(
+                    expected: "awslogs",
                     actual: entry.driver
                 )
         }
@@ -229,6 +258,11 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             .splunk(let rightRequest, let right)
         ):
             leftRequest == rightRequest && left == right
+        case (
+            .awslogs(let leftRequest, let left),
+            .awslogs(let rightRequest, let right)
+        ):
+            leftRequest == rightRequest && left == right
         default:
             false
         }
@@ -249,6 +283,7 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
     public let fluentd: FluentdLogDriverProvider
     public let gelf: GELFLogDriverProvider
     public let splunk: SplunkLogDriverProvider
+    public let awslogs: AWSLogsLogDriverProvider
 
     private init(
         registry: LogDriverProviderRegistry,
@@ -256,7 +291,8 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         syslog: SyslogLogDriverProvider,
         fluentd: FluentdLogDriverProvider,
         gelf: GELFLogDriverProvider,
-        splunk: SplunkLogDriverProvider
+        splunk: SplunkLogDriverProvider,
+        awslogs: AWSLogsLogDriverProvider
     ) {
         self.registry = registry
         self.configurations = configurations
@@ -264,10 +300,12 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         self.fluentd = fluentd
         self.gelf = gelf
         self.splunk = splunk
+        self.awslogs = awslogs
     }
 
     public static func install(
         eventLoopGroup: any EventLoopGroup,
+        awsLogsClientFactory: any AWSLogsClientFactory,
         providerGeneration: UInt64 = 1,
         baseCatalog: LogDriverCatalog = BuiltinLogDriverDescriptors.current
     ) async throws -> Self {
@@ -297,18 +335,25 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
             providerGeneration: providerGeneration,
             configurationResolver: configurations
         )
+        let awslogs = AWSLogsLogDriverProvider(
+            providerGeneration: providerGeneration,
+            configurationResolver: configurations,
+            clientFactory: awsLogsClientFactory
+        )
         let registry = LogDriverProviderRegistry(baseCatalog: baseCatalog)
         try await registry.install(syslog)
         try await registry.install(fluentd)
         try await registry.install(gelf)
         try await registry.install(splunk)
+        try await registry.install(awslogs)
         return Self(
             registry: registry,
             configurations: configurations,
             syslog: syslog,
             fluentd: fluentd,
             gelf: gelf,
-            splunk: splunk
+            splunk: splunk,
+            awslogs: awslogs
         )
     }
 }

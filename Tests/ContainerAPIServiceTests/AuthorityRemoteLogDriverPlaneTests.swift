@@ -24,6 +24,26 @@ import Testing
 
 @testable import ContainerAPIService
 
+private struct AuthorityUnavailableAWSLogsClientFactory:
+    AWSLogsClientFactory
+{
+    func makeClient(
+        configuration: AWSLogsDriverConfiguration
+    ) async throws -> any AWSLogsClient {
+        throw AWSLogsClientError.requestFailed
+    }
+}
+
+private struct AuthorityRecordingAWSLogsClientFactory: AWSLogsClientFactory {
+    let client: AuthorityRecordingAWSLogsClient
+
+    func makeClient(
+        configuration: AWSLogsDriverConfiguration
+    ) async throws -> any AWSLogsClient {
+        client
+    }
+}
+
 @Suite(.serialized)
 struct AuthorityRemoteLogDriverPlaneTests {
     @Test
@@ -90,7 +110,9 @@ struct AuthorityRemoteLogDriverPlaneTests {
             do {
                 let port = try #require(server.localAddress?.port)
                 let plane = try await AuthorityRemoteLogDriverPlane.create(
-                    appRoot: root
+                    appRoot: root,
+                    awsLogsClientFactory:
+                        AuthorityUnavailableAWSLogsClientFactory()
                 )
                 let id = "gelf-plane"
                 let bundle = ContainerResource.Bundle(
@@ -136,6 +158,46 @@ struct AuthorityRemoteLogDriverPlaneTests {
                 try? await serverGroup.shutdownGracefully()
                 throw error
             }
+        }
+    }
+
+    @Test
+    func awsLogsProductionPlanePublishesProviderBytes() async throws {
+        try await withTemporaryRoot { root in
+            let client = AuthorityRecordingAWSLogsClient()
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityRecordingAWSLogsClientFactory(
+                    client: client
+                )
+            )
+            let id = "awslogs-plane"
+            let bundle = ContainerResource.Bundle(
+                path: root.appendingPathComponent(id, isDirectory: true)
+            )
+            try FileManager.default.createDirectory(
+                at: bundle.path,
+                withIntermediateDirectories: true
+            )
+            let configuration = try awsLogsConfiguration(id: id)
+            let runtimeStdio = try await plane.prepareBootstrap(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                stdio: [nil, nil, nil]
+            )
+
+            try #require(runtimeStdio[1]).write(
+                contentsOf: Data("aws-plane-output\n".utf8)
+            )
+            try await plane.bootstrapSucceeded(containerID: id)
+            try await plane.activate(containerID: id)
+            try await plane.close(containerID: id)
+
+            let events = await client.publishedEvents
+            #expect(events.count == 1)
+            #expect(events[0].message == "aws-plane-output")
         }
     }
 
@@ -186,7 +248,9 @@ struct AuthorityRemoteLogDriverPlaneTests {
                 _ = try await ledger.reserveWriter(request)
 
                 let plane = try await AuthorityRemoteLogDriverPlane.create(
-                    appRoot: root
+                    appRoot: root,
+                    awsLogsClientFactory:
+                        AuthorityUnavailableAWSLogsClientFactory()
                 )
                 let runtimeStdio = try await plane.prepareBootstrap(
                     containerID: id,
@@ -236,6 +300,51 @@ struct AuthorityRemoteLogDriverPlaneTests {
             "gelf-compression-type": "none",
         ]
         let descriptor = GELFLogDriverContract.descriptor()
+        let resolved = try ResolvedContainerLogConfiguration(
+            leaseGeneration: 1,
+            driver: descriptor.driver,
+            safeOptions: options,
+            delivery: LogDeliveryConfiguration(),
+            readPolicy: LogReadPolicy(source: .unavailable),
+            providerIdentity: descriptor.providerIdentity,
+            providerGenerationAtResolution: descriptor.providerGeneration,
+            contractDigest: descriptor.optionContractDigest
+        )
+        var configuration = ContainerConfiguration(
+            id: id,
+            image: ImageDescription(
+                reference: "docker.io/library/alpine:latest",
+                descriptor: .init(
+                    mediaType: "application/vnd.oci.image.manifest.v1+json",
+                    digest: "sha256:" + String(repeating: "0", count: 64),
+                    size: 0
+                )
+            ),
+            process: ProcessConfiguration(
+                executable: "/bin/sh",
+                arguments: [],
+                environment: [],
+                terminal: true
+            )
+        )
+        configuration.logging = try ContainerLogConfiguration(
+            requested: ContainerLogRequest(
+                driver: descriptor.driver,
+                options: options
+            ),
+            resolved: resolved
+        )
+        return configuration
+    }
+
+    private func awsLogsConfiguration(id: String) throws -> ContainerConfiguration {
+        let options = [
+            "awslogs-group": "container-tests",
+            "awslogs-stream": id,
+            "awslogs-region": "eu-west-2",
+            "awslogs-create-stream": "false",
+        ]
+        let descriptor = AWSLogsLogDriverContract.descriptor()
         let resolved = try ResolvedContainerLogConfiguration(
             leaseGeneration: 1,
             driver: descriptor.driver,
@@ -413,6 +522,26 @@ private actor AuthorityPausingLogDriverSession: ContainerLogDriverSession {
     func flush(deadline: ContinuousClock.Instant) async throws {}
 
     func close(deadline: ContinuousClock.Instant) async throws {}
+}
+
+private actor AuthorityRecordingAWSLogsClient: AWSLogsClient {
+    private(set) var publishedEvents = [AWSLogsInputEvent]()
+
+    func createLogGroup(name: String) async throws {}
+
+    func createLogStream(group: String, stream: String) async throws {}
+
+    func putLogEvents(
+        group: String,
+        stream: String,
+        events: [AWSLogsInputEvent],
+        sequenceToken: String?
+    ) async throws -> AWSLogsPutResult {
+        publishedEvents.append(contentsOf: events)
+        return AWSLogsPutResult(nextSequenceToken: "next-token")
+    }
+
+    func close() async {}
 }
 
 private final class AuthorityDatagramCaptureHandler: ChannelInboundHandler,

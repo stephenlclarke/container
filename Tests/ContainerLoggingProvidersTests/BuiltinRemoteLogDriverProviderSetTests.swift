@@ -27,6 +27,9 @@ struct BuiltinRemoteLogDriverProviderSetTests {
         do {
             let providers = try await BuiltinRemoteLogDriverProviderSet.install(
                 eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
                 providerGeneration: 7
             )
             let catalog = try await providers.registry.logDriverCatalog()
@@ -34,9 +37,9 @@ struct BuiltinRemoteLogDriverProviderSetTests {
             #expect(
                 Set(catalog.registeredNames) == [
                     "none", "json-file", "local", "syslog", "fluentd", "gelf",
-                    "splunk",
+                    "splunk", "awslogs",
                 ])
-            for driver in ["syslog", "fluentd", "gelf", "splunk"] {
+            for driver in ["syslog", "fluentd", "gelf", "splunk", "awslogs"] {
                 let descriptor = try #require(
                     catalog.descriptor(named: driver)
                 )

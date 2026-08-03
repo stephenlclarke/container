@@ -69,6 +69,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
 
     package static func create(
         appRoot: URL,
+        awsLogsClientFactory: any AWSLogsClientFactory,
         providerGeneration: UInt64 = 1
     ) async throws -> AuthorityRemoteLogDriverPlane {
         let threadCount = max(
@@ -80,6 +81,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         )
         let providers = try await BuiltinRemoteLogDriverProviderSet.install(
             eventLoopGroup: eventLoopOwner.group,
+            awsLogsClientFactory: awsLogsClientFactory,
             providerGeneration: providerGeneration
         )
         let protectedEffects = try ProtectedLoggingEffectStore(
@@ -591,6 +593,33 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                     providerID: request.providerID,
                     providerGeneration: request.providerGeneration,
                     configuration: driverConfiguration
+                ),
+                for: request
+            )
+        case "awslogs":
+            let helper = try DockerSemanticHelperClient.shared(
+                for: DockerSemanticHelperGeneration(
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration
+                )
+            )
+            let driverConfiguration = try AWSLogsDriverConfiguration.resolve(
+                options: options,
+                info: info,
+                semanticService: helper
+            )
+            try await providers.configurations.register(
+                AWSLogsConfigurationBinding(
+                    semanticRequestDigest: request.semanticRequestDigest,
+                    containerID: request.containerID,
+                    leaseGeneration: request.leaseGeneration,
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration,
+                    configuration: driverConfiguration,
+                    multilineMatcher:
+                        DockerSemanticAWSLogsMultilineMatcher(
+                            semanticService: helper
+                        )
                 ),
                 for: request
             )

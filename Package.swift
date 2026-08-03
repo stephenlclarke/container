@@ -105,6 +105,8 @@ let package = Package(
         .library(name: "MachineAPIService", targets: ["MachineAPIService"]),
     ],
     dependencies: [
+        .package(url: "https://github.com/awslabs/aws-sdk-swift.git", exact: "1.7.52"),
+        .package(url: "https://github.com/smithy-lang/smithy-swift.git", exact: "0.238.0"),
         .package(
             url: "https://github.com/stephenlclarke/containerization.git",
             revision: containerizationRevision
@@ -245,6 +247,7 @@ let package = Package(
                 "ContainerPersistence",
                 "ContainerPlugin",
                 "ContainerLoggingProviders",
+                "ContainerAWSLogsSDKAdapter",
                 "ContainerResource",
                 "ContainerVersion",
                 "ContainerXPC",
@@ -559,6 +562,20 @@ let package = Package(
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
                 "ContainerResource",
                 "DockerSemanticHelper",
+            ]
+        ),
+        .target(
+            name: "ContainerAWSLogsSDKAdapter",
+            dependencies: [
+                .product(name: "AWSClientRuntime", package: "aws-sdk-swift"),
+                .product(name: "AWSCloudWatchLogs", package: "aws-sdk-swift"),
+                .product(name: "AWSSDKIdentity", package: "aws-sdk-swift"),
+                .product(name: "ClientRuntime", package: "smithy-swift"),
+                .product(name: "Smithy", package: "smithy-swift"),
+                .product(name: "SmithyHTTPAPI", package: "smithy-swift"),
+                .product(name: "SmithyIdentity", package: "smithy-swift"),
+                "ContainerLoggingProviders",
+                "ContainerVersion",
             ]
         ),
         .testTarget(
