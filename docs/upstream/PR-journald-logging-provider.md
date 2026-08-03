@@ -43,14 +43,19 @@ catalog descriptor and no false compatibility claim.
   versioned envelopes, validated binary-safe entries, stable operation IDs,
   ordered reader-next calls, one reconnect replay, mismatched-response
   rejection, `SIGPIPE` suppression, and cancellation-safe socket shutdown.
+- Add the server protocol engine and persistent connection loop. Identical
+  in-flight operations join one backend effect, completed outcomes replay from
+  a count- and encoded-byte-bounded cache, conflicting operation-ID reuse fails
+  before an effect, and backend failures map to stable wire categories.
 - Register configuration and the provider in the built-in authority plane only
   when a concrete service is supplied.
 
 ## Required follow-up before support can be claimed
 
-- Implement and package the signed Linux journald workload, wire-protocol
-  server with a bounded replay cache, and systemd journal adapter on the
-  completed shared-sandbox dial and client.
+- Implement and package the signed Linux journald workload and bind its vsock
+  listener to the completed connection/handler engine.
+- Implement the durable systemd journal backend. Every backend effect remains
+  idempotent after replay-cache eviction or service restart.
 - Persist writer identity/epoch state and reconcile service or authority crash,
   response loss, and sandbox replacement.
 - Implement journal query ordering and Docker filters for stdout/stderr,
@@ -71,6 +76,9 @@ catalog descriptor and no false compatibility claim.
 - `Sources/ContainerLoggingProviders/Journald/JournaldServiceWire.swift`
   contains the bounded versioned request/response projections, framed socket
   codec, reconnect-safe transport, and service client.
+- `Sources/ContainerLoggingProviders/Journald/JournaldServiceServer.swift`
+  contains the bounded exact-once replay engine, backend boundary, failure
+  mapping, and persistent framed connection loop.
 - `Sources/ContainerLoggingProviders/BuiltinRemoteLogDriverProviderSet.swift`
   stores typed bindings and conditionally installs the provider.
 - `Sources/Services/ContainerAPIService/Server/Containers/AuthorityRemoteLogDriverPlane.swift`
@@ -83,6 +91,10 @@ catalog descriptor and no false compatibility claim.
 - `Tests/ContainerLoggingProvidersTests/JournaldServiceWireTests.swift` covers
   frame and entry limits, binary round trips, lifecycle projection, exact
   response-loss replay, reader ordinals, and blocked-read cancellation.
+- `Tests/ContainerLoggingProvidersTests/JournaldServiceServerTests.swift`
+  covers lifecycle projection, concurrent duplicate joining, completed replay,
+  conflict rejection, bounded eviction, stable failures, and end-to-end
+  persistent framed client/server calls.
 
 ## Validation
 
@@ -91,6 +103,7 @@ swift build --target ContainerLoggingProviders
 swift build --target container-apiserver
 swift test --filter JournaldProviderTests
 swift test --filter JournaldServiceWireTests
+swift test --filter JournaldServiceServerTests
 swift test --filter BuiltinRemoteLogDriverProviderSetTests
 swift build -Xswiftc -warnings-as-errors --target ContainerLoggingProviders
 swift build -Xswiftc -warnings-as-errors --target container-apiserver
@@ -102,6 +115,8 @@ Current development MacBook Pro evidence:
 
 - five journald provider tests and three built-in provider-set tests passed;
 - five journald wire tests passed, including exact replay and cancellation;
+- seven journald wire-server tests passed, including concurrent replay-cache
+  and end-to-end framed-connection cases;
 - provider and API server targets built successfully;
 - the provider and API server targets built with Swift warnings promoted to
   errors;
@@ -112,6 +127,8 @@ Current development MacBook Pro evidence:
   `20071d97d10b386c2a24c84c51bca0e37c0280aa`.
 - signed journald service-wire commit:
   `a42ecf2fe1ffa582e34cfa74f6cf1ddba8505368`.
+- signed journald wire-server commit:
+  `bed5de1686bc005ad77ab63025a5582f37601738`.
 
 The warnings-as-errors build used the local signed Containerization
 shared-sandbox worktree because the coordinated Containerization upstream wave
@@ -128,6 +145,8 @@ published dependency pin remains unchanged.
   authority and runtime helper.
 - [x] The client wire is versioned, size-bounded, reconnect-safe, and preserves
   exact operation identity and reader order across response loss.
+- [x] The server joins in-flight replay, caches bounded outcomes, rejects
+  conflicting identities before effects, and serves persistent framed calls.
 - [ ] Add the signed Linux service and persistent journal adapter.
 - [ ] Complete production reader routing, recovery, and supervision.
 - [ ] Add real-systemd compatibility and performance evidence.

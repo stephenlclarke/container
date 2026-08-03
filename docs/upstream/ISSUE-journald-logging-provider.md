@@ -40,10 +40,13 @@ services. The journald-specific transport now adds an explicit versioned JSON
 envelope, one-MiB length-prefixed frames, binary-safe validated projections,
 stable operation IDs for response-loss replay, ordered reader-next ordinals,
 socket reconnect, `SIGPIPE` suppression, and cancellation that interrupts a
-blocked read. The provider is intentionally not advertised by the production
-API server because the protected Linux workload, wire-protocol server and
-idempotency cache, system-journal persistence/query adapter, supervision, and
-recovery path remain to be implemented.
+blocked read. The matching server protocol engine now joins identical in-flight
+operations, rejects operation-ID conflicts before effects, retains completed
+outcomes under count and encoded-byte limits, maps stable failures, and serves
+persistent framed connections. The provider is intentionally not advertised by
+the production API server because the protected Linux workload and listener,
+durable system-journal writer/query backend, restart reconciliation,
+supervision, and recovery path remain to be implemented.
 
 ## Scope and non-goals
 
