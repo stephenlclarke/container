@@ -488,6 +488,24 @@ struct RuntimeServiceHostsTests {
         #expect(runtimeConfiguration.readonlyPaths == LinuxContainer.defaultReadonlyPaths())
     }
 
+    @Test
+    func configureContainerAddsDefaultGuestVMSysctls() throws {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.domainname = "example.test"
+        config.sysctls = ["net.ipv4.ip_forward": "1"]
+        var runtimeConfiguration = LinuxContainer.Configuration()
+
+        try RuntimeService.configureContainer(
+            czConfig: &runtimeConfiguration,
+            config: config
+        )
+
+        #expect(runtimeConfiguration.sysctl["vm.overcommit_memory"] == "1")
+        #expect(runtimeConfiguration.sysctl["vm.max_map_count"] == "262144")
+        #expect(runtimeConfiguration.sysctl["net.ipv4.ip_forward"] == "1")
+        #expect(runtimeConfiguration.sysctl[RuntimeService.domainnameSysctl] == "example.test")
+    }
+
     private func runtimeTestConfiguration(id: String) -> ContainerConfiguration {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",

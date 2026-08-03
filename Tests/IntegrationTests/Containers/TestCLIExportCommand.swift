@@ -99,7 +99,7 @@ struct TestCLIExportCommand {
         }
     }
 
-    @Test func testExportCommandLive() async throws {
+    @Test func testExportCommandRunningContainerAndOverwrite() async throws {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(.alpine320)
             try await f.withContainer(image: image, autoRemove: false) { name in
@@ -107,7 +107,8 @@ struct TestCLIExportCommand {
                 try f.doExec(name, cmd: ["sh", "-c", "echo \(mustBeInImage) > /foo-live"])
 
                 let exportPath = f.testDir.appending("export-live.tar")
-                try f.run(["export", "--live", name, "-o", exportPath.string]).check()
+                try f.run(["export", name, "-o", exportPath.string]).check()
+                try f.run(["export", name, "-o", exportPath.string]).check()
 
                 let exportURL = URL(filePath: exportPath.string)
                 let attrs = try FileManager.default.attributesOfItem(atPath: exportPath.string)
