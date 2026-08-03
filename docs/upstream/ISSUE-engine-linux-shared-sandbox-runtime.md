@@ -61,6 +61,8 @@ ready.
 - [x] Lost-response state is reconciled from typed Containerization snapshots.
 - [x] Conflicting and unattributed operations fail closed.
 - [x] Sealed bundle identity and canonical root path are validated.
+- [x] Materialization is bound to the exact runtime-configuration digest and
+  rejects post-reservation mutation.
 - [x] Workload configuration maps to the independent `LinuxPod` surface.
 - [x] Focused runtime and wire-format tests pass.
 - [x] The full macOS unit corpus passes under warnings-as-errors; the release
@@ -68,9 +70,9 @@ ready.
 
 ## Follow-on integration
 
-The API service still registers one helper per container. A subsequent Engine
-orchestration slice must launch and supervise this shared helper, open the
-durable ledger, invoke `EngineLinuxSandboxManagerV1`, instantiate
-`EngineLinuxSandboxWorkloadProcessStarterV1`, and supply the specialized
-transactional controllers. That cutover is deliberately separate from the
-runtime materialization boundary documented here.
+The API-service authority now launches and supervises the shared helper, opens
+the durable ledger, reconciles the sandbox manager, and routes a workload
+start through the common resolver. Production `ContainersService` traffic
+still awaits specialized controllers, scoped workload lifecycle routes, guest
+network/IPAM semantics, and controlled migration. See
+`ISSUE-engine-linux-sandbox-api-authority.md`.

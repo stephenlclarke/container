@@ -30,12 +30,12 @@ effect cannot be attributed is reported as unknown or rejected, never inferred
 as success.
 
 The workload request binds the durable operation context to a canonical sealed
-bundle root, dynamic environment, and resolved network endpoints. The helper
-reads `RuntimeConfiguration` and `ContainerConfiguration` from that root,
-checks the container identity, activates the sealed logging plan, and maps the
-configuration into `LinuxPod.ContainerConfiguration`. It returns a process
-receipt only after the Containerization snapshot reports the workload running
-with an init PID.
+bundle root, a digest of its runtime configuration, dynamic environment, and
+resolved network endpoints. The helper reads and hashes one
+`RuntimeConfiguration` value, checks the digest and container identity,
+activates the sealed logging plan, and maps that same configuration into
+`LinuxPod.ContainerConfiguration`. It returns a process receipt only after the
+Containerization snapshot reports the workload running with an init PID.
 
 Sandbox boot/shutdown cannot race workload materialization. Successful
 shutdown closes retained log captures and clears resident receipts. Stopped
@@ -88,6 +88,8 @@ held locally until all parity development is complete.
 
 - `ec95450741789341870aca07d24eaa460b83b44c` — signed shared-sandbox runtime
   materialization implementation and tests.
+- `203c88b4d71d25a3ef6036035c54ca8b65f4923c` — signed API-service authority,
+  ready-state recovery, and workload integrity follow-up.
 
 ## Validation
 

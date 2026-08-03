@@ -40,6 +40,12 @@ tuple before commit, and observes an interrupted operation before deciding
 whether an exact retry is safe. Completed shutdowns remain replayable, and the
 next boot advances the sandbox generation.
 
+A later signed integration commit makes completed ready state observable too:
+after an API-service restart the manager compares the complete live runtime
+identity before accepting the durable record. The API-service composition and
+its remaining cutover boundary are documented in
+`PR-engine-linux-sandbox-api-authority.md`.
+
 ## Persistence and validation
 
 - Snapshots are versioned, size-bounded, deterministically encoded, and

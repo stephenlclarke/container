@@ -58,6 +58,9 @@ parity programme is ready for upstream submission.
 - [x] Reverse-order effect compensation and unknown-effect recovery fencing.
 - [x] Restart recovery preserves an active process/sandbox tuple.
 - [x] Protocol-driven sandbox runtime with exact receipt validation.
+- [x] Ready-state replay re-observes the complete live runtime identity.
+- [x] API-service composition owns launch, reconnect, ledger, manager, and
+  workload resolver construction.
 - [x] Bounded, schema-versioned, private file persistence.
 - [x] Focused crash, replay, compensation, lifecycle, and filesystem tests.
 - [x] Full macOS unit gate passes under warnings-as-errors.
@@ -67,12 +70,14 @@ parity programme is ready for upstream submission.
 - Implementation:
   `0075c3557357b02374f90e17ab59973c10f4b032`
   (`feat(runtime): add durable workload authority`).
+- API-service composition and ready-state recovery fix:
+  `203c88b4d71d25a3ef6036035c54ca8b65f4923c`
+  (`feat(runtime): compose shared sandbox authority`).
 
 ## Follow-on integration
 
-The generic transaction resolver is now implemented in
-`ISSUE-workload-plan-resolver.md`. Production adoption remains gated on the
-shared-sandbox materialization path: the current API service still launches
-one runtime VM per container, so attaching shared-sandbox authority to it would
-record ownership the runtime does not enforce. Once that runtime path exists,
-each specialized controller can adopt the resolver in dependency order.
+The generic transaction resolver, shared-sandbox materialization path, and
+API-service composition root are now implemented. Production adoption remains
+gated on specialized effect controllers, scoped workload lifecycle routes,
+advanced guest network/IPAM, and the controlled `ContainersService` cutover.
+See `ISSUE-engine-linux-sandbox-api-authority.md` for the exact boundary.
