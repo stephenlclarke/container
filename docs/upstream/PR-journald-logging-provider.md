@@ -2,8 +2,10 @@
 
 > [!IMPORTANT]
 > This handoff remains local until the complete parity programme is ready for
-> coordinated Apple publication. The production Linux journald service is a
-> required follow-up before the driver can be advertised as supported.
+> coordinated Apple publication. The Linux workload and concrete systemd
+> adapter are implemented and packaged locally, but production supervision,
+> release signing, authority routing, and readiness-gated advertisement remain
+> required before the driver can be advertised as supported.
 
 ## Type of Change
 
@@ -62,28 +64,53 @@ catalog descriptor and no false compatibility claim.
   and could duplicate or skip a record.
 - Return the durable reader sequence in the open-reader wire response so a
   reconstructed client cannot restart at sequence one and duplicate history.
+- Add a Linux/arm64 service executable with a production AF_VSOCK listener,
+  exact sandbox-generation handshake, bounded connections, disconnect-driven
+  operation cancellation, and a test-only private Unix listener.
+- Add the concrete go-systemd adapter. Append reconciliation queries the full
+  session/epoch/ordinal identity and entry digest before publishing, and does
+  not acknowledge a new entry until it is query-visible. Native reads preserve
+  receipt order, stdout/stderr, tail, since, until, follow, details, partial
+  records, and opaque cursor/realtime/end checkpoints.
+- Bound replay memory by retained request and response bytes, replace
+  attacker-controlled session-lock maps with fixed domain-separated stripes,
+  cap durable writer/reader state, and interrupt blocked Linux operations when
+  the client connection disappears.
+- Package the service and its dedicated systemd-journald process as a pinned
+  Linux/arm64 OCI workload. The build records source/test hashes, the archive
+  hash, and the stable platform-manifest digest, uses a signed Debian snapshot
+  for exact systemd packages, and emits BuildKit provenance.
+- Add portable race/unit tests, real-systemd integration and component
+  benchmarks, deterministic workload-manifest verification, and an opt-in
+  Swift-to-packaged-Linux cross-language test that verifies an exact
+  stdout/stderr write/read round trip.
 - Register configuration and the provider in the built-in authority plane only
   when a concrete service is supplied.
 
 ## Required follow-up before support can be claimed
 
-- Implement and package the signed Linux journald workload and bind its vsock
-  listener to the completed connection/handler engine.
-- Implement the concrete systemd adapter behind the durable backend. Append
-  must reconcile the complete session/epoch/ordinal identity. Reader prepare
-  must return a deterministic tail/start anchor; each read must return the
-  native cursor checkpoint committed with its record.
-- Implement journal query ordering and Docker filters for stdout/stderr,
-  follow, tail, since, until, timestamps, and details.
-- Route authority-owned provider readers through the production reader plane.
-- Add service supervision, readiness withdrawal, bounded transport, security,
-  migration, and shutdown behavior.
+- Add the authority-owned supervisor that verifies the expected OCI workload
+  digest, installs its private journal/state mounts, starts it inside the
+  common Engine Linux sandbox, authenticates the exact generation, and
+  withdraws readiness on process, journal, or transport failure.
+- Route production writer and reader sessions through that supervised service,
+  reconcile service/sandbox restart without overlapping writers, and advertise
+  `journald` only for the exact ready provider generation.
+- Add authority-driven reclamation for terminal service writer/reader state so
+  the bounded durable replay window cannot become a lifetime session quota;
+  complete delete, migration, shutdown, and recovery behavior.
+- Add release signing and installation verification around the reproducible
+  OCI workload and its BuildKit provenance. A signed source commit and recorded
+  platform digest are development evidence, not a production release trust
+  chain.
 - Synchronize the Container dependency pin with the matched Containerization
   protected-workload API before publishing either repository. The current pin
   predates `WorkloadNetworkEndpoint`, so local validation intentionally uses
   SwiftPM editable state and removes it afterward.
-- Certify real-systemd integration and Docker CLI/Compose behavior, then record
-  throughput, latency, memory, and backpressure evidence against Docker.
+- Certify Docker CLI/Compose behavior and record the paired warmed/cold
+  throughput, latency, CPU, memory, startup, follow, and backpressure evidence
+  against the pinned Docker reference. The current real-systemd/component
+  measurements are baselines, not a parity-performance claim.
 
 ## Code map
 
@@ -123,6 +150,13 @@ catalog descriptor and no false compatibility claim.
   close fencing, reader checkpoint resume/replay, stalled/invalid checkpoint
   rejection, generation matching, private file modes, and symbolic-link
   rejection.
+- `Tools/ContainerJournaldService/` contains the strict Go wire server, durable
+  backend, concrete systemd adapter, AF_VSOCK executable, dedicated journald
+  entrypoint, pinned OCI recipe, build/verification harness, and unit,
+  integration, cancellation, resource-bound, and benchmark coverage.
+- `Tests/ContainerLoggingProvidersTests/JournaldServiceLinuxIntegrationTests.swift`
+  exercises the production Swift client against the packaged Linux workload
+  and real system journal.
 
 ## Validation
 
@@ -137,6 +171,9 @@ swift test --filter JournaldService
 swift test --filter BuiltinRemoteLogDriverProviderSetTests
 swift build -Xswiftc -warnings-as-errors --target ContainerLoggingProviders
 swift build -Xswiftc -warnings-as-errors --target container-apiserver
+make test-journald-service
+make verify-journald-service
+make test-journald-service-integration
 make check
 git diff --check
 ```
@@ -153,6 +190,20 @@ Current development MacBook Pro evidence:
   checkpoint rejection, and private file-store hardening;
 - the combined journald wire, server, and durable-backend filter passed all 20
   tests;
+- 17 portable Go service tests passed with the race detector; the pinned Linux
+  real-systemd lane passed all 20 tests, including exact append replay/conflict,
+  static/follow reads, cancellation, fixed resource bounds, and durable
+  checkpoint recovery;
+- two independently built OCI archives produced the same Linux/arm64 workload
+  manifest digest
+  `sha256:90238651d604cc14f93477cfbf7ca4c50ca7cc36ab416553d05e03c6d7ec1c2a`;
+  the final archive and its recorded source/test hashes verified;
+- the packaged Swift-to-Linux integration passed its real-systemd stdout/stderr
+  round trip and removed its temporary dependency edit, image, containers, and
+  volumes;
+- direct component baselines on this MacBook Pro measured protocol replay at
+  1.75–2.09 microseconds, durable writer commit at 38.7–51.5 microseconds, and
+  query-visible systemd append at 11.43–11.66 milliseconds across three runs;
 - provider and API server targets built successfully;
 - the provider and API server targets built with Swift warnings promoted to
   errors;
@@ -169,6 +220,8 @@ Current development MacBook Pro evidence:
   `79c89babc7399c0cc1d4f800bd5ec092cc6c153d`.
 - signed durable reader-checkpoint commit:
   `dcefedba2b3b5806953c32e35ca2edaea24658a0`.
+- signed Linux workload/systemd-adapter commit:
+  `e8cc75f001d24896144a5e44e33d1f7a5d1e5729`.
 
 The warnings-as-errors build used the local signed Containerization
 shared-sandbox worktree because the coordinated Containerization upstream wave
@@ -190,8 +243,10 @@ published dependency pin remains unchanged.
 - [x] Durable writer/reader state reconciles restart and response-loss windows,
   fences close-before-flush, and resumes the exact reader sequence and native
   journal checkpoint.
-- [ ] Add the signed Linux service and concrete systemd journal adapter.
+- [x] Add the Linux service, concrete systemd journal adapter, pinned OCI build,
+  and cross-language real-systemd evidence.
 - [ ] Complete production reader routing, recovery, and supervision.
-- [ ] Add real-systemd compatibility and performance evidence.
+- [ ] Add release signing and readiness-gated installation/advertisement.
+- [ ] Add paired Docker compatibility and performance evidence.
 
 Related issue handoff: `docs/upstream/ISSUE-journald-logging-provider.md`.
