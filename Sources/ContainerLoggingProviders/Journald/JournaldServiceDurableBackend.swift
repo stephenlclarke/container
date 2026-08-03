@@ -30,6 +30,7 @@ public enum JournaldServiceDurableStateLimitsV1 {
     public static let maximumWriters = 4_096
     public static let maximumReaders = 4_096
     public static let maximumStateBytes = 64 * 1_024 * 1_024
+    public static let maximumReaderCheckpointBytes = 64 * 1_024
 }
 
 public protocol JournaldServiceDurableStateStoreV1: Sendable {
@@ -120,27 +121,69 @@ public enum JournaldJournalAppendDispositionV1: Equatable, Sendable {
     case alreadyPresent
 }
 
+/// Bounded adapter-private state that identifies the journal position before
+/// the next record. The Linux adapter stores a native systemd cursor and any
+/// immutable tail anchor here; the protocol engine deliberately never parses
+/// or logs these bytes.
+public struct JournaldJournalReaderCheckpointV1:
+    Codable, Equatable, Sendable
+{
+    public let bytes: Data
+
+    public init(bytes: Data) throws {
+        guard
+            !bytes.isEmpty,
+            bytes.count
+                <= JournaldServiceDurableStateLimitsV1
+                .maximumReaderCheckpointBytes
+        else {
+            throw JournaldServiceDurableStateError.corruptState
+        }
+        self.bytes = bytes
+    }
+}
+
+/// One journal read plus the position that must be committed with it.
+public struct JournaldJournalReadResultV1: Equatable, Sendable {
+    public let event: ContainerLogReaderEventV1
+    public let checkpoint: JournaldJournalReaderCheckpointV1?
+
+    public init(
+        event: ContainerLogReaderEventV1,
+        checkpoint: JournaldJournalReaderCheckpointV1?
+    ) {
+        self.event = event
+        self.checkpoint = checkpoint
+    }
+}
+
 /// System-journal boundary. `append` must atomically return `alreadyPresent`
 /// for the same identity and byte-identical entry, and throw
-/// `idempotencyConflict` if that identity exists with different bytes. `read`
-/// must return the same event for an identical request and sequence so a state
-/// persistence failure can be reconciled without advancing the journal cursor.
+/// `idempotencyConflict` if that identity exists with different bytes. Reader
+/// checkpoints identify the position *before* the next record. Preparing an
+/// identical reader must return an identical initial checkpoint, and reading
+/// from an identical checkpoint must return the same record and next
+/// checkpoint so a restart never depends on a process-local journal cursor.
 public protocol JournaldJournalAdapterV1: Sendable {
     func append(
         identity: JournaldJournalEntryIdentityV1,
         entry: JournaldEntry
     ) async throws -> JournaldJournalAppendDispositionV1
     func flush(timeoutNanoseconds: UInt64) async throws
+    func prepareReader(
+        request: LogDriverReaderOpenRequestV1
+    ) async throws -> JournaldJournalReaderCheckpointV1?
     func read(
         request: LogDriverReaderOpenRequestV1,
-        sequence: UInt64
-    ) async throws -> ContainerLogReaderEventV1
+        sequence: UInt64,
+        after checkpoint: JournaldJournalReaderCheckpointV1?
+    ) async throws -> JournaldJournalReadResultV1
     func cancelReader(sessionID: String) async
 }
 
 /// Restart-safe writer and reader state behind the journald protocol engine.
 public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
-    private static let currentSchemaVersion: UInt32 = 1
+    private static let currentSchemaVersion: UInt32 = 2
 
     private enum WriterPhase: String, Codable {
         case active
@@ -172,6 +215,7 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
         let open: LogDriverReaderOpenRequestV1
         var phase: ReaderPhase
         var nextSequence: UInt64
+        var checkpoint: JournaldJournalReaderCheckpointV1?
         var lastSequence: UInt64?
         var lastEvent: JournaldServiceReaderEventWireV1?
     }
@@ -408,11 +452,13 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
                 maximum: JournaldServiceDurableStateLimitsV1.maximumReaders
             )
         }
+        let checkpoint = try await journal.prepareReader(request: request)
         var candidate = snapshot
         candidate.readers[request.readerSessionID] = ReaderState(
             open: request,
             phase: .active,
             nextSequence: 1,
+            checkpoint: checkpoint,
             lastSequence: nil,
             lastEvent: nil
         )
@@ -435,9 +481,10 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
             throw JournaldProviderError.idempotencyConflict
         }
 
-        let event = try await journal.read(
+        let result = try await journal.read(
             request: reader.open,
-            sequence: sequence
+            sequence: sequence,
+            after: reader.checkpoint
         )
         guard let current = snapshot.readers[sessionID] else {
             throw JournaldProviderError.unknownSession
@@ -453,22 +500,32 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
         }
         reader = current
         reader.lastSequence = sequence
-        switch event {
+        switch result.event {
         case .record(let record):
+            guard
+                let nextCheckpoint = result.checkpoint,
+                nextCheckpoint != reader.checkpoint
+            else {
+                throw JournaldServiceDurableStateError.corruptState
+            }
             reader.lastEvent = .record(ContainerLogReadRecordWireV1(record))
+            reader.checkpoint = nextCheckpoint
             let next = sequence.addingReportingOverflow(1)
             guard !next.overflow else {
                 throw JournaldProviderError.invalidJournalEntry
             }
             reader.nextSequence = next.partialValue
         case .endOfStream:
+            guard result.checkpoint == reader.checkpoint else {
+                throw JournaldServiceDurableStateError.corruptState
+            }
             reader.lastEvent = .endOfStream
             reader.phase = .ended
         }
         var candidate = snapshot
         candidate.readers[sessionID] = reader
         try await commit(candidate)
-        return event
+        return result.event
     }
 
     public func cancelReader(sessionID: String) async throws {

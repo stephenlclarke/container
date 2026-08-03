@@ -209,6 +209,7 @@ struct JournaldServiceDurableBackendTests {
             journal: journal
         )
         #expect(try await recovered.openReader(request) == 2)
+        #expect(await journal.prepareReaderCallCount == 1)
         #expect(
             try await recovered.nextReader(
                 sessionID: request.readerSessionID,
@@ -236,6 +237,10 @@ struct JournaldServiceDurableBackendTests {
             ) == .endOfStream
         )
         #expect(await journal.readCallCount == 2)
+        #expect(
+            await journal.readerCheckpoints
+                == [nil, try journaldDurableCheckpoint(sequence: 1)]
+        )
     }
 
     @Test func activeReaderSourceMustMatchDurableWriterFence() async throws {
@@ -281,6 +286,62 @@ struct JournaldServiceDurableBackendTests {
         }
     }
 
+    @Test func readerCheckpointBoundsAndProgressFailClosed() async throws {
+        #expect(throws: JournaldServiceDurableStateError.corruptState) {
+            try JournaldJournalReaderCheckpointV1(bytes: Data())
+        }
+        #expect(throws: JournaldServiceDurableStateError.corruptState) {
+            try JournaldJournalReaderCheckpointV1(
+                bytes: Data(
+                    repeating: 0,
+                    count: JournaldServiceDurableStateLimitsV1
+                        .maximumReaderCheckpointBytes + 1
+                )
+            )
+        }
+
+        let record = try journaldDurableReadRecord(sequence: 1)
+        let stalledJournal = JournaldDurableRecordingJournal(
+            readerEvents: [1: .record(record)],
+            advanceRecordCheckpoint: false
+        )
+        let stalledRequest = try journaldDurableReaderOpen(
+            readerSessionID: "stalled-reader"
+        )
+        let stalledBackend = try await JournaldServiceDurableBackendV1.load(
+            sandboxGeneration: 13,
+            stateStore: JournaldDurableMemoryStateStore(),
+            journal: stalledJournal
+        )
+        #expect(try await stalledBackend.openReader(stalledRequest) == 1)
+        await #expect(throws: JournaldServiceDurableStateError.corruptState) {
+            try await stalledBackend.nextReader(
+                sessionID: stalledRequest.readerSessionID,
+                sequence: 1
+            )
+        }
+
+        let advancedEndJournal = JournaldDurableRecordingJournal(
+            readerEvents: [1: .endOfStream],
+            advanceEndCheckpoint: true
+        )
+        let advancedEndRequest = try journaldDurableReaderOpen(
+            readerSessionID: "advanced-end-reader"
+        )
+        let advancedEndBackend = try await JournaldServiceDurableBackendV1.load(
+            sandboxGeneration: 13,
+            stateStore: JournaldDurableMemoryStateStore(),
+            journal: advancedEndJournal
+        )
+        #expect(try await advancedEndBackend.openReader(advancedEndRequest) == 1)
+        await #expect(throws: JournaldServiceDurableStateError.corruptState) {
+            try await advancedEndBackend.nextReader(
+                sessionID: advancedEndRequest.readerSessionID,
+                sequence: 1
+            )
+        }
+    }
+
     @Test func generationMismatchAndCorruptStateFailClosed() async throws {
         let state = JournaldDurableMemoryStateStore()
         let journal = JournaldDurableRecordingJournal()
@@ -298,6 +359,24 @@ struct JournaldServiceDurableBackendTests {
         ) {
             try await JournaldServiceDurableBackendV1.load(
                 sandboxGeneration: 14,
+                stateStore: state,
+                journal: journal
+            )
+        }
+
+        await state.replace(
+            with: Data(
+                "{\"readers\":{},\"sandboxGeneration\":13,\"schemaVersion\":1,\"writers\":{}}"
+                    .utf8
+            )
+        )
+        await #expect(
+            throws:
+                JournaldServiceDurableStateError
+                .unsupportedSchemaVersion(1)
+        ) {
+            try await JournaldServiceDurableBackendV1.load(
+                sandboxGeneration: 13,
                 stateStore: state,
                 journal: journal
             )
@@ -390,6 +469,8 @@ private actor JournaldDurableMemoryStateStore:
 private actor JournaldDurableRecordingJournal: JournaldJournalAdapterV1 {
     private var entries = [JournaldJournalEntryIdentityV1: JournaldEntry]()
     private let readerEvents: [UInt64: ContainerLogReaderEventV1]
+    private let advanceRecordCheckpoint: Bool
+    private let advanceEndCheckpoint: Bool
     private var failAfterFirstAppendEffect: Bool
     private let blockFlush: Bool
     private var flushStarted = false
@@ -397,17 +478,23 @@ private actor JournaldDurableRecordingJournal: JournaldJournalAdapterV1 {
     private var flushContinuation: CheckedContinuation<Void, Never>?
     private(set) var appendCallCount = 0
     private(set) var flushCallCount = 0
+    private(set) var prepareReaderCallCount = 0
     private(set) var readCallCount = 0
+    private(set) var readerCheckpoints = [JournaldJournalReaderCheckpointV1?]()
     private(set) var cancelledReaders = Set<String>()
 
     init(
         failAfterFirstAppendEffect: Bool = false,
         blockFlush: Bool = false,
-        readerEvents: [UInt64: ContainerLogReaderEventV1] = [:]
+        readerEvents: [UInt64: ContainerLogReaderEventV1] = [:],
+        advanceRecordCheckpoint: Bool = true,
+        advanceEndCheckpoint: Bool = false
     ) {
         self.failAfterFirstAppendEffect = failAfterFirstAppendEffect
         self.blockFlush = blockFlush
         self.readerEvents = readerEvents
+        self.advanceRecordCheckpoint = advanceRecordCheckpoint
+        self.advanceEndCheckpoint = advanceEndCheckpoint
     }
 
     var entryCount: Int {
@@ -462,17 +549,50 @@ private actor JournaldDurableRecordingJournal: JournaldJournalAdapterV1 {
         flushContinuation = nil
     }
 
+    func prepareReader(
+        request: LogDriverReaderOpenRequestV1
+    ) -> JournaldJournalReaderCheckpointV1? {
+        prepareReaderCallCount += 1
+        return nil
+    }
+
     func read(
         request: LogDriverReaderOpenRequestV1,
-        sequence: UInt64
-    ) -> ContainerLogReaderEventV1 {
+        sequence: UInt64,
+        after checkpoint: JournaldJournalReaderCheckpointV1?
+    ) throws -> JournaldJournalReadResultV1 {
         readCallCount += 1
-        return readerEvents[sequence] ?? .endOfStream
+        readerCheckpoints.append(checkpoint)
+        let event = readerEvents[sequence] ?? .endOfStream
+        switch event {
+        case .record:
+            return JournaldJournalReadResultV1(
+                event: event,
+                checkpoint: advanceRecordCheckpoint
+                    ? try journaldDurableCheckpoint(sequence: sequence)
+                    : checkpoint
+            )
+        case .endOfStream:
+            return JournaldJournalReadResultV1(
+                event: event,
+                checkpoint: advanceEndCheckpoint
+                    ? try journaldDurableCheckpoint(sequence: sequence)
+                    : checkpoint
+            )
+        }
     }
 
     func cancelReader(sessionID: String) {
         cancelledReaders.insert(sessionID)
     }
+}
+
+private func journaldDurableCheckpoint(
+    sequence: UInt64
+) throws -> JournaldJournalReaderCheckpointV1 {
+    try JournaldJournalReaderCheckpointV1(
+        bytes: Data("checkpoint-\(sequence)".utf8)
+    )
 }
 
 private func journaldDurableWriterOpen(
