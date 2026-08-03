@@ -55,6 +55,42 @@ struct JournaldServiceWireTests {
                 from: responseData
             ) == response
         )
+
+        let readerOpened = try JournaldServiceWireResponseV1.readerOpened(
+            operationID: request.operationID,
+            readerSequence: 7
+        )
+        #expect(
+            try JSONDecoder().decode(
+                JournaldServiceWireResponseV1.self,
+                from: JSONEncoder().encode(readerOpened)
+            ) == readerOpened
+        )
+        #expect(throws: JournaldServiceWireError.invalidEnvelope) {
+            try JournaldServiceWireResponseV1.readerOpened(
+                operationID: request.operationID,
+                readerSequence: 0
+            )
+        }
+        let generation = try JournaldServiceWireResponseV1.generation(
+            operationID: request.operationID,
+            sandboxGeneration: 1
+        )
+        var conflictingObject = try #require(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(generation)
+            ) as? [String: Any]
+        )
+        conflictingObject["readerSequence"] = 1
+        let conflictingData = try JSONSerialization.data(
+            withJSONObject: conflictingObject
+        )
+        #expect(throws: JournaldServiceWireError.invalidEnvelope) {
+            try JSONDecoder().decode(
+                JournaldServiceWireResponseV1.self,
+                from: conflictingData
+            )
+        }
     }
 
     @Test func entryAndFrameLimitsFailClosed() throws {
@@ -136,7 +172,7 @@ struct JournaldServiceWireTests {
             ]
         )
         #expect(
-            requests.compactMap(\.readerSequence) == [1, 2]
+            requests.compactMap(\.readerSequence) == [5, 6]
         )
         #expect(requests[4].fenced == true)
         #expect(requests[3].timeoutNanoseconds != nil)
@@ -242,7 +278,7 @@ private actor JournaldWireRecordingTransport: JournaldServiceWireTransportV1 {
                 sandboxGeneration: 9
             )
         case .nextReader:
-            if request.readerSequence == 1 {
+            if request.readerSequence == 5 {
                 return try .reader(
                     operationID: request.operationID,
                     event: .record(
@@ -256,8 +292,12 @@ private actor JournaldWireRecordingTransport: JournaldServiceWireTransportV1 {
                 operationID: request.operationID,
                 event: .endOfStream
             )
-        case .openWriter, .write, .flushWriter, .closeWriter, .openReader,
-            .cancelReader:
+        case .openReader:
+            return try .readerOpened(
+                operationID: request.operationID,
+                readerSequence: 5
+            )
+        case .openWriter, .write, .flushWriter, .closeWriter, .cancelReader:
             return try .acknowledgement(operationID: request.operationID)
         }
     }

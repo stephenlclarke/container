@@ -559,6 +559,7 @@ public struct JournaldServiceWireResponseV1: Codable, Equatable, Sendable {
     public let schemaVersion: UInt32
     public let operationID: String
     public let sandboxGeneration: UInt64?
+    public let readerSequence: UInt64?
     public let readerEvent: JournaldServiceReaderEventWireV1?
     public let failure: JournaldServiceWireFailureV1?
 
@@ -583,6 +584,16 @@ public struct JournaldServiceWireResponseV1: Codable, Equatable, Sendable {
         try Self(operationID: operationID, readerEvent: event)
     }
 
+    public static func readerOpened(
+        operationID: String,
+        readerSequence: UInt64
+    ) throws -> Self {
+        try Self(
+            operationID: operationID,
+            readerSequence: readerSequence
+        )
+    }
+
     public static func failed(
         operationID: String,
         failure: JournaldServiceWireFailureV1
@@ -594,6 +605,7 @@ public struct JournaldServiceWireResponseV1: Codable, Equatable, Sendable {
         schemaVersion: UInt32 = currentSchemaVersion,
         operationID: String,
         sandboxGeneration: UInt64? = nil,
+        readerSequence: UInt64? = nil,
         readerEvent: JournaldServiceReaderEventWireV1? = nil,
         failure: JournaldServiceWireFailureV1? = nil
     ) throws {
@@ -605,15 +617,21 @@ public struct JournaldServiceWireResponseV1: Codable, Equatable, Sendable {
         }
         let payloadCount = [
             sandboxGeneration != nil,
+            readerSequence != nil,
             readerEvent != nil,
             failure != nil,
         ].filter { $0 }.count
-        guard payloadCount <= 1, sandboxGeneration != 0 else {
+        guard
+            payloadCount <= 1,
+            sandboxGeneration != 0,
+            readerSequence != 0
+        else {
             throw JournaldServiceWireError.invalidEnvelope
         }
         self.schemaVersion = schemaVersion
         self.operationID = operationID
         self.sandboxGeneration = sandboxGeneration
+        self.readerSequence = readerSequence
         self.readerEvent = readerEvent
         self.failure = failure
     }
@@ -626,6 +644,10 @@ public struct JournaldServiceWireResponseV1: Codable, Equatable, Sendable {
             sandboxGeneration: try container.decodeIfPresent(
                 UInt64.self,
                 forKey: .sandboxGeneration
+            ),
+            readerSequence: try container.decodeIfPresent(
+                UInt64.self,
+                forKey: .readerSequence
             ),
             readerEvent: try container.decodeIfPresent(
                 JournaldServiceReaderEventWireV1.self,
@@ -884,11 +906,15 @@ public actor JournaldServiceWireClientV1: JournaldService {
     public func openReader(
         _ request: LogDriverReaderOpenRequestV1
     ) async throws -> any ContainerLogReader {
-        try await requireAcknowledgement(
+        let response = try await invoke(
             JournaldServiceWireRequestV1.openReader(request)
         )
+        guard let sequence = response.readerSequence else {
+            throw JournaldServiceWireError.invalidEnvelope
+        }
         return JournaldServiceWireReaderV1(
             sessionID: request.readerSessionID,
+            sequence: sequence,
             client: self
         )
     }
@@ -931,6 +957,7 @@ public actor JournaldServiceWireClientV1: JournaldService {
         let response = try await invoke(request)
         guard
             response.sandboxGeneration == nil,
+            response.readerSequence == nil,
             response.readerEvent == nil
         else {
             throw JournaldServiceWireError.invalidEnvelope
@@ -1010,11 +1037,16 @@ public actor JournaldServiceWireClientV1: JournaldService {
 private actor JournaldServiceWireReaderV1: ContainerLogReader {
     private let sessionID: String
     private let client: JournaldServiceWireClientV1
-    private var sequence: UInt64 = 1
+    private var sequence: UInt64
     private var closed = false
 
-    init(sessionID: String, client: JournaldServiceWireClientV1) {
+    init(
+        sessionID: String,
+        sequence: UInt64,
+        client: JournaldServiceWireClientV1
+    ) {
         self.sessionID = sessionID
+        self.sequence = sequence
         self.client = client
     }
 

@@ -61,7 +61,9 @@ struct JournaldServiceServerTests {
         let openReader = try JournaldServiceWireRequestV1.openReader(
             readerOpen
         )
-        #expect(await handler.handle(openReader).failure == nil)
+        let openReaderResponse = await handler.handle(openReader)
+        #expect(openReaderResponse.failure == nil)
+        #expect(openReaderResponse.readerSequence == 1)
 
         let next = try JournaldServiceWireRequestV1.nextReader(
             sessionID: readerOpen.readerSessionID,
@@ -325,8 +327,9 @@ private actor JournaldServerRecordingBackend: JournaldServiceBackendV1 {
         )
     }
 
-    func openReader(_ request: LogDriverReaderOpenRequestV1) {
+    func openReader(_ request: LogDriverReaderOpenRequestV1) -> UInt64 {
         readerOpen = request
+        return 1
     }
 
     func nextReader(
@@ -400,7 +403,7 @@ private actor JournaldServerBlockingBackend: JournaldServiceBackendV1 {
         fenced: Bool,
         timeoutNanoseconds: UInt64
     ) {}
-    func openReader(_ request: LogDriverReaderOpenRequestV1) {}
+    func openReader(_ request: LogDriverReaderOpenRequestV1) -> UInt64 { 1 }
     func nextReader(
         sessionID: String,
         sequence: UInt64

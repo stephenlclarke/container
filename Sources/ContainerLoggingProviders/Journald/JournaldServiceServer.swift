@@ -36,7 +36,7 @@ public protocol JournaldServiceBackendV1: Sendable {
         fenced: Bool,
         timeoutNanoseconds: UInt64
     ) async throws
-    func openReader(_ request: LogDriverReaderOpenRequestV1) async throws
+    func openReader(_ request: LogDriverReaderOpenRequestV1) async throws -> UInt64
     func nextReader(
         sessionID: String,
         sequence: UInt64
@@ -227,8 +227,13 @@ public actor JournaldServiceWireHandlerV1 {
                 )
                 return try .acknowledgement(operationID: request.operationID)
             case .openReader:
-                try await backend.openReader(try required(request.readerOpen))
-                return try .acknowledgement(operationID: request.operationID)
+                let sequence = try await backend.openReader(
+                    try required(request.readerOpen)
+                )
+                return try .readerOpened(
+                    operationID: request.operationID,
+                    readerSequence: sequence
+                )
             case .nextReader:
                 let event = try await backend.nextReader(
                     sessionID: try required(request.sessionID),
