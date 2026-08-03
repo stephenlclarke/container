@@ -56,6 +56,8 @@ public enum RuntimeRoutes: String {
     case engineSandboxStartWorkload = "com.apple.container.runtime/engineSandbox/startWorkload"
     /// Observe an exact workload start after an interrupted response.
     case engineSandboxObserveWorkloadStart = "com.apple.container.runtime/engineSandbox/observeWorkloadStart"
+    /// Open a generation-fenced connection to a protected sandbox service.
+    case engineSandboxDialService = "com.apple.container.runtime/engineSandbox/dialService"
 
     // MARK: - Process management
 

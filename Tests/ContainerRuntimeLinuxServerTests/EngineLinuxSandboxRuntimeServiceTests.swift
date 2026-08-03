@@ -115,6 +115,36 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func protectedServiceDialRequiresExactRunningGeneration() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        let request = EngineLinuxSandboxServiceDialRequestV1(
+            sandboxID: "engine-sandbox",
+            sandboxGeneration: 1,
+            port: 12_345
+        )
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.dialService(request)
+        }
+        _ = try await service.boot(bootRequest())
+        let handle = try await service.dialService(request)
+        try handle.close()
+        #expect(await sandbox.dialedPorts == [12_345])
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.dialService(
+                EngineLinuxSandboxServiceDialRequestV1(
+                    sandboxID: "engine-sandbox",
+                    sandboxGeneration: 2,
+                    port: 12_345
+                )
+            )
+        }
+        #expect(await sandbox.dialedPorts == [12_345])
+    }
+
+    @Test
     func wireObservationsRoundTrip() throws {
         let bootReceipt = EngineLinuxSandboxBootReceiptV1(
             sandboxID: "engine-sandbox",
@@ -144,6 +174,11 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 requestDigest: workloadRequest.context.requestDigest
             )
         )
+        let dial = EngineLinuxSandboxServiceDialRequestV1(
+            sandboxID: "engine-sandbox",
+            sandboxGeneration: 1,
+            port: 12_345
+        )
 
         #expect(
             try JSONDecoder().decode(
@@ -168,6 +203,12 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 WorkloadProcessObservationV1.self,
                 from: JSONEncoder().encode(workloadObservation)
             ) == workloadObservation
+        )
+        #expect(
+            try JSONDecoder().decode(
+                EngineLinuxSandboxServiceDialRequestV1.self,
+                from: JSONEncoder().encode(dial)
+            ) == dial
         )
     }
 
@@ -231,6 +272,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var addCount = 0
     private(set) var startCount = 0
     private(set) var configuredArguments: [String] = []
+    private(set) var dialedPorts: [UInt32] = []
     private var workloads: [String: LinuxSandboxWorkloadSnapshot] = [:]
 
     init(state: LinuxSandboxRuntimeState = .absent) {
@@ -287,6 +329,11 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
 
     func removeContainer(_ containerID: String) {
         workloads[containerID] = nil
+    }
+
+    func dialVsock(port: UInt32) -> FileHandle {
+        dialedPorts.append(port)
+        return Pipe().fileHandleForReading
     }
 }
 

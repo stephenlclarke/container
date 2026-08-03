@@ -35,6 +35,7 @@ public protocol EngineLinuxSandboxInstanceV1: Sendable {
     ) async throws
     func startContainer(_ containerID: String) async throws
     func removeContainer(_ containerID: String) async throws
+    func dialVsock(port: UInt32) async throws -> FileHandle
 }
 
 extension LinuxPod: EngineLinuxSandboxInstanceV1 {}
@@ -45,7 +46,8 @@ extension LinuxPod: EngineLinuxSandboxInstanceV1 {}
 /// Containerization snapshot is consulted before every observation so a
 /// receipt cannot report a running VM after a later shutdown.
 public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
-    EngineLinuxSandboxWorkloadRuntimeV1
+    EngineLinuxSandboxWorkloadRuntimeV1,
+    EngineLinuxSandboxServiceRuntimeV1
 {
     private struct BootInFlight: Sendable {
         let request: EngineLinuxSandboxBootRequestV1
@@ -74,6 +76,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     private var workloadRequests: [String: EngineLinuxSandboxWorkloadStartRequestV1] = [:]
     private var workloadReceipts: [String: WorkloadProcessReceiptV1] = [:]
     private var workloadCaptures: [String: ContainerLogRuntimeCapture] = [:]
+    private var serviceDialsInFlight = 0
 
     public init(
         sandbox: any EngineLinuxSandboxInstanceV1,
@@ -207,7 +210,11 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         _ request: EngineLinuxSandboxShutdownRequestV1
     ) async throws -> EngineLinuxSandboxShutdownReceiptV1 {
         try validate(request)
-        guard bootInFlight == nil, workloadStartInFlight.isEmpty else {
+        guard
+            bootInFlight == nil,
+            workloadStartInFlight.isEmpty,
+            serviceDialsInFlight == 0
+        else {
             throw conflictingOperation("sandbox shutdown")
         }
         if let inFlight = shutdownInFlight {
@@ -500,6 +507,29 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         }
     }
 
+    public func dialService(
+        _ request: EngineLinuxSandboxServiceDialRequestV1
+    ) async throws -> FileHandle {
+        try validate(request)
+        guard bootInFlight == nil, shutdownInFlight == nil else {
+            throw conflictingOperation("protected service dial")
+        }
+        let snapshot = await sandbox.snapshot()
+        guard snapshot.state == .running else {
+            throw unattributedState("shared sandbox is not running for protected service dial")
+        }
+        guard
+            let bootReceipt,
+            bootReceipt.sandboxID == request.sandboxID,
+            bootReceipt.generation == request.sandboxGeneration
+        else {
+            throw unattributedState("protected service dial does not match the active sandbox generation")
+        }
+        serviceDialsInFlight += 1
+        defer { serviceDialsInFlight -= 1 }
+        return try await sandbox.dialVsock(port: request.port)
+    }
+
     /// Return an endpoint from the helper's anonymous XPC connection.
     @Sendable
     public func createEndpoint(_ message: XPCMessage) async throws -> XPCMessage {
@@ -569,6 +599,19 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         return reply
     }
 
+    @Sendable
+    public func dialServiceMessage(_ message: XPCMessage) async throws -> XPCMessage {
+        let request = try message.engineSandboxPayload(
+            EngineLinuxSandboxServiceDialRequestV1.self
+        )
+        let reply = message.reply()
+        reply.set(
+            key: RuntimeKeys.fd.rawValue,
+            value: try await dialService(request)
+        )
+        return reply
+    }
+
     private func validate(_ request: EngineLinuxSandboxBootRequestV1) throws {
         try validateIdentity(
             sandboxID: request.sandboxID,
@@ -613,6 +656,21 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             )
         }
         try WorkloadNetworkPlan.validate(request.networkEndpoints)
+    }
+
+    private func validate(_ request: EngineLinuxSandboxServiceDialRequestV1) throws {
+        guard
+            request.sandboxID == sandbox.id,
+            !request.sandboxID.isEmpty,
+            request.sandboxID.utf8.count <= EngineWorkloadLedgerLimitsV1.maximumIdentifierBytes,
+            request.sandboxGeneration > 0,
+            request.port > 0
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid Engine Linux sandbox protected service dial request"
+            )
+        }
     }
 
     private func validateIdentity(

@@ -281,6 +281,34 @@ public actor EngineLinuxSandboxAuthorityV1 {
         )
     }
 
+    /// Opens a service connection only after reconciling the exact durable
+    /// sandbox generation. The runtime independently checks the same fence.
+    public func dialService(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        port: UInt32
+    ) async throws -> FileHandle {
+        guard port > 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "Engine Linux sandbox service port must be positive"
+            )
+        }
+        let ready = try await ensureReady(configuration: configuration)
+        guard let runtime else {
+            throw ContainerizationError(
+                .internalError,
+                message: "Engine Linux sandbox runtime was not initialized"
+            )
+        }
+        return try await runtime.dialService(
+            EngineLinuxSandboxServiceDialRequestV1(
+                sandboxID: sandboxID,
+                sandboxGeneration: ready.generation,
+                port: port
+            )
+        )
+    }
+
     public func shutdownIfIdle(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1
     ) async throws -> EngineLinuxSandboxRecordV1 {

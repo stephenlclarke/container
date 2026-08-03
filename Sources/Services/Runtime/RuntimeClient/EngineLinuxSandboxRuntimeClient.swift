@@ -20,7 +20,8 @@ import ContainerizationError
 import Foundation
 
 public protocol EngineLinuxSandboxRuntimeClientV1: EngineLinuxSandboxRuntimeV1,
-    EngineLinuxSandboxWorkloadRuntimeV1
+    EngineLinuxSandboxWorkloadRuntimeV1,
+    EngineLinuxSandboxServiceRuntimeV1
 {}
 
 extension RuntimeClient: EngineLinuxSandboxRuntimeV1 {
@@ -68,6 +69,32 @@ extension RuntimeClient: EngineLinuxSandboxWorkloadRuntimeV1 {
             route: .engineSandboxObserveWorkloadStart,
             request: request
         )
+    }
+}
+
+extension RuntimeClient: EngineLinuxSandboxServiceRuntimeV1 {
+    public func dialService(
+        _ requestValue: EngineLinuxSandboxServiceDialRequestV1
+    ) async throws -> FileHandle {
+        let request = XPCMessage(route: RuntimeRoutes.engineSandboxDialService.rawValue)
+        try request.setEngineSandboxPayload(requestValue)
+        let response: XPCMessage
+        do {
+            response = try await client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to dial protected service port \(requestValue.port) on Engine Linux sandbox \(id)",
+                cause: error
+            )
+        }
+        guard let handle = response.fileHandle(key: RuntimeKeys.fd.rawValue) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "missing protected service file descriptor for Engine Linux sandbox \(id)"
+            )
+        }
+        return handle
     }
 }
 

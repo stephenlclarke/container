@@ -66,6 +66,14 @@ struct EngineLinuxSandboxAuthorityTests {
         #expect(running.activeProcessGeneration == 1)
         #expect(await runtime.workloadStartCount == 1)
 
+        let serviceHandle = try await recovered.dialService(
+            configuration: fixture.sandboxConfiguration,
+            port: 12_345
+        )
+        try serviceHandle.close()
+        #expect(await runtime.serviceDialCount == 1)
+        #expect(await runtime.lastServiceDial?.sandboxGeneration == ready.generation)
+
         let replay = try await recovered.startWorkload(
             planDigest: "sha256:plan",
             configuration: fixture.sandboxConfiguration,
@@ -117,6 +125,8 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
     private(set) var bootCount = 0
     private(set) var bootObservationCount = 0
     private(set) var workloadStartCount = 0
+    private(set) var serviceDialCount = 0
+    private(set) var lastServiceDial: EngineLinuxSandboxServiceDialRequestV1?
 
     func boot(
         _ request: EngineLinuxSandboxBootRequestV1
@@ -204,6 +214,14 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
             workloadReceipt.requestDigest == request.context.requestDigest
         else { return .absent }
         return .started(workloadReceipt)
+    }
+
+    func dialService(
+        _ request: EngineLinuxSandboxServiceDialRequestV1
+    ) async throws -> FileHandle {
+        serviceDialCount += 1
+        lastServiceDial = request
+        return Pipe().fileHandleForReading
     }
 }
 

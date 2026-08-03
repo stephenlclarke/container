@@ -97,6 +97,9 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.engineSandboxObserveWorkloadStart.rawValue: XPCServer.route(
                             service.observeWorkloadStartMessage
                         ),
+                        RuntimeRoutes.engineSandboxDialService.rawValue: XPCServer.route(
+                            service.dialServiceMessage
+                        ),
                     ],
                     log: log
                 )
