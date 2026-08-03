@@ -51,9 +51,16 @@ or starting a workload. This closes both post-reservation mutation and
 double-read time-of-check/time-of-use gaps.
 
 Protected service dials first reconcile the same durable ready record, then
-send the exact sandbox ID and generation to the runtime helper. The helper
-checks its live snapshot and boot receipt independently before returning an XPC
-file descriptor, and excludes shutdown while a dial is in flight.
+send the exact sandbox ID/generation, workload ID/process generation, and
+service port to the runtime helper. The helper checks its live sandbox and
+workload snapshots plus retained receipts independently before returning an
+XPC file descriptor, and excludes shutdown while a dial is in flight.
+
+Terminal service workloads can request monitoring. The helper withdraws their
+retained running receipt as soon as exit is observed; the authority durably
+reclaims that exact process generation and permits later rematerialization.
+The production journald service uses this path, including exact OCI
+materialization and readiness-probed catalog publication.
 
 ## Code map
 
@@ -68,7 +75,11 @@ file descriptor, and excludes shutdown while a dial is in flight.
 - `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxWorkloadRuntime.swift`
   carries and derives workload-configuration integrity evidence.
 - `Sources/Services/RuntimeLinux/Server/EngineLinuxSandboxRuntimeService.swift`
-  validates that evidence before materialization.
+  validates that evidence before materialization, exact service dial, and
+  terminal-state withdrawal.
+- `Sources/Services/ContainerAPIService/Server/Containers/EngineLinuxSandboxJournaldService.swift`
+  is the first production protected workload using exact routing, monitoring,
+  rematerialization, and readiness authentication.
 - Focused tests cover restart reuse, exact replay, conflicting replay,
   disappeared VM identity, and bundle mutation.
 
@@ -104,6 +115,10 @@ Results on the development MacBook Pro:
 - protected-service transport commit
   `20071d97d10b386c2a24c84c51bca0e37c0280aa` is signed; its combined runtime
   and authority run passed 8 tests in 2 suites.
+- exact workload routing, terminal monitoring/reclamation, and production
+  journald supervision commit
+  `84d160671f3ba6c265a02b49b2ff4309f6584d30` is signed; the current Engine Linux
+  sandbox filter passed 14 tests and its Thread Sanitizer run reported no race.
 
 ## Deliberate boundaries and review checklist
 
@@ -115,7 +130,10 @@ Results on the development MacBook Pro:
   policy.
 - [x] No Docker-specific behavior enters this generic layer.
 - [x] Service connections are double-fenced by durable authority state and the
-  helper's live exact-generation receipt.
+  helper's live exact sandbox/workload generation receipts.
+- [x] Terminal monitored workloads withdraw readiness, are reclaimed under
+  exact generation fencing, and can be rematerialized without trusting a stale
+  running receipt.
 - [ ] Add scoped exec/attach/wait/stats/copy/stop/remove helper routes.
 - [ ] Implement production effect controllers and guest network/IPAM broker.
 - [ ] Cut `ContainersService` lifecycle traffic over under feature gating,

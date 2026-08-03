@@ -53,6 +53,12 @@ Two restart and integrity defects also prevented a safe cutover:
 - [x] Focused authority, manager, and helper tests pass on the development
   MacBook Pro.
 - [x] Formatting, licence, and whitespace gates pass.
+- [x] Protected service dials validate the exact sandbox ID/generation,
+  workload ID/process generation, and service port at both authority and
+  helper boundaries.
+- [x] Monitored terminal workloads withdraw their retained receipt, are
+  durably reclaimed, and can be rematerialized under a later exact process
+  generation.
 
 ## Remaining production cutover
 
@@ -71,6 +77,13 @@ commit `2d7512c54cfe2fc01d506e08c0300d6f432fd437`. It reads the existing
 per-container authority and exact retained logging generation; it does not yet
 cut general container lifecycle traffic over to the shared sandbox.
 
+The production journald worker is the first protected workload routed through
+the shared-sandbox authority. Signed commit
+`84d160671f3ba6c265a02b49b2ff4309f6584d30` adds exact workload-generation
+service dials, terminal readiness withdrawal/reclamation, OCI materialization,
+and live catalog probing. This closes the protected-service path without
+changing the remaining general `ContainersService` lifecycle-cutover scope.
+
 ## Apple-shaped boundary
 
 This is generic Container runtime composition. It contains no Docker or
@@ -82,3 +95,5 @@ the complete parity programme is finished.
 
 - `203c88b4d71d25a3ef6036035c54ca8b65f4923c` — signed implementation and
   focused tests.
+- `84d160671f3ba6c265a02b49b2ff4309f6584d30` — signed exact service routing,
+  terminal workload recovery, and production journald supervision follow-up.

@@ -35,8 +35,9 @@ Expected behavior:
 
 This is a generic macOS-hosted Google Cloud Logging provider. It does not add
 Compose YAML, a Docker socket or REST API, a Google service emulator, or a
-native Google Cloud Logging reader. Journald, production plugin hosting, and
-Engine/gateway integration remain separate slices.
+native Google Cloud Logging reader. Production plugin hosting and
+Engine/gateway integration remain separate slices; journald is implemented
+separately as a supervised protected Linux workload.
 
 ## Upstream publication
 

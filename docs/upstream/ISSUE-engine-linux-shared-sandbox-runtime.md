@@ -68,7 +68,10 @@ ready.
 - [x] Workload configuration maps to the independent `LinuxPod` surface.
 - [x] Focused runtime and wire-format tests pass.
 - [x] Protected service dials fail closed before boot and for a stale sandbox
-  generation, and shutdown cannot overlap dial establishment.
+  or workload generation, and shutdown cannot overlap dial establishment.
+- [x] Terminal monitoring withdraws the retained running receipt, exact
+  authority reclamation clears durable state, and a later process generation
+  can rematerialize the workload.
 - [x] The full macOS unit corpus passes under warnings-as-errors; the release
   provenance suite also passes with an identity-preserving local mirror.
 
@@ -90,3 +93,9 @@ The reusable protected-service transport is retained at signed commit
 `20071d97d10b386c2a24c84c51bca0e37c0280aa`. It closes the macOS authority to
 shared-VM connection gap, but does not by itself install or advertise a
 journald or logging-plugin worker.
+
+The production journald follow-up is retained at signed commit
+`84d160671f3ba6c265a02b49b2ff4309f6584d30`. It verifies and materializes the
+pinned worker, uses exact workload-generation dials, withdraws readiness on
+terminal failure, rematerializes safely, and probes the live generation before
+catalog advertisement. Other protected service domains remain separate.

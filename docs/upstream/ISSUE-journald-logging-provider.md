@@ -32,44 +32,48 @@ Expected behavior:
 
 ## Current local implementation boundary
 
-The provider contract, exact Moby field/configuration codec, lifecycle fencing,
-native-reader boundary, optional catalog registration, authority configuration,
-and focused tests are implemented locally. The shared Linux sandbox now also
-has an exact-generation XPC/vsock file-descriptor transport for protected
-services. The journald-specific transport now adds an explicit versioned JSON
-envelope, one-MiB length-prefixed frames, binary-safe validated projections,
-stable operation IDs for response-loss replay, ordered reader-next ordinals,
-socket reconnect, `SIGPIPE` suppression, and cancellation that interrupts a
-blocked read. The matching server protocol engine now joins identical in-flight
-operations, rejects operation-ID conflicts before effects, retains completed
-outcomes under count and complete retained-byte limits, maps stable failures,
-and serves persistent framed connections. A restart-safe backend now persists bounded
-writer and reader state in an atomic private snapshot, reconciles the journal
-append crash window by session/epoch/ordinal identity, fences every close
-before flushing, resumes readers at their durable sequence and bounded opaque
-native-journal checkpoint, rejects stale active-reader generations, and fails
-closed if a record does not advance that checkpoint or an end event does. The
-local Linux/arm64 workload now binds the production AF_VSOCK listener to that
-backend and runs a dedicated systemd-journald process. Its concrete go-systemd
-adapter provides digest-checked append reconciliation, query-visible
-acknowledgement, receipt-ordered static/follow reads, Docker stream/filter/detail
-projection, and restartable opaque checkpoints. Pinned OCI builds record source,
-test, archive, and platform-manifest digests and emit BuildKit provenance; a
-packaged Swift client round trip against real systemd-journald passes locally.
-The provider is intentionally not advertised by the production API server
-because authority supervision, release signing and workload installation,
-production writer/reader routing, readiness withdrawal, terminal-state
-reclamation, migration, and recovery remain to be implemented. The Container
-head also currently requires the matched local
-Containerization worktree for `WorkloadNetworkEndpoint`; its published
-dependency pin predates that protected-workload API and must be synchronized in
-the final coordinated wave.
+The complete provider/runtime path is implemented locally. It includes the
+exact Moby field/configuration codec, authority lifecycle fencing, native
+reads, a versioned and bounded replay-safe Swift/Go wire, a restart-safe
+backend, a concrete go-systemd adapter, and a pinned Linux/arm64 OCI workload.
+
+The production API server now verifies the installed archive and manifest,
+loads only the recorded platform digest, materializes a read-only service with
+separate protected protocol-state and persistent-journal mounts, and
+supervises it through the common Engine Linux sandbox. Service connections are
+bound to the exact sandbox ID/generation, workload ID/process generation, and
+vsock port. Terminal exit immediately withdraws the running receipt, exact
+rematerialization is supported, and the catalog probes the live service so
+`journald` disappears whenever readiness cannot be authenticated.
+
+Protocol version two adds authority-ordered terminal writer/reader
+reclamation. The lifecycle ledger commits terminal state before provider
+reclamation and protected-effect deletion, and startup recovery repeats any
+interrupted removal idempotently. Same-generation service restarts preserve
+exact replay; a validated sandbox-generation advance atomically retires old
+protocol sessions while retaining the persistent system journal.
+
+Local evidence includes warnings-as-errors Swift tests, Thread Sanitizer for
+the shared-sandbox runtime, Go race tests, deterministic OCI builds, integrity
+verification, release staging, and a Swift-to-packaged-Linux round trip against
+real systemd-journald. The signed production supervision/reclamation commit is
+`84d160671f3ba6c265a02b49b2ff4309f6584d30`.
+
+The remaining programme-level blockers are release-signature trust
+publication, synchronization of Container's dependency pin with the matched
+Containerization protected-workload API, paired Docker CLI/Compose behavior
+and performance certification, and the separate isolated Docker
+logging-plugin service plane. Final install/upgrade/rollback and whole-stack
+shutdown evidence must be recorded under the synchronized signed dependency
+set.
 
 ## Scope and non-goals
 
 This change does not add Compose parsing, the public Docker REST/socket
-gateway, or Docker logging-plugin hosting. It does not claim journald support
-until the production service and external-client evidence are complete.
+gateway, or Docker logging-plugin hosting. Journald's production runtime path
+is locally implemented, but programme-wide parity is not claimed until the
+remaining release-trust, dependency, external-client, and performance evidence
+is complete.
 
 ## Upstream publication
 

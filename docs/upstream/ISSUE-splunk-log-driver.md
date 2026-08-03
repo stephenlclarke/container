@@ -35,8 +35,9 @@ Expected behavior:
 
 This is a generic macOS-hosted logging provider. It does not add Compose YAML,
 a Docker socket, Docker REST API emulation, a Splunk server, or a native Splunk
-log reader. AWS CloudWatch Logs, Google Cloud Logging, and journald remain
-separate provider slices.
+log reader. AWS CloudWatch Logs and Google Cloud Logging remain separate
+macOS-hosted providers; journald is implemented separately as a supervised
+protected Linux workload.
 
 ## Upstream publication
 

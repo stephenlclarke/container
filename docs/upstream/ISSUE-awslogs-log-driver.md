@@ -34,8 +34,9 @@ Expected behavior:
 
 This is a generic macOS-hosted CloudWatch Logs provider. It does not add
 Compose YAML, a Docker socket or REST API, an AWS service emulator, or a native
-CloudWatch reader. Google Cloud Logging, journald, production plugin hosting,
-and Engine/gateway integration remain separate slices.
+CloudWatch reader. Google Cloud Logging, production plugin hosting, and
+Engine/gateway integration remain separate slices; journald is implemented
+separately as a supervised protected Linux workload.
 
 ## Upstream publication
 

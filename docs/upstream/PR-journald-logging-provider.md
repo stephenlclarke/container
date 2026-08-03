@@ -2,10 +2,11 @@
 
 > [!IMPORTANT]
 > This handoff remains local until the complete parity programme is ready for
-> coordinated Apple publication. The Linux workload and concrete systemd
-> adapter are implemented and packaged locally, but production supervision,
-> release signing, authority routing, and readiness-gated advertisement remain
-> required before the driver can be advertised as supported.
+> coordinated Apple publication. The Linux workload is now verified,
+> materialized, supervised, routed, readiness-gated, and reclaimed by the
+> production authority. Release trust publication, dependency-pin
+> synchronization, and paired Docker compatibility/performance certification
+> remain required before programme-wide support can be claimed.
 
 ## Type of Change
 
@@ -84,21 +85,32 @@ catalog descriptor and no false compatibility claim.
   benchmarks, deterministic workload-manifest verification, and an opt-in
   Swift-to-packaged-Linux cross-language test that verifies an exact
   stdout/stderr write/read round trip.
-- Register configuration and the provider in the built-in authority plane only
-  when a concrete service is supplied.
+- Compose the production API server with the shared-sandbox launchd authority
+  and a lazy journald service. Verify the installed manifest and OCI archive,
+  load only the recorded Linux/arm64 manifest digest, materialize a read-only
+  workload, and mount separate protected service-state and persistent-journal
+  directories.
+- Bind every service dial to the exact sandbox ID/generation, workload ID,
+  process generation, and vsock port. Monitor terminal workload exit, withdraw
+  the retained running receipt immediately, and permit exact rematerialization
+  only after terminal state is observed.
+- Probe the concrete service generation before returning the logging-driver
+  catalog, so `journald` is advertised only while the exact service is ready
+  and is dynamically withdrawn on process, journal, transport, or generation
+  failure.
+- Advance the wire/service contract to protocol version two and add
+  authority-ordered terminal writer/reader reclamation. The lifecycle ledger
+  commits terminal state before asking the provider to reclaim, then removes
+  the protected effect; interrupted removals replay idempotently on startup.
+- Preserve exact replay across a same-generation service restart, but validate
+  and atomically reset protocol sessions when the sandbox generation advances.
+  Persistent journal storage remains mounted across that rollover.
+- Add builder bootstrap, package/Homebrew staging, manifest/archive integrity
+  verification, deterministic multi-build checks, Go race tests, and the
+  Swift-to-packaged-Linux integration to the release build surface.
 
-## Required follow-up before support can be claimed
+## Required follow-up before programme-wide support can be claimed
 
-- Add the authority-owned supervisor that verifies the expected OCI workload
-  digest, installs its private journal/state mounts, starts it inside the
-  common Engine Linux sandbox, authenticates the exact generation, and
-  withdraws readiness on process, journal, or transport failure.
-- Route production writer and reader sessions through that supervised service,
-  reconcile service/sandbox restart without overlapping writers, and advertise
-  `journald` only for the exact ready provider generation.
-- Add authority-driven reclamation for terminal service writer/reader state so
-  the bounded durable replay window cannot become a lifetime session quota;
-  complete delete, migration, shutdown, and recovery behavior.
 - Add release signing and installation verification around the reproducible
   OCI workload and its BuildKit provenance. A signed source commit and recorded
   platform digest are development evidence, not a production release trust
@@ -111,14 +123,20 @@ catalog descriptor and no false compatibility claim.
   throughput, latency, CPU, memory, startup, follow, and backpressure evidence
   against the pinned Docker reference. The current real-systemd/component
   measurements are baselines, not a parity-performance claim.
+- Complete the separate isolated Docker logging-plugin service plane. The
+  journald worker deliberately does not host third-party Docker plugins.
+- Exercise programme-level install/upgrade/rollback and whole-stack shutdown
+  under the final signed dependency set. The provider's own restart,
+  generation rollover, terminal reclamation, and response-loss paths are now
+  implemented and covered locally.
 
 ## Code map
 
 - `Sources/ContainerLoggingProviders/Journald/JournaldConfiguration.swift`
   contains the Docker option and field codec.
 - `Sources/ContainerLoggingProviders/Journald/JournaldProvider.swift` contains
-  the descriptor, service boundary, session lifecycle, fencing, and reader
-  provider.
+  the descriptor, service boundary, session lifecycle, fencing, terminal
+  reclamation, and reader provider.
 - `Sources/ContainerLoggingProviders/Journald/JournaldServiceWire.swift`
   contains the bounded versioned request/response projections, framed socket
   codec, reconnect-safe transport, and service client.
@@ -128,11 +146,20 @@ catalog descriptor and no false compatibility claim.
 - `Sources/ContainerLoggingProviders/Journald/JournaldServiceDurableBackend.swift`
   contains the bounded restart snapshot, private atomic file store,
   save-before-publish transitions, writer reconciliation/fencing, reader
-  resume, and system-journal adapter boundary.
+  resume, terminal reclamation, safe sandbox-generation rollover, and
+  system-journal adapter boundary.
 - `Sources/ContainerLoggingProviders/BuiltinRemoteLogDriverProviderSet.swift`
   stores typed bindings and conditionally installs the provider.
 - `Sources/Services/ContainerAPIService/Server/Containers/AuthorityRemoteLogDriverPlane.swift`
-  resolves the exact configuration and selected sandbox generation.
+  resolves the exact configuration and selected sandbox generation, recovers
+  pending terminal effects, and readiness-filters the catalog.
+- `Sources/Services/ContainerAPIService/Server/Containers/EngineLinuxSandboxJournaldService.swift`
+  verifies installed assets, materializes the exact protected workload and
+  durable mounts, supervises it through the shared-sandbox authority, and
+  opens an exact-generation service connection.
+- `Sources/APIServer/APIServer+Start.swift` conditionally composes that
+  production service and leaves `journald` unadvertised if its installed or
+  runtime prerequisites cannot be established.
 - `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxServiceRuntime.swift`
   and `EngineLinuxSandboxRuntimeClient.swift` provide the generation-fenced
   XPC/vsock connection to a protected service.
@@ -180,34 +207,33 @@ git diff --check
 
 Current development MacBook Pro evidence:
 
-- five journald provider tests and three built-in provider-set tests passed;
-- five journald wire tests passed, including exact replay and cancellation;
-- seven journald wire-server tests passed, including concurrent replay-cache
-  and end-to-end framed-connection cases;
-- eight durable-backend tests passed, covering both append/state crash windows,
-  no-duplicate recovery, close/write reentrancy fencing, active-reader
-  generation checks, durable reader checkpoint resume, invalid/stalled
-  checkpoint rejection, and private file-store hardening;
-- the combined journald wire, server, and durable-backend filter passed all 20
-  tests;
-- 17 portable Go service tests passed with the race detector; the pinned Linux
-  real-systemd lane passed all 20 tests, including exact append replay/conflict,
-  static/follow reads, cancellation, fixed resource bounds, and durable
-  checkpoint recovery;
-- two independently built OCI archives produced the same Linux/arm64 workload
+- the current warnings-as-errors journald run passed all 31 tests in six
+  suites, including provider reclamation, exact wire operations, durable
+  backend generation rollover, installed-asset verification, and production
+  materialization/connection behavior;
+- the Engine Linux sandbox runtime/authority filter passed all 14 tests, and
+  its Thread Sanitizer run passed without a race report;
+- portable Go unit/integration coverage passed with the race detector,
+  including active/mismatched reclaim rejection, idempotent terminal reclaim,
+  restart replay, session-ID reuse, and sandbox-generation reset;
+- deterministic multi-build verification produced Linux/arm64 workload
   manifest digest
-  `sha256:90238651d604cc14f93477cfbf7ca4c50ca7cc36ab416553d05e03c6d7ec1c2a`;
-  the final archive and its recorded source/test hashes verified;
+  `sha256:9e3ab273aa26ba6bb62d6905b4034451b19d42964592e673197242bd05638841`;
+  the final OCI archive SHA-256
+  `e391eb6f62570f2ea41b04185c3f01ed6a736f2376b833b6854952314e18ad0d`
+  and recorded source/test hashes verified;
 - the packaged Swift-to-Linux integration passed its real-systemd stdout/stderr
-  round trip and removed its temporary dependency edit, image, containers, and
+  round trip and removed its temporary dependency edit, containers, and
   volumes;
 - direct component baselines on this MacBook Pro measured protocol replay at
   1.75–2.09 microseconds, durable writer commit at 38.7–51.5 microseconds, and
   query-visible systemd append at 11.43–11.66 milliseconds across three runs;
-- provider and API server targets built successfully;
-- the provider and API server targets built with Swift warnings promoted to
-  errors;
-- formatting, licence, and whitespace gates passed;
+- debug release staging installed the current protocol-v2 OCI archive and
+  manifest under the journald service install root;
+- `make check`, Bash syntax, ShellCheck, formatting, licence, and whitespace
+  gates passed;
+- signed production supervision/reclamation commit:
+  `84d160671f3ba6c265a02b49b2ff4309f6584d30`.
 - signed implementation commit:
   `887848ed719a05836d2f846b69a22749e61f2f62`.
 - signed shared-service transport commit:
@@ -223,10 +249,11 @@ Current development MacBook Pro evidence:
 - signed Linux workload/systemd-adapter commit:
   `e8cc75f001d24896144a5e44e33d1f7a5d1e5729`.
 
-The warnings-as-errors build used the local signed Containerization
-shared-sandbox worktree because the coordinated Containerization upstream wave
-has not been published. SwiftPM editable state was removed afterward; the
-published dependency pin remains unchanged.
+The current warnings-as-errors and packaged-integration builds used the local
+signed Containerization shared-sandbox worktree because the coordinated
+Containerization upstream wave has not been published. SwiftPM editable state
+was removed afterward; `Package.resolved` and the published dependency pin
+remain unchanged.
 
 ## Review checklist
 
@@ -243,10 +270,12 @@ published dependency pin remains unchanged.
 - [x] Durable writer/reader state reconciles restart and response-loss windows,
   fences close-before-flush, and resumes the exact reader sequence and native
   journal checkpoint.
-- [x] Add the Linux service, concrete systemd journal adapter, pinned OCI build,
+- [x] The Linux service, concrete systemd journal adapter, pinned OCI build,
   and cross-language real-systemd evidence.
-- [ ] Complete production reader routing, recovery, and supervision.
-- [ ] Add release signing and readiness-gated installation/advertisement.
+- [x] Production writer/reader routing, exact workload supervision,
+  readiness-gated advertisement, terminal reclamation, and generation rollover
+  are implemented.
+- [ ] Add release-signature trust publication and synchronized dependency pins.
 - [ ] Add paired Docker compatibility and performance evidence.
 
 Related issue handoff: `docs/upstream/ISSUE-journald-logging-provider.md`.

@@ -43,11 +43,18 @@ Sandbox boot/shutdown cannot race workload materialization. Successful
 shutdown closes retained log captures and clears resident receipts. Stopped
 workloads can be removed and rematerialized under a later exact process
 generation; running or prepared workloads with a mismatched intent are fenced.
-Protected service dials name the exact sandbox ID and durable generation, check
-the live snapshot and retained boot receipt in the helper, and transfer only the
-connected file descriptor. Shutdown cannot overlap an in-flight dial. A stale
-authority therefore cannot reconnect a journald, logging-plugin, volume, or API
-service after sandbox replacement.
+Protected service dials name the exact sandbox ID/generation, workload
+ID/process generation, and port; the helper checks both live snapshots and
+retained receipts before transferring only the connected file descriptor.
+Shutdown cannot overlap an in-flight dial. A stale authority therefore cannot
+reconnect a journald, logging-plugin, volume, or API service after sandbox or
+workload replacement.
+
+Workloads may opt into terminal monitoring. Exit immediately withdraws the
+retained running receipt, exact durable authority state is reclaimed, and a
+later process generation can rematerialize the workload. The production
+journald service exercises this route with a pinned OCI workload, persistent
+journal storage, readiness probing, and reconnecting Swift/Go transport.
 
 ## Code map
 
@@ -87,8 +94,10 @@ metadata is not part of this change.
   remain specialized transaction controllers.
 - GPU workloads are rejected until the shared sandbox launch configuration can
   provide a real graphics device; the mapper does not silently accept them.
-- `ContainersService` cutover, service workload packaging, and
-  provider-specific bounded protocols remain integration work.
+- General `ContainersService` cutover and the remaining specialized effect
+  controllers remain integration work. Journald service packaging and its
+  provider-specific bounded protocol are now implemented; other protected
+  service domains retain their own separate work packages.
 
 No Apple issue, branch, pull request, or push has been created. This handoff is
 held locally until all parity development is complete.
@@ -103,6 +112,9 @@ held locally until all parity development is complete.
   logging-authority adapter and exact active-read wire follow-up.
 - `20071d97d10b386c2a24c84c51bca0e37c0280aa` — signed, generation-fenced
   protected-service vsock/XPC transport and authority composition.
+- `84d160671f3ba6c265a02b49b2ff4309f6584d30` — signed exact workload service
+  routing, terminal monitoring/reclamation, and production journald workload
+  supervision.
 
 ## Validation
 
@@ -121,6 +133,9 @@ Current results on the development MacBook Pro:
 - focused runtime suite: 7 tests in 1 suite passed;
 - combined protected-service runtime and API-authority run: 8 tests in 2
   suites passed;
+- current exact-routing/terminal-recovery runtime and authority filter: 14
+  tests passed; the same runtime filter passed under Thread Sanitizer without
+  a race report;
 - focused durable-configuration test passed;
 - `make check` passed;
 - the full unit run compiled and exercised 1,789 tests in 206 suites with no
@@ -140,6 +155,8 @@ Current results on the development MacBook Pro:
 - [x] Unattributed and unsupported state fails closed.
 - [x] The XPC/runtime boundary contains no Docker-specific policy.
 - [x] Protected service connections are bound to the exact live sandbox
-  generation and cannot overlap shutdown.
+  and workload generations and cannot overlap shutdown.
+- [x] Monitored terminal workloads withdraw stale receipts and can be reclaimed
+  and rematerialized under an exact later process generation.
 - [x] Full macOS formatting, license, and unit behavior is green.
 - [x] Implementation commit is signed.
