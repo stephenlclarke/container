@@ -34,6 +34,12 @@ struct ContainerEngineAttachmentInspection: Sendable {
     let terminal: Bool
 }
 
+struct ContainerEngineInspectBase: Sendable {
+    let snapshot: ContainerSnapshot
+    let options: ContainerCreateOptions
+    let runtimeData: Data?
+}
+
 enum ContainerEngineLogReadSource: Sendable {
     case direct(reader: any ContainerLogReader, terminal: Bool)
     case activeWire(file: FileHandle, terminal: Bool)
@@ -43,10 +49,23 @@ enum ContainerEngineLogReadSource: Sendable {
 /// Docker Engine logging backend. It never opens a second catalog, store, or
 /// provider session and therefore cannot diverge from native clients.
 public struct ContainerDockerLoggingBackend: DockerLoggingBackend, Sendable {
-    private let containers: ContainersService
+    let containers: ContainersService
+    let engineIdentity: String
+    let serverVersion: String
+    let imageCountProvider: @Sendable () async throws -> Int
 
-    public init(containers: ContainersService) {
+    public init(
+        containers: ContainersService,
+        engineIdentity: String = "container",
+        serverVersion: String = "unknown",
+        imageCountProvider: @escaping @Sendable () async throws -> Int = {
+            try await ClientImage.list().count
+        }
+    ) {
         self.containers = containers
+        self.engineIdentity = engineIdentity
+        self.serverVersion = serverVersion
+        self.imageCountProvider = imageCountProvider
     }
 
     public func loggingSystemInfo() async throws -> DockerLoggingSystemInfo {
@@ -270,7 +289,7 @@ public struct ContainerDockerLoggingBackend: DockerLoggingBackend, Sendable {
         )
     }
 
-    fileprivate static func map(
+    static func map(
         _ error: any Error,
         containerID: String?
     ) -> DockerLoggingBackendError {

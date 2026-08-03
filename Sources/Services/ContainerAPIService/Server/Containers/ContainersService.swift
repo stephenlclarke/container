@@ -3209,6 +3209,32 @@ public actor ContainersService {
 }
 
 extension ContainersService {
+    func engineInspectBase(
+        containerID: String
+    ) throws -> ContainerEngineInspectBase {
+        let snapshot = try _getContainerState(id: containerID).snapshot
+        let path = try Self.containerPath(
+            root: containerRoot,
+            id: containerID
+        )
+        let runtime = try? RuntimeConfiguration.readRuntimeConfiguration(
+            from: path
+        )
+        let bundle = ContainerResource.Bundle(path: path)
+        let legacyOptions: ContainerCreateOptions? = try? bundle.load(
+            filename: "options.json"
+        )
+        return ContainerEngineInspectBase(
+            snapshot: snapshot,
+            options: runtime?.options ?? legacyOptions ?? .default,
+            runtimeData: runtime?.runtimeData
+        )
+    }
+
+    func engineContainerRootPath() -> String {
+        containerRoot.path
+    }
+
     func engineAttachmentInspection(
         containerID: String
     ) throws -> ContainerEngineAttachmentInspection {

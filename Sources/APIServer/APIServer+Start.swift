@@ -219,6 +219,14 @@ extension APIServer {
                     identifier: "engine.route.ContainerLogs",
                     status: .native
                 ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerInspect",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemInfo",
+                    status: .native
+                ),
             ]
             let declaration = try ContainerEngineProviderDeclaration(
                 profile: .enhanced,
@@ -227,16 +235,20 @@ extension APIServer {
                 runtimeRevisions: [
                     "container": ReleaseVersion.gitCommit()
                         ?? ReleaseVersion.version(),
-                    "container-engine-api": "0.2.2",
+                    "container-engine-api": "0.2.3",
                     "containerization": ReleaseVersion.containerizationRef(),
                 ],
                 stateSchemaVersion: 1,
                 capabilities: capabilities
             )
+            let backend = ContainerDockerLoggingBackend(
+                containers: containersService,
+                engineIdentity: stateRootUUID.uuidString,
+                serverVersion: ReleaseVersion.version()
+            )
             let controller = try DockerLoggingAPIController(
-                backend: ContainerDockerLoggingBackend(
-                    containers: containersService
-                )
+                backend: backend,
+                sharedResponseBackend: backend
             )
             let socketPath =
                 stateRoot

@@ -469,7 +469,12 @@ struct ContainerLogsTests {
             appRoot: tempURL,
             logLabel: "container-engine-log-read-test"
         )
-        let backend = ContainerDockerLoggingBackend(containers: containers)
+        let backend = ContainerDockerLoggingBackend(
+            containers: containers,
+            engineIdentity: "test-authority",
+            serverVersion: "test-version",
+            imageCountProvider: { 3 }
+        )
         let info = try await backend.loggingSystemInfo()
         #expect(info.defaultDriver == "json-file")
         #expect(info.registeredDrivers.contains("json-file"))
@@ -520,9 +525,20 @@ struct ContainerLogsTests {
                     identifier: "engine.route.ContainerLogs",
                     status: .native
                 ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerInspect",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemInfo",
+                    status: .native
+                ),
             ]
         )
-        let controller = try DockerLoggingAPIController(backend: backend)
+        let controller = try DockerLoggingAPIController(
+            backend: backend,
+            sharedResponseBackend: backend
+        )
         let providerRoot = try canonicalTemporaryDirectory()
             .appendingPathComponent(
                 "ce-provider-\(UUID().uuidString.prefix(8))",
@@ -548,6 +564,71 @@ struct ContainerLogsTests {
                 socketPath: provider.socketPath,
                 expectedFingerprint: provider.fingerprint
             )
+            let infoResponse = await client.respond(
+                to: DockerHTTPRequest(method: .get, target: "/v1.53/info")
+            )
+            #expect(infoResponse.status == 200)
+            let infoObject = try engineJSONObject(infoResponse)
+            #expect(infoObject["ID"] as? String == "test-authority")
+            #expect(infoObject["Containers"] as? Int == 1)
+            #expect(infoObject["ContainersRunning"] as? Int == 0)
+            #expect(infoObject["ContainersPaused"] as? Int == 0)
+            #expect(infoObject["ContainersStopped"] as? Int == 1)
+            #expect(infoObject["Images"] as? Int == 3)
+            #expect(infoObject["LoggingDriver"] as? String == "json-file")
+            let plugins = try #require(infoObject["Plugins"] as? [String: Any])
+            #expect((plugins["Log"] as? [String])?.contains("local") == true)
+
+            let inspectResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target: "/v1.53/containers/\(id)/json"
+                )
+            )
+            #expect(inspectResponse.status == 200)
+            let inspectObject = try engineJSONObject(inspectResponse)
+            #expect(inspectObject["Id"] as? String == id)
+            #expect(inspectObject["Driver"] as? String == "apple-container")
+            #expect(inspectObject["LogPath"] as? String == bundle.containerJSONFileLog.path)
+            #expect(inspectObject["Path"] as? String == "/bin/sh")
+            #expect(inspectObject["Args"] as? [String] == [])
+            #expect(inspectObject["Image"] as? String == configuration.image.digest)
+            #expect(inspectObject["Name"] as? String == "/\(id)")
+            #expect(inspectObject["Platform"] as? String == "linux")
+            let inspectState = try #require(
+                inspectObject["State"] as? [String: Any]
+            )
+            #expect(inspectState["Status"] as? String == "created")
+            #expect(inspectState["Running"] as? Bool == false)
+            #expect(inspectState["ExitCode"] as? Int == 0)
+            let inspectConfig = try #require(
+                inspectObject["Config"] as? [String: Any]
+            )
+            #expect(inspectConfig["Tty"] as? Bool == false)
+            #expect(inspectConfig["Hostname"] as? String == id)
+            #expect(inspectConfig["User"] as? String == "0:0")
+            #expect(inspectConfig["Image"] as? String == configuration.image.reference)
+            #expect(inspectConfig["Entrypoint"] as? [String] == ["/bin/sh"])
+            #expect(inspectConfig["Cmd"] as? [String] == [])
+            let inspectHostConfig = try #require(
+                inspectObject["HostConfig"] as? [String: Any]
+            )
+            #expect(inspectHostConfig["NetworkMode"] as? String == "default")
+            #expect(inspectHostConfig["AutoRemove"] as? Bool == false)
+            let restartPolicy = try #require(
+                inspectHostConfig["RestartPolicy"] as? [String: Any]
+            )
+            #expect(restartPolicy["Name"] as? String == "no")
+            #expect(restartPolicy["MaximumRetryCount"] as? Int == 0)
+            let inspectLogConfig = try #require(
+                inspectHostConfig["LogConfig"] as? [String: Any]
+            )
+            #expect(inspectLogConfig["Type"] as? String == "json-file")
+            #expect(
+                inspectLogConfig["Config"] as? [String: String]
+                    == ["max-file": "1"]
+            )
+
             let response = await client.respond(
                 to: DockerHTTPRequest(
                     method: .get,
@@ -1134,6 +1215,16 @@ struct ContainerLogsTests {
         return bundle
     }
 
+    private func engineJSONObject(
+        _ response: DockerHTTPResponse
+    ) throws -> [String: Any] {
+        guard case .bytes(let data) = response.body else {
+            throw EngineResponseFixtureError("expected Engine JSON byte response")
+        }
+        let object = try JSONSerialization.jsonObject(with: data)
+        return try #require(object as? [String: Any])
+    }
+
     private func service(appRoot: URL, logLabel: String) throws -> ContainersService {
         try ContainersService(
             appRoot: appRoot,
@@ -1224,6 +1315,14 @@ struct ContainerLogsTests {
             preconditionFailure("invalid test date: \(value)")
         }
         return date
+    }
+}
+
+private struct EngineResponseFixtureError: Error {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
     }
 }
 
