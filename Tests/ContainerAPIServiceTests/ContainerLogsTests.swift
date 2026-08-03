@@ -522,6 +522,14 @@ struct ContainerLogsTests {
                     status: .native
                 ),
                 try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttachWebsocket",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerResize",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerLogs",
                     status: .native
                 ),
@@ -679,6 +687,102 @@ struct ContainerLogsTests {
                 Issue.record("expected Engine attach hijack")
             }
 
+            let webSocketResponse = await client.respond(
+                to: try DockerHTTPRequest(
+                    method: .get,
+                    target:
+                        "/v1.53/containers/\(id)/attach/ws?logs=1&stream=0&stdin=0&stdout=1&stderr=1",
+                    uniqueHeaders: [
+                        "Connection": "Upgrade",
+                        "Upgrade": "websocket",
+                        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                        "Sec-WebSocket-Version": "13",
+                    ]
+                )
+            )
+            #expect(webSocketResponse.status == 101)
+            if case .webSocket(let session) = webSocketResponse.body {
+                var frames = [DockerStreamFrame]()
+                for try await frame in session.frames {
+                    frames.append(frame)
+                }
+                #expect(
+                    frames
+                        == [
+                            DockerStreamFrame(
+                                channel: .standardError,
+                                data: Data("exact-engine-record\n".utf8)
+                            )
+                        ]
+                )
+                #expect(try await session.wait() == 0)
+            } else {
+                Issue.record("expected Engine WebSocket attach")
+            }
+
+            await #expect(
+                throws: DockerLoggingBackendError.invalidParameter(
+                    "terminal dimensions exceed the runtime range"
+                )
+            ) {
+                try await backend.resizeContainerTerminal(
+                    containerID: id,
+                    height: UInt32(UInt16.max) + 1,
+                    width: 80
+                )
+            }
+            await #expect(
+                throws: DockerLoggingBackendError.containerNotFound("missing")
+            ) {
+                try await backend.resizeContainerTerminal(
+                    containerID: "missing",
+                    height: 24,
+                    width: 80
+                )
+            }
+            await #expect(
+                throws: DockerLoggingBackendError.conflict(
+                    "container \(id) is not running"
+                )
+            ) {
+                try await backend.resizeContainerTerminal(
+                    containerID: id,
+                    height: 24,
+                    width: 80
+                )
+            }
+
+            let invalidResizeResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/\(id)/resize?h=4294967296&w=80"
+                )
+            )
+            #expect(invalidResizeResponse.status == 400)
+
+            let stoppedResizeResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/\(id)/resize?h=24&w=80"
+                )
+            )
+            #expect(stoppedResizeResponse.status == 409)
+            #expect(
+                try engineJSONObject(stoppedResizeResponse)["message"]
+                    as? String == "container \(id) is not running"
+            )
+
+            let missingResizeResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/missing/resize?h=24&w=80"
+                )
+            )
+            #expect(missingResizeResponse.status == 404)
+
             let eventSubscription = await containers.events(
                 options: ContainerEventOptions(until: Date())
             )
@@ -693,7 +797,10 @@ struct ContainerLogsTests {
                 .map {
                     try decoder.decode(ContainerEvent.self, from: Data($0.utf8))
                 }
-            #expect(events.map(\.action) == ["attach", "detach"])
+            #expect(
+                events.map(\.action)
+                    == ["attach", "detach", "attach", "detach"]
+            )
             #expect(events.allSatisfy { $0.id == id })
             await provider.shutdown()
         } catch {

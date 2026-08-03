@@ -113,7 +113,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/stephenlclarke/container-engine-api.git",
-            exact: "0.2.3"
+            exact: "0.3.4"
         ),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),

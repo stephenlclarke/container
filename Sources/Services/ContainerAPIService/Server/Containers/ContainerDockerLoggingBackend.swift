@@ -20,6 +20,7 @@ import ContainerEngineWire
 import ContainerLoggingStorage
 import ContainerResource
 import ContainerizationError
+import ContainerizationOS
 import Foundation
 
 struct ContainerEngineLoggingInspection: Sendable {
@@ -48,7 +49,11 @@ enum ContainerEngineLogReadSource: Sendable {
 /// Projects the authority-owned Container logging controller onto the neutral
 /// Docker Engine logging backend. It never opens a second catalog, store, or
 /// provider session and therefore cannot diverge from native clients.
-public struct ContainerDockerLoggingBackend: DockerLoggingBackend, Sendable {
+public struct ContainerDockerLoggingBackend:
+    DockerLoggingBackend,
+    DockerTerminalResizeBackend,
+    Sendable
+{
     let containers: ContainersService
     let engineIdentity: String
     let serverVersion: String
@@ -210,6 +215,39 @@ public struct ContainerDockerLoggingBackend: DockerLoggingBackend, Sendable {
             return DockerAttachConnection(
                 terminal: inspection.terminal,
                 session: session
+            )
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func resizeContainerTerminal(
+        containerID: String,
+        height: UInt32,
+        width: UInt32
+    ) async throws {
+        guard
+            let terminalHeight = UInt16(exactly: height),
+            let terminalWidth = UInt16(exactly: width)
+        else {
+            throw DockerLoggingBackendError.invalidParameter(
+                "terminal dimensions exceed the runtime range"
+            )
+        }
+        do {
+            try await containers.resize(
+                id: containerID,
+                processID: containerID,
+                size: Terminal.Size(
+                    width: terminalWidth,
+                    height: terminalHeight
+                )
+            )
+        } catch let error as ContainerizationError
+            where error.code == .invalidState
+        {
+            throw DockerLoggingBackendError.conflict(
+                "container \(containerID) is not running"
             )
         } catch {
             throw Self.map(error, containerID: containerID)

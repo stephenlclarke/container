@@ -222,6 +222,14 @@ extension APIServer {
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttachWebsocket",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerResize",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerLogs",
                     status: .native
                 ),
@@ -241,7 +249,7 @@ extension APIServer {
                 runtimeRevisions: [
                     "container": ReleaseVersion.gitCommit()
                         ?? ReleaseVersion.version(),
-                    "container-engine-api": "0.2.3",
+                    "container-engine-api": "0.3.4",
                     "containerization": ReleaseVersion.containerizationRef(),
                 ],
                 stateSchemaVersion: 1,
