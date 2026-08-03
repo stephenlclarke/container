@@ -58,7 +58,7 @@ func TestProtocolHandlerJoinsAndReplaysSemanticRequest(t *testing.T) {
 	}
 
 	semanticReplay := []byte(`{ "operation": "activeSandboxGeneration", "operationID": "` +
-		testOperationID + `", "schemaVersion": 1 }`)
+		testOperationID + `", "schemaVersion": 2 }`)
 	response := handler.Handle(t.Context(), semanticReplay)
 	if response.SandboxGeneration == nil || *response.SandboxGeneration != 13 || response.Failure != nil {
 		t.Fatalf("semantic replay failed: %#v", response)
@@ -225,10 +225,12 @@ func (*recordingServiceBackend) flushWriter(context.Context, string, uint64) err
 func (*recordingServiceBackend) closeWriter(context.Context, string, bool, uint64) error {
 	return nil
 }
+func (*recordingServiceBackend) reclaimWriter(terminalReclaimWire) error { return nil }
 func (*recordingServiceBackend) openReader(context.Context, readerOpenWire) (uint64, error) {
 	return 1, nil
 }
 func (*recordingServiceBackend) nextReader(context.Context, string, uint64) (readerEventWire, error) {
 	return readerEventWire{Kind: "endOfStream"}, nil
 }
-func (*recordingServiceBackend) cancelReader(string) error { return nil }
+func (*recordingServiceBackend) cancelReader(string) error               { return nil }
+func (*recordingServiceBackend) reclaimReader(terminalReclaimWire) error { return nil }

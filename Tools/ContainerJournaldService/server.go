@@ -40,9 +40,11 @@ type serviceBackend interface {
 	write(context.Context, string, journalEntryWire) error
 	flushWriter(context.Context, string, uint64) error
 	closeWriter(context.Context, string, bool, uint64) error
+	reclaimWriter(terminalReclaimWire) error
 	openReader(context.Context, readerOpenWire) (uint64, error)
 	nextReader(context.Context, string, uint64) (readerEventWire, error)
 	cancelReader(string) error
+	reclaimReader(terminalReclaimWire) error
 }
 
 type replayOperation struct {
@@ -151,6 +153,8 @@ func (handler *protocolHandler) execute(ctx context.Context, request wireRequest
 			*request.Fenced,
 			*request.TimeoutNanoseconds,
 		)
+	case operationReclaimWriter:
+		err = handler.backend.reclaimWriter(*request.TerminalReclaim)
 	case operationOpenReader:
 		var sequence uint64
 		sequence, err = handler.backend.openReader(ctx, *request.ReaderOpen)
@@ -165,6 +169,8 @@ func (handler *protocolHandler) execute(ctx context.Context, request wireRequest
 		}
 	case operationCancelReader:
 		err = handler.backend.cancelReader(*request.SessionID)
+	case operationReclaimReader:
+		err = handler.backend.reclaimReader(*request.TerminalReclaim)
 	default:
 		err = errors.New("unsupported operation")
 	}

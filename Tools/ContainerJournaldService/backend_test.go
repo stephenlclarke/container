@@ -125,6 +125,79 @@ func TestDurableReaderPersistsCheckpointAndReplaysResponse(t *testing.T) {
 	}
 }
 
+func TestTerminalSessionsReclaimDurablyAndRejectActiveEffects(t *testing.T) {
+	t.Parallel()
+
+	store := &memoryStateStore{}
+	journal := newRecordingJournal()
+	journal.readerEvents[1] = readerEventWire{Kind: "endOfStream"}
+	backend, err := loadDurableBackend(13, store, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := testWriterOpen()
+	writerReclaim := terminalReclaimWire{
+		SchemaVersion:      1,
+		SessionID:          writer.Request.SessionID,
+		ProviderID:         writer.Request.ProviderID,
+		ProviderGeneration: writer.Request.ProviderGeneration,
+	}
+	if err := backend.openWriter(writer); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.reclaimWriter(writerReclaim); !errors.Is(err, errGenerationMismatch) {
+		t.Fatalf("active writer reclaim error = %v", err)
+	}
+	if err := backend.closeWriter(context.Background(), writer.Request.SessionID, false, 1_000); err != nil {
+		t.Fatal(err)
+	}
+	wrongWriter := writerReclaim
+	wrongWriter.ProviderID = "wrong-provider"
+	if err := backend.reclaimWriter(wrongWriter); !errors.Is(err, errGenerationMismatch) {
+		t.Fatalf("wrong writer reclaim error = %v", err)
+	}
+	if err := backend.reclaimWriter(writerReclaim); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.reclaimWriter(writerReclaim); err != nil {
+		t.Fatalf("writer reclaim replay: %v", err)
+	}
+
+	reader := testReaderOpen()
+	readerReclaim := terminalReclaimWire{
+		SchemaVersion:      1,
+		SessionID:          reader.ReaderSessionID,
+		ProviderID:         reader.ProviderID,
+		ProviderGeneration: reader.ProviderGeneration,
+	}
+	if _, err := backend.openReader(context.Background(), reader); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.reclaimReader(readerReclaim); !errors.Is(err, errGenerationMismatch) {
+		t.Fatalf("active reader reclaim error = %v", err)
+	}
+	if event, err := backend.nextReader(context.Background(), reader.ReaderSessionID, 1); err != nil || event.Kind != "endOfStream" {
+		t.Fatalf("terminal reader event = %#v, %v", event, err)
+	}
+	if err := backend.reclaimReader(readerReclaim); err != nil {
+		t.Fatal(err)
+	}
+	if err := backend.reclaimReader(readerReclaim); err != nil {
+		t.Fatalf("reader reclaim replay: %v", err)
+	}
+
+	recovered, err := loadDurableBackend(13, store, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.openWriter(writer); err != nil {
+		t.Fatal(err)
+	}
+	if sequence, err := recovered.openReader(context.Background(), reader); err != nil || sequence != 1 {
+		t.Fatalf("reopened reader = %d, %v", sequence, err)
+	}
+}
+
 func TestDurableReaderRejectsCheckpointViolations(t *testing.T) {
 	t.Parallel()
 
@@ -191,16 +264,31 @@ func TestFileStateStoreIsPrivateAndRejectsSymlinks(t *testing.T) {
 	}
 }
 
-func TestSnapshotGenerationAndSchemaFailClosed(t *testing.T) {
+func TestSnapshotGenerationResetAndSchemaFailClosed(t *testing.T) {
 	t.Parallel()
 
 	store := &memoryStateStore{}
 	journal := newRecordingJournal()
-	if _, err := loadDurableBackend(13, store, journal); err != nil {
+	first, err := loadDurableBackend(13, store, journal)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadDurableBackend(14, store, journal); !errors.Is(err, errGenerationMismatch) {
-		t.Fatalf("generation error = %v", err)
+	oldWriter := testWriterOpen()
+	if err := first.openWriter(oldWriter); err != nil {
+		t.Fatal(err)
+	}
+	next, err := loadDurableBackend(14, store, journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := next.write(context.Background(), oldWriter.Request.SessionID, testJournalEntry(1)); !errors.Is(err, errUnknownSession) {
+		t.Fatalf("old generation writer error = %v", err)
+	}
+	newWriter := oldWriter
+	newGeneration := uint64(14)
+	newWriter.Request.CandidateSandboxGeneration = &newGeneration
+	if err := next.openWriter(newWriter); err != nil {
+		t.Fatalf("new generation writer: %v", err)
 	}
 	store.data = []byte(`{"schemaVersion":1,"sandboxGeneration":13,"writers":{},"readers":{}}`)
 	if _, err := loadDurableBackend(13, store, journal); !errors.Is(err, errCorruptState) {

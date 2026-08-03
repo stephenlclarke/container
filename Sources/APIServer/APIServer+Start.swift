@@ -22,11 +22,13 @@ import ContainerEngineLogging
 import ContainerEngineProviderSession
 import ContainerEngineRuntimeSPI
 import ContainerLog
+import ContainerLoggingProviders
 import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
 import ContainerVersion
 import ContainerXPC
+import ContainerizationError
 import ContainerizationExtras
 import DNSServer
 import Foundation
@@ -71,8 +73,13 @@ extension APIServer {
                 let pluginLoader = try initializePluginLoader(log: log)
 
                 try await initializePlugins(pluginLoader: pluginLoader, log: log, routes: &routes, debug: debug)
+                let kernelService = try initializeKernelService(
+                    log: log,
+                    routes: &routes
+                )
                 let containersService = try await initializeContainersService(
                     pluginLoader: pluginLoader,
+                    kernelService: kernelService,
                     containerSystemConfig: containerSystemConfig,
                     log: log,
                     routes: &routes
@@ -92,7 +99,6 @@ extension APIServer {
                 )
                 await containersService.setNetworksService(networkService)
                 initializeHealthCheckService(log: log, routes: &routes)
-                try initializeKernelService(log: log, routes: &routes)
                 let volumesService = try await initializeVolumeService(containersService: containersService, log: log, routes: &routes)
                 try initializeDiskUsageService(
                     containersService: containersService,
@@ -356,7 +362,10 @@ extension APIServer {
             routes[XPCRoute.ping] = XPCServer.route(svc.ping)
         }
 
-        private func initializeKernelService(log: Logger, routes: inout [XPCRoute: XPCServer.RouteHandler]) throws {
+        private func initializeKernelService(
+            log: Logger,
+            routes: inout [XPCRoute: XPCServer.RouteHandler]
+        ) throws -> KernelService {
             log.info("initializing kernel service")
 
             // TODO: Remove when we convert KernelService to FilePath
@@ -365,10 +374,12 @@ extension APIServer {
             let harness = KernelHarness(service: svc, log: log)
             routes[XPCRoute.installKernel] = XPCServer.route(harness.install)
             routes[XPCRoute.getDefaultKernel] = XPCServer.route(harness.getDefaultKernel)
+            return svc
         }
 
         private func initializeContainersService(
             pluginLoader: PluginLoader,
+            kernelService: KernelService,
             containerSystemConfig: ContainerSystemConfig,
             log: Logger,
             routes: inout [XPCRoute: XPCServer.RouteHandler]
@@ -377,11 +388,21 @@ extension APIServer {
 
             // TODO: Remove when we convert ContainersService to FilePath
             let appRootURL = URL(fileURLWithPath: appRoot.string)
+            let installRootURL = URL(fileURLWithPath: installRoot.string)
+            let journaldService = await initializeJournaldService(
+                appRoot: appRootURL,
+                installRoot: installRootURL,
+                pluginLoader: pluginLoader,
+                kernelService: kernelService,
+                containerSystemConfig: containerSystemConfig,
+                log: log
+            )
             let remoteLogDriverPlane =
                 try await AuthorityRemoteLogDriverPlane
                 .create(
                     appRoot: appRootURL,
-                    awsLogsClientFactory: AWSCloudWatchLogsClientFactory()
+                    awsLogsClientFactory: AWSCloudWatchLogsClientFactory(),
+                    journaldService: journaldService
                 )
             let service = try ContainersService(
                 appRoot: appRootURL,
@@ -421,6 +442,69 @@ extension APIServer {
             routes[XPCRoute.containerExport] = XPCServer.route(harness.export)
 
             return service
+        }
+
+        private func initializeJournaldService(
+            appRoot: URL,
+            installRoot: URL,
+            pluginLoader: PluginLoader,
+            kernelService: KernelService,
+            containerSystemConfig: ContainerSystemConfig,
+            log: Logger
+        ) async -> (any JournaldService)? {
+            do {
+                guard
+                    let runtimePlugin = pluginLoader.findPlugins().first(
+                        where: {
+                            $0.name
+                                == LaunchdEngineLinuxSandboxLauncherV1
+                                .runtimePluginName
+                                && $0.hasType(.runtime)
+                        }
+                    )
+                else {
+                    throw ContainerizationError(
+                        .notFound,
+                        message:
+                            "container-runtime-linux is unavailable for the journald service"
+                    )
+                }
+                let launcher = try LaunchdEngineLinuxSandboxLauncherV1(
+                    loader: pluginLoader,
+                    plugin: runtimePlugin,
+                    debug: debug
+                )
+                let authority = try await EngineLinuxSandboxAuthorityV1.open(
+                    root: appRoot.appendingPathComponent(
+                        "engine-linux-sandbox",
+                        isDirectory: true
+                    ),
+                    owningControllerID: "container-apiserver-journald",
+                    sandboxID: "engine-linux-sandbox",
+                    launcher: launcher
+                )
+                let service = try EngineLinuxSandboxJournaldServiceV1.create(
+                    appRoot: appRoot,
+                    installRoot: installRoot,
+                    kernelService: kernelService,
+                    containerSystemConfig: containerSystemConfig,
+                    authority: authority
+                )
+                log.info(
+                    "verified lazy journald logging service",
+                    metadata: [
+                        "sandbox": "engine-linux-sandbox",
+                        "workload": "container-journald-service",
+                    ]
+                )
+                return service
+            } catch {
+                log.warning(
+                    "journald logging driver is unavailable",
+                    metadata: ["error": "\(error)"]
+                )
+                return nil
+            }
         }
 
         private func initializeNetworksService(

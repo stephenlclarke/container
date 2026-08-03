@@ -152,11 +152,21 @@ struct JournaldServiceWireTests {
             fenced: true,
             deadline: ContinuousClock().now.advanced(by: .seconds(1))
         )
+        try await client.reclaimWriter(
+            sessionID: "writer-session",
+            providerID: JournaldLogDriverContract.providerIdentity.id,
+            providerGeneration: 1
+        )
 
         let reader = try await client.openReader(journaldWireReaderOpen())
         let expectedRecord = try journaldWireReadRecord()
         #expect(try await reader.next() == .record(expectedRecord))
         #expect(try await reader.next() == .endOfStream)
+        try await client.reclaimReader(
+            sessionID: "reader-session",
+            providerID: JournaldLogDriverContract.providerIdentity.id,
+            providerGeneration: 1
+        )
 
         let requests = await transport.requests()
         #expect(
@@ -166,9 +176,11 @@ struct JournaldServiceWireTests {
                 .write,
                 .flushWriter,
                 .closeWriter,
+                .reclaimWriter,
                 .openReader,
                 .nextReader,
                 .nextReader,
+                .reclaimReader,
             ]
         )
         #expect(
@@ -177,6 +189,8 @@ struct JournaldServiceWireTests {
         #expect(requests[4].fenced == true)
         #expect(requests[3].timeoutNanoseconds != nil)
         #expect(requests[4].timeoutNanoseconds != nil)
+        #expect(requests[5].terminalReclaim?.sessionID == "writer-session")
+        #expect(requests[9].terminalReclaim?.sessionID == "reader-session")
     }
 
     @Test func responseLossReconnectsWithSameOperationID() async throws {
@@ -297,7 +311,8 @@ private actor JournaldWireRecordingTransport: JournaldServiceWireTransportV1 {
                 operationID: request.operationID,
                 readerSequence: 5
             )
-        case .openWriter, .write, .flushWriter, .closeWriter, .cancelReader:
+        case .openWriter, .write, .flushWriter, .closeWriter, .reclaimWriter,
+            .cancelReader, .reclaimReader:
             return try .acknowledgement(operationID: request.operationID)
         }
     }

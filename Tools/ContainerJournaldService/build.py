@@ -19,8 +19,8 @@ import uuid
 
 
 SCHEMA_VERSION = 1
-SERVICE_VERSION = "1"
-PROTOCOL_VERSION = 1
+SERVICE_VERSION = "2"
+PROTOCOL_VERSION = 2
 GO_VERSION = "go1.25.6"
 SYSTEMD_VERSION = "252.39-1~deb12u2"
 DEBIAN_SNAPSHOT = "20260801T000000Z"
@@ -418,22 +418,32 @@ def run_cross_language_integration() -> None:
         local_containerization = (
             repository_root().parent / "containerization-engine-sandbox"
         )
+        editable_containerization = repository_root() / "Packages" / "containerization"
         edited_dependency = False
         try:
             if (local_containerization / "Package.swift").is_file():
-                subprocess.run(
-                    [
-                        "/usr/bin/swift",
-                        "package",
-                        "edit",
-                        "containerization",
-                        "--path",
-                        str(local_containerization),
-                    ],
-                    cwd=repository_root(),
-                    check=True,
-                )
-                edited_dependency = True
+                if editable_containerization.is_symlink():
+                    if (
+                        editable_containerization.resolve()
+                        != local_containerization.resolve()
+                    ):
+                        raise RuntimeError(
+                            "containerization is already edited to a different path"
+                        )
+                else:
+                    subprocess.run(
+                        [
+                            "/usr/bin/swift",
+                            "package",
+                            "edit",
+                            "containerization",
+                            "--path",
+                            str(local_containerization),
+                        ],
+                        cwd=repository_root(),
+                        check=True,
+                    )
+                    edited_dependency = True
             subprocess.run(
                 [
                     "/usr/bin/swift",

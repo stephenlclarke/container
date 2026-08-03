@@ -209,6 +209,16 @@ struct JournaldProviderTests {
         #expect(fenced.observation == LogDriverSessionObservationV1.writerFenced)
         #expect(fenced.writerFenceReceiptDigest?.hasPrefix("sha256:") == true)
         #expect(await service.closeCalls == [true])
+        try await provider.reclaimTerminalEffect(
+            LogDriverTerminalEffectReclaimV1(
+                kind: .detachedCleanup,
+                effectID: request.sessionID,
+                providerID: request.providerID,
+                providerGeneration: request.providerGeneration
+            )
+        )
+        #expect(try await provider.reconcileSession(sessionCall).observation == .absent)
+        #expect(await service.reclaimedWriters == [request.sessionID])
 
         let readerRequest = try LogDriverReaderOpenRequestV1(
             operationGeneration: 1,
@@ -256,6 +266,16 @@ struct JournaldProviderTests {
         let observed = try await provider.reconcileReader(readerCall)
         #expect(observed.observation == .closed)
         #expect(observed.terminalOutcomeDigest?.hasPrefix("sha256:") == true)
+        try await provider.reclaimTerminalEffect(
+            LogDriverTerminalEffectReclaimV1(
+                kind: .readerSession,
+                effectID: readerRequest.readerSessionID,
+                providerID: readerRequest.providerID,
+                providerGeneration: readerRequest.providerGeneration
+            )
+        )
+        #expect(try await provider.reconcileReader(readerCall).observation == .absent)
+        #expect(await service.reclaimedReaders == [readerRequest.readerSessionID])
     }
 
     private func writerRequest() throws -> LogDriverStartRequestV1 {
@@ -344,6 +364,8 @@ private actor RecordingJournaldService: JournaldService {
     private(set) var writerOpenCount = 0
     private(set) var readerOpenCount = 0
     private(set) var closeCalls = [Bool]()
+    private(set) var reclaimedWriters = [String]()
+    private(set) var reclaimedReaders = [String]()
 
     init(readerRecords: [ContainerLogReadRecordV1]) {
         self.readerRecords = readerRecords
@@ -391,11 +413,33 @@ private actor RecordingJournaldService: JournaldService {
         closeCalls.append(fenced)
     }
 
+    func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) {
+        _ = providerID
+        _ = providerGeneration
+        writers.removeValue(forKey: sessionID)
+        reclaimedWriters.append(sessionID)
+    }
+
     func openReader(
         _ request: LogDriverReaderOpenRequestV1
     ) -> any ContainerLogReader {
         readerOpenCount += 1
         return JournaldTestReader(records: readerRecords)
+    }
+
+    func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) {
+        _ = sessionID
+        _ = providerID
+        _ = providerGeneration
+        reclaimedReaders.append(sessionID)
     }
 }
 

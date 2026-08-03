@@ -16,21 +16,27 @@
 
 import Foundation
 
-/// Exact identity required to dial a protected service in the Engine Linux
-/// sandbox. A stale authority cannot reuse a connection after sandbox
-/// replacement because every request names the active durable generation.
+/// Exact identity required to dial a protected service workload in the Engine
+/// Linux sandbox. A stale authority cannot reuse a connection after sandbox or
+/// workload replacement because every request names both active generations.
 public struct EngineLinuxSandboxServiceDialRequestV1: Codable, Equatable, Sendable {
     public let sandboxID: String
     public let sandboxGeneration: UInt64
+    public let workloadID: String
+    public let workloadProcessGeneration: UInt64
     public let port: UInt32
 
     public init(
         sandboxID: String,
         sandboxGeneration: UInt64,
+        workloadID: String,
+        workloadProcessGeneration: UInt64,
         port: UInt32
     ) {
         self.sandboxID = sandboxID
         self.sandboxGeneration = sandboxGeneration
+        self.workloadID = workloadID
+        self.workloadProcessGeneration = workloadProcessGeneration
         self.port = port
     }
 }

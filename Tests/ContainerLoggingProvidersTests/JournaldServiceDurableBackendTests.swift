@@ -243,6 +243,83 @@ struct JournaldServiceDurableBackendTests {
         )
     }
 
+    @Test func terminalSessionsReclaimDurablyAndActiveSessionsFailClosed() async throws {
+        let state = JournaldDurableMemoryStateStore()
+        let journal = JournaldDurableRecordingJournal(
+            readerEvents: [1: .endOfStream]
+        )
+        let backend = try await JournaldServiceDurableBackendV1.load(
+            sandboxGeneration: 13,
+            stateStore: state,
+            journal: journal
+        )
+        let writer = try journaldDurableWriterOpen()
+        try await backend.openWriter(writer)
+        await #expect(throws: JournaldProviderError.invalidSessionFence) {
+            try await backend.reclaimWriter(
+                sessionID: writer.request.sessionID,
+                providerID: writer.request.providerID,
+                providerGeneration: writer.request.providerGeneration
+            )
+        }
+        try await backend.closeWriter(
+            sessionID: writer.request.sessionID,
+            fenced: false,
+            timeoutNanoseconds: 1_000
+        )
+        await #expect(throws: JournaldProviderError.invalidSessionFence) {
+            try await backend.reclaimWriter(
+                sessionID: writer.request.sessionID,
+                providerID: "wrong-provider",
+                providerGeneration: writer.request.providerGeneration
+            )
+        }
+        try await backend.reclaimWriter(
+            sessionID: writer.request.sessionID,
+            providerID: writer.request.providerID,
+            providerGeneration: writer.request.providerGeneration
+        )
+        try await backend.reclaimWriter(
+            sessionID: writer.request.sessionID,
+            providerID: writer.request.providerID,
+            providerGeneration: writer.request.providerGeneration
+        )
+
+        let reader = try journaldDurableReaderOpen()
+        #expect(try await backend.openReader(reader) == 1)
+        await #expect(throws: JournaldProviderError.invalidSessionFence) {
+            try await backend.reclaimReader(
+                sessionID: reader.readerSessionID,
+                providerID: reader.providerID,
+                providerGeneration: reader.providerGeneration
+            )
+        }
+        #expect(
+            try await backend.nextReader(
+                sessionID: reader.readerSessionID,
+                sequence: 1
+            ) == .endOfStream
+        )
+        try await backend.reclaimReader(
+            sessionID: reader.readerSessionID,
+            providerID: reader.providerID,
+            providerGeneration: reader.providerGeneration
+        )
+        try await backend.reclaimReader(
+            sessionID: reader.readerSessionID,
+            providerID: reader.providerID,
+            providerGeneration: reader.providerGeneration
+        )
+
+        let recovered = try await JournaldServiceDurableBackendV1.load(
+            sandboxGeneration: 13,
+            stateStore: state,
+            journal: journal
+        )
+        try await recovered.openWriter(writer)
+        #expect(try await recovered.openReader(reader) == 1)
+    }
+
     @Test func activeReaderSourceMustMatchDurableWriterFence() async throws {
         let state = JournaldDurableMemoryStateStore()
         let journal = JournaldDurableRecordingJournal()
@@ -342,27 +419,32 @@ struct JournaldServiceDurableBackendTests {
         }
     }
 
-    @Test func generationMismatchAndCorruptStateFailClosed() async throws {
+    @Test func newSandboxGenerationResetsSessionsAndCorruptStateFailsClosed() async throws {
         let state = JournaldDurableMemoryStateStore()
         let journal = JournaldDurableRecordingJournal()
-        _ = try await JournaldServiceDurableBackendV1.load(
+        let first = try await JournaldServiceDurableBackendV1.load(
             sandboxGeneration: 13,
             stateStore: state,
             journal: journal
         )
+        let oldWriter = try journaldDurableWriterOpen()
+        try await first.openWriter(oldWriter)
 
-        await #expect(
-            throws: JournaldServiceDurableStateError.generationMismatch(
-                expected: 14,
-                actual: 13
-            )
-        ) {
-            try await JournaldServiceDurableBackendV1.load(
-                sandboxGeneration: 14,
-                stateStore: state,
-                journal: journal
+        let next = try await JournaldServiceDurableBackendV1.load(
+            sandboxGeneration: 14,
+            stateStore: state,
+            journal: journal
+        )
+        #expect(await next.activeSandboxGeneration() == 14)
+        await #expect(throws: JournaldProviderError.unknownSession) {
+            try await next.write(
+                sessionID: oldWriter.request.sessionID,
+                entry: journaldDurableEntry(ordinal: 1)
             )
         }
+        try await next.openWriter(
+            journaldDurableWriterOpen(sandboxGeneration: 14)
+        )
 
         await state.replace(
             with: Data(
@@ -596,7 +678,8 @@ private func journaldDurableCheckpoint(
 }
 
 private func journaldDurableWriterOpen(
-    epoch: String = "epoch-1"
+    epoch: String = "epoch-1",
+    sandboxGeneration: UInt64 = 13
 ) throws -> JournaldWriterOpenRequest {
     let identifier = String(repeating: "a", count: 64)
     return try JournaldWriterOpenRequest(
@@ -610,7 +693,7 @@ private func journaldDurableWriterOpen(
             candidateProcessGeneration: 4,
             providerID: JournaldLogDriverContract.providerIdentity.id,
             providerGeneration: 1,
-            candidateSandboxGeneration: 13
+            candidateSandboxGeneration: sandboxGeneration
         ),
         configuration: JournaldDriverConfiguration(
             containerID: identifier,

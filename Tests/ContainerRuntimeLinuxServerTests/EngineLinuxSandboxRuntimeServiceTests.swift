@@ -121,6 +121,8 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         let request = EngineLinuxSandboxServiceDialRequestV1(
             sandboxID: "engine-sandbox",
             sandboxGeneration: 1,
+            workloadID: "workload-1",
+            workloadProcessGeneration: 3,
             port: 12_345
         )
 
@@ -128,6 +130,15 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             _ = try await service.dialService(request)
         }
         _ = try await service.boot(bootRequest())
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.dialService(request)
+        }
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        _ = try await service.startWorkload(
+            workloadRequest(root: fixture.root),
+            stdio: []
+        )
         let handle = try await service.dialService(request)
         try handle.close()
         #expect(await sandbox.dialedPorts == [12_345])
@@ -136,12 +147,48 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             _ = try await service.dialService(
                 EngineLinuxSandboxServiceDialRequestV1(
                     sandboxID: "engine-sandbox",
-                    sandboxGeneration: 2,
+                    sandboxGeneration: 1,
+                    workloadID: "workload-1",
+                    workloadProcessGeneration: 4,
                     port: 12_345
                 )
             )
         }
         #expect(await sandbox.dialedPorts == [12_345])
+    }
+
+    @Test
+    func monitoredWorkloadWithdrawalFencesDialAndAllowsRematerialization() async throws {
+        let sandbox = FakeEngineLinuxSandbox(terminalOnWait: true)
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let request = try workloadRequest(root: fixture.root, monitorTerminal: true)
+
+        let first = try await service.startWorkload(request, stdio: [])
+        await waitForTerminalObservation(
+            service: service,
+            request: request
+        )
+        #expect(try await service.observeWorkloadStart(request) == .absent)
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.dialService(
+                EngineLinuxSandboxServiceDialRequestV1(
+                    sandboxID: "engine-sandbox",
+                    sandboxGeneration: 1,
+                    workloadID: "workload-1",
+                    workloadProcessGeneration: 3,
+                    port: 12_345
+                )
+            )
+        }
+        #expect(await sandbox.stopContainerCount == 1)
+
+        #expect(try await service.startWorkload(request, stdio: []) == first)
+        #expect(await sandbox.addCount == 2)
+        #expect(await sandbox.startCount == 2)
+        #expect(await sandbox.removeCount == 1)
     }
 
     @Test
@@ -177,6 +224,8 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         let dial = EngineLinuxSandboxServiceDialRequestV1(
             sandboxID: "engine-sandbox",
             sandboxGeneration: 1,
+            workloadID: "workload-1",
+            workloadProcessGeneration: 3,
             port: 12_345
         )
 
@@ -244,7 +293,8 @@ struct EngineLinuxSandboxRuntimeServiceTests {
 
     private func workloadRequest(
         root: URL,
-        configurationDigest: String? = nil
+        configurationDigest: String? = nil,
+        monitorTerminal: Bool = false
     ) throws -> EngineLinuxSandboxWorkloadStartRequestV1 {
         let digest =
             try configurationDigest
@@ -259,8 +309,22 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             ),
             workloadRoot: root,
             workloadConfigurationDigest: digest,
-            dynamicEnvironment: ["BUILD_ID": "42"]
+            dynamicEnvironment: ["BUILD_ID": "42"],
+            monitorTerminal: monitorTerminal
         )
+    }
+
+    private func waitForTerminalObservation(
+        service: EngineLinuxSandboxRuntimeServiceV1,
+        request: EngineLinuxSandboxWorkloadStartRequestV1
+    ) async {
+        for _ in 0..<100 {
+            if (try? await service.observeWorkloadStart(request)) == .absent {
+                return
+            }
+            await Task.yield()
+        }
+        Issue.record("monitored workload did not reach terminal observation")
     }
 }
 
@@ -271,12 +335,19 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var stopCount = 0
     private(set) var addCount = 0
     private(set) var startCount = 0
+    private(set) var stopContainerCount = 0
+    private(set) var removeCount = 0
     private(set) var configuredArguments: [String] = []
     private(set) var dialedPorts: [UInt32] = []
     private var workloads: [String: LinuxSandboxWorkloadSnapshot] = [:]
+    private let terminalOnWait: Bool
 
-    init(state: LinuxSandboxRuntimeState = .absent) {
+    init(
+        state: LinuxSandboxRuntimeState = .absent,
+        terminalOnWait: Bool = false
+    ) {
         self.state = state
+        self.terminalOnWait = terminalOnWait
     }
 
     func snapshot() -> LinuxSandboxSnapshot {
@@ -327,8 +398,35 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
         )
     }
 
+    func stopContainer(_ containerID: String) throws {
+        guard workloads[containerID] != nil else {
+            throw ContainerizationError(.notFound, message: "fake workload is absent")
+        }
+        stopContainerCount += 1
+        workloads[containerID] = LinuxSandboxWorkloadSnapshot(
+            id: containerID,
+            state: .stopped,
+            initProcessID: nil
+        )
+    }
+
     func removeContainer(_ containerID: String) {
+        removeCount += 1
         workloads[containerID] = nil
+    }
+
+    func waitContainer(
+        _ containerID: String,
+        timeoutInSeconds: Int64?
+    ) async throws -> Containerization.ExitStatus {
+        guard terminalOnWait, workloads[containerID]?.state == .running else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "fake workload was not configured to terminate"
+            )
+        }
+        _ = timeoutInSeconds
+        return Containerization.ExitStatus(exitCode: 0)
     }
 
     func dialVsock(port: UInt32) -> FileHandle {

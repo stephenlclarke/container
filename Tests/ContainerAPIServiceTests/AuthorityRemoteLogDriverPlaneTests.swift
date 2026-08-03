@@ -35,6 +35,89 @@ private struct AuthorityUnavailableAWSLogsClientFactory:
     }
 }
 
+private enum AuthorityCatalogJournaldServiceError: Error {
+    case unavailable
+}
+
+private actor AuthorityCatalogJournaldService: JournaldService {
+    private var generation: UInt64?
+
+    init(generation: UInt64?) {
+        self.generation = generation
+    }
+
+    func setGeneration(_ generation: UInt64?) {
+        self.generation = generation
+    }
+
+    func activeSandboxGeneration() throws -> UInt64 {
+        guard let generation else {
+            throw AuthorityCatalogJournaldServiceError.unavailable
+        }
+        return generation
+    }
+
+    func openWriter(_ request: JournaldWriterOpenRequest) throws {
+        _ = request
+        throw AuthorityCatalogJournaldServiceError.unavailable
+    }
+
+    func write(sessionID: String, entry: JournaldEntry) throws {
+        _ = sessionID
+        _ = entry
+        throw AuthorityCatalogJournaldServiceError.unavailable
+    }
+
+    func flushWriter(
+        sessionID: String,
+        deadline: ContinuousClock.Instant
+    ) throws {
+        _ = sessionID
+        _ = deadline
+        throw AuthorityCatalogJournaldServiceError.unavailable
+    }
+
+    func closeWriter(
+        sessionID: String,
+        fenced: Bool,
+        deadline: ContinuousClock.Instant
+    ) throws {
+        _ = sessionID
+        _ = fenced
+        _ = deadline
+        throw AuthorityCatalogJournaldServiceError.unavailable
+    }
+
+    func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws {
+        _ = sessionID
+        _ = providerID
+        _ = providerGeneration
+        throw AuthorityCatalogJournaldServiceError.unavailable
+    }
+
+    func openReader(
+        _ request: LogDriverReaderOpenRequestV1
+    ) throws -> any ContainerLogReader {
+        _ = request
+        throw AuthorityCatalogJournaldServiceError.unavailable
+    }
+
+    func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws {
+        _ = sessionID
+        _ = providerID
+        _ = providerGeneration
+        throw AuthorityCatalogJournaldServiceError.unavailable
+    }
+}
+
 private struct AuthorityRecordingAWSLogsClientFactory: AWSLogsClientFactory {
     let client: AuthorityRecordingAWSLogsClient
 
@@ -91,6 +174,34 @@ private final class AuthorityRecordingGCPLoggingService:
 
 @Suite(.serialized)
 struct AuthorityRemoteLogDriverPlaneTests {
+    @Test
+    func journaldCatalogTracksConcreteServiceReadiness() async throws {
+        try await withTemporaryRoot { root in
+            let service = AuthorityCatalogJournaldService(generation: 9)
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory:
+                    AuthorityUnavailableAWSLogsClientFactory(),
+                journaldService: service
+            )
+
+            #expect(
+                try await plane.logDriverCatalog()
+                    .descriptor(named: "journald") != nil
+            )
+            await service.setGeneration(nil)
+            #expect(
+                try await plane.logDriverCatalog()
+                    .descriptor(named: "journald") == nil
+            )
+            await service.setGeneration(10)
+            #expect(
+                try await plane.logDriverCatalog()
+                    .descriptor(named: "journald") != nil
+            )
+        }
+    }
+
     @Test
     func nonBlockingDeliveryPreservesOrderAcrossQueueCompaction() async throws {
         let session = AuthorityRecordingLogDriverSession()

@@ -70,9 +70,11 @@ public actor ContainerLogLifecycleControllerV1 {
     /// Completes effect removals that were durably committed before a prior
     /// controller process stopped. Removal is idempotent; the journal entry is
     /// cleared only after the protected store confirms the effect is absent.
-    public func reconcilePendingEffectRemovals() async throws {
+    public func reconcilePendingEffectRemovals(
+        using provider: (any ContainerLogDriverProvider)? = nil
+    ) async throws {
         while let pending = await ledger.snapshot().pendingEffectRemovals.first {
-            try await finishEffectRemoval(pending)
+            try await finishEffectRemoval(pending, using: provider)
         }
     }
 
@@ -115,7 +117,8 @@ public actor ContainerLogLifecycleControllerV1 {
         case .candidateClosed:
             try await finishPendingEffectRemoval(
                 kind: .writerCandidate,
-                ownerID: request.sessionID
+                ownerID: request.sessionID,
+                using: provider
             )
             throw ContainerLogLifecycleLedgerError.terminalOperation
         case .candidateClosing, .candidateRecoveryRequired:
@@ -124,7 +127,8 @@ public actor ContainerLogLifecycleControllerV1 {
             if activation.state == .closed || activation.state == .tombstoned {
                 try await finishPendingEffectRemoval(
                     kind: .writerSession,
-                    ownerID: activation.sessionID
+                    ownerID: activation.sessionID,
+                    using: provider
                 )
             }
             throw ContainerLogLifecycleLedgerError.terminalOperation
@@ -152,7 +156,8 @@ public actor ContainerLogLifecycleControllerV1 {
         if case .candidateClosed = record.result {
             try await finishPendingEffectRemoval(
                 kind: .writerCandidate,
-                ownerID: request.sessionID
+                ownerID: request.sessionID,
+                using: provider
             )
             return record
         }
@@ -179,7 +184,8 @@ public actor ContainerLogLifecycleControllerV1 {
                 case .closed, .absent:
                     return try await completePreparedWriter(
                         request,
-                        preparation: preparation
+                        preparation: preparation,
+                        using: provider
                     )
                 case .active, .draining, .writerFenced:
                     break
@@ -195,7 +201,11 @@ public actor ContainerLogLifecycleControllerV1 {
                 _ = try await ledger.markWriterCandidateRecoveryRequired(for: request)
                 throw ContainerLogLifecycleLedgerError.uncertainOwnership
             }
-            return try await completePreparedWriter(request, preparation: preparation)
+            return try await completePreparedWriter(
+                request,
+                preparation: preparation,
+                using: provider
+            )
         } catch {
             _ = try await markWriterCandidateRecoveryIfCurrent(request)
             throw error
@@ -220,7 +230,8 @@ public actor ContainerLogLifecycleControllerV1 {
             case .closed, .tombstoned:
                 try await finishPendingEffectRemoval(
                     kind: .writerSession,
-                    ownerID: actual.sessionID
+                    ownerID: actual.sessionID,
+                    using: provider
                 )
                 return actual
             }
@@ -228,7 +239,8 @@ public actor ContainerLogLifecycleControllerV1 {
         if expected.state == .closed || expected.state == .tombstoned {
             try await finishPendingEffectRemoval(
                 kind: .writerSession,
-                ownerID: expected.sessionID
+                ownerID: expected.sessionID,
+                using: provider
             )
             return expected
         }
@@ -245,7 +257,10 @@ public actor ContainerLogLifecycleControllerV1 {
                 try validateWriterAcknowledgement(observation, call: call)
                 switch observation.observation {
                 case .closed, .absent:
-                    return try await completeWriterClose(draining)
+                    return try await completeWriterClose(
+                        draining,
+                        using: provider
+                    )
                 case .active, .draining, .writerFenced:
                     break
                 case .uncertain:
@@ -260,7 +275,7 @@ public actor ContainerLogLifecycleControllerV1 {
                 _ = try await ledger.markWriterRecoveryRequired(draining)
                 throw ContainerLogLifecycleLedgerError.uncertainOwnership
             }
-            return try await completeWriterClose(draining)
+            return try await completeWriterClose(draining, using: provider)
         } catch {
             _ = try await markWriterRecoveryIfCurrent(draining)
             throw error
@@ -289,7 +304,7 @@ public actor ContainerLogLifecycleControllerV1 {
             switch observation.observation {
             case .closed, .absent:
                 let draining = try await ledger.resumeWriterDrain(expected)
-                return try await completeWriterClose(draining)
+                return try await completeWriterClose(draining, using: provider)
             case .active, .draining, .writerFenced:
                 let draining = try await ledger.resumeWriterDrain(expected)
                 return try await closeWriter(draining, using: provider)
@@ -316,7 +331,8 @@ public actor ContainerLogLifecycleControllerV1 {
             if existing.state == .complete || existing.state == .tombstoned {
                 try await finishPendingEffectRemoval(
                     kind: .detachedCleanup,
-                    ownerID: existing.cleanupID
+                    ownerID: existing.cleanupID,
+                    using: provider
                 )
             }
             return .detached(existing)
@@ -337,7 +353,8 @@ public actor ContainerLogLifecycleControllerV1 {
             case .closed, .tombstoned:
                 try await finishPendingEffectRemoval(
                     kind: .writerSession,
-                    ownerID: actual.sessionID
+                    ownerID: actual.sessionID,
+                    using: provider
                 )
                 return .closed(actual)
             }
@@ -345,7 +362,8 @@ public actor ContainerLogLifecycleControllerV1 {
         if expected.state == .closed || expected.state == .tombstoned {
             try await finishPendingEffectRemoval(
                 kind: .writerSession,
-                ownerID: expected.sessionID
+                ownerID: expected.sessionID,
+                using: provider
             )
             return .closed(expected)
         }
@@ -365,7 +383,8 @@ public actor ContainerLogLifecycleControllerV1 {
                 if let outcome = try await applyWriterFenceObservation(
                     observation,
                     draining: draining,
-                    cleanupID: cleanupID
+                    cleanupID: cleanupID,
+                    using: provider
                 ) {
                     return outcome
                 }
@@ -376,7 +395,8 @@ public actor ContainerLogLifecycleControllerV1 {
             if let outcome = try await applyWriterFenceObservation(
                 acknowledgement,
                 draining: draining,
-                cleanupID: cleanupID
+                cleanupID: cleanupID,
+                using: provider
             ) {
                 return outcome
             }
@@ -406,7 +426,8 @@ public actor ContainerLogLifecycleControllerV1 {
             case .complete, .tombstoned:
                 try await finishPendingEffectRemoval(
                     kind: .detachedCleanup,
-                    ownerID: actual.cleanupID
+                    ownerID: actual.cleanupID,
+                    using: provider
                 )
                 return actual
             }
@@ -415,7 +436,8 @@ public actor ContainerLogLifecycleControllerV1 {
             if expected.state == .complete || expected.state == .tombstoned {
                 try await finishPendingEffectRemoval(
                     kind: .detachedCleanup,
-                    ownerID: expected.cleanupID
+                    ownerID: expected.cleanupID,
+                    using: provider
                 )
                 return expected
             }
@@ -431,7 +453,8 @@ public actor ContainerLogLifecycleControllerV1 {
                 case .closed, .absent:
                     return try await completeDetachedCleanup(
                         expected,
-                        observation: observation.observation
+                        observation: observation.observation,
+                        using: provider
                     )
                 case .active, .draining, .writerFenced:
                     break
@@ -448,7 +471,8 @@ public actor ContainerLogLifecycleControllerV1 {
             }
             return try await completeDetachedCleanup(
                 expected,
-                observation: acknowledgement.observation
+                observation: acknowledgement.observation,
+                using: provider
             )
         } catch {
             _ = try await markCleanupRecoveryIfCurrent(expected)
@@ -492,7 +516,8 @@ public actor ContainerLogLifecycleControllerV1 {
         case .candidateClosed:
             try await finishPendingEffectRemoval(
                 kind: .readerCandidate,
-                ownerID: request.readerSessionID
+                ownerID: request.readerSessionID,
+                using: provider
             )
             throw ContainerLogLifecycleLedgerError.terminalOperation
         case .candidateClosing, .candidateRecoveryRequired:
@@ -501,7 +526,8 @@ public actor ContainerLogLifecycleControllerV1 {
             if session.state == .closed || session.state == .tombstoned {
                 try await finishPendingEffectRemoval(
                     kind: .readerSession,
-                    ownerID: session.readerSessionID
+                    ownerID: session.readerSessionID,
+                    using: provider
                 )
             }
             throw ContainerLogLifecycleLedgerError.terminalOperation
@@ -528,7 +554,8 @@ public actor ContainerLogLifecycleControllerV1 {
         if case .candidateClosed = record.result {
             try await finishPendingEffectRemoval(
                 kind: .readerCandidate,
-                ownerID: request.readerSessionID
+                ownerID: request.readerSessionID,
+                using: provider
             )
             return record
         }
@@ -555,7 +582,8 @@ public actor ContainerLogLifecycleControllerV1 {
                 case .closed, .absent:
                     return try await completePreparedReader(
                         request,
-                        preparation: preparation
+                        preparation: preparation,
+                        using: provider
                     )
                 case .active, .closing:
                     break
@@ -571,7 +599,11 @@ public actor ContainerLogLifecycleControllerV1 {
                 _ = try await ledger.markReaderCandidateRecoveryRequired(for: request)
                 throw ContainerLogLifecycleLedgerError.uncertainOwnership
             }
-            return try await completePreparedReader(request, preparation: preparation)
+            return try await completePreparedReader(
+                request,
+                preparation: preparation,
+                using: provider
+            )
         } catch {
             _ = try await markReaderCandidateRecoveryIfCurrent(request)
             throw error
@@ -595,7 +627,8 @@ public actor ContainerLogLifecycleControllerV1 {
             case .closed, .tombstoned:
                 try await finishPendingEffectRemoval(
                     kind: .readerSession,
-                    ownerID: actual.readerSessionID
+                    ownerID: actual.readerSessionID,
+                    using: provider
                 )
                 return actual
             }
@@ -603,7 +636,8 @@ public actor ContainerLogLifecycleControllerV1 {
         if expected.state == .closed || expected.state == .tombstoned {
             try await finishPendingEffectRemoval(
                 kind: .readerSession,
-                ownerID: expected.readerSessionID
+                ownerID: expected.readerSessionID,
+                using: provider
             )
             return expected
         }
@@ -619,7 +653,8 @@ public actor ContainerLogLifecycleControllerV1 {
                 try validateReaderAcknowledgement(observation, call: call)
                 if let closed = try await applyReaderCloseObservation(
                     observation,
-                    closing: closing
+                    closing: closing,
+                    using: provider
                 ) {
                     return closed
                 }
@@ -629,7 +664,8 @@ public actor ContainerLogLifecycleControllerV1 {
             try validateReaderAcknowledgement(acknowledgement, call: call)
             if let closed = try await applyReaderCloseObservation(
                 acknowledgement,
-                closing: closing
+                closing: closing,
+                using: provider
             ) {
                 return closed
             }
@@ -661,7 +697,11 @@ public actor ContainerLogLifecycleControllerV1 {
         switch observation.observation {
         case .closed, .absent:
             let closing = try await ledger.resumeReaderClose(expected)
-            return try await completeReaderClose(closing, acknowledgement: observation)
+            return try await completeReaderClose(
+                closing,
+                acknowledgement: observation,
+                using: provider
+            )
         case .active, .closing:
             let closing = try await ledger.resumeReaderClose(expected)
             return try await closeReader(closing, using: provider)
@@ -953,23 +993,27 @@ public actor ContainerLogLifecycleControllerV1 {
 
     private func completePreparedWriter(
         _ request: LogDriverStartRequestV1,
-        preparation: LoggingSessionPreparationV1
+        preparation: LoggingSessionPreparationV1,
+        using provider: any ContainerLogDriverProvider
     ) async throws -> LoggingWriterOperationRecordV1 {
         let record = try await ledger.completeWriterCandidate(for: request)
         try await finishPendingEffectRemoval(
             kind: .writerCandidate,
-            ownerID: preparation.sessionID
+            ownerID: preparation.sessionID,
+            using: provider
         )
         return record
     }
 
     private func completeWriterClose(
-        _ draining: LoggingSessionActivationV1
+        _ draining: LoggingSessionActivationV1,
+        using provider: any ContainerLogDriverProvider
     ) async throws -> LoggingSessionActivationV1 {
         let closed = try await ledger.completeWriterClose(draining)
         try await finishPendingEffectRemoval(
             kind: .writerSession,
-            ownerID: draining.sessionID
+            ownerID: draining.sessionID,
+            using: provider
         )
         return closed
     }
@@ -977,7 +1021,8 @@ public actor ContainerLogLifecycleControllerV1 {
     private func applyWriterFenceObservation(
         _ acknowledgement: LogDriverSessionAcknowledgementV1,
         draining: LoggingSessionActivationV1,
-        cleanupID: String
+        cleanupID: String,
+        using provider: any ContainerLogDriverProvider
     ) async throws -> LoggingWriterDeadlineOutcomeV1? {
         switch acknowledgement.observation {
         case .writerFenced:
@@ -991,7 +1036,9 @@ public actor ContainerLogLifecycleControllerV1 {
             )
             return .detached(cleanup)
         case .closed, .absent:
-            return .closed(try await completeWriterClose(draining))
+            return .closed(
+                try await completeWriterClose(draining, using: provider)
+            )
         case .active, .draining:
             return nil
         case .uncertain:
@@ -1002,7 +1049,8 @@ public actor ContainerLogLifecycleControllerV1 {
 
     private func completeDetachedCleanup(
         _ cleanup: LoggingDetachedCleanupV1,
-        observation: LogDriverSessionObservationV1
+        observation: LogDriverSessionObservationV1,
+        using provider: any ContainerLogDriverProvider
     ) async throws -> LoggingDetachedCleanupV1 {
         let outcomeDigest = Self.writerCloseOutcomeDigest(
             cleanup: cleanup,
@@ -1014,30 +1062,38 @@ public actor ContainerLogLifecycleControllerV1 {
         )
         try await finishPendingEffectRemoval(
             kind: .detachedCleanup,
-            ownerID: cleanup.cleanupID
+            ownerID: cleanup.cleanupID,
+            using: provider
         )
         return completed
     }
 
     private func completePreparedReader(
         _ request: LogDriverReaderOpenRequestV1,
-        preparation: LoggingReaderPreparationV1
+        preparation: LoggingReaderPreparationV1,
+        using provider: any ContainerLogDriverProvider
     ) async throws -> LoggingReaderOperationRecordV1 {
         let record = try await ledger.completeReaderCandidate(for: request)
         try await finishPendingEffectRemoval(
             kind: .readerCandidate,
-            ownerID: preparation.readerSessionID
+            ownerID: preparation.readerSessionID,
+            using: provider
         )
         return record
     }
 
     private func applyReaderCloseObservation(
         _ acknowledgement: LogDriverReaderAcknowledgementV1,
-        closing: LoggingReaderSessionV1
+        closing: LoggingReaderSessionV1,
+        using provider: any ContainerLogDriverProvider
     ) async throws -> LoggingReaderSessionV1? {
         switch acknowledgement.observation {
         case .closed, .absent:
-            return try await completeReaderClose(closing, acknowledgement: acknowledgement)
+            return try await completeReaderClose(
+                closing,
+                acknowledgement: acknowledgement,
+                using: provider
+            )
         case .active, .closing:
             return nil
         case .uncertain:
@@ -1048,7 +1104,8 @@ public actor ContainerLogLifecycleControllerV1 {
 
     private func completeReaderClose(
         _ closing: LoggingReaderSessionV1,
-        acknowledgement: LogDriverReaderAcknowledgementV1
+        acknowledgement: LogDriverReaderAcknowledgementV1,
+        using provider: any ContainerLogDriverProvider
     ) async throws -> LoggingReaderSessionV1 {
         let digest =
             acknowledgement.terminalOutcomeDigest
@@ -1059,24 +1116,43 @@ public actor ContainerLogLifecycleControllerV1 {
         )
         try await finishPendingEffectRemoval(
             kind: .readerSession,
-            ownerID: closing.readerSessionID
+            ownerID: closing.readerSessionID,
+            using: provider
         )
         return closed
     }
 
     private func finishPendingEffectRemoval(
         kind: LoggingEffectRemovalKindV1,
-        ownerID: String
+        ownerID: String,
+        using provider: (any ContainerLogDriverProvider)? = nil
     ) async throws {
         guard let pending = await ledger.pendingEffectRemoval(kind: kind, ownerID: ownerID) else {
             return
         }
-        try await finishEffectRemoval(pending)
+        try await finishEffectRemoval(pending, using: provider)
     }
 
     private func finishEffectRemoval(
-        _ pending: LoggingEffectRemovalPendingV1
+        _ pending: LoggingEffectRemovalPendingV1,
+        using provider: (any ContainerLogDriverProvider)?
     ) async throws {
+        if let provider {
+            let binding = pending.effectTokenReference.binding
+            try await validateProvider(
+                provider,
+                providerID: binding.providerID,
+                providerGeneration: binding.providerGeneration
+            )
+            try await provider.reclaimTerminalEffect(
+                LogDriverTerminalEffectReclaimV1(
+                    kind: pending.kind,
+                    effectID: binding.effectID,
+                    providerID: binding.providerID,
+                    providerGeneration: binding.providerGeneration
+                )
+            )
+        }
         try await removeEffect(pending.effectTokenReference)
         try await ledger.acknowledgeEffectRemoval(pending)
     }

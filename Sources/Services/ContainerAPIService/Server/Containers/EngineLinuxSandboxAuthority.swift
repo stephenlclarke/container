@@ -92,6 +92,7 @@ public actor EngineLinuxSandboxAuthorityV1 {
         let workloadConfigurationDigest: String
         let dynamicEnvironment: [String: String]
         let networkEndpoints: [WorkloadNetworkEndpoint]
+        let monitorTerminal: Bool
     }
 
     private let root: URL
@@ -222,7 +223,8 @@ public actor EngineLinuxSandboxAuthorityV1 {
         dynamicEnvironment: [String: String] = [:],
         networkEndpoints: [WorkloadNetworkEndpoint] = [],
         stdio: [FileHandle?] = [],
-        controllers: [any WorkloadEffectControllerV1] = []
+        controllers: [any WorkloadEffectControllerV1] = [],
+        monitorTerminal: Bool = false
     ) async throws -> EngineWorkloadRecordV1 {
         let ready = try await ensureReady(configuration: configuration)
         guard let runtime else {
@@ -248,12 +250,22 @@ public actor EngineLinuxSandboxAuthorityV1 {
                 planDigest: planDigest,
                 workloadConfigurationDigest: configurationDigest,
                 dynamicEnvironment: dynamicEnvironment,
-                networkEndpoints: networkEndpoints
+                networkEndpoints: networkEndpoints,
+                monitorTerminal: monitorTerminal
             )
         )
-        let registered = try await ledger.registerWorkload(
+        var registered = try await ledger.registerWorkload(
             containerID: containerID,
             planDigest: planDigest
+        )
+        let process = EngineLinuxSandboxWorkloadProcessStarterV1(
+            runtime: runtime,
+            workloadRoot: workloadRoot,
+            workloadConfigurationDigest: configurationDigest,
+            dynamicEnvironment: dynamicEnvironment,
+            networkEndpoints: networkEndpoints,
+            stdio: stdio,
+            monitorTerminal: monitorTerminal
         )
         if registered.state == .running {
             guard registered.lastOperation?.kind == .start,
@@ -262,17 +274,23 @@ public actor EngineLinuxSandboxAuthorityV1 {
             else {
                 throw EngineWorkloadLedgerError.idempotencyConflict
             }
-            return registered
+            guard monitorTerminal else {
+                return registered
+            }
+            let context = try startContext(for: registered)
+            switch try await process.observe(context: context) {
+            case .started(let receipt):
+                guard Self.matches(receipt, context: context) else {
+                    throw WorkloadPlanResolverError.recoveryRequired
+                }
+                return registered
+            case .absent:
+                registered = try await reclaimTerminalWorkload(registered)
+            case .unknown:
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
         }
         let mutation = try startMutation(for: registered, requestDigest: requestDigest)
-        let process = EngineLinuxSandboxWorkloadProcessStarterV1(
-            runtime: runtime,
-            workloadRoot: workloadRoot,
-            workloadConfigurationDigest: configurationDigest,
-            dynamicEnvironment: dynamicEnvironment,
-            networkEndpoints: networkEndpoints,
-            stdio: stdio
-        )
         return try await resolver.start(
             mutation,
             sandboxGeneration: ready.generation,
@@ -285,6 +303,8 @@ public actor EngineLinuxSandboxAuthorityV1 {
     /// sandbox generation. The runtime independently checks the same fence.
     public func dialService(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64,
         port: UInt32
     ) async throws -> FileHandle {
         guard port > 0 else {
@@ -294,6 +314,17 @@ public actor EngineLinuxSandboxAuthorityV1 {
             )
         }
         let ready = try await ensureReady(configuration: configuration)
+        guard
+            let workload = await ledger.workload(containerID: workloadID),
+            workload.state == .running,
+            workload.activeProcessGeneration == workloadProcessGeneration,
+            workload.activeSandboxGeneration == ready.generation
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "Engine Linux sandbox service workload is not active for the requested generation"
+            )
+        }
         guard let runtime else {
             throw ContainerizationError(
                 .internalError,
@@ -304,6 +335,8 @@ public actor EngineLinuxSandboxAuthorityV1 {
             EngineLinuxSandboxServiceDialRequestV1(
                 sandboxID: sandboxID,
                 sandboxGeneration: ready.generation,
+                workloadID: workloadID,
+                workloadProcessGeneration: workloadProcessGeneration,
                 port: port
             )
         )
@@ -363,6 +396,75 @@ public actor EngineLinuxSandboxAuthorityV1 {
             requestDigest: requestDigest,
             expectedTransitionRevision: workload.transitionRevision
         )
+    }
+
+    private func startContext(
+        for workload: EngineWorkloadRecordV1
+    ) throws -> WorkloadStartContextV1 {
+        guard
+            let operation = workload.lastOperation,
+            operation.kind == .start,
+            operation.outcome == .running,
+            let processGeneration = workload.activeProcessGeneration,
+            let sandboxGeneration = workload.activeSandboxGeneration
+        else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        return WorkloadStartContextV1(
+            containerID: workload.containerID,
+            operationGeneration: operation.operationGeneration,
+            candidateProcessGeneration: processGeneration,
+            sandboxGeneration: sandboxGeneration,
+            requestDigest: operation.requestDigest
+        )
+    }
+
+    private func reclaimTerminalWorkload(
+        _ workload: EngineWorkloadRecordV1
+    ) async throws -> EngineWorkloadRecordV1 {
+        guard workload.activeEffects.isEmpty,
+            let processGeneration = workload.activeProcessGeneration,
+            let sandboxGeneration = workload.activeSandboxGeneration
+        else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        let requestDigest = Self.digest(
+            "terminal:\(workload.containerID):\(processGeneration):\(sandboxGeneration)"
+        )
+        let reservation = try await ledger.beginStop(
+            EngineWorkloadMutationRequestV1(
+                containerID: workload.containerID,
+                idempotencyKey: "terminal-\(workload.containerID)-\(processGeneration)",
+                requestDigest: requestDigest,
+                expectedTransitionRevision: workload.transitionRevision
+            )
+        )
+        let stopping: EngineWorkloadRecordV1
+        switch reservation {
+        case .reserved(let record), .replay(let record):
+            stopping = record
+        }
+        guard
+            stopping.state == .stopping,
+            let operationGeneration = stopping.operation?.operationGeneration
+        else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        return try await ledger.commitStop(
+            containerID: workload.containerID,
+            operationGeneration: operationGeneration
+        )
+    }
+
+    private static func matches(
+        _ receipt: WorkloadProcessReceiptV1,
+        context: WorkloadStartContextV1
+    ) -> Bool {
+        receipt.containerID == context.containerID
+            && receipt.operationGeneration == context.operationGeneration
+            && receipt.processGeneration == context.candidateProcessGeneration
+            && receipt.sandboxGeneration == context.sandboxGeneration
+            && receipt.requestDigest == context.requestDigest
     }
 
     private static func digest<T: Encodable>(_ value: T) throws -> String {

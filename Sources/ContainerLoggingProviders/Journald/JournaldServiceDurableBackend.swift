@@ -253,7 +253,7 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
         guard sandboxGeneration > 0 else {
             throw JournaldProviderError.invalidSessionFence
         }
-        let snapshot: Snapshot
+        var snapshot: Snapshot
         if let data = try await stateStore.load() {
             do {
                 snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
@@ -267,13 +267,16 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
                     snapshot.schemaVersion
                 )
             }
-            guard snapshot.sandboxGeneration == sandboxGeneration else {
-                throw JournaldServiceDurableStateError.generationMismatch(
-                    expected: sandboxGeneration,
-                    actual: snapshot.sandboxGeneration
-                )
-            }
             try validate(snapshot)
+            if snapshot.sandboxGeneration != sandboxGeneration {
+                snapshot = Snapshot(
+                    schemaVersion: currentSchemaVersion,
+                    sandboxGeneration: sandboxGeneration,
+                    writers: [:],
+                    readers: [:]
+                )
+                try await stateStore.save(try encode(snapshot))
+            }
         } else {
             snapshot = Snapshot(
                 schemaVersion: currentSchemaVersion,
@@ -435,6 +438,30 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
         try await commit(candidate)
     }
 
+    public func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws {
+        try requireHealthyPersistence()
+        guard let writer = snapshot.writers[sessionID] else {
+            return
+        }
+        guard
+            writer.phase == .closed,
+            writer.pending == nil,
+            let open = try? writer.open.value(),
+            open.request.providerID == providerID,
+            open.request.providerGeneration == providerGeneration,
+            open.request.candidateSandboxGeneration == sandboxGeneration
+        else {
+            throw JournaldProviderError.invalidSessionFence
+        }
+        var candidate = snapshot
+        candidate.writers.removeValue(forKey: sessionID)
+        try await commit(candidate)
+    }
+
     public func openReader(
         _ request: LogDriverReaderOpenRequestV1
     ) async throws -> UInt64 {
@@ -541,6 +568,27 @@ public actor JournaldServiceDurableBackendV1: JournaldServiceBackendV1 {
         candidate.readers[sessionID] = reader
         try await commit(candidate)
         await journal.cancelReader(sessionID: sessionID)
+    }
+
+    public func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws {
+        try requireHealthyPersistence()
+        guard let reader = snapshot.readers[sessionID] else {
+            return
+        }
+        guard
+            reader.phase == .ended || reader.phase == .cancelled,
+            reader.open.providerID == providerID,
+            reader.open.providerGeneration == providerGeneration
+        else {
+            throw JournaldProviderError.invalidSessionFence
+        }
+        var candidate = snapshot
+        candidate.readers.removeValue(forKey: sessionID)
+        try await commit(candidate)
     }
 
     private func commit(_ candidate: Snapshot) async throws {

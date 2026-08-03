@@ -116,7 +116,22 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 
     public func logDriverCatalog() async throws -> LogDriverCatalog {
-        try await providers.registry.logDriverCatalog()
+        let catalog = try await providers.registry.logDriverCatalog()
+        guard let journald = providers.journald else {
+            return catalog
+        }
+        do {
+            _ = try await journald.activeSandboxGeneration()
+            return catalog
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return try LogDriverCatalog(
+                descriptors: catalog.descriptors.filter {
+                    $0.driver != "journald"
+                }
+            )
+        }
     }
 
     /// Prepares one provider session and substitutes authority-owned pipes for
@@ -169,7 +184,9 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             containerID: containerID,
             configuration: configuration.logging
         )
-        try await controller.reconcilePendingEffectRemovals()
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
         try await reconcilePriorRuns(
             ledger: ledger,
             controller: controller,

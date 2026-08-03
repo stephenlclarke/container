@@ -31,19 +31,24 @@ public struct EngineLinuxSandboxWorkloadStartRequestV1: Codable, Equatable, Send
     public let workloadConfigurationDigest: String
     public let dynamicEnvironment: [String: String]
     public let networkEndpoints: [WorkloadNetworkEndpoint]
+    /// Whether the helper must watch the init process and withdraw protected
+    /// service routing as soon as that process terminates.
+    public let monitorTerminal: Bool
 
     public init(
         context: WorkloadStartContextV1,
         workloadRoot: URL,
         workloadConfigurationDigest: String,
         dynamicEnvironment: [String: String] = [:],
-        networkEndpoints: [WorkloadNetworkEndpoint] = []
+        networkEndpoints: [WorkloadNetworkEndpoint] = [],
+        monitorTerminal: Bool = false
     ) {
         self.context = context
         self.workloadRoot = workloadRoot
         self.workloadConfigurationDigest = workloadConfigurationDigest
         self.dynamicEnvironment = dynamicEnvironment
         self.networkEndpoints = networkEndpoints
+        self.monitorTerminal = monitorTerminal
     }
 }
 
@@ -66,6 +71,7 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
     private let dynamicEnvironment: [String: String]
     private let networkEndpoints: [WorkloadNetworkEndpoint]
     private let stdio: [FileHandle?]
+    private let monitorTerminal: Bool
 
     public init(
         runtime: any EngineLinuxSandboxWorkloadRuntimeV1,
@@ -73,7 +79,8 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
         workloadConfigurationDigest: String,
         dynamicEnvironment: [String: String] = [:],
         networkEndpoints: [WorkloadNetworkEndpoint] = [],
-        stdio: [FileHandle?] = []
+        stdio: [FileHandle?] = [],
+        monitorTerminal: Bool = false
     ) {
         self.runtime = runtime
         self.workloadRoot = workloadRoot
@@ -81,6 +88,7 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
         self.dynamicEnvironment = dynamicEnvironment
         self.networkEndpoints = networkEndpoints
         self.stdio = stdio
+        self.monitorTerminal = monitorTerminal
     }
 
     public func start(context: WorkloadStartContextV1) async throws -> WorkloadProcessReceiptV1 {
@@ -97,7 +105,8 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
             workloadRoot: workloadRoot,
             workloadConfigurationDigest: workloadConfigurationDigest,
             dynamicEnvironment: dynamicEnvironment,
-            networkEndpoints: networkEndpoints
+            networkEndpoints: networkEndpoints,
+            monitorTerminal: monitorTerminal
         )
     }
 }

@@ -36,12 +36,22 @@ public protocol JournaldServiceBackendV1: Sendable {
         fenced: Bool,
         timeoutNanoseconds: UInt64
     ) async throws
+    func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws
     func openReader(_ request: LogDriverReaderOpenRequestV1) async throws -> UInt64
     func nextReader(
         sessionID: String,
         sequence: UInt64
     ) async throws -> ContainerLogReaderEventV1
     func cancelReader(sessionID: String) async throws
+    func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws
 }
 
 public struct JournaldServiceReplayLimitsV1: Equatable, Sendable {
@@ -226,6 +236,14 @@ public actor JournaldServiceWireHandlerV1 {
                     )
                 )
                 return try .acknowledgement(operationID: request.operationID)
+            case .reclaimWriter:
+                let reclaim = try required(request.terminalReclaim)
+                try await backend.reclaimWriter(
+                    sessionID: reclaim.sessionID,
+                    providerID: reclaim.providerID,
+                    providerGeneration: reclaim.providerGeneration
+                )
+                return try .acknowledgement(operationID: request.operationID)
             case .openReader:
                 let sequence = try await backend.openReader(
                     try required(request.readerOpen)
@@ -254,6 +272,14 @@ public actor JournaldServiceWireHandlerV1 {
             case .cancelReader:
                 try await backend.cancelReader(
                     sessionID: try required(request.sessionID)
+                )
+                return try .acknowledgement(operationID: request.operationID)
+            case .reclaimReader:
+                let reclaim = try required(request.terminalReclaim)
+                try await backend.reclaimReader(
+                    sessionID: reclaim.sessionID,
+                    providerID: reclaim.providerID,
+                    providerGeneration: reclaim.providerGeneration
                 )
                 return try .acknowledgement(operationID: request.operationID)
             }

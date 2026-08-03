@@ -38,9 +38,11 @@ public enum JournaldServiceWireOperationV1: String, Codable, Sendable {
     case write
     case flushWriter
     case closeWriter
+    case reclaimWriter
     case openReader
     case nextReader
     case cancelReader
+    case reclaimReader
 }
 
 public enum JournaldServiceWireFailureV1: String, Codable, Sendable {
@@ -294,8 +296,54 @@ public struct JournaldWriterOpenWireV1: Codable, Equatable, Sendable {
     }
 }
 
-public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
+public struct JournaldTerminalReclaimWireV1: Codable, Equatable, Sendable {
     public static let currentSchemaVersion: UInt32 = 1
+
+    public let schemaVersion: UInt32
+    public let sessionID: String
+    public let providerID: String
+    public let providerGeneration: UInt64
+
+    public init(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws {
+        try JournaldServiceWireLimitsV1.validate(identifier: sessionID)
+        try JournaldServiceWireLimitsV1.validate(identifier: providerID)
+        guard providerGeneration > 0 else {
+            throw JournaldServiceWireError.invalidEnvelope
+        }
+        self.schemaVersion = Self.currentSchemaVersion
+        self.sessionID = sessionID
+        self.providerID = providerID
+        self.providerGeneration = providerGeneration
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let schemaVersion = try container.decode(
+            UInt32.self,
+            forKey: .schemaVersion
+        )
+        guard schemaVersion == Self.currentSchemaVersion else {
+            throw JournaldServiceWireError.unsupportedSchemaVersion(
+                schemaVersion
+            )
+        }
+        try self.init(
+            sessionID: container.decode(String.self, forKey: .sessionID),
+            providerID: container.decode(String.self, forKey: .providerID),
+            providerGeneration: container.decode(
+                UInt64.self,
+                forKey: .providerGeneration
+            )
+        )
+    }
+}
+
+public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion: UInt32 = 2
 
     public let schemaVersion: UInt32
     public let operationID: String
@@ -307,6 +355,7 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
     public let fenced: Bool?
     public let readerOpen: LogDriverReaderOpenRequestV1?
     public let readerSequence: UInt64?
+    public let terminalReclaim: JournaldTerminalReclaimWireV1?
 
     public static func activeSandboxGeneration() throws -> Self {
         try make(operation: .activeSandboxGeneration)
@@ -348,6 +397,21 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
         )
     }
 
+    public static func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws -> Self {
+        try make(
+            operation: .reclaimWriter,
+            terminalReclaim: JournaldTerminalReclaimWireV1(
+                sessionID: sessionID,
+                providerID: providerID,
+                providerGeneration: providerGeneration
+            )
+        )
+    }
+
     public static func openReader(_ request: LogDriverReaderOpenRequestV1) throws -> Self {
         try make(operation: .openReader, readerOpen: request)
     }
@@ -367,6 +431,21 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
         try make(operation: .cancelReader, sessionID: sessionID)
     }
 
+    public static func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws -> Self {
+        try make(
+            operation: .reclaimReader,
+            terminalReclaim: JournaldTerminalReclaimWireV1(
+                sessionID: sessionID,
+                providerID: providerID,
+                providerGeneration: providerGeneration
+            )
+        )
+    }
+
     private static func make(
         operation: JournaldServiceWireOperationV1,
         writerOpen: JournaldWriterOpenWireV1? = nil,
@@ -375,7 +454,8 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
         timeoutNanoseconds: UInt64? = nil,
         fenced: Bool? = nil,
         readerOpen: LogDriverReaderOpenRequestV1? = nil,
-        readerSequence: UInt64? = nil
+        readerSequence: UInt64? = nil,
+        terminalReclaim: JournaldTerminalReclaimWireV1? = nil
     ) throws -> Self {
         try Self(
             schemaVersion: currentSchemaVersion,
@@ -387,7 +467,8 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
             timeoutNanoseconds: timeoutNanoseconds,
             fenced: fenced,
             readerOpen: readerOpen,
-            readerSequence: readerSequence
+            readerSequence: readerSequence,
+            terminalReclaim: terminalReclaim
         )
     }
 
@@ -401,7 +482,8 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
         timeoutNanoseconds: UInt64?,
         fenced: Bool?,
         readerOpen: LogDriverReaderOpenRequestV1?,
-        readerSequence: UInt64?
+        readerSequence: UInt64?,
+        terminalReclaim: JournaldTerminalReclaimWireV1?
     ) throws {
         guard schemaVersion == Self.currentSchemaVersion else {
             throw JournaldServiceWireError.unsupportedSchemaVersion(schemaVersion)
@@ -417,49 +499,58 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
             guard
                 writerOpen == nil, sessionID == nil, entry == nil,
                 timeoutNanoseconds == nil, fenced == nil, readerOpen == nil,
-                readerSequence == nil
+                readerSequence == nil, terminalReclaim == nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         case .openWriter:
             guard
                 writerOpen != nil, sessionID == nil, entry == nil,
                 timeoutNanoseconds == nil, fenced == nil, readerOpen == nil,
-                readerSequence == nil
+                readerSequence == nil, terminalReclaim == nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         case .write:
             guard
                 writerOpen == nil, sessionID != nil, entry != nil,
                 timeoutNanoseconds == nil, fenced == nil, readerOpen == nil,
-                readerSequence == nil
+                readerSequence == nil, terminalReclaim == nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         case .flushWriter:
             guard
                 writerOpen == nil, sessionID != nil, entry == nil,
                 timeoutNanoseconds != nil, timeoutNanoseconds != 0,
-                fenced == nil, readerOpen == nil, readerSequence == nil
+                fenced == nil, readerOpen == nil, readerSequence == nil,
+                terminalReclaim == nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         case .closeWriter:
             guard
                 writerOpen == nil, sessionID != nil, entry == nil,
                 timeoutNanoseconds != nil, timeoutNanoseconds != 0,
-                fenced != nil, readerOpen == nil, readerSequence == nil
+                fenced != nil, readerOpen == nil, readerSequence == nil,
+                terminalReclaim == nil
+            else { throw JournaldServiceWireError.invalidEnvelope }
+        case .reclaimWriter, .reclaimReader:
+            guard
+                writerOpen == nil, sessionID == nil, entry == nil,
+                timeoutNanoseconds == nil, fenced == nil, readerOpen == nil,
+                readerSequence == nil, terminalReclaim != nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         case .openReader:
             guard
                 writerOpen == nil, sessionID == nil, entry == nil,
                 timeoutNanoseconds == nil, fenced == nil, readerOpen != nil,
-                readerSequence == nil
+                readerSequence == nil, terminalReclaim == nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         case .nextReader:
             guard
                 writerOpen == nil, sessionID != nil, entry == nil,
                 timeoutNanoseconds == nil, fenced == nil, readerOpen == nil,
-                readerSequence != nil, readerSequence != 0
+                readerSequence != nil, readerSequence != 0,
+                terminalReclaim == nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         case .cancelReader:
             guard
                 writerOpen == nil, sessionID != nil, entry == nil,
                 timeoutNanoseconds == nil, fenced == nil, readerOpen == nil,
-                readerSequence == nil
+                readerSequence == nil, terminalReclaim == nil
             else { throw JournaldServiceWireError.invalidEnvelope }
         }
         self.schemaVersion = schemaVersion
@@ -472,6 +563,7 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
         self.fenced = fenced
         self.readerOpen = readerOpen
         self.readerSequence = readerSequence
+        self.terminalReclaim = terminalReclaim
     }
 
     public init(from decoder: any Decoder) throws {
@@ -504,6 +596,10 @@ public struct JournaldServiceWireRequestV1: Codable, Equatable, Sendable {
             readerSequence: try container.decodeIfPresent(
                 UInt64.self,
                 forKey: .readerSequence
+            ),
+            terminalReclaim: try container.decodeIfPresent(
+                JournaldTerminalReclaimWireV1.self,
+                forKey: .terminalReclaim
             )
         )
     }
@@ -554,7 +650,7 @@ public enum JournaldServiceReaderEventWireV1: Codable, Equatable, Sendable {
 }
 
 public struct JournaldServiceWireResponseV1: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion: UInt32 = 1
+    public static let currentSchemaVersion: UInt32 = 2
 
     public let schemaVersion: UInt32
     public let operationID: String
@@ -903,6 +999,20 @@ public actor JournaldServiceWireClientV1: JournaldService {
         )
     }
 
+    public func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws {
+        try await requireAcknowledgement(
+            JournaldServiceWireRequestV1.reclaimWriter(
+                sessionID: sessionID,
+                providerID: providerID,
+                providerGeneration: providerGeneration
+            )
+        )
+    }
+
     public func openReader(
         _ request: LogDriverReaderOpenRequestV1
     ) async throws -> any ContainerLogReader {
@@ -916,6 +1026,20 @@ public actor JournaldServiceWireClientV1: JournaldService {
             sessionID: request.readerSessionID,
             sequence: sequence,
             client: self
+        )
+    }
+
+    public func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws {
+        try await requireAcknowledgement(
+            JournaldServiceWireRequestV1.reclaimReader(
+                sessionID: sessionID,
+                providerID: providerID,
+                providerGeneration: providerGeneration
+            )
         )
     }
 

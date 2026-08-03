@@ -295,11 +295,23 @@ func loadDurableBackend(generation uint64, store durableStateStore, journal jour
 		if snapshot.SchemaVersion != durableSchemaVersion {
 			return nil, errCorruptState
 		}
-		if snapshot.SandboxGeneration != generation {
-			return nil, errGenerationMismatch
-		}
 		if err := validateSnapshot(snapshot); err != nil {
 			return nil, err
+		}
+		if snapshot.SandboxGeneration != generation {
+			snapshot = durableSnapshot{
+				SchemaVersion:     durableSchemaVersion,
+				SandboxGeneration: generation,
+				Writers:           make(map[string]writerState),
+				Readers:           make(map[string]readerState),
+			}
+			encoded, err := encodeSnapshot(snapshot)
+			if err != nil {
+				return nil, err
+			}
+			if err := store.Save(encoded); err != nil {
+				return nil, err
+			}
 		}
 	}
 	return &durableBackend{
@@ -513,6 +525,31 @@ func (backend *durableBackend) closeWriter(ctx context.Context, sessionID string
 	return backend.commitLocked(candidate)
 }
 
+func (backend *durableBackend) reclaimWriter(reclaim terminalReclaimWire) error {
+	lock := backend.writerLock(reclaim.SessionID)
+	lock.Lock()
+	defer lock.Unlock()
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if err := backend.requireHealthyLocked(); err != nil {
+		return err
+	}
+	writer, ok := backend.snapshot.Writers[reclaim.SessionID]
+	if !ok {
+		return nil
+	}
+	if writer.Phase != writerClosed || writer.Pending != nil ||
+		writer.Open.Request.ProviderID != reclaim.ProviderID ||
+		writer.Open.Request.ProviderGeneration != reclaim.ProviderGeneration ||
+		writer.Open.Request.CandidateSandboxGeneration == nil ||
+		*writer.Open.Request.CandidateSandboxGeneration != backend.sandboxGeneration {
+		return errGenerationMismatch
+	}
+	candidate := cloneSnapshot(backend.snapshot)
+	delete(candidate.Writers, reclaim.SessionID)
+	return backend.commitLocked(candidate)
+}
+
 func (backend *durableBackend) openReader(ctx context.Context, open readerOpenWire) (uint64, error) {
 	lock := backend.readerLock(open.ReaderSessionID)
 	lock.Lock()
@@ -679,6 +716,29 @@ func (backend *durableBackend) cancelReader(sessionID string) error {
 	backend.mu.Unlock()
 	backend.journal.CancelReader(sessionID)
 	return nil
+}
+
+func (backend *durableBackend) reclaimReader(reclaim terminalReclaimWire) error {
+	lock := backend.readerLock(reclaim.SessionID)
+	lock.Lock()
+	defer lock.Unlock()
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if err := backend.requireHealthyLocked(); err != nil {
+		return err
+	}
+	reader, ok := backend.snapshot.Readers[reclaim.SessionID]
+	if !ok {
+		return nil
+	}
+	if (reader.Phase != readerEnded && reader.Phase != readerCancelled) ||
+		reader.Open.ProviderID != reclaim.ProviderID ||
+		reader.Open.ProviderGeneration != reclaim.ProviderGeneration {
+		return errGenerationMismatch
+	}
+	candidate := cloneSnapshot(backend.snapshot)
+	delete(candidate.Readers, reclaim.SessionID)
+	return backend.commitLocked(candidate)
 }
 
 func (backend *durableBackend) validateNewReaderSourceLocked(open readerOpenWire) error {

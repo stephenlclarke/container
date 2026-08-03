@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	wireSchemaVersion       = uint32(1)
+	wireSchemaVersion       = uint32(2)
 	maximumFrameBytes       = 1 * 1024 * 1024
 	maximumIdentifierBytes  = 256
 	maximumEpochBytes       = 128
@@ -48,9 +48,11 @@ const (
 	operationWrite                   wireOperation = "write"
 	operationFlushWriter             wireOperation = "flushWriter"
 	operationCloseWriter             wireOperation = "closeWriter"
+	operationReclaimWriter           wireOperation = "reclaimWriter"
 	operationOpenReader              wireOperation = "openReader"
 	operationNextReader              wireOperation = "nextReader"
 	operationCancelReader            wireOperation = "cancelReader"
+	operationReclaimReader           wireOperation = "reclaimReader"
 )
 
 type wireFailure string
@@ -66,16 +68,24 @@ const (
 )
 
 type wireRequest struct {
-	SchemaVersion      uint32            `json:"schemaVersion"`
-	OperationID        string            `json:"operationID"`
-	Operation          wireOperation     `json:"operation"`
-	WriterOpen         *writerOpenWire   `json:"writerOpen,omitempty"`
-	SessionID          *string           `json:"sessionID,omitempty"`
-	Entry              *journalEntryWire `json:"entry,omitempty"`
-	TimeoutNanoseconds *uint64           `json:"timeoutNanoseconds,omitempty"`
-	Fenced             *bool             `json:"fenced,omitempty"`
-	ReaderOpen         *readerOpenWire   `json:"readerOpen,omitempty"`
-	ReaderSequence     *uint64           `json:"readerSequence,omitempty"`
+	SchemaVersion      uint32               `json:"schemaVersion"`
+	OperationID        string               `json:"operationID"`
+	Operation          wireOperation        `json:"operation"`
+	WriterOpen         *writerOpenWire      `json:"writerOpen,omitempty"`
+	SessionID          *string              `json:"sessionID,omitempty"`
+	Entry              *journalEntryWire    `json:"entry,omitempty"`
+	TimeoutNanoseconds *uint64              `json:"timeoutNanoseconds,omitempty"`
+	Fenced             *bool                `json:"fenced,omitempty"`
+	ReaderOpen         *readerOpenWire      `json:"readerOpen,omitempty"`
+	ReaderSequence     *uint64              `json:"readerSequence,omitempty"`
+	TerminalReclaim    *terminalReclaimWire `json:"terminalReclaim,omitempty"`
+}
+
+type terminalReclaimWire struct {
+	SchemaVersion      uint32 `json:"schemaVersion"`
+	SessionID          string `json:"sessionID"`
+	ProviderID         string `json:"providerID"`
+	ProviderGeneration uint64 `json:"providerGeneration"`
 }
 
 type writerOpenWire struct {
@@ -232,14 +242,14 @@ func (request wireRequest) validate() error {
 		if present(request.WriterOpen) || present(request.SessionID) ||
 			present(request.Entry) || present(request.TimeoutNanoseconds) ||
 			present(request.Fenced) || present(request.ReaderOpen) ||
-			present(request.ReaderSequence) {
+			present(request.ReaderSequence) || present(request.TerminalReclaim) {
 			return errors.New("generation request contains payload")
 		}
 	case operationOpenWriter:
 		if request.WriterOpen == nil || present(request.SessionID) ||
 			present(request.Entry) || present(request.TimeoutNanoseconds) ||
 			present(request.Fenced) || present(request.ReaderOpen) ||
-			present(request.ReaderSequence) {
+			present(request.ReaderSequence) || present(request.TerminalReclaim) {
 			return errors.New("invalid open-writer payload")
 		}
 		if err := request.WriterOpen.validate(); err != nil {
@@ -249,7 +259,7 @@ func (request wireRequest) validate() error {
 		if request.SessionID == nil || request.Entry == nil ||
 			present(request.WriterOpen) || present(request.TimeoutNanoseconds) ||
 			present(request.Fenced) || present(request.ReaderOpen) ||
-			present(request.ReaderSequence) {
+			present(request.ReaderSequence) || present(request.TerminalReclaim) {
 			return errors.New("invalid write payload")
 		}
 		if err := request.Entry.validate(); err != nil {
@@ -259,21 +269,33 @@ func (request wireRequest) validate() error {
 		if request.SessionID == nil || request.TimeoutNanoseconds == nil ||
 			*request.TimeoutNanoseconds == 0 || present(request.WriterOpen) ||
 			present(request.Entry) || present(request.Fenced) ||
-			present(request.ReaderOpen) || present(request.ReaderSequence) {
+			present(request.ReaderOpen) || present(request.ReaderSequence) ||
+			present(request.TerminalReclaim) {
 			return errors.New("invalid flush-writer payload")
 		}
 	case operationCloseWriter:
 		if request.SessionID == nil || request.TimeoutNanoseconds == nil ||
 			*request.TimeoutNanoseconds == 0 || request.Fenced == nil ||
 			present(request.WriterOpen) || present(request.Entry) ||
-			present(request.ReaderOpen) || present(request.ReaderSequence) {
+			present(request.ReaderOpen) || present(request.ReaderSequence) ||
+			present(request.TerminalReclaim) {
 			return errors.New("invalid close-writer payload")
+		}
+	case operationReclaimWriter, operationReclaimReader:
+		if request.TerminalReclaim == nil || present(request.WriterOpen) ||
+			present(request.SessionID) || present(request.Entry) ||
+			present(request.TimeoutNanoseconds) || present(request.Fenced) ||
+			present(request.ReaderOpen) || present(request.ReaderSequence) {
+			return errors.New("invalid terminal-reclaim payload")
+		}
+		if err := request.TerminalReclaim.validate(); err != nil {
+			return err
 		}
 	case operationOpenReader:
 		if request.ReaderOpen == nil || present(request.WriterOpen) ||
 			present(request.SessionID) || present(request.Entry) ||
 			present(request.TimeoutNanoseconds) || present(request.Fenced) ||
-			present(request.ReaderSequence) {
+			present(request.ReaderSequence) || present(request.TerminalReclaim) {
 			return errors.New("invalid open-reader payload")
 		}
 		if err := request.ReaderOpen.validate(); err != nil {
@@ -283,18 +305,27 @@ func (request wireRequest) validate() error {
 		if request.SessionID == nil || request.ReaderSequence == nil ||
 			*request.ReaderSequence == 0 || present(request.WriterOpen) ||
 			present(request.Entry) || present(request.TimeoutNanoseconds) ||
-			present(request.Fenced) || present(request.ReaderOpen) {
+			present(request.Fenced) || present(request.ReaderOpen) ||
+			present(request.TerminalReclaim) {
 			return errors.New("invalid next-reader payload")
 		}
 	case operationCancelReader:
 		if request.SessionID == nil || present(request.WriterOpen) ||
 			present(request.Entry) || present(request.TimeoutNanoseconds) ||
 			present(request.Fenced) || present(request.ReaderOpen) ||
-			present(request.ReaderSequence) {
+			present(request.ReaderSequence) || present(request.TerminalReclaim) {
 			return errors.New("invalid cancel-reader payload")
 		}
 	default:
 		return errors.New("unknown operation")
+	}
+	return nil
+}
+
+func (reclaim terminalReclaimWire) validate() error {
+	if reclaim.SchemaVersion != 1 || !validIdentifier(reclaim.SessionID) ||
+		!validIdentifier(reclaim.ProviderID) || reclaim.ProviderGeneration == 0 {
+		return errors.New("invalid terminal reclaim")
 	}
 	return nil
 }

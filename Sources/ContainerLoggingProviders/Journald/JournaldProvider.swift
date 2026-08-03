@@ -167,9 +167,19 @@ public protocol JournaldService: Sendable {
         fenced: Bool,
         deadline: ContinuousClock.Instant
     ) async throws
+    func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws
     func openReader(
         _ request: LogDriverReaderOpenRequestV1
     ) async throws -> any ContainerLogReader
+    func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws
 }
 
 public protocol JournaldRandomBytesGenerating: Sendable {
@@ -608,6 +618,48 @@ public actor JournaldLogDriverProvider: ContainerLogDriverProvider {
             observation: .closed,
             terminalOutcomeDigest: entry.terminalOutcomeDigest
         )
+    }
+
+    public func reclaimTerminalEffect(
+        _ request: LogDriverTerminalEffectReclaimV1
+    ) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
+        guard
+            request.providerID == descriptorValue.providerIdentity.id,
+            request.providerGeneration == descriptorValue.providerGeneration
+        else {
+            throw JournaldProviderError.invalidProviderIdentity
+        }
+        switch request.kind {
+        case .writerCandidate, .writerSession, .detachedCleanup:
+            if let entry = sessions[request.effectID] {
+                switch await entry.session.currentState() {
+                case .writerFenced, .closed:
+                    break
+                case .active, .closing:
+                    throw JournaldProviderError.invalidSessionFence
+                }
+            }
+            try await service.reclaimWriter(
+                sessionID: request.effectID,
+                providerID: request.providerID,
+                providerGeneration: request.providerGeneration
+            )
+            sessions.removeValue(forKey: request.effectID)
+        case .readerCandidate, .readerSession:
+            if let entry = readers[request.effectID],
+                !(await entry.reader.isClosed())
+            {
+                throw JournaldProviderError.invalidSessionFence
+            }
+            try await service.reclaimReader(
+                sessionID: request.effectID,
+                providerID: request.providerID,
+                providerGeneration: request.providerGeneration
+            )
+            readers.removeValue(forKey: request.effectID)
+        }
     }
 
     private func existingStart(

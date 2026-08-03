@@ -418,6 +418,27 @@ struct ContainerLogLifecycleLedgerTests {
         #expect(closed.terminalOutcomeDigest == "sha256:reader-closed")
         #expect(closed.effectTokenReference == nil)
         #expect(await effects.contains(effectID: request.readerSessionID) == false)
+        #expect(
+            await provider.reclaimedEffects
+                == [
+                    try LogDriverTerminalEffectReclaimV1(
+                        kind: .readerSession,
+                        effectID: request.readerSessionID,
+                        providerID: request.providerID,
+                        providerGeneration: request.providerGeneration
+                    )
+                ]
+        )
+        let eventValues = await events.values
+        let reclaim = try #require(
+            eventValues.firstIndex(of: "provider.reclaim.readerSession")
+        )
+        let terminalPersist = try #require(
+            eventValues[..<reclaim].lastIndex(of: "persist")
+        )
+        let remove = try #require(eventValues.firstIndex(of: "effect.remove"))
+        #expect(terminalPersist < reclaim)
+        #expect(reclaim < remove)
     }
 
     @Test(
@@ -919,6 +940,7 @@ private actor FakeLifecycleProvider: ContainerLogDriverProvider {
     private(set) var readerOpenCount = 0
     private(set) var readerOpenReconcileCount = 0
     private(set) var sessionEffectCallCount = 0
+    private(set) var reclaimedEffects = [LogDriverTerminalEffectReclaimV1]()
 
     init(
         events: LifecycleEventRecorder,
@@ -1062,6 +1084,13 @@ private actor FakeLifecycleProvider: ContainerLogDriverProvider {
             observation: .closed,
             terminalOutcomeDigest: "sha256:reader-closed"
         )
+    }
+
+    func reclaimTerminalEffect(
+        _ request: LogDriverTerminalEffectReclaimV1
+    ) async {
+        reclaimedEffects.append(request)
+        await events.append("provider.reclaim.\(request.kind.rawValue)")
     }
 
     private func startedWriter(

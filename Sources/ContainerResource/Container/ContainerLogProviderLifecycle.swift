@@ -1099,6 +1099,57 @@ public protocol ContainerLogDriverSession: Sendable {
     func close(deadline: ContinuousClock.Instant) async throws
 }
 
+/// One authority-confirmed terminal provider effect that may now be reclaimed.
+///
+/// The lifecycle ledger publishes this request only after it has durably
+/// committed the terminal outcome. Providers must treat identical calls as
+/// idempotent and must reject reclamation while the named effect is still
+/// active. No opaque effect material crosses this boundary.
+public struct LogDriverTerminalEffectReclaimV1: Equatable, Sendable {
+    public let kind: LoggingEffectRemovalKindV1
+    public let effectID: String
+    public let providerID: String
+    public let providerGeneration: UInt64
+
+    public init(
+        kind: LoggingEffectRemovalKindV1,
+        effectID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws {
+        try Self.validateIdentifier(effectID, field: "terminalEffectID")
+        try Self.validateIdentifier(providerID, field: "providerID")
+        guard providerGeneration > 0 else {
+            throw LogDriverLifecycleContractError.zeroGeneration(
+                "providerGeneration"
+            )
+        }
+        self.kind = kind
+        self.effectID = effectID
+        self.providerID = providerID
+        self.providerGeneration = providerGeneration
+    }
+
+    private static func validateIdentifier(
+        _ value: String,
+        field: String
+    ) throws {
+        guard !value.isEmpty else {
+            throw LogDriverLifecycleContractError.emptyField(field)
+        }
+        guard
+            value.utf8.count
+                <= LogDriverLifecycleLimitsV1.maximumIdentifierUTF8Bytes
+        else {
+            throw LogDriverLifecycleContractError.fieldExceedsUTF8Limit(
+                field: field,
+                maximumBytes:
+                    LogDriverLifecycleLimitsV1.maximumIdentifierUTF8Bytes
+            )
+        }
+    }
+}
+
 /// Generation-fenced lifecycle boundary implemented by native and isolated
 /// logging providers. Create-time option resolution remains the authority's
 /// side-effect-free descriptor contract; this interface begins at effectful
@@ -1128,4 +1179,16 @@ public protocol ContainerLogDriverProvider: Sendable {
     func closeReader(
         _ request: LogDriverReaderCallV1
     ) async throws -> LogDriverReaderAcknowledgementV1
+
+    /// Reclaims provider-private terminal state after the authority has made
+    /// the matching terminal ledger transition durable.
+    func reclaimTerminalEffect(
+        _ request: LogDriverTerminalEffectReclaimV1
+    ) async throws
+}
+
+extension ContainerLogDriverProvider {
+    public func reclaimTerminalEffect(
+        _: LogDriverTerminalEffectReclaimV1
+    ) async throws {}
 }

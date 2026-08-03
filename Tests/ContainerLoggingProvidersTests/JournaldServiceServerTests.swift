@@ -56,6 +56,12 @@ struct JournaldServiceServerTests {
             timeoutNanoseconds: 9_000
         )
         #expect(await handler.handle(close).failure == nil)
+        let reclaimWriter = try JournaldServiceWireRequestV1.reclaimWriter(
+            sessionID: "writer-session",
+            providerID: JournaldLogDriverContract.providerIdentity.id,
+            providerGeneration: 1
+        )
+        #expect(await handler.handle(reclaimWriter).failure == nil)
 
         let readerOpen = try journaldServerReaderOpen()
         let openReader = try JournaldServiceWireRequestV1.openReader(
@@ -80,6 +86,12 @@ struct JournaldServiceServerTests {
             sessionID: readerOpen.readerSessionID
         )
         #expect(await handler.handle(cancel).failure == nil)
+        let reclaimReader = try JournaldServiceWireRequestV1.reclaimReader(
+            sessionID: readerOpen.readerSessionID,
+            providerID: JournaldLogDriverContract.providerIdentity.id,
+            providerGeneration: 1
+        )
+        #expect(await handler.handle(reclaimReader).failure == nil)
 
         let snapshot = await backend.snapshot()
         #expect(snapshot.activeGenerationCalls == 1)
@@ -100,6 +112,8 @@ struct JournaldServiceServerTests {
                 == .init(sessionID: "reader-session", sequence: 1)
         )
         #expect(snapshot.cancelledReader == "reader-session")
+        #expect(snapshot.reclaimedWriter?.sessionID == "writer-session")
+        #expect(snapshot.reclaimedReader?.sessionID == "reader-session")
     }
 
     @Test func concurrentIdenticalCallsJoinOneBackendEffect() async throws {
@@ -269,6 +283,8 @@ private struct JournaldServerBackendSnapshot: Equatable, Sendable {
     let readerOpen: LogDriverReaderOpenRequestV1?
     let readerNext: JournaldServerReaderCall?
     let cancelledReader: String?
+    let reclaimedWriter: JournaldTerminalReclaimWireV1?
+    let reclaimedReader: JournaldTerminalReclaimWireV1?
     let writeCalls: Int
 }
 
@@ -282,6 +298,8 @@ private actor JournaldServerRecordingBackend: JournaldServiceBackendV1 {
     private var readerOpen: LogDriverReaderOpenRequestV1?
     private var readerNext: JournaldServerReaderCall?
     private var cancelledReader: String?
+    private var reclaimedWriter: JournaldTerminalReclaimWireV1?
+    private var reclaimedReader: JournaldTerminalReclaimWireV1?
     private var writeCalls = 0
 
     init(writeError: JournaldProviderError? = nil) {
@@ -327,6 +345,18 @@ private actor JournaldServerRecordingBackend: JournaldServiceBackendV1 {
         )
     }
 
+    func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws {
+        reclaimedWriter = try JournaldTerminalReclaimWireV1(
+            sessionID: sessionID,
+            providerID: providerID,
+            providerGeneration: providerGeneration
+        )
+    }
+
     func openReader(_ request: LogDriverReaderOpenRequestV1) -> UInt64 {
         readerOpen = request
         return 1
@@ -347,6 +377,18 @@ private actor JournaldServerRecordingBackend: JournaldServiceBackendV1 {
         cancelledReader = sessionID
     }
 
+    func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws {
+        reclaimedReader = try JournaldTerminalReclaimWireV1(
+            sessionID: sessionID,
+            providerID: providerID,
+            providerGeneration: providerGeneration
+        )
+    }
+
     func snapshot() -> JournaldServerBackendSnapshot {
         JournaldServerBackendSnapshot(
             activeGenerationCalls: activeGenerationCalls,
@@ -357,6 +399,8 @@ private actor JournaldServerRecordingBackend: JournaldServiceBackendV1 {
             readerOpen: readerOpen,
             readerNext: readerNext,
             cancelledReader: cancelledReader,
+            reclaimedWriter: reclaimedWriter,
+            reclaimedReader: reclaimedReader,
             writeCalls: writeCalls
         )
     }
@@ -403,12 +447,22 @@ private actor JournaldServerBlockingBackend: JournaldServiceBackendV1 {
         fenced: Bool,
         timeoutNanoseconds: UInt64
     ) {}
+    func reclaimWriter(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) {}
     func openReader(_ request: LogDriverReaderOpenRequestV1) -> UInt64 { 1 }
     func nextReader(
         sessionID: String,
         sequence: UInt64
     ) -> ContainerLogReaderEventV1 { .endOfStream }
     func cancelReader(sessionID: String) {}
+    func reclaimReader(
+        sessionID: String,
+        providerID: String,
+        providerGeneration: UInt64
+    ) {}
 }
 
 private actor JournaldServerSingleConnector {

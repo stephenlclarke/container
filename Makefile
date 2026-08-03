@@ -46,6 +46,7 @@ JOURNALD_SERVICE_BUILD_DIR := $(ROOT_DIR)/.build/container-journald-service
 JOURNALD_SERVICE_ARCHIVE := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.oci.tar
 JOURNALD_SERVICE_MANIFEST := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.manifest.json
 JOURNALD_SERVICE_BUILD_TOOL := Tools/ContainerJournaldService/build.py
+JOURNALD_SERVICE_BUILDER_SETUP := scripts/ensure-journald-builder.sh
 STAGING_DIR := bin/$(BUILD_CONFIGURATION)/staging/
 PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer-unsigned.pkg
 DSYM_DIR := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM
@@ -105,16 +106,19 @@ verify-semantic-helper: semantic-helper
 .PHONY: journald-service
 journald-service:
 	@echo Building pinned Linux journald-service workload...
+	@$(JOURNALD_SERVICE_BUILDER_SETUP)
 	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) build --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"
 
 .PHONY: test-journald-service
 test-journald-service:
 	@echo Testing pinned Linux journald-service workload...
+	@$(JOURNALD_SERVICE_BUILDER_SETUP)
 	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) test --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"
 
 .PHONY: test-journald-service-integration
 test-journald-service-integration:
 	@echo Testing Swift client against packaged Linux journald-service workload...
+	@$(JOURNALD_SERVICE_BUILDER_SETUP)
 	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) integration
 
 .PHONY: verify-journald-service
@@ -179,7 +183,7 @@ install: installer-pkg
 		$(SUDO) installer -pkg $(PKG_PATH) -target / ; \
 	fi
 
-$(STAGING_DIR): semantic-helper
+$(STAGING_DIR): semantic-helper journald-service
 	@echo Installing container binaries from "$(BUILD_BIN_DIR)" into "$(STAGING_DIR)"...
 	@rm -rf "$(STAGING_DIR)"
 	@mkdir -p "$(join $(STAGING_DIR), bin)"
@@ -189,6 +193,7 @@ $(STAGING_DIR): semantic-helper
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/helpers)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/journald)"
 
 	@install "$(BUILD_BIN_DIR)/container" "$(join $(STAGING_DIR), bin/container)"
 	@install "$(BUILD_BIN_DIR)/container-apiserver" "$(join $(STAGING_DIR), bin/container-apiserver)"
@@ -204,6 +209,11 @@ $(STAGING_DIR): semantic-helper
 	@install Sources/Plugins/MachineAPIServer/Resources/create-user.sh "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/create-user.sh)"
 	@install "$(SEMANTIC_HELPER_BINARY)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
 	@install -m 0644 "$(SEMANTIC_HELPER_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@install -m 0644 "$(JOURNALD_SERVICE_ARCHIVE)" "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)"
+	@install -m 0644 "$(JOURNALD_SERVICE_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
 
 	@echo Install update script
 	@install scripts/update-container.sh "$(join $(STAGING_DIR), bin/update-container.sh)"
@@ -226,6 +236,9 @@ installer-pkg: $(STAGING_DIR)
 	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
 		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
 
 	@echo Creating application installer
 	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(PKG_PATH)
@@ -250,6 +263,9 @@ homebrew-package: build $(STAGING_DIR)
 	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
 		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
 	@tar -czf "$(HOMEBREW_ARCHIVE)" -C "$(STAGING_DIR)" .

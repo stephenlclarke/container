@@ -17,6 +17,7 @@
 import ContainerResource
 import ContainerRuntimeClient
 import Containerization
+import ContainerizationError
 import Foundation
 import Testing
 
@@ -68,6 +69,8 @@ struct EngineLinuxSandboxAuthorityTests {
 
         let serviceHandle = try await recovered.dialService(
             configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: try #require(running.activeProcessGeneration),
             port: 12_345
         )
         try serviceHandle.close()
@@ -93,6 +96,74 @@ struct EngineLinuxSandboxAuthorityTests {
             )
         }
         #expect(await runtime.workloadStartCount == 1)
+    }
+
+    @Test
+    func monitoredTerminalWorkloadIsReconciledBeforeRestartAndDial() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+
+        let first = try await authority.startWorkload(
+            planDigest: "sha256:service-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            monitorTerminal: true
+        )
+        let firstGeneration = try #require(first.activeProcessGeneration)
+        await runtime.markWorkloadTerminal()
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await authority.dialService(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: first.containerID,
+                workloadProcessGeneration: firstGeneration + 1,
+                port: 12_345
+            )
+        }
+        #expect(await runtime.serviceDialCount == 0)
+
+        let restarted = try await authority.startWorkload(
+            planDigest: "sha256:service-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            monitorTerminal: true
+        )
+        let restartedGeneration = try #require(restarted.activeProcessGeneration)
+        #expect(restarted.state == .running)
+        #expect(restartedGeneration == firstGeneration + 1)
+        #expect(await runtime.workloadObservationCount == 1)
+        #expect(await runtime.workloadStartCount == 2)
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await authority.dialService(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: restarted.containerID,
+                workloadProcessGeneration: firstGeneration,
+                port: 12_345
+            )
+        }
+        let handle = try await authority.dialService(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: restarted.containerID,
+            workloadProcessGeneration: restartedGeneration,
+            port: 12_345
+        )
+        try handle.close()
+        #expect(await runtime.serviceDialCount == 1)
+        #expect(await runtime.lastServiceDial?.workloadID == restarted.containerID)
+        #expect(
+            await runtime.lastServiceDial?.workloadProcessGeneration
+                == restartedGeneration
+        )
     }
 }
 
@@ -122,9 +193,11 @@ private actor FakeAuthorityLauncher: EngineLinuxSandboxLaunchingV1 {
 private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
     private var bootReceipt: EngineLinuxSandboxBootReceiptV1?
     private var workloadReceipt: WorkloadProcessReceiptV1?
+    private var workloadTerminal = false
     private(set) var bootCount = 0
     private(set) var bootObservationCount = 0
     private(set) var workloadStartCount = 0
+    private(set) var workloadObservationCount = 0
     private(set) var serviceDialCount = 0
     private(set) var lastServiceDial: EngineLinuxSandboxServiceDialRequestV1?
 
@@ -189,7 +262,14 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         _ request: EngineLinuxSandboxWorkloadStartRequestV1,
         stdio: [FileHandle?]
     ) async throws -> WorkloadProcessReceiptV1 {
-        if let workloadReceipt {
+        if let workloadReceipt,
+            workloadReceipt.containerID == request.context.containerID,
+            workloadReceipt.operationGeneration == request.context.operationGeneration,
+            workloadReceipt.processGeneration == request.context.candidateProcessGeneration,
+            workloadReceipt.sandboxGeneration == request.context.sandboxGeneration,
+            workloadReceipt.requestDigest == request.context.requestDigest,
+            !workloadTerminal
+        {
             return workloadReceipt
         }
         workloadStartCount += 1
@@ -201,6 +281,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
             requestDigest: request.context.requestDigest
         )
         workloadReceipt = receipt
+        workloadTerminal = false
         _ = stdio
         return receipt
     }
@@ -208,12 +289,22 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
     func observeWorkloadStart(
         _ request: EngineLinuxSandboxWorkloadStartRequestV1
     ) async throws -> WorkloadProcessObservationV1 {
+        workloadObservationCount += 1
+        if workloadTerminal {
+            return .absent
+        }
         guard let workloadReceipt,
             workloadReceipt.containerID == request.context.containerID,
             workloadReceipt.operationGeneration == request.context.operationGeneration,
+            workloadReceipt.processGeneration == request.context.candidateProcessGeneration,
+            workloadReceipt.sandboxGeneration == request.context.sandboxGeneration,
             workloadReceipt.requestDigest == request.context.requestDigest
         else { return .absent }
         return .started(workloadReceipt)
+    }
+
+    func markWorkloadTerminal() {
+        workloadTerminal = true
     }
 
     func dialService(

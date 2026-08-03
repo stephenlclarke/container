@@ -34,7 +34,12 @@ public protocol EngineLinuxSandboxInstanceV1: Sendable {
         configuration: @Sendable @escaping (inout LinuxPod.ContainerConfiguration) throws -> Void
     ) async throws
     func startContainer(_ containerID: String) async throws
+    func stopContainer(_ containerID: String) async throws
     func removeContainer(_ containerID: String) async throws
+    func waitContainer(
+        _ containerID: String,
+        timeoutInSeconds: Int64?
+    ) async throws -> ExitStatus
     func dialVsock(port: UInt32) async throws -> FileHandle
 }
 
@@ -76,6 +81,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     private var workloadRequests: [String: EngineLinuxSandboxWorkloadStartRequestV1] = [:]
     private var workloadReceipts: [String: WorkloadProcessReceiptV1] = [:]
     private var workloadCaptures: [String: ContainerLogRuntimeCapture] = [:]
+    private var workloadTerminalMonitors: [String: Task<Void, Never>] = [:]
+    private var terminalWorkloadGenerations: [String: UInt64] = [:]
     private var serviceDialsInFlight = 0
 
     public init(
@@ -236,8 +243,10 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             shutdownReceipt = receipt
             bootReceipt = nil
             closeWorkloadCaptures()
+            cancelWorkloadTerminalMonitors()
             workloadRequests.removeAll()
             workloadReceipts.removeAll()
+            terminalWorkloadGenerations.removeAll()
             return receipt
         case .recoveryRequired:
             throw unattributedState("sandbox requires recovery before shutdown")
@@ -263,8 +272,10 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             shutdownReceipt = applied
             bootReceipt = nil
             closeWorkloadCaptures()
+            cancelWorkloadTerminalMonitors()
             workloadRequests.removeAll()
             workloadReceipts.removeAll()
+            terminalWorkloadGenerations.removeAll()
             shutdownInFlight = nil
             return applied
         } catch {
@@ -313,7 +324,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             return try await inFlight.task.value
         }
 
-        let snapshot = await sandbox.snapshot()
+        var snapshot = await sandbox.snapshot()
         guard snapshot.state == .running else {
             throw unattributedState("shared sandbox is not running for workload start")
         }
@@ -324,7 +335,14 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             throw unattributedState("workload start does not match the active sandbox generation")
         }
 
-        let observed = snapshot.workloads.first { $0.id == id }
+        var observed = snapshot.workloads.first { $0.id == id }
+        if terminalWorkloadGenerations[id] != nil,
+            observed?.state == .running || observed?.state == .paused
+        {
+            try await sandbox.stopContainer(id)
+            snapshot = await sandbox.snapshot()
+            observed = snapshot.workloads.first { $0.id == id }
+        }
         switch observed?.state {
         case .running?, .paused?:
             guard
@@ -444,9 +462,13 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             let applied = try await task.value
             workloadRequests[id] = request
             workloadReceipts[id] = applied
+            terminalWorkloadGenerations[id] = nil
             if let capture {
                 workloadCaptures[id]?.close()
                 workloadCaptures[id] = capture
+            }
+            if request.monitorTerminal {
+                startWorkloadTerminalMonitor(id: id, receipt: applied)
             }
             workloadStartInFlight[id] = nil
             return applied
@@ -487,6 +509,11 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         else {
             return .unknown
         }
+        if terminalWorkloadGenerations[id]
+            == request.context.candidateProcessGeneration
+        {
+            return .absent
+        }
         guard let workload = snapshot.workloads.first(where: { $0.id == id }) else {
             return .absent
         }
@@ -524,6 +551,30 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             bootReceipt.generation == request.sandboxGeneration
         else {
             throw unattributedState("protected service dial does not match the active sandbox generation")
+        }
+        guard
+            terminalWorkloadGenerations[request.workloadID]
+                != request.workloadProcessGeneration,
+            let workload = snapshot.workloads.first(where: {
+                $0.id == request.workloadID
+            }),
+            workload.state == .running,
+            let start = workloadRequests[request.workloadID],
+            let receipt = workloadReceipts[request.workloadID],
+            start.context.containerID == request.workloadID,
+            start.context.sandboxGeneration == request.sandboxGeneration,
+            start.context.candidateProcessGeneration
+                == request.workloadProcessGeneration,
+            receipt.containerID == request.workloadID,
+            receipt.operationGeneration
+                == start.context.operationGeneration,
+            receipt.processGeneration == request.workloadProcessGeneration,
+            receipt.sandboxGeneration == request.sandboxGeneration,
+            receipt.requestDigest == start.context.requestDigest
+        else {
+            throw unattributedState(
+                "protected service workload is not ready for the requested generation"
+            )
         }
         serviceDialsInFlight += 1
         defer { serviceDialsInFlight -= 1 }
@@ -664,6 +715,10 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             !request.sandboxID.isEmpty,
             request.sandboxID.utf8.count <= EngineWorkloadLedgerLimitsV1.maximumIdentifierBytes,
             request.sandboxGeneration > 0,
+            !request.workloadID.isEmpty,
+            request.workloadID.utf8.count
+                <= EngineWorkloadLedgerLimitsV1.maximumIdentifierBytes,
+            request.workloadProcessGeneration > 0,
             request.port > 0
         else {
             throw ContainerizationError(
@@ -714,6 +769,76 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             capture.close()
         }
         workloadCaptures.removeAll()
+    }
+
+    private func startWorkloadTerminalMonitor(
+        id: String,
+        receipt: WorkloadProcessReceiptV1
+    ) {
+        workloadTerminalMonitors.removeValue(forKey: id)?.cancel()
+        let sandbox = self.sandbox
+        workloadTerminalMonitors[id] = Task { [weak self] in
+            do {
+                _ = try await sandbox.waitContainer(
+                    id,
+                    timeoutInSeconds: nil
+                )
+                try Task.checkCancellation()
+                await self?.recordTerminalWorkload(id: id, receipt: receipt)
+            } catch is CancellationError {
+                return
+            } catch {
+                await self?.recordTerminalMonitorFailure(
+                    id: id,
+                    receipt: receipt,
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func recordTerminalWorkload(
+        id: String,
+        receipt: WorkloadProcessReceiptV1
+    ) async {
+        guard workloadReceipts[id] == receipt else {
+            return
+        }
+        terminalWorkloadGenerations[id] = receipt.processGeneration
+        workloadCaptures.removeValue(forKey: id)?.close()
+        do {
+            try await sandbox.stopContainer(id)
+        } catch {
+            log.error(
+                "Engine Linux sandbox terminal workload cleanup failed",
+                metadata: ["containerID": "\(id)", "error": "\(error)"]
+            )
+        }
+        workloadTerminalMonitors[id] = nil
+    }
+
+    private func recordTerminalMonitorFailure(
+        id: String,
+        receipt: WorkloadProcessReceiptV1,
+        error: any Error
+    ) {
+        guard workloadReceipts[id] == receipt else {
+            return
+        }
+        terminalWorkloadGenerations[id] = receipt.processGeneration
+        workloadCaptures.removeValue(forKey: id)?.close()
+        workloadTerminalMonitors[id] = nil
+        log.error(
+            "Engine Linux sandbox terminal workload observation failed",
+            metadata: ["containerID": "\(id)", "error": "\(error)"]
+        )
+    }
+
+    private func cancelWorkloadTerminalMonitors() {
+        for monitor in workloadTerminalMonitors.values {
+            monitor.cancel()
+        }
+        workloadTerminalMonitors.removeAll()
     }
 }
 
