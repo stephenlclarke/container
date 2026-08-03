@@ -42,6 +42,10 @@ SEMANTIC_HELPER_BUILD_DIR := $(ROOT_DIR)/.build/container-semantic-helper
 SEMANTIC_HELPER_BINARY := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper
 SEMANTIC_HELPER_MANIFEST := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper.manifest.json
 SEMANTIC_HELPER_BUILD_TOOL := Tools/ContainerSemanticHelper/build.py
+JOURNALD_SERVICE_BUILD_DIR := $(ROOT_DIR)/.build/container-journald-service
+JOURNALD_SERVICE_ARCHIVE := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.oci.tar
+JOURNALD_SERVICE_MANIFEST := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.manifest.json
+JOURNALD_SERVICE_BUILD_TOOL := Tools/ContainerJournaldService/build.py
 STAGING_DIR := bin/$(BUILD_CONFIGURATION)/staging/
 PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer-unsigned.pkg
 DSYM_DIR := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM
@@ -97,6 +101,27 @@ verify-semantic-helper: semantic-helper
 	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
 		--binary "$(SEMANTIC_HELPER_BINARY)" \
 		--manifest "$(SEMANTIC_HELPER_MANIFEST)"
+
+.PHONY: journald-service
+journald-service:
+	@echo Building pinned Linux journald-service workload...
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) build --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"
+
+.PHONY: test-journald-service
+test-journald-service:
+	@echo Testing pinned Linux journald-service workload...
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) test --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"
+
+.PHONY: test-journald-service-integration
+test-journald-service-integration:
+	@echo Testing Swift client against packaged Linux journald-service workload...
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) integration
+
+.PHONY: verify-journald-service
+verify-journald-service: journald-service
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(JOURNALD_SERVICE_ARCHIVE)" \
+		--manifest "$(JOURNALD_SERVICE_MANIFEST)"
 
 .PHONY: build
 build: semantic-helper
