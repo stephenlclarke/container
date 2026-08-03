@@ -34,8 +34,9 @@ or nanosecond timestamp presentation.
   identity and an enhanced Container authority fingerprint.
 - Advertise only complete generated Engine operations. Shared `/info` and
   inspect routes must remain unadvertised until their non-logging fields are
-  composed; attach must remain unadvertised until replay/live handoff and
-  canonical attach/detach events are complete.
+  composed. Attach is advertised only after replay/live handoff, stdin/TTY and
+  detach-key handling, bounded hijack transport, and canonical attach/detach
+  events are one authority-owned path.
 
 ## Acceptance evidence
 
@@ -50,7 +51,18 @@ or nanosecond timestamp presentation.
 - [x] EOF, close, cancel, partial record, and record-size handling are bounded.
 - [x] The APIServer starts one private provider session under a stable
   provider-owned state-root UUID.
-- [x] The provider fingerprint declares only `engine.route.ContainerLogs`.
+- [x] Docker attach replays readable history and follows the retained active
+  generation without a replay/live gap; unreadable drivers fall back to the
+  exact process streams without fabricating history.
+- [x] Runtime stdin/stdout/stderr use exact-process attachment, TTY output is
+  merged, Docker detach keys are consumed server-side, and slow hijack clients
+  cannot create an unbounded allocation or silently lose buffered frames.
+- [x] Attach session setup, EOF, input close, cancellation, reader failure, and
+  failed runtime attachment close every local handle and reader exactly once.
+- [x] Canonical `attach` and `detach` events use the existing service event
+  broadcaster and immutable authority snapshot.
+- [x] The provider fingerprint declares `engine.route.ContainerAttach` and
+  `engine.route.ContainerLogs`, and no incomplete shared operation.
 - [x] Focused controller/backend, protected-option, active-wire, runtime-stream,
   and provider-session tests pass on the development MacBook Pro.
 
@@ -58,9 +70,13 @@ or nanosecond timestamp presentation.
 
 - Compose logging projections into the complete shared `SystemInfo` and
   `ContainerInspect` responses, then advertise those generated operation IDs.
-- Implement atomic attach-with-logs plus live transition, stdin/TTY behavior,
-  detach keys, resize, exit status, and the canonical attach/detach event
-  journal before advertising `ContainerAttach` or `ContainerAttachWebsocket`.
+- Add `ContainerAttachWebsocket` only after the common public gateway owns its
+  WebSocket transport. `ContainerAttach` hijack is complete and advertised by
+  the enhanced provider.
+- Add the independent resize operation and certify real-runtime TTY resize and
+  detach/re-attach behavior. Attach wait currently reports the runtime process
+  exit where it is needed to keep an input-only session alive; the Docker
+  hijack protocol itself does not expose that code to the HTTP client.
 - Route direct isolated-provider `ReadLogs` sessions through the authority;
   current non-native providers require the production provider-reader plane or
   dual cache.
@@ -83,3 +99,6 @@ only after the complete parity programme is finished.
 
 - `2d7512c54cfe2fc01d506e08c0300d6f432fd437` — signed authority
   backend, exact active-record wire, provider composition, and focused tests.
+- `72a76ab596e95fa775593bc3bcbef67135c384e4` — signed bounded Docker
+  attach/hijack, exact-process I/O, detach keys, lifecycle events, route
+  advertisement, and focused tests.

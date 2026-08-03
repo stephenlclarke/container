@@ -7,8 +7,11 @@
   canonical readers, and active runtime generation.
 - Add a separate lossless, bounded runtime read-record stream for Docker
   details and nanosecond presentation without breaking native compatibility.
+- Bridge Docker attach to either that canonical replay/follow reader or the
+  exact init-process pipes, with Docker detach keys and canonical lifecycle
+  events.
 - Start one restart-stable enhanced provider session and advertise only the
-  complete `ContainerLogs` generated Engine operation.
+  complete `ContainerAttach` and `ContainerLogs` generated Engine operations.
 
 ## Type of change
 
@@ -20,7 +23,7 @@
 - [x] Unit and provider-session integration tests
 - [ ] Public Engine listener installation
 - [ ] Complete `/info` or inspect route composition
-- [ ] Attach/hijack route advertisement
+- [x] Attach/hijack route advertisement
 - [ ] Compose parser behavior
 
 ## Authority contract
@@ -40,6 +43,20 @@ record, and the stream enforces a fixed encoded-record bound. Stream, exact
 seconds/nanoseconds, binary payload, attributes, sequence, and process
 generation cross the XPC file-descriptor boundary losslessly.
 
+Attach uses the same reader with `follow` for readable drivers, so historical
+replay and the retained active generation remain one ordered source. Drivers
+without a reader, including `none`, fall back to exact-process output without
+inventing historical bytes. Requested live stdin/stdout/stderr are attached
+through the existing `ContainersService` runtime path. TTY output is merged;
+non-TTY output retains Docker stdout/stderr channels.
+
+`ContainerDockerAttachSession` exposes a bounded hijack frame stream. A full
+buffer retries the same frame and applies backpressure instead of dropping it.
+It consumes the Docker default or requested detach sequence, closes readers
+and file handles exactly once across success, failure, disconnect, and runtime
+attachment failure, and publishes ordered `attach`/`detach` records through
+the canonical service event broadcaster.
+
 ## Provider identity and route gating
 
 `container-apiserver` loads or creates one provider-owned state-root UUID,
@@ -47,17 +64,19 @@ builds an enhanced `container-authority` declaration from Container and
 Containerization revisions plus exact Engine API release 0.2.2, and starts a
 private singleton provider socket. Cancellation shuts the provider down.
 
-The fingerprint advertises only `engine.route.ContainerLogs`. Although the
+The fingerprint advertises `engine.route.ContainerAttach` and
+`engine.route.ContainerLogs`. Although the
 logging backend implements the logging projections needed by `/info` and
 inspect, those generated operations cover whole shared responses and cannot be
-advertised until the remaining fields are composed. Attach similarly remains
-unadvertised until historical replay, live attachment, stdin/TTY/detach-key
-semantics, and canonical lifecycle events are one coherent authority path.
+advertised until the remaining fields are composed. WebSocket attach and
+resize remain separate operations for the common public gateway and are not
+claimed by this provider declaration.
 
 ## Code map
 
 - `Sources/Services/ContainerAPIService/Server/Containers/ContainerDockerLoggingBackend.swift`
-  contains the neutral backend, direct reader, and bounded active-wire reader.
+  contains the neutral backend, direct and active-wire readers, runtime attach
+  bridge, detach filter, and bounded hijack session.
 - `Sources/Services/ContainerAPIService/Server/Containers/ContainersService.swift`
   exposes the narrow authority projections and exact reader selection.
 - `Sources/ContainerResource/Container/ContainerLogReadRecordWireV1.swift`
@@ -69,7 +88,9 @@ semantics, and canonical lifecycle events are one coherent authority path.
 - `Sources/APIServer/APIServer+Start.swift` composes the stable enhanced
   provider session.
 - Focused tests cover canonical static reads, protected inspect options,
-  lossless active wire, stream cancellation, and provider forwarding.
+  lossless active wire, stream cancellation, runtime I/O, detach keys,
+  over-capacity no-drop behavior, provider hijack forwarding, and lifecycle
+  event ordering.
 
 ## Dependency handoff
 
@@ -87,6 +108,7 @@ The complete change remains local until all parity development is complete.
 ```console
 swift build --target ContainerAPIService
 swift build --target container-apiserver
+swift test --filter 'ContainerDockerAttachSessionTests|engineLoggingBackendUsesAuthoritativeInspectionAndExactReader'
 swift test --filter 'ContainerLogReaderStreamTests|ContainerLogsTests.engine|ContainerLoggingAuthorityIntegrationTests.engineInspect'
 make check
 git diff --check
@@ -97,9 +119,12 @@ Current development MacBook Pro evidence:
 - Container API service and APIServer targets build against the local signed
   Containerization dependency;
 - focused authority/runtime/provider integration: 5 tests in 3 suites passed;
+- focused attach/hijack/provider integration: 5 tests in 2 suites passed;
 - formatting, licence, and whitespace gates passed;
 - signed implementation commit:
-  `2d7512c54cfe2fc01d506e08c0300d6f432fd437`.
+  `2d7512c54cfe2fc01d506e08c0300d6f432fd437`;
+- signed attach/hijack implementation commit:
+  `72a76ab596e95fa775593bc3bcbef67135c384e4`.
 
 ## Review checklist
 
@@ -109,7 +134,9 @@ Current development MacBook Pro evidence:
 - [x] Existing native compatibility streaming is unchanged.
 - [x] Wire decoding re-enters bounded core-record validation.
 - [x] Provider identity is stable across APIServer restart.
-- [x] Only a complete generated Engine operation is advertised.
+- [x] Only complete generated Engine operations are advertised.
+- [x] Attach replay/live, stdin/TTY, detach-key, bounded transport, and
+  lifecycle-event semantics use one authority path.
 - [ ] Compose whole `/info` and inspect responses before advertising them.
-- [ ] Complete attach and lifecycle-event authority before route advertisement.
+- [ ] Add WebSocket attach and resize through the common public gateway.
 - [ ] Complete public gateway installation and external-client certification.
