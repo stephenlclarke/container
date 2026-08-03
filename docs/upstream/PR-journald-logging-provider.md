@@ -51,7 +51,15 @@ catalog descriptor and no false compatibility claim.
   session/epoch/ordinal identity survives service restart, a pending append is
   reconciled without duplication, uncertain state persistence requires reload,
   every close fences new writes before flush, active readers validate the exact
-  writer/sandbox generation, and reader open resumes at the durable sequence.
+  writer/sandbox generation, and reader open resumes at the durable sequence
+  and bounded adapter-private journal checkpoint.
+- Prepare the native journal position before publishing a reader open, advance
+  that checkpoint atomically with each record, and fail closed if a record
+  stalls the position or an end event mutates it. This removes dependence on a
+  process-local systemd cursor after service restart.
+- Advance the private snapshot schema to version two and reject sequence-only
+  version-one snapshots; accepting one would invent a native journal position
+  and could duplicate or skip a record.
 - Return the durable reader sequence in the open-reader wire response so a
   reconstructed client cannot restart at sequence one and duplicate history.
 - Register configuration and the provider in the built-in authority plane only
@@ -62,13 +70,18 @@ catalog descriptor and no false compatibility claim.
 - Implement and package the signed Linux journald workload and bind its vsock
   listener to the completed connection/handler engine.
 - Implement the concrete systemd adapter behind the durable backend. Append
-  must reconcile the complete session/epoch/ordinal identity, and reads must be
-  deterministic for an identical request/sequence across state-save failure.
+  must reconcile the complete session/epoch/ordinal identity. Reader prepare
+  must return a deterministic tail/start anchor; each read must return the
+  native cursor checkpoint committed with its record.
 - Implement journal query ordering and Docker filters for stdout/stderr,
   follow, tail, since, until, timestamps, and details.
 - Route authority-owned provider readers through the production reader plane.
 - Add service supervision, readiness withdrawal, bounded transport, security,
   migration, and shutdown behavior.
+- Synchronize the Container dependency pin with the matched Containerization
+  protected-workload API before publishing either repository. The current pin
+  predates `WorkloadNetworkEndpoint`, so local validation intentionally uses
+  SwiftPM editable state and removes it afterward.
 - Certify real-systemd integration and Docker CLI/Compose behavior, then record
   throughput, latency, memory, and backpressure evidence against Docker.
 
@@ -107,8 +120,9 @@ catalog descriptor and no false compatibility claim.
   persistent framed client/server calls.
 - `Tests/ContainerLoggingProvidersTests/JournaldServiceDurableBackendTests.swift`
   covers restart reconciliation, uncertain state-save recovery, ordering and
-  close fencing, reader resume/replay, generation matching, private file modes,
-  and symbolic-link rejection.
+  close fencing, reader checkpoint resume/replay, stalled/invalid checkpoint
+  rejection, generation matching, private file modes, and symbolic-link
+  rejection.
 
 ## Validation
 
@@ -133,11 +147,12 @@ Current development MacBook Pro evidence:
 - five journald wire tests passed, including exact replay and cancellation;
 - seven journald wire-server tests passed, including concurrent replay-cache
   and end-to-end framed-connection cases;
-- seven durable-backend tests passed, covering both append/state crash windows,
+- eight durable-backend tests passed, covering both append/state crash windows,
   no-duplicate recovery, close/write reentrancy fencing, active-reader
-  generation checks, durable reader resume, and private file-store hardening;
-- the combined journald wire, server, and durable-backend filter passed all 19
-  tests with Swift warnings promoted to errors;
+  generation checks, durable reader checkpoint resume, invalid/stalled
+  checkpoint rejection, and private file-store hardening;
+- the combined journald wire, server, and durable-backend filter passed all 20
+  tests;
 - provider and API server targets built successfully;
 - the provider and API server targets built with Swift warnings promoted to
   errors;
@@ -152,6 +167,8 @@ Current development MacBook Pro evidence:
   `bed5de1686bc005ad77ab63025a5582f37601738`.
 - signed journald durable-backend commit:
   `79c89babc7399c0cc1d4f800bd5ec092cc6c153d`.
+- signed durable reader-checkpoint commit:
+  `dcefedba2b3b5806953c32e35ca2edaea24658a0`.
 
 The warnings-as-errors build used the local signed Containerization
 shared-sandbox worktree because the coordinated Containerization upstream wave
@@ -171,7 +188,8 @@ published dependency pin remains unchanged.
 - [x] The server joins in-flight replay, caches bounded outcomes, rejects
   conflicting identities before effects, and serves persistent framed calls.
 - [x] Durable writer/reader state reconciles restart and response-loss windows,
-  fences close-before-flush, and resumes the exact reader sequence.
+  fences close-before-flush, and resumes the exact reader sequence and native
+  journal checkpoint.
 - [ ] Add the signed Linux service and concrete systemd journal adapter.
 - [ ] Complete production reader routing, recovery, and supervision.
 - [ ] Add real-systemd compatibility and performance evidence.

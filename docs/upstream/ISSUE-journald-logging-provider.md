@@ -46,12 +46,16 @@ outcomes under count and encoded-byte limits, maps stable failures, and serves
 persistent framed connections. A restart-safe backend now persists bounded
 writer and reader state in an atomic private snapshot, reconciles the journal
 append crash window by session/epoch/ordinal identity, fences every close
-before flushing, resumes readers at their durable sequence, rejects stale
-active-reader generations, and fails closed after uncertain persistence until
-reload. The provider is intentionally not advertised by the production API
-server because the protected Linux workload/listener, concrete systemd journal
-append/query adapter, production reader route, supervision, and recovery path
-remain to be implemented.
+before flushing, resumes readers at their durable sequence and bounded opaque
+native-journal checkpoint, rejects stale active-reader generations, and fails
+closed if a record does not advance that checkpoint or an end event does. The
+provider is intentionally not advertised by the production API server because
+the protected Linux workload/listener, concrete systemd journal append/query
+adapter, production reader route, supervision, and recovery path remain to be
+implemented. The Container head also currently requires the matched local
+Containerization worktree for `WorkloadNetworkEndpoint`; its published
+dependency pin predates that protected-workload API and must be synchronized in
+the final coordinated wave.
 
 ## Scope and non-goals
 
