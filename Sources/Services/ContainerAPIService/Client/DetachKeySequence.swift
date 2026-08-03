@@ -23,7 +23,7 @@ public struct DetachKeySequence: Sendable, Equatable {
     /// The Docker-compatible default: control-P followed by control-Q.
     public static let standard = try! DetachKeySequence("ctrl-p,ctrl-q")
 
-    let bytes: [UInt8]
+    package let bytes: [UInt8]
 
     /// Parses comma-separated literal or `ctrl-` key tokens.
     ///

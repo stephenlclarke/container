@@ -210,10 +210,16 @@ extension APIServer {
             let stateRootUUID = try ContainerEngineStateRootIdentityStore(
                 path: stateRoot.appendingPathComponent("state-root-id")
             ).loadOrCreate()
-            let capability = try ContainerEngineProviderCapability(
-                identifier: "engine.route.ContainerLogs",
-                status: .native
-            )
+            let capabilities = try [
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttach",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerLogs",
+                    status: .native
+                ),
+            ]
             let declaration = try ContainerEngineProviderDeclaration(
                 profile: .enhanced,
                 kind: .containerAuthority,
@@ -225,7 +231,7 @@ extension APIServer {
                     "containerization": ReleaseVersion.containerizationRef(),
                 ],
                 stateSchemaVersion: 1,
-                capabilities: [capability]
+                capabilities: capabilities
             )
             let controller = try DockerLoggingAPIController(
                 backend: ContainerDockerLoggingBackend(

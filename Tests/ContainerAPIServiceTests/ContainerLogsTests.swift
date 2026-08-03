@@ -513,9 +513,13 @@ struct ContainerLogsTests {
             stateSchemaVersion: 1,
             capabilities: [
                 try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttach",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerLogs",
                     status: .native
-                )
+                ),
             ]
         )
         let controller = try DockerLoggingAPIController(backend: backend)
@@ -561,6 +565,55 @@ struct ContainerLogsTests {
             } else {
                 Issue.record("expected managed Engine log stream")
             }
+
+            let attachResponse = await client.respond(
+                to: try DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/\(id)/attach?logs=1&stream=0&stdin=0&stdout=1&stderr=1",
+                    uniqueHeaders: [
+                        "Connection": "Upgrade",
+                        "Upgrade": "tcp",
+                    ]
+                )
+            )
+            #expect(attachResponse.status == 200)
+            if case .hijack(let session, let terminal) = attachResponse.body {
+                #expect(!terminal)
+                var frames = [DockerStreamFrame]()
+                for try await frame in session.frames {
+                    frames.append(frame)
+                }
+                #expect(
+                    frames
+                        == [
+                            DockerStreamFrame(
+                                channel: .standardError,
+                                data: Data("exact-engine-record\n".utf8)
+                            )
+                        ]
+                )
+                #expect(try await session.wait() == 0)
+            } else {
+                Issue.record("expected Engine attach hijack")
+            }
+
+            let eventSubscription = await containers.events(
+                options: ContainerEventOptions(until: Date())
+            )
+            defer { try? eventSubscription.fileHandle.close() }
+            let eventData = try #require(
+                try eventSubscription.fileHandle.readToEnd()
+            )
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let events = try String(decoding: eventData, as: UTF8.self)
+                .split(separator: "\n")
+                .map {
+                    try decoder.decode(ContainerEvent.self, from: Data($0.utf8))
+                }
+            #expect(events.map(\.action) == ["attach", "detach"])
+            #expect(events.allSatisfy { $0.id == id })
             await provider.shutdown()
         } catch {
             await provider.shutdown()

@@ -3209,6 +3209,24 @@ public actor ContainersService {
 }
 
 extension ContainersService {
+    func engineAttachmentInspection(
+        containerID: String
+    ) throws -> ContainerEngineAttachmentInspection {
+        let snapshot = try _getContainerState(id: containerID).snapshot
+        return ContainerEngineAttachmentInspection(
+            snapshot: snapshot,
+            terminal: snapshot.configuration.initProcess.terminal
+        )
+    }
+
+    func publishEngineAttachEvent(snapshot: ContainerSnapshot) async {
+        await publishContainerEvent(action: "attach", snapshot: snapshot)
+    }
+
+    func publishEngineDetachEvent(snapshot: ContainerSnapshot) async {
+        await publishContainerEvent(action: "detach", snapshot: snapshot)
+    }
+
     func engineLoggingSystemInfo() async throws -> (
         defaultDriver: String,
         registeredDrivers: [String]

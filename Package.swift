@@ -271,6 +271,7 @@ let package = Package(
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ContainerEngineLogging", package: "container-engine-api"),
+                .product(name: "ContainerEngineWire", package: "container-engine-api"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SystemPackage", package: "swift-system"),
                 "CVersion",
