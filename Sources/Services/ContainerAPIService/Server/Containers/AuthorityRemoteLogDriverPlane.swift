@@ -78,6 +78,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     package static func create(
         appRoot: URL,
         awsLogsClientFactory: any AWSLogsClientFactory,
+        journaldService: (any JournaldService)? = nil,
         gcpLoggingServiceFactory: @escaping AuthorityGCPLoggingServiceFactory = {
             generation in
             try DockerSemanticHelperClient.shared(
@@ -97,6 +98,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         let providers = try await BuiltinRemoteLogDriverProviderSet.install(
             eventLoopGroup: eventLoopOwner.group,
             awsLogsClientFactory: awsLogsClientFactory,
+            journaldService: journaldService,
             providerGeneration: providerGeneration
         )
         let protectedEffects = try ProtectedLoggingEffectStore(
@@ -195,7 +197,9 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             candidateProcessGeneration: processGeneration,
             providerID: resolved.providerIdentity.id,
             providerGeneration: resolved.providerGenerationAtResolution,
-            candidateSandboxGeneration: nil
+            candidateSandboxGeneration: try await sandboxGeneration(
+                for: resolved
+            )
         )
         try await registerConfiguration(
             request: request,
@@ -662,6 +666,29 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 ),
                 for: request
             )
+        case "journald":
+            let helper = try DockerSemanticHelperClient.shared(
+                for: DockerSemanticHelperGeneration(
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration
+                )
+            )
+            let driverConfiguration = try JournaldDriverConfiguration.resolve(
+                options: options,
+                info: info,
+                semanticService: helper
+            )
+            try await providers.configurations.register(
+                JournaldConfigurationBinding(
+                    semanticRequestDigest: request.semanticRequestDigest,
+                    containerID: request.containerID,
+                    leaseGeneration: request.leaseGeneration,
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration,
+                    configuration: driverConfiguration
+                ),
+                for: request
+            )
         default:
             throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
                 resolved.driver
@@ -684,6 +711,20 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             }
         }
         return options
+    }
+
+    private func sandboxGeneration(
+        for resolved: ResolvedContainerLogConfiguration
+    ) async throws -> UInt64? {
+        guard resolved.driver == "journald" else {
+            return nil
+        }
+        guard let journald = providers.journald else {
+            throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                resolved.driver
+            )
+        }
+        return try await journald.activeSandboxGeneration()
     }
 
     private static func semanticDigest(
