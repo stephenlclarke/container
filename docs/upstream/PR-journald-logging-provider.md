@@ -47,6 +47,13 @@ catalog descriptor and no false compatibility claim.
   in-flight operations join one backend effect, completed outcomes replay from
   a count- and encoded-byte-bounded cache, conflicting operation-ID reuse fails
   before an effect, and backend failures map to stable wire categories.
+- Add the restart-safe backend and private atomic state store. Writer
+  session/epoch/ordinal identity survives service restart, a pending append is
+  reconciled without duplication, uncertain state persistence requires reload,
+  every close fences new writes before flush, active readers validate the exact
+  writer/sandbox generation, and reader open resumes at the durable sequence.
+- Return the durable reader sequence in the open-reader wire response so a
+  reconstructed client cannot restart at sequence one and duplicate history.
 - Register configuration and the provider in the built-in authority plane only
   when a concrete service is supplied.
 
@@ -54,10 +61,9 @@ catalog descriptor and no false compatibility claim.
 
 - Implement and package the signed Linux journald workload and bind its vsock
   listener to the completed connection/handler engine.
-- Implement the durable systemd journal backend. Every backend effect remains
-  idempotent after replay-cache eviction or service restart.
-- Persist writer identity/epoch state and reconcile service or authority crash,
-  response loss, and sandbox replacement.
+- Implement the concrete systemd adapter behind the durable backend. Append
+  must reconcile the complete session/epoch/ordinal identity, and reads must be
+  deterministic for an identical request/sequence across state-save failure.
 - Implement journal query ordering and Docker filters for stdout/stderr,
   follow, tail, since, until, timestamps, and details.
 - Route authority-owned provider readers through the production reader plane.
@@ -79,6 +85,10 @@ catalog descriptor and no false compatibility claim.
 - `Sources/ContainerLoggingProviders/Journald/JournaldServiceServer.swift`
   contains the bounded exact-once replay engine, backend boundary, failure
   mapping, and persistent framed connection loop.
+- `Sources/ContainerLoggingProviders/Journald/JournaldServiceDurableBackend.swift`
+  contains the bounded restart snapshot, private atomic file store,
+  save-before-publish transitions, writer reconciliation/fencing, reader
+  resume, and system-journal adapter boundary.
 - `Sources/ContainerLoggingProviders/BuiltinRemoteLogDriverProviderSet.swift`
   stores typed bindings and conditionally installs the provider.
 - `Sources/Services/ContainerAPIService/Server/Containers/AuthorityRemoteLogDriverPlane.swift`
@@ -95,6 +105,10 @@ catalog descriptor and no false compatibility claim.
   covers lifecycle projection, concurrent duplicate joining, completed replay,
   conflict rejection, bounded eviction, stable failures, and end-to-end
   persistent framed client/server calls.
+- `Tests/ContainerLoggingProvidersTests/JournaldServiceDurableBackendTests.swift`
+  covers restart reconciliation, uncertain state-save recovery, ordering and
+  close fencing, reader resume/replay, generation matching, private file modes,
+  and symbolic-link rejection.
 
 ## Validation
 
@@ -104,6 +118,8 @@ swift build --target container-apiserver
 swift test --filter JournaldProviderTests
 swift test --filter JournaldServiceWireTests
 swift test --filter JournaldServiceServerTests
+swift test --filter JournaldServiceDurableBackendTests
+swift test --filter JournaldService
 swift test --filter BuiltinRemoteLogDriverProviderSetTests
 swift build -Xswiftc -warnings-as-errors --target ContainerLoggingProviders
 swift build -Xswiftc -warnings-as-errors --target container-apiserver
@@ -117,6 +133,11 @@ Current development MacBook Pro evidence:
 - five journald wire tests passed, including exact replay and cancellation;
 - seven journald wire-server tests passed, including concurrent replay-cache
   and end-to-end framed-connection cases;
+- seven durable-backend tests passed, covering both append/state crash windows,
+  no-duplicate recovery, close/write reentrancy fencing, active-reader
+  generation checks, durable reader resume, and private file-store hardening;
+- the combined journald wire, server, and durable-backend filter passed all 19
+  tests with Swift warnings promoted to errors;
 - provider and API server targets built successfully;
 - the provider and API server targets built with Swift warnings promoted to
   errors;
@@ -129,6 +150,8 @@ Current development MacBook Pro evidence:
   `a42ecf2fe1ffa582e34cfa74f6cf1ddba8505368`.
 - signed journald wire-server commit:
   `bed5de1686bc005ad77ab63025a5582f37601738`.
+- signed journald durable-backend commit:
+  `79c89babc7399c0cc1d4f800bd5ec092cc6c153d`.
 
 The warnings-as-errors build used the local signed Containerization
 shared-sandbox worktree because the coordinated Containerization upstream wave
@@ -147,7 +170,9 @@ published dependency pin remains unchanged.
   exact operation identity and reader order across response loss.
 - [x] The server joins in-flight replay, caches bounded outcomes, rejects
   conflicting identities before effects, and serves persistent framed calls.
-- [ ] Add the signed Linux service and persistent journal adapter.
+- [x] Durable writer/reader state reconciles restart and response-loss windows,
+  fences close-before-flush, and resumes the exact reader sequence.
+- [ ] Add the signed Linux service and concrete systemd journal adapter.
 - [ ] Complete production reader routing, recovery, and supervision.
 - [ ] Add real-systemd compatibility and performance evidence.
 
