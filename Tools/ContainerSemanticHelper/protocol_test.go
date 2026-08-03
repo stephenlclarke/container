@@ -97,7 +97,7 @@ func TestDispatchHandshakeAndRemoteErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	reader := newProtocolReader(hello)
-	for index := 0; index < 5; index++ {
+	for index := 0; index < 6; index++ {
 		if _, err := reader.byteField(256); err != nil {
 			t.Fatal(err)
 		}

@@ -14,10 +14,11 @@ import (
 )
 
 var (
-	helperVersion       = "development"
-	mobyCommit          = "development"
-	helperSourceDigest  = "development"
-	oracleFixtureDigest = "development"
+	helperVersion        = "development"
+	mobyCommit           = "development"
+	mobyGCPLoggingDigest = "development"
+	helperSourceDigest   = "development"
+	oracleFixtureDigest  = "development"
 )
 
 func main() {

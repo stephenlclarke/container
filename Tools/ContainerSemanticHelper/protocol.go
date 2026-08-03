@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	protocolVersion        uint16 = 1
+	protocolVersion        uint16 = 2
 	headerBytes                   = 28
 	maximumFrameBytes             = 16 * 1024 * 1024
 	maximumByteFieldBytes         = 2 * 1024 * 1024
@@ -46,6 +46,10 @@ const (
 	opFluentdAddress opcode = 6
 	opGELFAddress    opcode = 7
 	opSyslogAddress  opcode = 8
+	opGCPStart       opcode = 9
+	opGCPLog         opcode = 10
+	opGCPFlush       opcode = 11
+	opGCPClose       opcode = 12
 )
 
 type responseStatus uint16
@@ -102,7 +106,7 @@ func decodeHeader(source []byte) (frameHeader, error) {
 		return frameHeader{}, errors.New("invalid protocol frame kind")
 	}
 	op := opcode(source[7])
-	if op < opHello || op > opSyslogAddress {
+	if op < opHello || op > opGCPClose {
 		return frameHeader{}, errors.New("invalid protocol opcode")
 	}
 	return frameHeader{

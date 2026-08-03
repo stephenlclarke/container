@@ -127,6 +127,43 @@ func templatePayload(t *testing.T, format string) []byte {
 	return writer.bytes
 }
 
+func gcpStartPayload(t *testing.T, sessionID string) []byte {
+	t.Helper()
+	writer := &protocolWriter{}
+	if err := writer.byteField([]byte(sessionID)); err != nil {
+		t.Fatal(err)
+	}
+	appendStringMap(t, writer, map[string]string{"gcp-project": "project"})
+	for _, value := range []string{
+		"0123456789abcdef0123456789abcdef",
+		"/alpha",
+		"/bin/sh",
+	} {
+		if err := writer.byteField([]byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendByteList(t, writer, "-c", "echo ok")
+	for _, value := range []string{
+		"abcdef0123456789abcdef0123456789",
+		"example/image:latest",
+	} {
+		if err := writer.byteField([]byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writer.int64(1_234_567_890)
+	writer.int32(123_456_789)
+	appendByteList(t, writer, "ALPHA=one")
+	appendStringMap(t, writer, map[string]string{"com.example.label": "value"})
+	for _, value := range []string{"/private/log", "dockerd", "engine-host"} {
+		if err := writer.byteField([]byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return writer.bytes
+}
+
 func TestServerRoundTripsEverySemanticOperation(t *testing.T) {
 	harness := newServerHarness(t)
 
@@ -135,7 +172,7 @@ func TestServerRoundTripsEverySemanticOperation(t *testing.T) {
 		t.Fatalf("hello status = %d", header.status)
 	}
 	reader := newProtocolReader(hello)
-	for range 5 {
+	for range 6 {
 		if _, err := reader.byteField(256); err != nil {
 			t.Fatal(err)
 		}
@@ -237,6 +274,51 @@ func TestServerReturnsTypedRequestAndSemanticErrors(t *testing.T) {
 	header, _, err = readFrame(harness.client)
 	if err != nil || header.status != statusInvalidRequest {
 		t.Fatalf("invalid timeout response = %+v/%v", header, err)
+	}
+}
+
+func TestServerRoundTripsGCPLoggingLifecycle(t *testing.T) {
+	harness := newServerHarness(t)
+	metadata := &fakeGCPMetadataSource{}
+	client := &fakeGCPCloudClient{}
+	logger := &fakeGCPCloudLogger{}
+	harness.server.gcp, _ = testGCPManager(metadata, client, logger)
+
+	header, response := harness.roundTrip(
+		t, 30, opGCPStart, gcpStartPayload(t, "gcp-session"),
+	)
+	if header.status != statusOK || len(response) != 0 {
+		t.Fatalf("start response = %d/%v", header.status, response)
+	}
+
+	logRequest := &protocolWriter{}
+	if err := logRequest.byteField([]byte("gcp-session")); err != nil {
+		t.Fatal(err)
+	}
+	logRequest.int64(1_700_000_000)
+	logRequest.int32(123_456_789)
+	if err := logRequest.byteField([]byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	header, response = harness.roundTrip(t, 31, opGCPLog, logRequest.bytes)
+	if header.status != statusOK || len(response) != 0 || len(logger.entries) != 1 {
+		t.Fatalf("log response = %d/%v entries=%d", header.status, response, len(logger.entries))
+	}
+
+	for requestID, operation := range []opcode{opGCPFlush, opGCPClose} {
+		request := &protocolWriter{}
+		if err := request.byteField([]byte("gcp-session")); err != nil {
+			t.Fatal(err)
+		}
+		header, response = harness.roundTrip(
+			t, uint64(requestID+32), operation, request.bytes,
+		)
+		if header.status != statusOK || len(response) != 0 {
+			t.Fatalf("operation %d response = %d/%v", operation, header.status, response)
+		}
+	}
+	if logger.flushCalls != 2 || client.closeCalls != 1 {
+		t.Fatalf("lifecycle calls = flush:%d close:%d", logger.flushCalls, client.closeCalls)
 	}
 }
 

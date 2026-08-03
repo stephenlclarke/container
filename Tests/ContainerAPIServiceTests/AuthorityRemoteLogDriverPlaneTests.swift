@@ -17,6 +17,7 @@
 import ContainerLoggingProviders
 import ContainerResource
 import CryptoKit
+import DockerSemanticHelper
 import Foundation
 import NIOCore
 import NIOPosix
@@ -41,6 +42,50 @@ private struct AuthorityRecordingAWSLogsClientFactory: AWSLogsClientFactory {
         configuration: AWSLogsDriverConfiguration
     ) async throws -> any AWSLogsClient {
         client
+    }
+}
+
+private final class AuthorityRecordingGCPLoggingService:
+    DockerGCPLoggingServicing, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private(set) var starts = 0
+    private(set) var lines = [Data]()
+    private(set) var closes = 0
+
+    func startGCPLoggingSession(
+        sessionID: String,
+        configuration: [DockerSemanticBytePair],
+        info: DockerLogTemplateInfo,
+        timeout: Duration
+    ) throws {
+        lock.withLock { starts += 1 }
+    }
+
+    func logGCPRecord(
+        sessionID: String,
+        timestampSeconds: Int64,
+        timestampNanoseconds: UInt32,
+        line: Data,
+        timeout: Duration
+    ) throws {
+        lock.withLock { lines.append(line) }
+    }
+
+    func flushGCPLoggingSession(
+        sessionID: String,
+        timeout: Duration
+    ) throws {}
+
+    func closeGCPLoggingSession(
+        sessionID: String,
+        timeout: Duration
+    ) throws {
+        lock.withLock { closes += 1 }
+    }
+
+    func snapshot() -> (starts: Int, lines: [Data], closes: Int) {
+        lock.withLock { (starts, lines, closes) }
     }
 }
 
@@ -202,6 +247,46 @@ struct AuthorityRemoteLogDriverPlaneTests {
     }
 
     @Test
+    func gcpLogsProductionPlanePublishesProviderBytes() async throws {
+        try await withTemporaryRoot { root in
+            let service = AuthorityRecordingGCPLoggingService()
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityUnavailableAWSLogsClientFactory(),
+                gcpLoggingServiceFactory: { _ in service }
+            )
+            let id = "gcplogs-plane"
+            let bundle = ContainerResource.Bundle(
+                path: root.appendingPathComponent(id, isDirectory: true)
+            )
+            try FileManager.default.createDirectory(
+                at: bundle.path,
+                withIntermediateDirectories: true
+            )
+            let configuration = try gcpLogsConfiguration(id: id)
+            let runtimeStdio = try await plane.prepareBootstrap(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                stdio: [nil, nil, nil]
+            )
+
+            try #require(runtimeStdio[1]).write(
+                contentsOf: Data("gcp-plane-output\n".utf8)
+            )
+            try await plane.bootstrapSucceeded(containerID: id)
+            try await plane.activate(containerID: id)
+            try await plane.close(containerID: id)
+
+            let snapshot = service.snapshot()
+            #expect(snapshot.starts == 1)
+            #expect(snapshot.lines == [Data("gcp-plane-output".utf8)])
+            #expect(snapshot.closes == 1)
+        }
+    }
+
+    @Test
     func reservedWriterIsReconciledBeforeNextGenerationStarts() async throws {
         try await withTemporaryRoot { root in
             let serverGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
@@ -345,6 +430,46 @@ struct AuthorityRemoteLogDriverPlaneTests {
             "awslogs-create-stream": "false",
         ]
         let descriptor = AWSLogsLogDriverContract.descriptor()
+        let resolved = try ResolvedContainerLogConfiguration(
+            leaseGeneration: 1,
+            driver: descriptor.driver,
+            safeOptions: options,
+            delivery: LogDeliveryConfiguration(),
+            readPolicy: LogReadPolicy(source: .unavailable),
+            providerIdentity: descriptor.providerIdentity,
+            providerGenerationAtResolution: descriptor.providerGeneration,
+            contractDigest: descriptor.optionContractDigest
+        )
+        var configuration = ContainerConfiguration(
+            id: id,
+            image: ImageDescription(
+                reference: "docker.io/library/alpine:latest",
+                descriptor: .init(
+                    mediaType: "application/vnd.oci.image.manifest.v1+json",
+                    digest: "sha256:" + String(repeating: "0", count: 64),
+                    size: 0
+                )
+            ),
+            process: ProcessConfiguration(
+                executable: "/bin/sh",
+                arguments: [],
+                environment: [],
+                terminal: true
+            )
+        )
+        configuration.logging = try ContainerLogConfiguration(
+            requested: ContainerLogRequest(
+                driver: descriptor.driver,
+                options: options
+            ),
+            resolved: resolved
+        )
+        return configuration
+    }
+
+    private func gcpLogsConfiguration(id: String) throws -> ContainerConfiguration {
+        let options = ["gcp-project": "container-tests"]
+        let descriptor = GCPLogsLogDriverContract.descriptor()
         let resolved = try ResolvedContainerLogConfiguration(
             leaseGeneration: 1,
             driver: descriptor.driver,

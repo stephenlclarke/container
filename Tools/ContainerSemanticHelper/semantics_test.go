@@ -161,6 +161,36 @@ func TestOracleTemplates(t *testing.T) {
 	}
 }
 
+func TestDockerLogInfoExtraAttributesMatchesDockerFilters(t *testing.T) {
+	info := testLogInfo()
+	info.ContainerEnv = append(info.ContainerEnv, "BETA=two", "MALFORMED")
+	info.ContainerLabels["com.example.second"] = "second"
+	info.Config = map[string]string{
+		"labels":       "com.example.label,missing",
+		"labels-regex": `\.second$`,
+		"env":          "ALPHA,missing",
+		"env-regex":    "^BETA$",
+	}
+	attributes, err := info.ExtraAttributes(strings.ToUpper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"ALPHA":              "one",
+		"BETA":               "two",
+		"COM.EXAMPLE.LABEL":  "value",
+		"COM.EXAMPLE.SECOND": "second",
+	}
+	if !reflect.DeepEqual(attributes, want) {
+		t.Fatalf("attributes = %v, want %v", attributes, want)
+	}
+
+	info.Config["env-regex"] = "a(?=b)"
+	if _, err := info.ExtraAttributes(nil); err == nil {
+		t.Fatal("invalid environment expression unexpectedly succeeded")
+	}
+}
+
 func TestOracleURLs(t *testing.T) {
 	for _, vector := range loadOracle(t).URLs {
 		parsed, err := parseRawURL([]byte(vector.Source))

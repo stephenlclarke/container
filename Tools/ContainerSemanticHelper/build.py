@@ -22,8 +22,8 @@ GO_ARCHIVE_URL = f"https://go.dev/dl/{GO_ARCHIVE_NAME}"
 GO_ARCHIVE_SHA256 = (
     "984521ae978a5377c7d782fd2dd953291840d7d3d0bd95781a1f32f16d94a006"
 )
-HELPER_VERSION = "1"
-PROTOCOL_VERSION = 1
+HELPER_VERSION = "2"
+PROTOCOL_VERSION = 2
 MOBY_TAG = "docker-v29.2.1"
 MOBY_COMMIT = "6bc6209b88a7a834c91f77d848e025c79e0227a1"
 MOBY_TEMPLATES_SHA256 = (
@@ -31,6 +31,9 @@ MOBY_TEMPLATES_SHA256 = (
 )
 MOBY_LOG_INFO_SHA256 = (
     "96565a4bd2db9c7021c7e4a1b16bca100d86ca5a2f892843518add0b86ec8624"
+)
+MOBY_GCP_LOGGING_SHA256 = (
+    "07e3f6d88058802bb5c28fe40905c0ff8e458c4df47e0d6303eeedb26c23b659"
 )
 EXECUTABLE_NAME = "container-semantic-helper"
 MANIFEST_NAME = "container-semantic-helper.manifest.json"
@@ -80,7 +83,7 @@ def sha256_tree(paths: list[Path], base: Path) -> str:
 
 def source_digest() -> str:
     root = helper_root()
-    sources = [root / "go.mod", root / "build.py"]
+    sources = [root / "go.mod", root / "go.sum", root / "build.py"]
     sources.extend(
         path
         for path in root.glob("*.go")
@@ -193,7 +196,10 @@ def go_environment() -> dict[str, str]:
             "GOARCH": "arm64",
             "GOENV": "off",
             "GOOS": "darwin",
-            "GOPROXY": "off",
+            "GONOSUMDB": "",
+            "GOPRIVATE": "",
+            "GOPROXY": "https://proxy.golang.org",
+            "GOSUMDB": "sum.golang.org",
             "GOTOOLCHAIN": "local",
             "GOWORK": "off",
         }
@@ -208,6 +214,7 @@ def build_arguments(go: Path, output: Path) -> list[str]:
             "-buildid=",
             f"-X main.helperVersion={HELPER_VERSION}",
             f"-X main.mobyCommit={MOBY_COMMIT}",
+            f"-X main.mobyGCPLoggingDigest={MOBY_GCP_LOGGING_SHA256}",
             f"-X main.helperSourceDigest={source_digest()}",
             f"-X main.oracleFixtureDigest={oracle_digest()}",
         ]
@@ -260,6 +267,7 @@ def manifest(binary: Path) -> dict[str, object]:
         "helperSourceSHA256": source_digest(),
         "helperVersion": HELPER_VERSION,
         "mobyCommit": MOBY_COMMIT,
+        "mobyGCPLoggingSHA256": MOBY_GCP_LOGGING_SHA256,
         "mobyLogInfoSHA256": MOBY_LOG_INFO_SHA256,
         "mobyTag": MOBY_TAG,
         "mobyTemplatesSHA256": MOBY_TEMPLATES_SHA256,

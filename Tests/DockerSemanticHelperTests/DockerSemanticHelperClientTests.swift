@@ -31,6 +31,10 @@ struct DockerSemanticHelperClientTests {
                 == "6bc6209b88a7a834c91f77d848e025c79e0227a1"
         )
         #expect(
+            client.manifest.mobyGCPLoggingSHA256
+                == "07e3f6d88058802bb5c28fe40905c0ff8e458c4df47e0d6303eeedb26c23b659"
+        )
+        #expect(
             try client.matchRegularExpression(
                 pattern: Data("^(?:foo|bar)[0-9]+$".utf8),
                 candidates: [
@@ -206,6 +210,27 @@ struct DockerSemanticHelperClientTests {
                 candidates: []
             )
         }
+    }
+
+    @Test("GCP lifecycle requests retain typed remote failures")
+    func gcpLifecycleRemoteFailure() throws {
+        let client = try makeClient(generation: 5)
+        do {
+            try client.startGCPLoggingSession(
+                sessionID: "gcp-test",
+                configuration: [],
+                info: templateInfo(),
+                timeout: .seconds(5)
+            )
+            Issue.record("gcplogs start without a project unexpectedly passed")
+        } catch let error as DockerSemanticHelperRemoteError {
+            #expect(error.category == .execute)
+            #expect(!error.messageBytes.isEmpty)
+        }
+        #expect(
+            try client.parseURL(Data("tcp://localhost:3".utf8)).port
+                == Data("3".utf8)
+        )
     }
 
     @Test("manifest digest mismatch fails before process launch")

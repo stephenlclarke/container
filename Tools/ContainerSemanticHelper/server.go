@@ -22,6 +22,7 @@ const (
 type semanticServer struct {
 	connection  net.Conn
 	engine      *semanticEngine
+	gcp         *gcpLoggingManager
 	writeMu     sync.Mutex
 	activeMu    sync.Mutex
 	active      map[uint64]context.CancelFunc
@@ -33,6 +34,7 @@ func newSemanticServer(connection net.Conn) *semanticServer {
 	return &semanticServer{
 		connection:  connection,
 		engine:      newSemanticEngine(),
+		gcp:         newGCPLoggingManager(),
 		active:      make(map[uint64]context.CancelFunc),
 		concurrency: make(chan struct{}, maximumConcurrentRequests),
 	}
@@ -42,6 +44,7 @@ func (s *semanticServer) serve() error {
 	defer func() {
 		s.cancelAll()
 		s.waitGroup.Wait()
+		s.gcp.closeAll()
 	}()
 	for {
 		header, payload, err := readFrame(s.connection)
@@ -162,6 +165,7 @@ func (s *semanticServer) dispatch(
 			helperVersion,
 			runtime.Version(),
 			mobyCommit,
+			mobyGCPLoggingDigest,
 			helperSourceDigest,
 			oracleFixtureDigest,
 		} {
@@ -321,6 +325,62 @@ func (s *semanticServer) dispatch(
 			return nil, err
 		}
 		writer.uint16(port)
+	case opGCPStart:
+		sessionID, info, err := decodeGCPStartRequest(reader)
+		if err != nil || !reader.atEnd() {
+			return nil, invalidPayloadWithError(err)
+		}
+		if err := s.gcp.start(ctx, string(sessionID), info); err != nil {
+			return nil, &semanticError{
+				status: statusExecuteError, message: err.Error(),
+			}
+		}
+	case opGCPLog:
+		sessionID, err := reader.byteField(maximumMapKeyBytes)
+		if err != nil {
+			return nil, invalidPayloadWithError(err)
+		}
+		seconds, err := reader.int64()
+		if err != nil {
+			return nil, invalidPayloadWithError(err)
+		}
+		nanoseconds, err := reader.int32()
+		if err != nil || nanoseconds < 0 || nanoseconds > 999_999_999 {
+			return nil, invalidPayloadWithError(err)
+		}
+		line, err := reader.byteField(maximumByteFieldBytes)
+		if err != nil || !reader.atEnd() {
+			return nil, invalidPayloadWithError(err)
+		}
+		if err := s.gcp.log(
+			string(sessionID),
+			time.Unix(seconds, int64(nanoseconds)).UTC(),
+			line,
+		); err != nil {
+			return nil, &semanticError{
+				status: statusExecuteError, message: err.Error(),
+			}
+		}
+	case opGCPFlush:
+		sessionID, err := decodeSingleByteField(reader)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.gcp.flush(string(sessionID)); err != nil {
+			return nil, &semanticError{
+				status: statusExecuteError, message: err.Error(),
+			}
+		}
+	case opGCPClose:
+		sessionID, err := decodeSingleByteField(reader)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.gcp.close(string(sessionID)); err != nil {
+			return nil, &semanticError{
+				status: statusExecuteError, message: err.Error(),
+			}
+		}
 	default:
 		return nil, invalidPayload()
 	}
@@ -336,59 +396,82 @@ func decodeTemplateRequest(reader *protocolReader) ([]byte, dockerLogInfo, error
 	if err != nil {
 		return nil, dockerLogInfo{}, err
 	}
-	containerID, err := reader.byteField(maximumByteFieldBytes)
+	info, err := decodeDockerLogInfo(reader, configuration)
+	return format, info, err
+}
+
+func decodeGCPStartRequest(
+	reader *protocolReader,
+) ([]byte, dockerLogInfo, error) {
+	sessionID, err := reader.byteField(maximumMapKeyBytes)
 	if err != nil {
 		return nil, dockerLogInfo{}, err
+	}
+	configuration, err := reader.stringMap()
+	if err != nil {
+		return nil, dockerLogInfo{}, err
+	}
+	info, err := decodeDockerLogInfo(reader, configuration)
+	return sessionID, info, err
+}
+
+func decodeDockerLogInfo(
+	reader *protocolReader,
+	configuration map[string]string,
+) (dockerLogInfo, error) {
+	containerID, err := reader.byteField(maximumByteFieldBytes)
+	if err != nil {
+		return dockerLogInfo{}, err
 	}
 	containerName, err := reader.byteField(maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	entrypoint, err := reader.byteField(maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	argumentBytes, err := reader.byteList(maximumCollectionCount, maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	imageID, err := reader.byteField(maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	imageName, err := reader.byteField(maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	createdSeconds, err := reader.int64()
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	createdNanoseconds, err := reader.int32()
 	if err != nil || createdNanoseconds < 0 || createdNanoseconds > 999_999_999 {
-		return nil, dockerLogInfo{}, errors.New("invalid container creation nanoseconds")
+		return dockerLogInfo{}, errors.New("invalid container creation nanoseconds")
 	}
 	environmentBytes, err := reader.byteList(maximumCollectionCount, maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	labels, err := reader.stringMap()
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	logPath, err := reader.byteField(maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	daemonName, err := reader.byteField(maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
 	hostname, err := reader.byteField(maximumByteFieldBytes)
 	if err != nil {
-		return nil, dockerLogInfo{}, err
+		return dockerLogInfo{}, err
 	}
-	return format, dockerLogInfo{
+	return dockerLogInfo{
 		Config:              configuration,
 		ContainerID:         string(containerID),
 		ContainerName:       string(containerName),

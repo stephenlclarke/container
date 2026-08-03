@@ -21,12 +21,47 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+extern char **environ;
+
 enum { CSH_CHILD_DESCRIPTOR = 3 };
+
+static int csh_has_prefix(const char *value, const char *prefix) {
+    return strncmp(value, prefix, strlen(prefix)) == 0;
+}
+
+/// Preserve the authority environment needed by Application Default
+/// Credentials while rejecting dynamic-loader injection controls.
+static char **csh_copy_safe_inherited_environment(void) {
+    size_t count = 0;
+    for (char **entry = environ; *entry != NULL; entry++) {
+        if (
+            !csh_has_prefix(*entry, "DYLD_")
+            && !csh_has_prefix(*entry, "LD_")
+        ) {
+            count++;
+        }
+    }
+    char **result = calloc(count + 1, sizeof(char *));
+    if (result == NULL) {
+        return NULL;
+    }
+    size_t index = 0;
+    for (char **entry = environ; *entry != NULL; entry++) {
+        if (
+            !csh_has_prefix(*entry, "DYLD_")
+            && !csh_has_prefix(*entry, "LD_")
+        ) {
+            result[index++] = *entry;
+        }
+    }
+    return result;
+}
 
 static int csh_poll(int fd, short events, int timeout_milliseconds) {
     struct pollfd descriptor = {
@@ -48,7 +83,12 @@ static int csh_poll(int fd, short events, int timeout_milliseconds) {
     return (descriptor.revents & events) != 0 ? 1 : 0;
 }
 
-int csh_spawn(const char *executable_path, pid_t *child_pid, int *parent_fd) {
+int csh_spawn(
+    const char *executable_path,
+    int inherit_environment,
+    pid_t *child_pid,
+    int *parent_fd
+) {
     if (executable_path == NULL || child_pid == NULL || parent_fd == NULL) {
         return EINVAL;
     }
@@ -113,12 +153,27 @@ int csh_spawn(const char *executable_path, pid_t *child_pid, int *parent_fd) {
         (char *)"--fd=3",
         NULL,
     };
-    char *const environment[] = {
+    char *const restricted_environment[] = {
         (char *)"LANG=C",
         (char *)"LC_ALL=C",
         (char *)"PATH=/usr/bin:/bin",
         NULL,
     };
+    char **inherited_environment = NULL;
+    char *const *environment = restricted_environment;
+    if (inherit_environment != 0) {
+        inherited_environment = csh_copy_safe_inherited_environment();
+        if (inherited_environment == NULL) {
+            if (attribute_result == 0) {
+                posix_spawnattr_destroy(&attributes);
+            }
+            posix_spawn_file_actions_destroy(&actions);
+            close(sockets[0]);
+            close(sockets[1]);
+            return ENOMEM;
+        }
+        environment = inherited_environment;
+    }
     pid_t pid = 0;
     if (result == 0) {
         result = posix_spawn(
@@ -130,6 +185,8 @@ int csh_spawn(const char *executable_path, pid_t *child_pid, int *parent_fd) {
             environment
         );
     }
+
+    free(inherited_environment);
 
     if (attribute_result == 0) {
         posix_spawnattr_destroy(&attributes);

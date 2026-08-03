@@ -17,8 +17,8 @@
 import Foundation
 
 public enum DockerSemanticHelperProvenance {
-    public static let protocolVersion: UInt16 = 1
-    public static let helperVersion = "1"
+    public static let protocolVersion: UInt16 = 2
+    public static let helperVersion = "2"
     public static let goVersion = "go1.25.6"
     public static let goDarwinARM64ArchiveSHA256 =
         "984521ae978a5377c7d782fd2dd953291840d7d3d0bd95781a1f32f16d94a006"
@@ -28,6 +28,8 @@ public enum DockerSemanticHelperProvenance {
         "4c82c12a734e49627c745d24ef54eb658727ead67ac17253ac86f8785e746252"
     public static let mobyLogInfoSHA256 =
         "96565a4bd2db9c7021c7e4a1b16bca100d86ca5a2f892843518add0b86ec8624"
+    public static let mobyGCPLoggingSHA256 =
+        "07e3f6d88058802bb5c28fe40905c0ff8e458c4df47e0d6303eeedb26c23b659"
 }
 
 public struct DockerSemanticHelperGeneration: Hashable, Sendable {
@@ -98,6 +100,7 @@ public struct DockerSemanticHelperManifest: Codable, Equatable, Sendable {
     public let goArchiveSHA256: String
     public let mobyTag: String
     public let mobyCommit: String
+    public let mobyGCPLoggingSHA256: String
     public let mobyTemplatesSHA256: String
     public let mobyLogInfoSHA256: String
     public let helperSourceSHA256: String
@@ -115,6 +118,8 @@ public struct DockerSemanticHelperManifest: Codable, Equatable, Sendable {
                 == DockerSemanticHelperProvenance.goDarwinARM64ArchiveSHA256,
             mobyTag == DockerSemanticHelperProvenance.mobyTag,
             mobyCommit == DockerSemanticHelperProvenance.mobyCommit,
+            mobyGCPLoggingSHA256
+                == DockerSemanticHelperProvenance.mobyGCPLoggingSHA256,
             mobyTemplatesSHA256
                 == DockerSemanticHelperProvenance.mobyTemplatesSHA256,
             mobyLogInfoSHA256
@@ -375,4 +380,34 @@ public protocol DockerSemanticServicing: Sendable {
         _ source: Data,
         timeout: Duration
     ) throws -> DockerSyslogAddress
+}
+
+/// Lifecycle operations implemented by the signed helper with Google's
+/// official Cloud Logging client. The helper process is generation-fenced and
+/// must be launched with the authority environment for exact ADC behavior.
+public protocol DockerGCPLoggingServicing: Sendable {
+    func startGCPLoggingSession(
+        sessionID: String,
+        configuration: [DockerSemanticBytePair],
+        info: DockerLogTemplateInfo,
+        timeout: Duration
+    ) throws
+
+    func logGCPRecord(
+        sessionID: String,
+        timestampSeconds: Int64,
+        timestampNanoseconds: UInt32,
+        line: Data,
+        timeout: Duration
+    ) throws
+
+    func flushGCPLoggingSession(
+        sessionID: String,
+        timeout: Duration
+    ) throws
+
+    func closeGCPLoggingSession(
+        sessionID: String,
+        timeout: Duration
+    ) throws
 }

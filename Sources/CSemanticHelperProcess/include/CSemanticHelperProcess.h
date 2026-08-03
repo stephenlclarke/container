@@ -27,7 +27,12 @@ extern "C" {
 
 /// Starts one helper with one endpoint of an anonymous socketpair inherited as
 /// descriptor 3. The parent endpoint is nonblocking and close-on-exec.
-int csh_spawn(const char *executable_path, pid_t *child_pid, int *parent_fd);
+int csh_spawn(
+    const char *executable_path,
+    int inherit_environment,
+    pid_t *child_pid,
+    int *parent_fd
+);
 
 ssize_t csh_read(int fd, void *buffer, size_t count);
 ssize_t csh_write(int fd, const void *buffer, size_t count);

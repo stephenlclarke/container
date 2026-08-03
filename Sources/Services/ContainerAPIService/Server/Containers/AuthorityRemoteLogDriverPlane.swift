@@ -32,6 +32,11 @@ enum AuthorityRemoteLogDriverPlaneError: Error, Equatable, Sendable {
     case generationMismatch(expected: UInt64, actual: UInt64)
 }
 
+package typealias AuthorityGCPLoggingServiceFactory =
+    @Sendable (
+        DockerSemanticHelperGeneration
+    ) throws -> any DockerGCPLoggingServicing
+
 /// API-authority ownership for built-in remote logging drivers.
 ///
 /// Protected options are authenticated and converted into an exact typed
@@ -55,21 +60,31 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     private let providers: BuiltinRemoteLogDriverProviderSet
     private let protectedEffects: ProtectedLoggingEffectStore
     private let eventLoopOwner: AuthorityRemoteLogEventLoopOwner
+    private let gcpLoggingServiceFactory: AuthorityGCPLoggingServiceFactory
     private var runs = [String: Run]()
 
     private init(
         providers: BuiltinRemoteLogDriverProviderSet,
         protectedEffects: ProtectedLoggingEffectStore,
-        eventLoopOwner: AuthorityRemoteLogEventLoopOwner
+        eventLoopOwner: AuthorityRemoteLogEventLoopOwner,
+        gcpLoggingServiceFactory: @escaping AuthorityGCPLoggingServiceFactory
     ) {
         self.providers = providers
         self.protectedEffects = protectedEffects
         self.eventLoopOwner = eventLoopOwner
+        self.gcpLoggingServiceFactory = gcpLoggingServiceFactory
     }
 
     package static func create(
         appRoot: URL,
         awsLogsClientFactory: any AWSLogsClientFactory,
+        gcpLoggingServiceFactory: @escaping AuthorityGCPLoggingServiceFactory = {
+            generation in
+            try DockerSemanticHelperClient.shared(
+                for: generation,
+                launchConfiguration: .discover(inheritEnvironment: true)
+            )
+        },
         providerGeneration: UInt64 = 1
     ) async throws -> AuthorityRemoteLogDriverPlane {
         let threadCount = max(
@@ -93,7 +108,8 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         return AuthorityRemoteLogDriverPlane(
             providers: providers,
             protectedEffects: protectedEffects,
-            eventLoopOwner: eventLoopOwner
+            eventLoopOwner: eventLoopOwner,
+            gcpLoggingServiceFactory: gcpLoggingServiceFactory
         )
     }
 
@@ -620,6 +636,29 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                         DockerSemanticAWSLogsMultilineMatcher(
                             semanticService: helper
                         )
+                ),
+                for: request
+            )
+        case "gcplogs":
+            let helper = try gcpLoggingServiceFactory(
+                DockerSemanticHelperGeneration(
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration
+                )
+            )
+            let driverConfiguration = try GCPLogsDriverConfiguration.resolve(
+                options: options,
+                info: info
+            )
+            try await providers.configurations.register(
+                GCPLogsConfigurationBinding(
+                    semanticRequestDigest: request.semanticRequestDigest,
+                    containerID: request.containerID,
+                    leaseGeneration: request.leaseGeneration,
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration,
+                    configuration: driverConfiguration,
+                    loggingService: helper
                 ),
                 for: request
             )

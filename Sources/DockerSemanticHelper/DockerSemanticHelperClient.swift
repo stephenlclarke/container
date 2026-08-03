@@ -27,18 +27,23 @@ public struct DockerSemanticHelperLaunchConfiguration: Hashable, Sendable {
     public let executableURL: URL
     public let manifestURL: URL
     public let verifyCodeSignature: Bool
+    public let inheritEnvironment: Bool
 
     public init(
         executableURL: URL,
         manifestURL: URL,
-        verifyCodeSignature: Bool = true
+        verifyCodeSignature: Bool = true,
+        inheritEnvironment: Bool = false
     ) {
         self.executableURL = executableURL
         self.manifestURL = manifestURL
         self.verifyCodeSignature = verifyCodeSignature
+        self.inheritEnvironment = inheritEnvironment
     }
 
-    public static func discover() throws -> Self {
+    public static func discover(
+        inheritEnvironment: Bool = false
+    ) throws -> Self {
         let fileManager = FileManager.default
         if let path = ProcessInfo.processInfo.environment[
             "CONTAINER_SEMANTIC_HELPER_PATH"
@@ -52,7 +57,11 @@ public struct DockerSemanticHelperLaunchConfiguration: Hashable, Sendable {
             else {
                 throw DockerSemanticHelperError.helperNotFound
             }
-            return Self(executableURL: executable, manifestURL: manifest)
+            return Self(
+                executableURL: executable,
+                manifestURL: manifest,
+                inheritEnvironment: inheritEnvironment
+            )
         }
 
         let launchedExecutable = URL(fileURLWithPath: CommandLine.arguments[0])
@@ -76,7 +85,11 @@ public struct DockerSemanticHelperLaunchConfiguration: Hashable, Sendable {
             if fileManager.isExecutableFile(atPath: executable.path),
                 fileManager.fileExists(atPath: manifest.path)
             {
-                return Self(executableURL: executable, manifestURL: manifest)
+                return Self(
+                    executableURL: executable,
+                    manifestURL: manifest,
+                    inheritEnvironment: inheritEnvironment
+                )
             }
         }
         throw DockerSemanticHelperError.helperNotFound
@@ -84,6 +97,7 @@ public struct DockerSemanticHelperLaunchConfiguration: Hashable, Sendable {
 }
 
 public final class DockerSemanticHelperClient: DockerSemanticServicing,
+    DockerGCPLoggingServicing,
     @unchecked Sendable
 {
     private struct ProcessState {
@@ -115,7 +129,12 @@ public final class DockerSemanticHelperClient: DockerSemanticServicing,
         var pid: pid_t = 0
         var descriptor: Int32 = -1
         let spawnResult = launchConfiguration.executableURL.path.withCString {
-            csh_spawn($0, &pid, &descriptor)
+            csh_spawn(
+                $0,
+                launchConfiguration.inheritEnvironment ? 1 : 0,
+                &pid,
+                &descriptor
+            )
         }
         guard spawnResult == 0 else {
             throw DockerSemanticHelperError.spawnFailed(Int32(spawnResult))
@@ -222,19 +241,7 @@ public final class DockerSemanticHelperClient: DockerSemanticServicing,
             maximumBytes: DockerSemanticProtocolV1.maximumTemplateBytes
         )
         try request.appendByteMap(configuration)
-        try request.appendByteField(info.containerID)
-        try request.appendByteField(info.containerName)
-        try request.appendByteField(info.containerEntrypoint)
-        try request.appendByteList(info.containerArguments)
-        try request.appendByteField(info.containerImageID)
-        try request.appendByteField(info.containerImageName)
-        request.append(info.containerCreatedSeconds)
-        request.append(info.containerCreatedNanoseconds)
-        try request.appendByteList(info.containerEnvironment)
-        try request.appendByteMap(info.containerLabels)
-        try request.appendByteField(info.logPath)
-        try request.appendByteField(info.daemonName)
-        try request.appendByteField(info.hostname)
+        try request.appendLogInfo(info)
 
         let response = try perform(
             opcode: .templateRender,
@@ -372,11 +379,95 @@ public final class DockerSemanticHelperClient: DockerSemanticServicing,
         )
     }
 
+    public func startGCPLoggingSession(
+        sessionID: String,
+        configuration: [DockerSemanticBytePair],
+        info: DockerLogTemplateInfo,
+        timeout: Duration = .seconds(30)
+    ) throws {
+        var request = DockerSemanticBinaryWriter()
+        try request.appendByteField(
+            Data(sessionID.utf8),
+            maximumBytes: DockerSemanticProtocolV1.maximumMapKeyBytes
+        )
+        try request.appendByteMap(configuration)
+        try request.appendLogInfo(info)
+        try requireEmptyResponse(
+            perform(opcode: .gcpStart, payload: request.data, timeout: timeout)
+        )
+    }
+
+    public func logGCPRecord(
+        sessionID: String,
+        timestampSeconds: Int64,
+        timestampNanoseconds: UInt32,
+        line: Data,
+        timeout: Duration = .seconds(5)
+    ) throws {
+        guard timestampNanoseconds < 1_000_000_000 else {
+            throw DockerSemanticHelperError.inputLimitExceeded
+        }
+        var request = DockerSemanticBinaryWriter()
+        try request.appendByteField(
+            Data(sessionID.utf8),
+            maximumBytes: DockerSemanticProtocolV1.maximumMapKeyBytes
+        )
+        request.append(timestampSeconds)
+        request.append(Int32(timestampNanoseconds))
+        try request.appendByteField(line)
+        try requireEmptyResponse(
+            perform(opcode: .gcpLog, payload: request.data, timeout: timeout)
+        )
+    }
+
+    public func flushGCPLoggingSession(
+        sessionID: String,
+        timeout: Duration = .seconds(30)
+    ) throws {
+        try performGCPSessionOperation(
+            .gcpFlush,
+            sessionID: sessionID,
+            timeout: timeout
+        )
+    }
+
+    public func closeGCPLoggingSession(
+        sessionID: String,
+        timeout: Duration = .seconds(30)
+    ) throws {
+        try performGCPSessionOperation(
+            .gcpClose,
+            sessionID: sessionID,
+            timeout: timeout
+        )
+    }
+
     /// Cancels the in-flight request, terminates the helper, and permanently
     /// fences this provider generation. A new process requires a new provider
     /// generation, preventing silent semantic changes after partial work.
     public func cancelAndFenceGeneration() {
         fenceGeneration()
+    }
+
+    private func performGCPSessionOperation(
+        _ opcode: DockerSemanticProtocolV1.Opcode,
+        sessionID: String,
+        timeout: Duration
+    ) throws {
+        var request = DockerSemanticBinaryWriter()
+        try request.appendByteField(
+            Data(sessionID.utf8),
+            maximumBytes: DockerSemanticProtocolV1.maximumMapKeyBytes
+        )
+        try requireEmptyResponse(
+            perform(opcode: opcode, payload: request.data, timeout: timeout)
+        )
+    }
+
+    private func requireEmptyResponse(_ response: Data) throws {
+        guard response.isEmpty else {
+            throw fencedProtocolViolation()
+        }
     }
 
     private func verifyHandshake() throws {
@@ -386,14 +477,15 @@ public final class DockerSemanticHelperClient: DockerSemanticServicing,
             timeout: Self.handshakeTimeout
         )
         var reader = DockerSemanticBinaryReader(response)
-        let values = try reader.readByteFields(count: 5, maximumBytes: 256)
+        let values = try reader.readByteFields(count: 6, maximumBytes: 256)
         guard
             reader.isAtEnd,
             values[0] == Data(manifest.helperVersion.utf8),
             values[1] == Data(manifest.goVersion.utf8),
             values[2] == Data(manifest.mobyCommit.utf8),
-            values[3] == Data(manifest.helperSourceSHA256.utf8),
-            values[4] == Data(manifest.oracleFixtureSHA256.utf8)
+            values[3] == Data(manifest.mobyGCPLoggingSHA256.utf8),
+            values[4] == Data(manifest.helperSourceSHA256.utf8),
+            values[5] == Data(manifest.oracleFixtureSHA256.utf8)
         else {
             throw DockerSemanticHelperError.invalidManifest
         }

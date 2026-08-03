@@ -44,6 +44,10 @@ enum DockerSemanticProtocolV1 {
         case fluentdAddress = 6
         case gelfAddress = 7
         case syslogAddress = 8
+        case gcpStart = 9
+        case gcpLog = 10
+        case gcpFlush = 11
+        case gcpClose = 12
     }
 
     struct Header: Equatable {
@@ -162,6 +166,22 @@ struct DockerSemanticBinaryWriter {
             )
             try appendByteField(pair.value)
         }
+    }
+
+    mutating func appendLogInfo(_ info: DockerLogTemplateInfo) throws {
+        try appendByteField(info.containerID)
+        try appendByteField(info.containerName)
+        try appendByteField(info.containerEntrypoint)
+        try appendByteList(info.containerArguments)
+        try appendByteField(info.containerImageID)
+        try appendByteField(info.containerImageName)
+        append(info.containerCreatedSeconds)
+        append(info.containerCreatedNanoseconds)
+        try appendByteList(info.containerEnvironment)
+        try appendByteMap(info.containerLabels)
+        try appendByteField(info.logPath)
+        try appendByteField(info.daemonName)
+        try appendByteField(info.hostname)
     }
 }
 

@@ -201,6 +201,71 @@ func (info *dockerLogInfo) Command() string {
 	return strings.Join(terms, " ")
 }
 
+func (info *dockerLogInfo) ExtraAttributes(
+	keyModifier func(string) string,
+) (map[string]string, error) {
+	extra := make(map[string]string)
+	if labels := info.Config["labels"]; labels != "" {
+		for label := range strings.SplitSeq(labels, ",") {
+			if value, found := info.ContainerLabels[label]; found {
+				if keyModifier != nil {
+					label = keyModifier(label)
+				}
+				extra[label] = value
+			}
+		}
+	}
+	if pattern := info.Config["labels-regex"]; pattern != "" {
+		expression, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range info.ContainerLabels {
+			if expression.MatchString(key) {
+				if keyModifier != nil {
+					key = keyModifier(key)
+				}
+				extra[key] = value
+			}
+		}
+	}
+
+	environment := make(map[string]string)
+	for _, entry := range info.ContainerEnv {
+		if key, value, found := strings.Cut(entry, "="); found {
+			environment[key] = value
+		}
+	}
+	if len(environment) == 0 {
+		return extra, nil
+	}
+	if names := info.Config["env"]; names != "" {
+		for name := range strings.SplitSeq(names, ",") {
+			if value, found := environment[name]; found {
+				if keyModifier != nil {
+					name = keyModifier(name)
+				}
+				extra[name] = value
+			}
+		}
+	}
+	if pattern := info.Config["env-regex"]; pattern != "" {
+		expression, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, err
+		}
+		for key, value := range environment {
+			if expression.MatchString(key) {
+				if keyModifier != nil {
+					key = keyModifier(key)
+				}
+				extra[key] = value
+			}
+		}
+	}
+	return extra, nil
+}
+
 func (info *dockerLogInfo) ID() string {
 	return info.ContainerID[:12]
 }
