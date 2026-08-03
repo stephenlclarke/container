@@ -109,3 +109,7 @@ Results on the development MacBook Pro:
 - [ ] Cut `ContainersService` lifecycle traffic over under feature gating,
   migration, rollback, and performance evidence.
 
+The first specialized Engine adapter follow-up is signed at
+`2d7512c54cfe2fc01d506e08c0300d6f432fd437`: Docker log reads now use the
+existing Container authority and a lossless active-generation wire. Shared
+sandbox lifecycle cutover remains outstanding.

@@ -66,6 +66,11 @@ Until those pieces are complete, the legacy per-container runtime path remains
 the production lifecycle path. The new authority is not presented as full
 Docker or Compose parity by itself.
 
+The enhanced Engine logging provider is now composed separately at signed
+commit `2d7512c54cfe2fc01d506e08c0300d6f432fd437`. It reads the existing
+per-container authority and exact retained logging generation; it does not yet
+cut general container lifecycle traffic over to the shared sandbox.
+
 ## Apple-shaped boundary
 
 This is generic Container runtime composition. It contains no Docker or
@@ -77,4 +82,3 @@ the complete parity programme is finished.
 
 - `203c88b4d71d25a3ef6036035c54ca8b65f4923c` — signed implementation and
   focused tests.
-

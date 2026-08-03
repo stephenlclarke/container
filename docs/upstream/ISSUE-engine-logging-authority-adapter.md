@@ -1,0 +1,85 @@
+# Runtime gap: enhanced Engine logging authority adapter
+
+## Problem
+
+The runtime-neutral `container-engine-api` logging controller and private
+provider session existed, but the enhanced Container authority did not provide
+a production backend or register a stable provider identity. Docker Engine log
+requests therefore could not read the same catalog, resolved configuration,
+protected options, canonical stores, or active logging generation as native
+Container clients.
+
+The existing active-runtime compatibility stream also projected records onto
+the older `ContainerLogRecord` shape. That intentionally retained native API
+compatibility but lost driver attributes and converted the exact timestamp
+through `Date`, so it was not a sufficient source for Docker `logs --details`
+or nanosecond timestamp presentation.
+
+## Required behavior
+
+- Pin the runtime-neutral `container-engine-api` package at exact release
+  `0.2.2`.
+- Project `/info` logging fields, inspect `LogConfig`/`LogPath`/TTY, and
+  container logs from the existing `ContainersService` authority.
+- Requery the authority-owned driver catalog for every info request.
+- Authenticate protected logging options against the durable container-bound
+  reference before exposing the authorized Docker inspect projection.
+- Read stopped containers from the canonical driver-neutral reader and active
+  follow requests from the exact retained runtime logging generation.
+- Preserve stream identity, payload, attributes, and seconds/nanoseconds
+  without routing through the older compatibility record.
+- Bound and version the new runtime wire representation and close/cancel its
+  file descriptor deterministically.
+- Start one private provider-session server with a restart-stable state-root
+  identity and an enhanced Container authority fingerprint.
+- Advertise only complete generated Engine operations. Shared `/info` and
+  inspect routes must remain unadvertised until their non-logging fields are
+  composed; attach must remain unadvertised until replay/live handoff and
+  canonical attach/detach events are complete.
+
+## Acceptance evidence
+
+- [x] Exact `container-engine-api` 0.2.2 dependency and resolved pin.
+- [x] Authority-backed default driver and registered-driver projection.
+- [x] Authority-backed resolved inspect options, public json-file path, and TTY.
+- [x] Protected option values are authenticated at the authorized Engine
+  inspect boundary and remain absent from diagnostics and error messages.
+- [x] Static reads retain stream, payload, attributes, and nanoseconds.
+- [x] Active follow has a separate bounded `ContainerLogReadRecordWireV1`
+  runtime route and does not change the older native compatibility route.
+- [x] EOF, close, cancel, partial record, and record-size handling are bounded.
+- [x] The APIServer starts one private provider session under a stable
+  provider-owned state-root UUID.
+- [x] The provider fingerprint declares only `engine.route.ContainerLogs`.
+- [x] Focused controller/backend, protected-option, active-wire, runtime-stream,
+  and provider-session tests pass on the development MacBook Pro.
+
+## Remaining Engine logging work
+
+- Compose logging projections into the complete shared `SystemInfo` and
+  `ContainerInspect` responses, then advertise those generated operation IDs.
+- Implement atomic attach-with-logs plus live transition, stdin/TTY behavior,
+  detach keys, resize, exit status, and the canonical attach/detach event
+  journal before advertising `ContainerAttach` or `ContainerAttachWebsocket`.
+- Route direct isolated-provider `ReadLogs` sessions through the authority;
+  current non-native providers require the production provider-reader plane or
+  dual cache.
+- Complete journald, the isolated Docker logging-plugin service plane,
+  devcontainer logging handoff, shutdown/migration/security/performance
+  evidence, and external Docker CLI/Compose/Testcontainers/devcontainer
+  certification.
+- Install and supervise the common public `container-engine` executable under
+  the API-socket work package. This change owns only the enhanced private
+  provider side and does not claim `use_api_socket` closure.
+
+## Apple-shaped boundary
+
+The runtime wire and enhanced authority adapter are retained on the local
+`upstream/logging-driver-parity` branch. They include no Compose parsing and do
+not publish to Apple. The handoff is held for coordinated upstream submission
+only after the complete parity programme is finished.
+
+## Commit tracking
+
+- `2d7512c54cfe2fc01d506e08c0300d6f432fd437` — signed authority
+  backend, exact active-record wire, provider composition, and focused tests.

@@ -76,3 +76,8 @@ start through the common resolver. Production `ContainersService` traffic
 still awaits specialized controllers, scoped workload lifecycle routes, guest
 network/IPAM semantics, and controlled migration. See
 `ISSUE-engine-linux-sandbox-api-authority.md`.
+
+The enhanced Engine logging provider follow-up is retained at signed commit
+`2d7512c54cfe2fc01d506e08c0300d6f432fd437`. It uses the existing authority
+and exact active logging generation without claiming shared-sandbox lifecycle
+cutover.

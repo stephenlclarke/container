@@ -90,6 +90,8 @@ held locally until all parity development is complete.
   materialization implementation and tests.
 - `203c88b4d71d25a3ef6036035c54ca8b65f4923c` — signed API-service authority,
   ready-state recovery, and workload integrity follow-up.
+- `2d7512c54cfe2fc01d506e08c0300d6f432fd437` — signed enhanced Engine
+  logging-authority adapter and exact active-read wire follow-up.
 
 ## Validation
 
