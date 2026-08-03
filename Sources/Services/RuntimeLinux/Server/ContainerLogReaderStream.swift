@@ -21,6 +21,7 @@ import Foundation
 package enum ContainerLogReaderStreamFormat: Sendable {
     case raw
     case structuredRecords
+    case structuredReadRecordsV1
 }
 
 /// Adapts the pull-based retained reader to one XPC-transferable stream.
@@ -82,6 +83,22 @@ package enum ContainerLogReaderStream {
                             try server.write(
                                 contentsOf: Data([UInt8(ascii: "\n")])
                             )
+                        case .structuredReadRecordsV1:
+                            let encoded = try encoder.encode(
+                                ContainerLogReadRecordWireV1(record)
+                            )
+                            guard
+                                encoded.count
+                                    <= ContainerLogReadRecordWireV1
+                                    .maximumEncodedRecordBytes
+                            else {
+                                throw ContainerLogReaderStreamError
+                                    .encodedRecordTooLarge
+                            }
+                            try server.write(contentsOf: encoded)
+                            try server.write(
+                                contentsOf: Data([UInt8(ascii: "\n")])
+                            )
                         }
                     case .endOfStream:
                         return
@@ -93,6 +110,10 @@ package enum ContainerLogReaderStream {
         }
         return client
     }
+}
+
+package enum ContainerLogReaderStreamError: Error, Equatable, Sendable {
+    case encodedRecordTooLarge
 }
 
 extension ContainerLogRecord {

@@ -3208,6 +3208,121 @@ public actor ContainersService {
     }
 }
 
+extension ContainersService {
+    func engineLoggingSystemInfo() async throws -> (
+        defaultDriver: String,
+        registeredDrivers: [String]
+    ) {
+        let catalog = try await logDriverCatalogProvider.logDriverCatalog()
+        return (
+            defaultDriver: containerSystemConfig.logging.driver,
+            registeredDrivers: catalog.registeredNames
+        )
+    }
+
+    func engineLoggingInspection(
+        containerID: String
+    ) async throws -> ContainerEngineLoggingInspection {
+        let state = try _getContainerState(id: containerID)
+        let configuration = state.snapshot.configuration
+        let logging = configuration.logging
+        let driver: String
+        let options: [String: String]
+        let publicLogPath: String?
+
+        if logging.isLegacy {
+            driver = logging.effectiveDriver
+            options = [:]
+            publicLogPath = nil
+        } else {
+            guard let resolved = logging.resolved else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container logging configuration is incomplete"
+                )
+            }
+            var resolvedOptions = resolved.safeOptions
+            if let reference = resolved.protectedOptionReference {
+                let binding = try LoggingProtectedOptionsBinding(
+                    containerID: containerID,
+                    configuration: logging
+                )
+                let protectedOptions = try await loggingProtectedOptionsStore.load(
+                    reference,
+                    boundTo: binding
+                )
+                guard
+                    Set(resolvedOptions.keys).isDisjoint(
+                        with: protectedOptions.keys
+                    )
+                else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "container logging option classes overlap"
+                    )
+                }
+                resolvedOptions.merge(protectedOptions) { current, _ in current }
+            }
+            driver = resolved.driver
+            options = resolvedOptions
+            if resolved.driver == "json-file" {
+                let path = try Self.containerPath(
+                    root: containerRoot,
+                    id: containerID
+                )
+                publicLogPath =
+                    ContainerResource.Bundle(path: path)
+                    .containerJSONFileLog.path
+            } else {
+                publicLogPath = nil
+            }
+        }
+
+        return ContainerEngineLoggingInspection(
+            driver: driver,
+            options: options,
+            publicLogPath: publicLogPath,
+            terminal: configuration.initProcess.terminal
+        )
+    }
+
+    func engineLogReadSource(
+        containerID: String,
+        request: ContainerLogReadRequest
+    ) async throws -> ContainerEngineLogReadSource {
+        let state = try _getContainerState(id: containerID)
+        let configuration = state.snapshot.configuration
+        let terminal = configuration.initProcess.terminal
+        let path = try Self.containerPath(
+            root: containerRoot,
+            id: containerID
+        )
+        let bundle = ContainerResource.Bundle(path: path)
+
+        if request.follow, isLiveForLogFollow(id: containerID) {
+            do {
+                let file = try await state.getClient().followLogReadRecordsV1(
+                    request: request
+                )
+                return .activeWire(file: file, terminal: terminal)
+            } catch {
+                guard !isLiveForLogFollow(id: containerID) else {
+                    throw error
+                }
+            }
+        }
+
+        let reader = try ContainerLogNativeReaderFactory.makeReader(
+            bundle: bundle,
+            configuration: configuration,
+            request: request,
+            source: .stoppedContainer,
+            includeRotated: true
+        )
+        return .direct(reader: reader, terminal: terminal)
+    }
+}
+
 extension XPCMessage {
     func signal() throws -> String {
         guard let signal = self.string(key: .signal) else {

@@ -106,6 +106,9 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.attach.rawValue: XPCServer.route(server.attach),
                         RuntimeRoutes.followLogs.rawValue: XPCServer.route(server.followLogs),
                         RuntimeRoutes.followLogRecords.rawValue: XPCServer.route(server.followLogRecords),
+                        RuntimeRoutes.followLogReadRecordsV1.rawValue: XPCServer.route(
+                            server.followLogReadRecordsV1
+                        ),
                         RuntimeRoutes.dial.rawValue: XPCServer.route(server.dial),
                         RuntimeRoutes.shutdown.rawValue: XPCServer.route(server.shutdown),
                         RuntimeRoutes.statistics.rawValue: XPCServer.route(server.statistics),

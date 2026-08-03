@@ -15,6 +15,10 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerAPIClient
+import ContainerEngineLogging
+import ContainerEngineProviderSession
+import ContainerEngineRuntimeSPI
+import ContainerEngineWire
 import ContainerPersistence
 import ContainerResource
 import ContainerXPC
@@ -408,6 +412,197 @@ struct ContainerLogsTests {
                     - records[0].timestamp.timeIntervalSince1970
             ) < 0.001
         )
+    }
+
+    @Test func engineLoggingBackendUsesAuthoritativeInspectionAndExactReader() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent("container-engine-log-read-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let id = "engine-log-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(
+            path: containerRoot.appendingPathComponent(id)
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.containerLoggingV2,
+            withIntermediateDirectories: true
+        )
+        for directory in [tempURL, containerRoot, bundle.path, bundle.containerLoggingV2] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: directory.path
+            )
+        }
+        var configuration = testConfiguration(id: id)
+        configuration.logging = try version2JSONFileConfiguration(
+            safeOptions: ["max-file": "1"]
+        )
+        try bundle.set(configuration: configuration)
+
+        let timestamp = try ContainerLogTimestamp(
+            secondsSinceUnixEpoch: 1_767_323_045,
+            nanoseconds: 123_456_789
+        )
+        let store = try DockerJSONFileLogStore(
+            directoryURL: bundle.containerJSONFileLogDirectory,
+            activeFileName: ContainerResource.Bundle.jsonFileLogName,
+            configuration: DockerJSONFileLogConfiguration()
+        )
+        try store.write(
+            ContainerLogRecordV2(
+                stream: .stderr,
+                observation: ContainerLogObservation(
+                    wallClock: timestamp,
+                    monotonicInstant: ContinuousClock().now
+                ),
+                payload: Data("exact-engine-record".utf8),
+                partial: nil,
+                sequence: 1,
+                attributes: ["compose.service": "web"],
+                processGeneration: 1
+            )
+        )
+        try store.close()
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-log-read-test"
+        )
+        let backend = ContainerDockerLoggingBackend(containers: containers)
+        let info = try await backend.loggingSystemInfo()
+        #expect(info.defaultDriver == "json-file")
+        #expect(info.registeredDrivers.contains("json-file"))
+        #expect(info.registeredDrivers.contains("local"))
+
+        let inspection = try await backend.inspectContainerLogging(
+            containerID: id
+        )
+        #expect(inspection.configuration.driver == "json-file")
+        #expect(inspection.configuration.options == ["max-file": "1"])
+        #expect(inspection.publicLogPath == bundle.containerJSONFileLog.path)
+        #expect(!inspection.terminal)
+
+        let reader = try await backend.openContainerLogs(
+            containerID: id,
+            request: DockerLogReadRequest(
+                stdout: true,
+                stderr: true,
+                follow: false,
+                tail: nil,
+                since: nil,
+                until: nil,
+                timestamps: true,
+                details: true
+            )
+        )
+        let record = try #require(try await reader.nextRecord())
+        #expect(record.source == .standardError)
+        #expect(record.timestamp.secondsSinceUnixEpoch == timestamp.secondsSinceUnixEpoch)
+        #expect(record.timestamp.nanoseconds == timestamp.nanoseconds)
+        #expect(record.line == Data("exact-engine-record\n".utf8))
+        #expect(record.attributes == ["compose.service": "web"])
+        #expect(try await reader.nextRecord() == nil)
+        await reader.close()
+
+        let declaration = try ContainerEngineProviderDeclaration(
+            profile: .enhanced,
+            kind: .containerAuthority,
+            implementationVersion: "test",
+            runtimeRevisions: ["container": "test"],
+            stateSchemaVersion: 1,
+            capabilities: [
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerLogs",
+                    status: .native
+                )
+            ]
+        )
+        let controller = try DockerLoggingAPIController(backend: backend)
+        let providerRoot = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "ce-provider-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: providerRoot,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        defer { try? FileManager.default.removeItem(at: providerRoot) }
+        let provider = try ContainerEngineProviderSessionServer(
+            responder: controller,
+            socketPath: providerRoot.appendingPathComponent("provider.sock").path,
+            declaration: declaration,
+            stateRootUUID: try #require(
+                UUID(uuidString: "41A36BAF-17E0-4CA8-882D-F9E31D754EF4")
+            )
+        )
+        try provider.start()
+        do {
+            let client = ContainerEngineProviderSessionClient(
+                socketPath: provider.socketPath,
+                expectedFingerprint: provider.fingerprint
+            )
+            let response = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target:
+                        "/v1.53/containers/\(id)/logs?stdout=1&stderr=1&timestamps=1&details=1"
+                )
+            )
+            #expect(response.status == 200)
+            if case .managedStream(let session) = response.body {
+                let chunk = try #require(try await session.nextChunk())
+                #expect(chunk.range(of: Data("exact-engine-record\n".utf8)) != nil)
+                #expect(chunk.range(of: Data("compose.project".utf8)) == nil)
+                #expect(chunk.range(of: Data("compose.service=web".utf8)) != nil)
+                #expect(try await session.nextChunk() == nil)
+            } else {
+                Issue.record("expected managed Engine log stream")
+            }
+            await provider.shutdown()
+        } catch {
+            await provider.shutdown()
+            throw error
+        }
+    }
+
+    @Test func engineActiveWireReaderPreservesExactRecordAndTerminalMode() async throws {
+        let source = try ContainerLogReadRecordV1(
+            stream: .stdout,
+            timestamp: ContainerLogTimestamp(
+                secondsSinceUnixEpoch: 1_767_323_045,
+                nanoseconds: 987_654_321
+            ),
+            data: Data("active-wire\n".utf8),
+            attributes: ["compose.project": "example"],
+            sequence: 41,
+            processGeneration: 7
+        )
+        var encoded = try JSONEncoder().encode(
+            ContainerLogReadRecordWireV1(source)
+        )
+        encoded.append(UInt8(ascii: "\n"))
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: encoded)
+        try pipe.fileHandleForWriting.close()
+
+        let reader = WireDockerLogReadSession(
+            file: pipe.fileHandleForReading,
+            terminal: true
+        )
+        #expect(reader.terminal)
+        let record = try #require(try await reader.nextRecord())
+        #expect(record.source == .standardOutput)
+        #expect(
+            record.timestamp.secondsSinceUnixEpoch
+                == source.timestamp.secondsSinceUnixEpoch
+        )
+        #expect(record.timestamp.nanoseconds == source.timestamp.nanoseconds)
+        #expect(record.line == source.data)
+        #expect(record.attributes == source.attributes)
+        #expect(try await reader.nextRecord() == nil)
     }
 
     @Test func staticLogReplayAppliesTailAfterCombiningRotatedFiles() async throws {
@@ -921,15 +1116,21 @@ struct ContainerLogsTests {
         return ContainerConfiguration(id: id, image: image, process: process)
     }
 
-    private func version2JSONFileConfiguration() throws -> ContainerLogConfiguration {
+    private func version2JSONFileConfiguration(
+        safeOptions: [String: String] = [:]
+    ) throws -> ContainerLogConfiguration {
         let descriptor = try #require(
             BuiltinLogDriverDescriptors.current.descriptor(named: "json-file")
         )
         return try ContainerLogConfiguration(
-            requested: ContainerLogRequest(driver: "json-file"),
+            requested: ContainerLogRequest(
+                driver: "json-file",
+                options: safeOptions
+            ),
             resolved: ResolvedContainerLogConfiguration(
                 leaseGeneration: 1,
                 driver: "json-file",
+                safeOptions: safeOptions,
                 delivery: LogDeliveryConfiguration(),
                 readPolicy: LogReadPolicy(source: .direct),
                 providerIdentity: descriptor.providerIdentity,

@@ -77,6 +77,8 @@ public enum RuntimeRoutes: String {
     case followLogs = "com.apple.container.runtime/followLogs"
     /// Follow structured records from the retained active logging generation.
     case followLogRecords = "com.apple.container.runtime/followLogRecords"
+    /// Follow exact versioned read records from the active logging generation.
+    case followLogReadRecordsV1 = "com.apple.container.runtime/followLogReadRecordsV1"
 
     // MARK: - File Management
     /// Copy a file or directory into the container.

@@ -215,6 +215,19 @@ extension RuntimeClient {
         )
     }
 
+    /// Follow exact, versioned read records from the runtime's retained active
+    /// logging generation. The file contains newline-delimited
+    /// ``ContainerLogReadRecordWireV1`` values.
+    public func followLogReadRecordsV1(
+        request logReadRequest: ContainerLogReadRequest
+    ) async throws -> FileHandle {
+        try await followLogStream(
+            route: .followLogReadRecordsV1,
+            request: logReadRequest,
+            description: "lossless log records"
+        )
+    }
+
     private func followLogStream(
         route: RuntimeRoutes,
         request logReadRequest: ContainerLogReadRequest,

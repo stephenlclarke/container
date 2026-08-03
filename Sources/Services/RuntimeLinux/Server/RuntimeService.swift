@@ -470,6 +470,15 @@ public actor RuntimeService {
         try openLogStream(message, format: .structuredRecords)
     }
 
+    /// Opens a newline-delimited, lossless read-record stream from the exact
+    /// active logging generation for authority-owned Engine presentation.
+    @Sendable
+    public func followLogReadRecordsV1(
+        _ message: XPCMessage
+    ) async throws -> XPCMessage {
+        try openLogStream(message, format: .structuredReadRecordsV1)
+    }
+
     private func openLogStream(
         _ message: XPCMessage,
         format: ContainerLogReaderStreamFormat

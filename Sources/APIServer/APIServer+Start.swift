@@ -18,10 +18,14 @@ import ArgumentParser
 import ContainerAPIClient
 import ContainerAPIService
 import ContainerAWSLogsSDKAdapter
+import ContainerEngineLogging
+import ContainerEngineProviderSession
+import ContainerEngineRuntimeSPI
 import ContainerLog
 import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
+import ContainerVersion
 import ContainerXPC
 import ContainerizationExtras
 import DNSServer
@@ -73,6 +77,12 @@ extension APIServer {
                     log: log,
                     routes: &routes
                 )
+                let engineLoggingProvider = try initializeEngineLoggingProvider(
+                    appRoot: appRootURL,
+                    containersService: containersService,
+                    log: log
+                )
+                try engineLoggingProvider.start()
                 let networkService = try await initializeNetworksService(
                     pluginLoader: pluginLoader,
                     containersService: containersService,
@@ -100,6 +110,17 @@ extension APIServer {
                         }), log: log)
 
                 await withTaskGroup(of: Result<Void, Error>.self) { group in
+                    group.addTask {
+                        await withTaskCancellationHandler {
+                            await engineLoggingProvider.wait()
+                        } onCancel: {
+                            Task {
+                                await engineLoggingProvider.shutdown()
+                            }
+                        }
+                        return .success(())
+                    }
+
                     group.addTask {
                         log.info("starting XPC server")
                         do {
@@ -175,6 +196,60 @@ extension APIServer {
                     ])
                 APIServer.exit(withError: error)
             }
+        }
+
+        private func initializeEngineLoggingProvider(
+            appRoot: URL,
+            containersService: ContainersService,
+            log: Logger
+        ) throws -> ContainerEngineProviderSessionServer {
+            let stateRoot = appRoot.appendingPathComponent(
+                "engine-provider",
+                isDirectory: true
+            )
+            let stateRootUUID = try ContainerEngineStateRootIdentityStore(
+                path: stateRoot.appendingPathComponent("state-root-id")
+            ).loadOrCreate()
+            let capability = try ContainerEngineProviderCapability(
+                identifier: "engine.route.ContainerLogs",
+                status: .native
+            )
+            let declaration = try ContainerEngineProviderDeclaration(
+                profile: .enhanced,
+                kind: .containerAuthority,
+                implementationVersion: ReleaseVersion.version(),
+                runtimeRevisions: [
+                    "container": ReleaseVersion.gitCommit()
+                        ?? ReleaseVersion.version(),
+                    "container-engine-api": "0.2.2",
+                    "containerization": ReleaseVersion.containerizationRef(),
+                ],
+                stateSchemaVersion: 1,
+                capabilities: [capability]
+            )
+            let controller = try DockerLoggingAPIController(
+                backend: ContainerDockerLoggingBackend(
+                    containers: containersService
+                )
+            )
+            let socketPath =
+                stateRoot
+                .appendingPathComponent("provider.sock")
+                .path
+            let provider = try ContainerEngineProviderSessionServer(
+                responder: controller,
+                socketPath: socketPath,
+                declaration: declaration,
+                stateRootUUID: stateRootUUID
+            )
+            log.info(
+                "configured enhanced Engine logging provider",
+                metadata: [
+                    "fingerprint": "\(provider.fingerprint.digest)",
+                    "socket": "\(socketPath)",
+                ]
+            )
+            return provider
         }
 
         private func initializePluginLoader(log: Logger) throws -> PluginLoader {

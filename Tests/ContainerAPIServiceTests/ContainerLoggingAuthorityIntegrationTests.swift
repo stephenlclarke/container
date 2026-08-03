@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerEngineLogging
 import ContainerLoggingProviders
 import ContainerPersistence
 import ContainerResource
@@ -30,6 +31,64 @@ import Testing
 @testable import ContainerPlugin
 
 struct ContainerLoggingAuthorityIntegrationTests {
+    @Test func engineInspectAuthenticatesProtectedOptionsAtAuthorityBoundary() async throws {
+        try await withTemporaryRoot { root in
+            let id = "engine-protected-inspect"
+            let token = "DO_NOT_EXPOSE_SPLUNK_TOKEN"
+            let descriptor = SplunkLogDriverContract.descriptor()
+            let catalog = try LogDriverCatalog(
+                descriptors: BuiltinLogDriverDescriptors.current.descriptors + [
+                    descriptor
+                ]
+            )
+            let catalogProvider = StaticLogDriverCatalogProvider(catalog: catalog)
+            let sealingService = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: catalogProvider
+            )
+            let plan = try await sealingService.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(
+                    driver: "splunk",
+                    options: [
+                        "splunk-token": token,
+                        "splunk-url": "https://splunk.example.test:8088",
+                        "splunk-verify-connection": "false",
+                    ]
+                )
+            )
+            let sealed = try await sealingService.sealLoggingForCreate(
+                containerID: id,
+                plan: plan
+            )
+            _ = try persistConfiguration(
+                appRoot: root,
+                id: id,
+                logging: sealed.configuration
+            )
+
+            let authoritativeService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                logDriverCatalogProvider: catalogProvider
+            )
+            let backend = ContainerDockerLoggingBackend(
+                containers: authoritativeService
+            )
+            let inspection = try await backend.inspectContainerLogging(
+                containerID: id
+            )
+            #expect(inspection.configuration.driver == "splunk")
+            #expect(inspection.configuration.options["splunk-token"] == token)
+            #expect(
+                inspection.configuration.options["splunk-url"]
+                    == "https://splunk.example.test:8088"
+            )
+            #expect(inspection.publicLogPath == nil)
+        }
+    }
+
     @Test func splunkCreateSealsTokenAndPinsProviderContract() async throws {
         try await withTemporaryRoot { root in
             let token = "DO_NOT_EXPOSE_SPLUNK_TOKEN"

@@ -33,6 +33,7 @@ struct ContainerLogReaderStreamTests {
                     nanoseconds: 123_456_789
                 ),
                 data: Data("stdout\n".utf8),
+                attributes: ["compose.service": "web"],
                 sequence: 1,
                 processGeneration: 4
             ),
@@ -82,6 +83,23 @@ struct ContainerLogReaderStreamTests {
                     - 1_767_323_045.123_456_7
             ) < 0.001
         )
+
+        let losslessHandle = try ContainerLogReaderStream.open(
+            reader: ContainerLogBufferedReader(records: records),
+            format: .structuredReadRecordsV1
+        )
+        defer { try? losslessHandle.close() }
+        let losslessData = try #require(try losslessHandle.readToEnd())
+        let losslessRecords =
+            try losslessData
+            .split(separator: UInt8(ascii: "\n"))
+            .map {
+                try JSONDecoder().decode(
+                    ContainerLogReadRecordWireV1.self,
+                    from: Data($0)
+                ).record()
+            }
+        #expect(losslessRecords == records)
     }
 
     @Test
