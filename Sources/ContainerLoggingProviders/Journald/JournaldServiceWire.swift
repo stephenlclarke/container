@@ -29,6 +29,7 @@ public enum JournaldServiceWireError: Error, Equatable, Sendable {
     case disconnected
     case deadlineExceeded
     case responseMismatch
+    case invalidReplayLimits
 }
 
 public enum JournaldServiceWireOperationV1: String, Codable, Sendable {
