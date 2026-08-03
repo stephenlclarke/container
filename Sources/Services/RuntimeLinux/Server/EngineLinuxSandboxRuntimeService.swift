@@ -355,7 +355,11 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             let loadedRuntimeConfiguration = try RuntimeConfiguration.readRuntimeConfiguration(
                 from: request.workloadRoot
             )
+            let observedConfigurationDigest =
+                try EngineLinuxSandboxWorkloadIntegrityV1
+                .configurationDigest(loadedRuntimeConfiguration)
             guard
+                observedConfigurationDigest == request.workloadConfigurationDigest,
                 loadedRuntimeConfiguration.path.resolvingSymlinksInPath().standardizedFileURL.path
                     == request.workloadRoot.resolvingSymlinksInPath().standardizedFileURL.path,
                 let loadedContainerConfiguration = loadedRuntimeConfiguration.containerConfiguration,
@@ -599,6 +603,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             context.requestDigest.utf8.count <= digestLimit,
             request.workloadRoot.isFileURL,
             request.workloadRoot.path.utf8.count <= 4096,
+            !request.workloadConfigurationDigest.isEmpty,
+            request.workloadConfigurationDigest.utf8.count <= digestLimit,
             request.dynamicEnvironment.count <= 1024
         else {
             throw ContainerizationError(

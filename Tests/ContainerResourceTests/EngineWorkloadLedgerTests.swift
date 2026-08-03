@@ -289,6 +289,14 @@ struct EngineWorkloadLedgerTests {
         #expect(ready.runtimeFingerprint == "runtime:test")
         #expect(await runtime.bootCallCount() == 1)
 
+        let observedReady = try await manager.ensureReady(
+            idempotencyKey: "boot-1",
+            requestDigest: "sha256:boot",
+            effectID: "effect-boot-1"
+        )
+        #expect(observedReady == ready)
+        #expect(await runtime.observeBootCallCount() == 2)
+
         let absent = try await manager.shutdownIfIdle(
             idempotencyKey: "stop-sandbox-1",
             requestDigest: "sha256:stop-sandbox",
@@ -320,6 +328,37 @@ struct EngineWorkloadLedgerTests {
             )
         }
         #expect(await runtime.shutdownCallCount() == 1)
+    }
+
+    @Test func managerFencesReadyLedgerWhenRuntimeIdentityDisappears() async throws {
+        let ledger = try await readyLedger()
+        let runtime = TestSandboxRuntime(failFirstBootResponse: false)
+        await runtime.seedBootReceipt(
+            .init(
+                sandboxID: "sandbox-1",
+                generation: 1,
+                effectID: "effect-boot-1",
+                requestDigest: "sha256:boot",
+                runtimeFingerprint: "runtime:test"
+            )
+        )
+        let manager = EngineLinuxSandboxManagerV1(ledger: ledger, runtime: runtime)
+
+        _ = try await manager.ensureReady(
+            idempotencyKey: "boot-1",
+            requestDigest: "sha256:boot",
+            effectID: "effect-boot-1"
+        )
+        await runtime.loseSandbox()
+
+        await #expect(throws: EngineLinuxSandboxManagerError.recoveryRequired) {
+            _ = try await manager.ensureReady(
+                idempotencyKey: "boot-1",
+                requestDigest: "sha256:boot",
+                effectID: "effect-boot-1"
+            )
+        }
+        #expect(await ledger.snapshot().sandbox.state == .recoveryRequired)
     }
 
     private func readyLedger(
@@ -396,6 +435,7 @@ private actor TestSandboxRuntime: EngineLinuxSandboxRuntimeV1 {
 
     private var bootCalls = 0
     private var shutdownCalls = 0
+    private var observeBootCalls = 0
     private var failFirstBootResponse: Bool
     private var bootReceipt: EngineLinuxSandboxBootReceiptV1?
 
@@ -423,6 +463,7 @@ private actor TestSandboxRuntime: EngineLinuxSandboxRuntimeV1 {
     func observeBoot(
         _ request: EngineLinuxSandboxBootRequestV1
     ) -> EngineLinuxSandboxBootObservationV1 {
+        observeBootCalls += 1
         guard let bootReceipt else { return .absent }
         return .ready(bootReceipt)
     }
@@ -462,5 +503,17 @@ private actor TestSandboxRuntime: EngineLinuxSandboxRuntimeV1 {
 
     func shutdownCallCount() -> Int {
         shutdownCalls
+    }
+
+    func observeBootCallCount() -> Int {
+        observeBootCalls
+    }
+
+    func seedBootReceipt(_ receipt: EngineLinuxSandboxBootReceiptV1) {
+        bootReceipt = receipt
+    }
+
+    func loseSandbox() {
+        bootReceipt = nil
     }
 }

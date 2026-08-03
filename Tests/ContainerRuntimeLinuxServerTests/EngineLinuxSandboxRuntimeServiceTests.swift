@@ -85,7 +85,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         _ = try await service.boot(bootRequest())
         let fixture = try WorkloadBundleFixture()
         defer { fixture.remove() }
-        let request = workloadRequest(root: fixture.root)
+        let request = try workloadRequest(root: fixture.root)
 
         let receipt = try await service.startWorkload(request, stdio: [])
         #expect(receipt.containerID == request.context.containerID)
@@ -95,6 +95,23 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         #expect(await sandbox.addCount == 1)
         #expect(await sandbox.startCount == 1)
         #expect(await sandbox.configuredArguments == ["/bin/sh", "-c", "echo ready"])
+    }
+
+    @Test
+    func changedWorkloadBundleIsRejectedBeforeMaterialization() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let request = try workloadRequest(root: fixture.root)
+        try fixture.replaceCommand("echo ready", with: "echo changed")
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.startWorkload(request, stdio: [])
+        }
+        #expect(await sandbox.addCount == 0)
+        #expect(await sandbox.startCount == 0)
     }
 
     @Test
@@ -114,8 +131,9 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             requestDigest: "shutdown-digest"
         )
         let shutdown = EngineLinuxSandboxShutdownObservationV1.absent(shutdownReceipt)
-        let workloadRequest = workloadRequest(
-            root: URL(fileURLWithPath: "/tmp/engine-workload")
+        let workloadRequest = try workloadRequest(
+            root: URL(fileURLWithPath: "/tmp/engine-workload"),
+            configurationDigest: "sha256:workload"
         )
         let workloadObservation = WorkloadProcessObservationV1.started(
             WorkloadProcessReceiptV1(
@@ -183,8 +201,14 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         )
     }
 
-    private func workloadRequest(root: URL) -> EngineLinuxSandboxWorkloadStartRequestV1 {
-        .init(
+    private func workloadRequest(
+        root: URL,
+        configurationDigest: String? = nil
+    ) throws -> EngineLinuxSandboxWorkloadStartRequestV1 {
+        let digest =
+            try configurationDigest
+            ?? EngineLinuxSandboxWorkloadIntegrityV1.configurationDigest(at: root)
+        return .init(
             context: WorkloadStartContextV1(
                 containerID: "workload-1",
                 operationGeneration: 2,
@@ -193,6 +217,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 requestDigest: "workload-digest"
             ),
             workloadRoot: root,
+            workloadConfigurationDigest: digest,
             dynamicEnvironment: ["BUILD_ID": "42"]
         )
     }
@@ -309,5 +334,18 @@ private struct WorkloadBundleFixture {
 
     func remove() {
         try? FileManager.default.removeItem(at: root)
+    }
+
+    func replaceCommand(_ oldValue: String, with newValue: String) throws {
+        let configurationURL = root.appendingPathComponent("runtime-configuration.json")
+        let data = try Data(contentsOf: configurationURL)
+        guard let value = String(data: data, encoding: .utf8), value.contains(oldValue) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "test runtime configuration did not contain the expected command"
+            )
+        }
+        try Data(value.replacingOccurrences(of: oldValue, with: newValue).utf8)
+            .write(to: configurationURL)
     }
 }

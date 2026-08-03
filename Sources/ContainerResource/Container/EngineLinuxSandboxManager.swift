@@ -165,10 +165,27 @@ public actor EngineLinuxSandboxManagerV1 {
             isNew = false
         }
 
-        if record.state == .ready {
-            return record
-        }
         let request = try bootRequest(from: record)
+        if record.state == .ready {
+            do {
+                guard case .ready(let receipt) = try await runtime.observeBoot(request),
+                    receipt.sandboxID == request.sandboxID,
+                    receipt.generation == request.generation,
+                    receipt.effectID == request.effectID,
+                    receipt.requestDigest == request.requestDigest,
+                    receipt.runtimeFingerprint == record.runtimeFingerprint
+                else {
+                    try await markRecovery("ready sandbox runtime identity is missing or mismatched")
+                    throw EngineLinuxSandboxManagerError.recoveryRequired
+                }
+                return record
+            } catch let error as EngineLinuxSandboxManagerError {
+                throw error
+            } catch {
+                try await markRecovery("ready sandbox observation is inconclusive")
+                throw EngineLinuxSandboxManagerError.recoveryRequired
+            }
+        }
         if isNew {
             let receipt: EngineLinuxSandboxBootReceiptV1
             do {
@@ -252,7 +269,7 @@ public actor EngineLinuxSandboxManagerV1 {
     }
 
     private func bootRequest(from record: EngineLinuxSandboxRecordV1) throws -> EngineLinuxSandboxBootRequestV1 {
-        guard record.state == .booting || record.state == .recoveryRequired,
+        guard record.state == .booting || record.state == .ready || record.state == .recoveryRequired,
             let idempotencyKey = record.idempotencyKey,
             let requestDigest = record.requestDigest,
             let effectID = record.effectID

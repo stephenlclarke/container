@@ -19,6 +19,10 @@ import ContainerXPC
 import ContainerizationError
 import Foundation
 
+public protocol EngineLinuxSandboxRuntimeClientV1: EngineLinuxSandboxRuntimeV1,
+    EngineLinuxSandboxWorkloadRuntimeV1
+{}
+
 extension RuntimeClient: EngineLinuxSandboxRuntimeV1 {
     public func boot(
         _ request: EngineLinuxSandboxBootRequestV1
@@ -66,6 +70,8 @@ extension RuntimeClient: EngineLinuxSandboxWorkloadRuntimeV1 {
         )
     }
 }
+
+extension RuntimeClient: EngineLinuxSandboxRuntimeClientV1 {}
 
 extension RuntimeClient {
 

@@ -206,7 +206,8 @@ public struct EngineLinuxSandboxRecordV1: Codable, Equatable, Sendable {
                 runtimeFingerprint == nil, recoveryReason == nil
             else { throw EngineWorkloadLedgerError.corruptSnapshot("incomplete sandbox operation") }
         case .ready:
-            guard generation > 0, operationKind == .boot, requestDigest != nil, effectID != nil, runtimeFingerprint != nil,
+            guard generation > 0, operationKind == .boot, idempotencyKey != nil,
+                requestDigest != nil, effectID != nil, runtimeFingerprint != nil,
                 recoveryReason == nil
             else { throw EngineWorkloadLedgerError.corruptSnapshot("incomplete ready sandbox") }
         case .recoveryRequired:
