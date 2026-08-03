@@ -25,10 +25,10 @@
 
 `EngineLinuxSandboxAuthorityV1` is the only composition point for the shared
 helper. It opens the workload ledger, owns a common runtime client satisfying
-both sandbox and workload protocols, constructs the sandbox manager and plan
-resolver, and serializes launch/start/shutdown decisions. The production
-launcher accepts only `container-runtime-linux`, writes its bounded private
-configuration, and registers the stable helper instance with the
+the sandbox, workload, and protected-service protocols, constructs the sandbox
+manager and plan resolver, and serializes launch/start/shutdown decisions. The
+production launcher accepts only `container-runtime-linux`, writes its bounded
+private configuration, and registers the stable helper instance with the
 `shared-sandbox` command.
 
 The authority derives deterministic boot, stop, and workload request
@@ -50,6 +50,11 @@ same value they subsequently use; the helper rejects a mismatch before adding
 or starting a workload. This closes both post-reservation mutation and
 double-read time-of-check/time-of-use gaps.
 
+Protected service dials first reconcile the same durable ready record, then
+send the exact sandbox ID and generation to the runtime helper. The helper
+checks its live snapshot and boot receipt independently before returning an XPC
+file descriptor, and excludes shutdown while a dial is in flight.
+
 ## Code map
 
 - `Sources/Services/ContainerAPIService/Server/Containers/EngineLinuxSandboxAuthority.swift`
@@ -57,7 +62,9 @@ double-read time-of-check/time-of-use gaps.
 - `Sources/ContainerResource/Container/EngineLinuxSandboxManager.swift` and
   `EngineWorkloadLedger.swift` enforce ready-state reconciliation evidence.
 - `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxRuntimeClient.swift`
-  exposes the common sandbox/workload client contract.
+  exposes the common sandbox/workload/service client contract.
+- `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxServiceRuntime.swift`
+  defines the generic exact-generation service dial.
 - `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxWorkloadRuntime.swift`
   carries and derives workload-configuration integrity evidence.
 - `Sources/Services/RuntimeLinux/Server/EngineLinuxSandboxRuntimeService.swift`
@@ -94,6 +101,9 @@ Results on the development MacBook Pro:
 - formatting, licence, and whitespace gates passed;
 - implementation commit
   `203c88b4d71d25a3ef6036035c54ca8b65f4923c` is signed.
+- protected-service transport commit
+  `20071d97d10b386c2a24c84c51bca0e37c0280aa` is signed; its combined runtime
+  and authority run passed 8 tests in 2 suites.
 
 ## Deliberate boundaries and review checklist
 
@@ -104,6 +114,8 @@ Results on the development MacBook Pro:
 - [x] The authority accepts specialized controllers without owning their
   policy.
 - [x] No Docker-specific behavior enters this generic layer.
+- [x] Service connections are double-fenced by durable authority state and the
+  helper's live exact-generation receipt.
 - [ ] Add scoped exec/attach/wait/stats/copy/stop/remove helper routes.
 - [ ] Implement production effect controllers and guest network/IPAM broker.
 - [ ] Cut `ContainersService` lifecycle traffic over under feature gating,

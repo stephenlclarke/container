@@ -36,13 +36,17 @@ catalog descriptor and no false compatibility claim.
   provider lifecycles.
 - Define the narrow signed Linux-service boundary for generation discovery,
   writer open/write/flush/close, and reader open.
+- Add the generic shared-sandbox XPC/vsock dial used to reach a protected
+  service only after independently checking the exact durable generation in
+  the API authority and runtime helper.
 - Register configuration and the provider in the built-in authority plane only
   when a concrete service is supplied.
 
 ## Required follow-up before support can be claimed
 
-- Implement and package the signed Linux journald workload and systemd journal
-  adapter.
+- Implement and package the signed Linux journald workload, bounded
+  journald-specific wire protocol, and systemd journal adapter on the completed
+  shared-sandbox dial.
 - Persist writer identity/epoch state and reconcile service or authority crash,
   response loss, and sandbox replacement.
 - Implement journal query ordering and Docker filters for stdout/stderr,
@@ -64,6 +68,9 @@ catalog descriptor and no false compatibility claim.
   stores typed bindings and conditionally installs the provider.
 - `Sources/Services/ContainerAPIService/Server/Containers/AuthorityRemoteLogDriverPlane.swift`
   resolves the exact configuration and selected sandbox generation.
+- `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxServiceRuntime.swift`
+  and `EngineLinuxSandboxRuntimeClient.swift` provide the generation-fenced
+  XPC/vsock connection to a protected service.
 - `Tests/ContainerLoggingProvidersTests/JournaldProviderTests.swift` covers the
   pinned codec and lifecycle contract.
 
@@ -87,6 +94,8 @@ Current development MacBook Pro evidence:
 - formatting, licence, and whitespace gates passed;
 - signed implementation commit:
   `887848ed719a05836d2f846b69a22749e61f2f62`.
+- signed shared-service transport commit:
+  `20071d97d10b386c2a24c84c51bca0e37c0280aa`.
 
 The warnings-as-errors build used the local signed Containerization
 shared-sandbox worktree because the coordinated Containerization upstream wave
@@ -99,6 +108,8 @@ published dependency pin remains unchanged.
 - [x] Writer and reader lifecycles are idempotent and generation-fenced.
 - [x] Journald is absent from the catalog without a concrete service.
 - [x] The production API server does not advertise an unavailable driver.
+- [x] The protected service connection is generation-fenced in both the API
+  authority and runtime helper.
 - [ ] Add the signed Linux service and persistent journal adapter.
 - [ ] Complete production reader routing, recovery, and supervision.
 - [ ] Add real-systemd compatibility and performance evidence.

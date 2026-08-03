@@ -25,6 +25,8 @@ Without a shared runtime boundary:
 - Expose typed XPC operations for exact sandbox boot, boot observation,
   shutdown, shutdown observation, workload start, and workload-start
   observation.
+- Expose a generic, exact-generation service dial that transfers only a
+  connected vsock file descriptor to the authority.
 - Consult authoritative Containerization snapshots before every decision.
 - Coalesce identical in-flight operations and reject conflicting operations.
 - Fence running or prepared state that has no matching request and receipt.
@@ -65,6 +67,8 @@ ready.
   rejects post-reservation mutation.
 - [x] Workload configuration maps to the independent `LinuxPod` surface.
 - [x] Focused runtime and wire-format tests pass.
+- [x] Protected service dials fail closed before boot and for a stale sandbox
+  generation, and shutdown cannot overlap dial establishment.
 - [x] The full macOS unit corpus passes under warnings-as-errors; the release
   provenance suite also passes with an identity-preserving local mirror.
 
@@ -81,3 +85,8 @@ The enhanced Engine logging provider follow-up is retained at signed commit
 `2d7512c54cfe2fc01d506e08c0300d6f432fd437`. It uses the existing authority
 and exact active logging generation without claiming shared-sandbox lifecycle
 cutover.
+
+The reusable protected-service transport is retained at signed commit
+`20071d97d10b386c2a24c84c51bca0e37c0280aa`. It closes the macOS authority to
+shared-VM connection gap, but does not by itself install or advertise a
+journald or logging-plugin worker.

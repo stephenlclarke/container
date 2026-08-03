@@ -34,10 +34,12 @@ Expected behavior:
 
 The provider contract, exact Moby field/configuration codec, lifecycle fencing,
 native-reader boundary, optional catalog registration, authority configuration,
-and focused tests are implemented locally. The provider is intentionally not
-advertised by the production API server because the protected Linux workload,
-system-journal persistence/query adapter, supervision, and recovery path remain
-to be implemented.
+and focused tests are implemented locally. The shared Linux sandbox now also
+has an exact-generation XPC/vsock file-descriptor transport for protected
+services. The provider is intentionally not advertised by the production API
+server because the protected Linux workload, journald-specific bounded wire
+protocol, system-journal persistence/query adapter, supervision, and recovery
+path remain to be implemented.
 
 ## Scope and non-goals
 

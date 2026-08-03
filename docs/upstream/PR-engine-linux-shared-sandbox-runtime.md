@@ -6,6 +6,8 @@
   Containerization's multi-workload `LinuxPod`.
 - Add exact typed XPC requests, receipts, and observations for sandbox and
   workload-start operations.
+- Add a generation-fenced XPC/FD route for authority-owned protected service
+  connections over the shared VM's vsock device.
 - Materialize sealed workload bundles into the shared VM with independent
   namespace, resource, mount, socket, network, process, and logging settings.
 
@@ -41,6 +43,11 @@ Sandbox boot/shutdown cannot race workload materialization. Successful
 shutdown closes retained log captures and clears resident receipts. Stopped
 workloads can be removed and rematerialized under a later exact process
 generation; running or prepared workloads with a mismatched intent are fenced.
+Protected service dials name the exact sandbox ID and durable generation, check
+the live snapshot and retained boot receipt in the helper, and transfer only the
+connected file descriptor. Shutdown cannot overlap an in-flight dial. A stale
+authority therefore cannot reconnect a journald, logging-plugin, volume, or API
+service after sandbox replacement.
 
 ## Code map
 
@@ -48,6 +55,8 @@ generation; running or prepared workloads with a mismatched intent are fenced.
   contains the private durable launch configuration.
 - `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxRuntimeClient.swift`
   contains the typed XPC client and wire helpers.
+- `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxServiceRuntime.swift`
+  contains the generic protected-service dial identity and runtime boundary.
 - `Sources/Services/Runtime/RuntimeClient/EngineLinuxSandboxWorkloadRuntime.swift`
   binds a sealed workload intent to `WorkloadProcessStarterV1`.
 - `Sources/Services/RuntimeLinux/Server/EngineLinuxSandboxRuntimeService.swift`
@@ -78,8 +87,8 @@ metadata is not part of this change.
   remain specialized transaction controllers.
 - GPU workloads are rejected until the shared sandbox launch configuration can
   provide a real graphics device; the mapper does not silently accept them.
-- `ContainersService` cutover and shared-helper launch supervision are the next
-  integration slice.
+- `ContainersService` cutover, service workload packaging, and
+  provider-specific bounded protocols remain integration work.
 
 No Apple issue, branch, pull request, or push has been created. This handoff is
 held locally until all parity development is complete.
@@ -92,6 +101,8 @@ held locally until all parity development is complete.
   ready-state recovery, and workload integrity follow-up.
 - `2d7512c54cfe2fc01d506e08c0300d6f432fd437` — signed enhanced Engine
   logging-authority adapter and exact active-read wire follow-up.
+- `20071d97d10b386c2a24c84c51bca0e37c0280aa` — signed, generation-fenced
+  protected-service vsock/XPC transport and authority composition.
 
 ## Validation
 
@@ -107,7 +118,9 @@ git diff --check
 Current results on the development MacBook Pro:
 
 - shared helper target builds successfully;
-- focused runtime suite: 5 tests in 1 suite passed;
+- focused runtime suite: 7 tests in 1 suite passed;
+- combined protected-service runtime and API-authority run: 8 tests in 2
+  suites passed;
 - focused durable-configuration test passed;
 - `make check` passed;
 - the full unit run compiled and exercised 1,789 tests in 206 suites with no
@@ -126,5 +139,7 @@ Current results on the development MacBook Pro:
 - [x] Process receipt commits only after a running PID observation.
 - [x] Unattributed and unsupported state fails closed.
 - [x] The XPC/runtime boundary contains no Docker-specific policy.
+- [x] Protected service connections are bound to the exact live sandbox
+  generation and cannot overlap shutdown.
 - [x] Full macOS formatting, license, and unit behavior is green.
 - [x] Implementation commit is signed.
