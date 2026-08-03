@@ -39,14 +39,18 @@ catalog descriptor and no false compatibility claim.
 - Add the generic shared-sandbox XPC/vsock dial used to reach a protected
   service only after independently checking the exact durable generation in
   the API authority and runtime helper.
+- Add the journald-specific one-MiB framed protocol and client, with explicit
+  versioned envelopes, validated binary-safe entries, stable operation IDs,
+  ordered reader-next calls, one reconnect replay, mismatched-response
+  rejection, `SIGPIPE` suppression, and cancellation-safe socket shutdown.
 - Register configuration and the provider in the built-in authority plane only
   when a concrete service is supplied.
 
 ## Required follow-up before support can be claimed
 
-- Implement and package the signed Linux journald workload, bounded
-  journald-specific wire protocol, and systemd journal adapter on the completed
-  shared-sandbox dial.
+- Implement and package the signed Linux journald workload, wire-protocol
+  server with a bounded replay cache, and systemd journal adapter on the
+  completed shared-sandbox dial and client.
 - Persist writer identity/epoch state and reconcile service or authority crash,
   response loss, and sandbox replacement.
 - Implement journal query ordering and Docker filters for stdout/stderr,
@@ -64,6 +68,9 @@ catalog descriptor and no false compatibility claim.
 - `Sources/ContainerLoggingProviders/Journald/JournaldProvider.swift` contains
   the descriptor, service boundary, session lifecycle, fencing, and reader
   provider.
+- `Sources/ContainerLoggingProviders/Journald/JournaldServiceWire.swift`
+  contains the bounded versioned request/response projections, framed socket
+  codec, reconnect-safe transport, and service client.
 - `Sources/ContainerLoggingProviders/BuiltinRemoteLogDriverProviderSet.swift`
   stores typed bindings and conditionally installs the provider.
 - `Sources/Services/ContainerAPIService/Server/Containers/AuthorityRemoteLogDriverPlane.swift`
@@ -73,6 +80,9 @@ catalog descriptor and no false compatibility claim.
   XPC/vsock connection to a protected service.
 - `Tests/ContainerLoggingProvidersTests/JournaldProviderTests.swift` covers the
   pinned codec and lifecycle contract.
+- `Tests/ContainerLoggingProvidersTests/JournaldServiceWireTests.swift` covers
+  frame and entry limits, binary round trips, lifecycle projection, exact
+  response-loss replay, reader ordinals, and blocked-read cancellation.
 
 ## Validation
 
@@ -80,7 +90,9 @@ catalog descriptor and no false compatibility claim.
 swift build --target ContainerLoggingProviders
 swift build --target container-apiserver
 swift test --filter JournaldProviderTests
+swift test --filter JournaldServiceWireTests
 swift test --filter BuiltinRemoteLogDriverProviderSetTests
+swift build -Xswiftc -warnings-as-errors --target ContainerLoggingProviders
 swift build -Xswiftc -warnings-as-errors --target container-apiserver
 make check
 git diff --check
@@ -89,13 +101,17 @@ git diff --check
 Current development MacBook Pro evidence:
 
 - five journald provider tests and three built-in provider-set tests passed;
+- five journald wire tests passed, including exact replay and cancellation;
 - provider and API server targets built successfully;
-- the API server target built with Swift warnings promoted to errors;
+- the provider and API server targets built with Swift warnings promoted to
+  errors;
 - formatting, licence, and whitespace gates passed;
 - signed implementation commit:
   `887848ed719a05836d2f846b69a22749e61f2f62`.
 - signed shared-service transport commit:
   `20071d97d10b386c2a24c84c51bca0e37c0280aa`.
+- signed journald service-wire commit:
+  `a42ecf2fe1ffa582e34cfa74f6cf1ddba8505368`.
 
 The warnings-as-errors build used the local signed Containerization
 shared-sandbox worktree because the coordinated Containerization upstream wave
@@ -110,6 +126,8 @@ published dependency pin remains unchanged.
 - [x] The production API server does not advertise an unavailable driver.
 - [x] The protected service connection is generation-fenced in both the API
   authority and runtime helper.
+- [x] The client wire is versioned, size-bounded, reconnect-safe, and preserves
+  exact operation identity and reader order across response loss.
 - [ ] Add the signed Linux service and persistent journal adapter.
 - [ ] Complete production reader routing, recovery, and supervision.
 - [ ] Add real-systemd compatibility and performance evidence.
