@@ -154,7 +154,8 @@ To retain your user data so that it is available should you reinstall later, run
   of `container`.
 - Browse the [full command reference](./docs/command-reference.md).
 - [Build and run](./BUILDING.md) `container` on your own development system.
-- View the project [API documentation](https://apple.github.io/container/documentation/).
+- View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
+- Compare the [Apple upstream API reference](https://apple.github.io/container/documentation/).
 
 ## Contributing
 
