@@ -571,6 +571,29 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 ),
                 for: request
             )
+        case "splunk":
+            let helper = try DockerSemanticHelperClient.shared(
+                for: DockerSemanticHelperGeneration(
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration
+                )
+            )
+            let driverConfiguration = try SplunkDriverConfiguration.resolve(
+                options: options,
+                info: info,
+                semanticService: helper
+            )
+            try await providers.configurations.register(
+                SplunkConfigurationBinding(
+                    semanticRequestDigest: request.semanticRequestDigest,
+                    containerID: request.containerID,
+                    leaseGeneration: request.leaseGeneration,
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration,
+                    configuration: driverConfiguration
+                ),
+                for: request
+            )
         default:
             throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
                 resolved.driver

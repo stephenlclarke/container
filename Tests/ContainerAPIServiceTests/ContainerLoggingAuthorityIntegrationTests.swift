@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerLoggingProviders
 import ContainerPersistence
 import ContainerResource
 import ContainerRuntimeClient
@@ -29,6 +30,61 @@ import Testing
 @testable import ContainerPlugin
 
 struct ContainerLoggingAuthorityIntegrationTests {
+    @Test func splunkCreateSealsTokenAndPinsProviderContract() async throws {
+        try await withTemporaryRoot { root in
+            let token = "DO_NOT_EXPOSE_SPLUNK_TOKEN"
+            let descriptor = SplunkLogDriverContract.descriptor()
+            let catalog = try LogDriverCatalog(
+                descriptors: BuiltinLogDriverDescriptors.current.descriptors + [
+                    descriptor
+                ]
+            )
+            let service = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: StaticLogDriverCatalogProvider(
+                    catalog: catalog
+                )
+            )
+
+            let plan = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(
+                    driver: "splunk",
+                    options: [
+                        "splunk-token": token,
+                        "splunk-url": "https://splunk.example.test:8088",
+                        "splunk-verify-connection": "false",
+                    ]
+                )
+            )
+            let sealed = try await service.sealLoggingForCreate(
+                containerID: "splunk-sealed-token",
+                plan: plan
+            )
+            let resolved = try #require(sealed.configuration.resolved)
+            #expect(resolved.driver == "splunk")
+            #expect(resolved.providerIdentity == descriptor.providerIdentity)
+            #expect(resolved.contractDigest == descriptor.optionContractDigest)
+            #expect(resolved.safeOptions["splunk-token"] == nil)
+            #expect(resolved.protectedOptionNames == ["splunk-token"])
+            #expect(sealed.protectedReference != nil)
+            #expect(!String(describing: sealed.configuration).contains(token))
+            #expect(
+                !String(
+                    decoding: try JSONEncoder().encode(sealed.configuration),
+                    as: UTF8.self
+                ).contains(token)
+            )
+
+            _ = try await service.validateLoggingForStart(
+                containerID: "splunk-sealed-token",
+                configuration: sealed.configuration
+            )
+            await service.rollbackSealedLogging(sealed)
+        }
+    }
+
     @Test func injectedCatalogIsRequeriedAtCreateAndStartBoundaries() async throws {
         try await withTemporaryRoot { root in
             let descriptor = try testProviderDescriptor()

@@ -34,8 +34,9 @@ struct BuiltinRemoteLogDriverProviderSetTests {
             #expect(
                 Set(catalog.registeredNames) == [
                     "none", "json-file", "local", "syslog", "fluentd", "gelf",
+                    "splunk",
                 ])
-            for driver in ["syslog", "fluentd", "gelf"] {
+            for driver in ["syslog", "fluentd", "gelf", "splunk"] {
                 let descriptor = try #require(
                     catalog.descriptor(named: driver)
                 )

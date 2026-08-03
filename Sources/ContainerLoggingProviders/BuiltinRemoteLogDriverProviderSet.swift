@@ -35,7 +35,7 @@ public enum BuiltinRemoteLogDriverConfigurationError: Error, Equatable,
 /// cannot enter the provider lifecycle ledger or ordinary configuration.
 public actor BuiltinRemoteLogDriverConfigurationRegistry:
     SyslogConfigurationResolving, FluentdConfigurationResolving,
-    GELFConfigurationResolving
+    GELFConfigurationResolving, SplunkConfigurationResolving
 {
     private enum Entry: Sendable {
         case syslog(
@@ -50,11 +50,15 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             request: LogDriverStartRequestV1,
             binding: GELFConfigurationBinding
         )
+        case splunk(
+            request: LogDriverStartRequestV1,
+            binding: SplunkConfigurationBinding
+        )
 
         var request: LogDriverStartRequestV1 {
             switch self {
             case .syslog(let request, _), .fluentd(let request, _),
-                .gelf(let request, _):
+                .gelf(let request, _), .splunk(let request, _):
                 request
             }
         }
@@ -64,6 +68,7 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             case .syslog: "syslog"
             case .fluentd: "fluentd"
             case .gelf: "gelf"
+            case .splunk: "splunk"
             }
         }
     }
@@ -91,6 +96,13 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
         for request: LogDriverStartRequestV1
     ) throws {
         try register(.gelf(request: request, binding: binding))
+    }
+
+    public func register(
+        _ binding: SplunkConfigurationBinding,
+        for request: LogDriverStartRequestV1
+    ) throws {
+        try register(.splunk(request: request, binding: binding))
     }
 
     /// Removes only the exact request identity. A stale cleanup cannot erase a
@@ -156,6 +168,21 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
         return binding
     }
 
+    public func configuration(
+        for request: LogDriverStartRequestV1
+    ) throws -> SplunkConfigurationBinding {
+        let entry = try exactEntry(for: request)
+        guard case .splunk(_, let binding) = entry else {
+            throw
+                BuiltinRemoteLogDriverConfigurationError
+                .contextDriverMismatch(
+                    expected: "splunk",
+                    actual: entry.driver
+                )
+        }
+        return binding
+    }
+
     package var registeredContextCount: Int {
         entries.count
     }
@@ -197,6 +224,11 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             leftRequest == rightRequest && left == right
         case (.gelf(let leftRequest, let left), .gelf(let rightRequest, let right)):
             leftRequest == rightRequest && left == right
+        case (
+            .splunk(let leftRequest, let left),
+            .splunk(let rightRequest, let right)
+        ):
+            leftRequest == rightRequest && left == right
         default:
             false
         }
@@ -216,19 +248,22 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
     public let syslog: SyslogLogDriverProvider
     public let fluentd: FluentdLogDriverProvider
     public let gelf: GELFLogDriverProvider
+    public let splunk: SplunkLogDriverProvider
 
     private init(
         registry: LogDriverProviderRegistry,
         configurations: BuiltinRemoteLogDriverConfigurationRegistry,
         syslog: SyslogLogDriverProvider,
         fluentd: FluentdLogDriverProvider,
-        gelf: GELFLogDriverProvider
+        gelf: GELFLogDriverProvider,
+        splunk: SplunkLogDriverProvider
     ) {
         self.registry = registry
         self.configurations = configurations
         self.syslog = syslog
         self.fluentd = fluentd
         self.gelf = gelf
+        self.splunk = splunk
     }
 
     public static func install(
@@ -258,16 +293,22 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                 eventLoopGroup: eventLoopGroup
             )
         )
+        let splunk = SplunkLogDriverProvider(
+            providerGeneration: providerGeneration,
+            configurationResolver: configurations
+        )
         let registry = LogDriverProviderRegistry(baseCatalog: baseCatalog)
         try await registry.install(syslog)
         try await registry.install(fluentd)
         try await registry.install(gelf)
+        try await registry.install(splunk)
         return Self(
             registry: registry,
             configurations: configurations,
             syslog: syslog,
             fluentd: fluentd,
-            gelf: gelf
+            gelf: gelf,
+            splunk: splunk
         )
     }
 }
