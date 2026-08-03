@@ -71,8 +71,9 @@ swift test --filter \
 make check
 ```
 
-Record the one final full-repository gate and signed implementation commit in
-the validation section before Apple publication.
+The full repository gate also passes all 1,762 Swift tests in 202 suites, the
+pinned Go semantic-helper test, Homebrew archive checksum verification, and the
+init-image/install validation stages.
 
 ## Compatibility and risks
 
@@ -87,8 +88,10 @@ the validation section before Apple publication.
 
 ## Validation and commit tracking
 
-- Final full repository gate: pending.
-- Signed local implementation commit: pending.
+- Final full repository gate: `make test`, passed locally on 2026-08-03.
+- Signed local implementation commit:
+  `39a36e287b3462227f83a33ec0bf7a9299051f1e`
+  (`feat(logging): implement AWS Logs provider`).
 - Branch: `upstream/logging-driver-parity`.
 - Apple publication: intentionally deferred until all programme development is
   complete.
