@@ -96,7 +96,9 @@ the init-image/install validation stages.
 ## Validation and commit tracking
 
 - Final full repository gate: `make test`, passed locally on 2026-08-03.
-- Signed local implementation commit: pending.
+- Signed local implementation commit:
+  `c3ea6f99a837a390afb5466ac13df6d160eac77c`
+  (`feat(logging): implement Splunk HEC provider`).
 - Branch: `upstream/logging-driver-parity`.
 - Apple publication: intentionally deferred until all programme development is
   complete.
