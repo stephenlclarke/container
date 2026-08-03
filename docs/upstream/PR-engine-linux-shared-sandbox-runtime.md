@@ -84,6 +84,11 @@ metadata is not part of this change.
 No Apple issue, branch, pull request, or push has been created. This handoff is
 held locally until all parity development is complete.
 
+## Commit tracking
+
+- `ec95450741789341870aca07d24eaa460b83b44c` — signed shared-sandbox runtime
+  materialization implementation and tests.
+
 ## Validation
 
 ```console
@@ -118,4 +123,4 @@ Current results on the development MacBook Pro:
 - [x] Unattributed and unsupported state fails closed.
 - [x] The XPC/runtime boundary contains no Docker-specific policy.
 - [x] Full macOS formatting, license, and unit behavior is green.
-- [ ] Implementation commit is signed.
+- [x] Implementation commit is signed.
