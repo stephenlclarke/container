@@ -70,7 +70,9 @@ parity programme is ready for upstream submission.
 
 ## Follow-on integration
 
-The API service and each specialized controller must adopt this authority in
-dependency order. That wiring remains a separate Container implementation
-slice so the generic transaction substrate can be reviewed independently from
-Docker compatibility policy.
+The generic transaction resolver is now implemented in
+`ISSUE-workload-plan-resolver.md`. Production adoption remains gated on the
+shared-sandbox materialization path: the current API service still launches
+one runtime VM per container, so attaching shared-sandbox authority to it would
+record ownership the runtime does not enforce. Once that runtime path exists,
+each specialized controller can adopt the resolver in dependency order.
