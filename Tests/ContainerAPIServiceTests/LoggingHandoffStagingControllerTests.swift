@@ -126,6 +126,135 @@ struct LoggingHandoffStagingControllerTests {
     }
 
     @Test
+    func `portable devcontainer history stages for the json file destination`() async throws {
+        try await withStores { stores in
+            let sourceRoot = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            let package = try ProviderHandoffPortableLoggingPayloadCodec.package(
+                containers: [
+                    ProviderHandoffPortableLoggingContainerV1(
+                        containerID: "portable-container",
+                        providerID: "devcontainer.apple-container",
+                        providerVersion: "1",
+                        terminalHistoryEpoch: 7,
+                        records: [
+                            ProviderHandoffPortableLogRecordV1(
+                                secondsSinceUnixEpoch: 1_786_000_000,
+                                nanoseconds: 123_000_000,
+                                stream: .stderr,
+                                data: Data("portable history\n".utf8)
+                            )
+                        ]
+                    )
+                ],
+                sourceStateRootUUID: sourceRoot
+            )
+            let payload = try LoggingHandoffPayloadCodec.decodeVerified(
+                package,
+                sourceStateRootUUID: sourceRoot,
+                sourceAuthorityLineageUUID:
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                sourceLineageKeyVersion: 1,
+                sourceLineageHMACSHA256Key: Data(repeating: 0x41, count: 32)
+            )
+            let common = try contentVerifiedRecord(store: stores.common)
+            let controller = LoggingHandoffStagingController(
+                defaults: LoggingConfig(),
+                commonStore: stores.common,
+                protectedOptionsStore: stores.protected,
+                receiptStore: stores.receipts
+            )
+
+            let staged = try await controller.stage(
+                commonRecord: common,
+                payload: payload,
+                catalog: LogDriverCatalog(
+                    descriptors: BuiltinLogDriverDescriptors.current.descriptors
+                )
+            )
+
+            #expect(staged.commonRecord.state == .imported)
+            #expect(staged.receipt.importedEntries.isEmpty)
+            let container = try #require(staged.privateState.containers.first)
+            #expect(container.configuration.requested?.driver == nil)
+            #expect(container.configuration.resolved?.driver == "json-file")
+            #expect(container.configuration.resolved?.leaseGeneration == 1)
+            let history = try #require(container.histories.first)
+            #expect(history.kind == .dockerJSONFile)
+            #expect(history.disposition == .importVerified)
+            #expect(history.terminalHistoryEpoch == 7)
+            #expect(try protectedObjectCount(stores.protectedRoot) == 0)
+            #expect(try receiptCount(stores.receiptRoot) == 1)
+
+            let promoter = PortableLoggingHandoffContainerPromoter()
+            let destination = try LoggingHandoffDestinationReconciler(
+                rootURL: stores.root.appendingPathComponent(
+                    "portable-promotions",
+                    isDirectory: true
+                ),
+                containerPromoter: promoter
+            )
+            let authorization = LoggingHandoffPromotionAuthorizationV1(
+                tokenID: staged.privateState.handoffTokenID,
+                manifestID: staged.privateState.handoffManifestID,
+                manifestDigest: staged.privateState.handoffManifestDigest,
+                commitDigestSHA256: digest("portable-commit"),
+                handoffChainHeadDigestSHA256: digest("portable-chain"),
+                destinationProviderFingerprint: "sha256:destination-provider",
+                destinationStateRootUUID:
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            )
+            let promotion = try await destination.promoteLogging(
+                privateState: staged.privateState,
+                payload: payload,
+                authorization: authorization,
+                protectedReceipt: staged.receipt
+            )
+            #expect(
+                try await destination.promoteLogging(
+                    privateState: staged.privateState,
+                    payload: payload,
+                    authorization: authorization,
+                    protectedReceipt: staged.receipt
+                ) == promotion
+            )
+            let activation = LoggingHandoffActivationAuthorizationV1(
+                tokenID: authorization.tokenID,
+                manifestID: authorization.manifestID,
+                manifestDigest: authorization.manifestDigest,
+                commitDigestSHA256: authorization.commitDigestSHA256,
+                handoffChainHeadDigestSHA256:
+                    authorization.handoffChainHeadDigestSHA256,
+                terminalOutcomeDigestSHA256: digest("portable-complete"),
+                destinationProviderFingerprint:
+                    authorization.destinationProviderFingerprint,
+                destinationStateRootUUID:
+                    authorization.destinationStateRootUUID
+            )
+            try await destination.activateLogging(
+                privateState: staged.privateState,
+                payload: payload,
+                promotionReceipt: promotion,
+                authorization: activation
+            )
+            try await destination.activateLogging(
+                privateState: staged.privateState,
+                payload: payload,
+                promotionReceipt: promotion,
+                authorization: activation
+            )
+            #expect(await promoter.promotedEffectCount() == 1)
+            #expect(await promoter.activatedEffectCount() == 1)
+            let segment = try #require(await promoter.promotedSegment())
+            #expect(segment.destinationFileName == "json.log")
+            #expect(
+                segment.bytes.range(
+                    of: Data("portable history\\n".utf8)
+                ) != nil
+            )
+        }
+    }
+
+    @Test
     func `local history requires a contiguous rotation set beginning at active`() async throws {
         try await withStores { stores in
             let descriptor = try remoteDescriptor()
@@ -1555,4 +1684,41 @@ private actor TestLoggingHandoffContainerPromoter:
     func promotedEffectCount() -> Int { promoted.count }
 
     func activatedEffectCount() -> Int { activated.count }
+}
+
+private actor PortableLoggingHandoffContainerPromoter:
+    LoggingHandoffContainerPromoting
+{
+    private var promoted = Set<String>()
+    private var activated = Set<String>()
+    private var segment: LoggingHandoffPromotedHistorySegmentV1?
+
+    func promoteContainerLogging(
+        container: LoggingHandoffStagedContainerV1,
+        history: [LoggingHandoffPromotedHistorySegmentV1],
+        authorization: LoggingHandoffPromotionAuthorizationV1
+    ) throws {
+        let value = try #require(history.first)
+        #expect(history.count == 1)
+        #expect(value.kind == .dockerJSONFile)
+        segment = value
+        promoted.insert("\(authorization.tokenID):\(container.containerID)")
+    }
+
+    func activateContainerLogging(
+        container: LoggingHandoffStagedContainerV1,
+        promotionReceipt: LoggingHandoffControllerPromotionReceiptV1,
+        authorization: LoggingHandoffActivationAuthorizationV1
+    ) {
+        #expect(promotionReceipt.handoffTokenID == authorization.tokenID)
+        activated.insert("\(authorization.tokenID):\(container.containerID)")
+    }
+
+    func promotedEffectCount() -> Int { promoted.count }
+
+    func activatedEffectCount() -> Int { activated.count }
+
+    func promotedSegment() -> LoggingHandoffPromotedHistorySegmentV1? {
+        segment
+    }
 }

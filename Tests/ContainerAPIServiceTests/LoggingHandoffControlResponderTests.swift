@@ -1361,7 +1361,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                     trustRegistryRevision: trustRevision
                 )
             )
-        }
+        }.sorted()
     }
 
     private static func exportContainer(
