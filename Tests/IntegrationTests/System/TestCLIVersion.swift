@@ -65,7 +65,7 @@ struct TestCLIVersion {
             #expect(!lines[0].contains("COMPONENT"))
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c"))
 
             let expected = expectedBuildType()
             #expect(lines.contains(where: { $0.contains("build") && $0.contains(expected) }))
@@ -83,8 +83,8 @@ struct TestCLIVersion {
             #expect(!decoded[0].version.isEmpty)
             #expect(!decoded[0].commit.isEmpty)
             #expect(decoded[0].builderShimRepository == "ghcr.io/stephenlclarke/container-builder-shim/builder")
-            #expect(decoded[0].builderShimVersion == "current-30068004175-f97cddf5b3aa")
-            #expect(decoded[0].builderShimDigest == "sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197")
+            #expect(decoded[0].builderShimVersion == "current-30784216505-806feb1c9cc1")
+            #expect(decoded[0].builderShimDigest == "sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c")
             #expect(decoded[0].buildType == expectedBuildType())
         }
     }
@@ -116,7 +116,7 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:d993210e3960bce33a84e061d6cb96385b43277fe94a7492fd6c60b6317d2197"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c"))
         }
     }
 

@@ -60,7 +60,7 @@ Use `container system property list` (alias `ls`) to print the merged configurat
 cpus = 2
 memory = "2048mb"
 rosetta = true
-image = "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:09bdaafcffcde28e3022ff65ef5ae3a6502022b3c9735a9b4f45acb17d054d3d"
+image = "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c"
 
 [container]
 cpus = 8
