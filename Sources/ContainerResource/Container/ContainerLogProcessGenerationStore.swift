@@ -42,8 +42,25 @@ package enum ContainerLogProcessGenerationError: Error, Equatable, Sendable {
     case unsafeStorage
     case invalidEncoding
     case exhausted
+    case historyCursorConflict
     case temporaryNameCollision
     case io(Operation, Int32)
+}
+
+package struct ContainerLogSequenceReservationV1: Equatable, Sendable {
+    package let historyEpoch: UInt64
+    package let lowerBound: UInt64
+    package let upperBoundInclusive: UInt64
+
+    package init(
+        historyEpoch: UInt64,
+        lowerBound: UInt64,
+        upperBoundInclusive: UInt64
+    ) {
+        self.historyEpoch = historyEpoch
+        self.lowerBound = lowerBound
+        self.upperBoundInclusive = upperBoundInclusive
+    }
 }
 
 /// Crash-safe allocator for a container's logging process generation.
@@ -57,8 +74,14 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
     private static let stateFileName = "process-generation-v1.bin"
     private static let lockFileName = ".process-generation-v1.lock"
     private static let temporaryPrefix = ".process-generation-v1.tmp."
+    private static let historyCursorFileName = "history-sequence-v1.bin"
+    private static let historyCursorTemporaryPrefix = ".history-sequence-v1.tmp."
     private static let magic = Data("CLOGGEN1".utf8)
+    private static let historyCursorMagic = Data("CLOGSEQ1".utf8)
     private static let encodedByteCount = magic.count + MemoryLayout<UInt64>.size + SHA256.byteCount
+    private static let historyCursorEncodedByteCount =
+        historyCursorMagic.count + 2 * MemoryLayout<UInt64>.size + 1
+        + SHA256.byteCount
     private static let maximumDirectoryEntries = 1_024
     private static let maximumPublicationAttempts = 8
     private static let directoryMode = mode_t(0o700)
@@ -72,6 +95,12 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
     package let directoryURL: URL
 
     private let directoryDescriptor: Int32
+
+    private struct HistoryCursor: Equatable {
+        var historyEpoch: UInt64
+        var nextUnreservedSequence: UInt64
+        var exhausted: Bool
+    }
 
     package init(directoryURL: URL) throws {
         let directoryDescriptor = try Self.openDirectory(directoryURL)
@@ -135,6 +164,90 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
         }
     }
 
+    /// Adopts a transferred terminal history boundary before destination
+    /// logging can start. Exact replay accepts a cursor that has subsequently
+    /// reserved sequence blocks, but another epoch or lower boundary conflicts.
+    package func adoptHistoryCursor(
+        terminalHistoryEpoch: UInt64,
+        maximumInternalSequence: UInt64
+    ) throws {
+        try Self.processLock.withLock {
+            try Self.validateDirectoryDescriptor(directoryDescriptor)
+            let allocationLockDescriptor = try acquireAllocationLock()
+            defer { Darwin.close(allocationLockDescriptor) }
+            try removeInterruptedTemporaryFiles()
+            guard terminalHistoryEpoch < UInt64.max else {
+                throw ContainerLogProcessGenerationError.exhausted
+            }
+            let candidate = HistoryCursor(
+                historyEpoch: terminalHistoryEpoch + 1,
+                nextUnreservedSequence:
+                    maximumInternalSequence == UInt64.max
+                    ? UInt64.max : maximumInternalSequence + 1,
+                exhausted: maximumInternalSequence == UInt64.max
+            )
+            if let current = try readHistoryCursor() {
+                guard
+                    current.historyEpoch == candidate.historyEpoch,
+                    current.exhausted
+                        || current.nextUnreservedSequence
+                            >= candidate.nextUnreservedSequence
+                else {
+                    throw ContainerLogProcessGenerationError
+                        .historyCursorConflict
+                }
+                return
+            }
+            try publishHistoryCursor(candidate)
+        }
+    }
+
+    /// Reserves a durable sequence block. Gaps after a crash are intentional;
+    /// a sequence returned to any writer is never reused.
+    package func reserveSequenceBlock(
+        requestedCount: UInt64 = 1_048_576
+    ) throws -> ContainerLogSequenceReservationV1 {
+        guard requestedCount > 0 else {
+            throw ContainerLogProcessGenerationError.invalidEncoding
+        }
+        return try Self.processLock.withLock {
+            try Self.validateDirectoryDescriptor(directoryDescriptor)
+            let allocationLockDescriptor = try acquireAllocationLock()
+            defer { Darwin.close(allocationLockDescriptor) }
+            try removeInterruptedTemporaryFiles()
+            var cursor =
+                try readHistoryCursor()
+                ?? HistoryCursor(
+                    historyEpoch: 1,
+                    nextUnreservedSequence: 1,
+                    exhausted: false
+                )
+            guard !cursor.exhausted else {
+                throw ContainerLogProcessGenerationError.exhausted
+            }
+            let lowerBound = cursor.nextUnreservedSequence
+            let requestedDelta = requestedCount - 1
+            let addition = lowerBound.addingReportingOverflow(
+                requestedDelta
+            )
+            let upperBound =
+                addition.overflow
+                ? UInt64.max : addition.partialValue
+            if upperBound == UInt64.max {
+                cursor.nextUnreservedSequence = UInt64.max
+                cursor.exhausted = true
+            } else {
+                cursor.nextUnreservedSequence = upperBound + 1
+            }
+            try publishHistoryCursor(cursor)
+            return ContainerLogSequenceReservationV1(
+                historyEpoch: cursor.historyEpoch,
+                lowerBound: lowerBound,
+                upperBoundInclusive: upperBound
+            )
+        }
+    }
+
     private func acquireAllocationLock() throws -> Int32 {
         try Self.openLockFile(directoryDescriptor: directoryDescriptor, exclusive: true)
     }
@@ -168,6 +281,36 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
             throw ContainerLogProcessGenerationError.invalidEncoding
         }
         return try Self.decode(data)
+    }
+
+    private func readHistoryCursor() throws -> HistoryCursor? {
+        let descriptor = Self.historyCursorFileName.withCString {
+            Darwin.openat(
+                directoryDescriptor,
+                $0,
+                O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+            )
+        }
+        if descriptor < 0 {
+            let code = errno
+            if code == ENOENT { return nil }
+            throw ContainerLogProcessGenerationError.io(.openStateFile, code)
+        }
+        defer { Darwin.close(descriptor) }
+        try Self.validateRegularFileDescriptor(descriptor)
+        var metadata = stat()
+        guard
+            Darwin.fstat(descriptor, &metadata) == 0,
+            metadata.st_size == Self.historyCursorEncodedByteCount
+        else {
+            throw ContainerLogProcessGenerationError.invalidEncoding
+        }
+        return try Self.decodeHistoryCursor(
+            Self.readExactly(
+                descriptor: descriptor,
+                count: Self.historyCursorEncodedByteCount
+            )
+        )
     }
 
     private func publish(_ generation: UInt64) throws {
@@ -238,6 +381,67 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
         throw ContainerLogProcessGenerationError.temporaryNameCollision
     }
 
+    private func publishHistoryCursor(_ cursor: HistoryCursor) throws {
+        let encoded = Self.encodeHistoryCursor(cursor)
+        for _ in 0..<Self.maximumPublicationAttempts {
+            let temporaryName =
+                Self.historyCursorTemporaryPrefix
+                + UUID().uuidString.lowercased()
+            let descriptor = temporaryName.withCString {
+                Darwin.openat(
+                    directoryDescriptor,
+                    $0,
+                    O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                    Self.fileMode
+                )
+            }
+            if descriptor < 0 {
+                if errno == EEXIST { continue }
+                throw ContainerLogProcessGenerationError.io(
+                    .createTemporaryFile,
+                    errno
+                )
+            }
+            var needsClose = true
+            var needsRemoval = true
+            defer {
+                if needsClose { Darwin.close(descriptor) }
+                if needsRemoval {
+                    temporaryName.withCString {
+                        _ = Darwin.unlinkat(directoryDescriptor, $0, 0)
+                    }
+                }
+            }
+            try Self.validateRegularFileDescriptor(descriptor)
+            try Self.writeAll(encoded, descriptor: descriptor)
+            guard Darwin.fsync(descriptor) == 0 else {
+                throw ContainerLogProcessGenerationError.io(.synchronize, errno)
+            }
+            guard Darwin.close(descriptor) == 0 else {
+                needsClose = false
+                throw ContainerLogProcessGenerationError.io(.close, errno)
+            }
+            needsClose = false
+            let result = temporaryName.withCString { temporaryPointer in
+                Self.historyCursorFileName.withCString { statePointer in
+                    Darwin.renameat(
+                        directoryDescriptor,
+                        temporaryPointer,
+                        directoryDescriptor,
+                        statePointer
+                    )
+                }
+            }
+            guard result == 0 else {
+                throw ContainerLogProcessGenerationError.io(.rename, errno)
+            }
+            needsRemoval = false
+            try synchronizeDirectory()
+            return
+        }
+        throw ContainerLogProcessGenerationError.temporaryNameCollision
+    }
+
     private func removeInterruptedTemporaryFiles() throws {
         let duplicate = Darwin.openat(
             directoryDescriptor,
@@ -278,7 +482,10 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
         }
 
         var removed = false
-        for name in names where name.hasPrefix(Self.temporaryPrefix) {
+        for name in names
+        where name.hasPrefix(Self.temporaryPrefix)
+            || name.hasPrefix(Self.historyCursorTemporaryPrefix)
+        {
             var metadata = stat()
             let metadataResult = name.withCString {
                 Darwin.fstatat(directoryDescriptor, $0, &metadata, AT_SYMLINK_NOFOLLOW)
@@ -331,6 +538,55 @@ package final class ContainerLogProcessGenerationStore: @unchecked Sendable {
             value = (value << 8) | UInt64(byte)
         }
         return value
+    }
+
+    private static func encodeHistoryCursor(_ cursor: HistoryCursor) -> Data {
+        var data = historyCursorMagic
+        var epoch = cursor.historyEpoch.bigEndian
+        var next = cursor.nextUnreservedSequence.bigEndian
+        withUnsafeBytes(of: &epoch) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &next) { data.append(contentsOf: $0) }
+        data.append(cursor.exhausted ? 1 : 0)
+        data.append(contentsOf: SHA256.hash(data: data))
+        return data
+    }
+
+    private static func decodeHistoryCursor(_ data: Data) throws -> HistoryCursor {
+        guard
+            data.count == historyCursorEncodedByteCount,
+            data.prefix(historyCursorMagic.count) == historyCursorMagic
+        else {
+            throw ContainerLogProcessGenerationError.invalidEncoding
+        }
+        let authenticatedCount = historyCursorEncodedByteCount - SHA256.byteCount
+        guard
+            Data(SHA256.hash(data: data.prefix(authenticatedCount)))
+                == data.suffix(SHA256.byteCount)
+        else {
+            throw ContainerLogProcessGenerationError.invalidEncoding
+        }
+        let epochStart = historyCursorMagic.count
+        let nextStart = epochStart + MemoryLayout<UInt64>.size
+        let exhaustedIndex = nextStart + MemoryLayout<UInt64>.size
+        let epoch = decodeUInt64(data[epochStart..<nextStart])
+        let next = decodeUInt64(data[nextStart..<exhaustedIndex])
+        guard
+            epoch > 0,
+            next > 0,
+            data[exhaustedIndex] == 0 || data[exhaustedIndex] == 1,
+            data[exhaustedIndex] == 0 || next == UInt64.max
+        else {
+            throw ContainerLogProcessGenerationError.invalidEncoding
+        }
+        return HistoryCursor(
+            historyEpoch: epoch,
+            nextUnreservedSequence: next,
+            exhausted: data[exhaustedIndex] == 1
+        )
+    }
+
+    private static func decodeUInt64(_ bytes: Data.SubSequence) -> UInt64 {
+        bytes.reduce(UInt64.zero) { ($0 << 8) | UInt64($1) }
     }
 
     private static func openDirectory(_ url: URL) throws -> Int32 {

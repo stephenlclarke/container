@@ -39,6 +39,10 @@ type wireOperation string
 const (
 	operationActiveSandboxGeneration wireOperation = "activeSandboxGeneration"
 	operationMigrateHistory          wireOperation = "migrateHistory"
+	operationExportHistoryForHandoff wireOperation = "exportHistoryForHandoff"
+	operationPreflightHistoryHandoff wireOperation = "preflightHistoryHandoff"
+	operationPromoteHistoryHandoff   wireOperation = "promoteHistoryHandoff"
+	operationActivateHistoryHandoff  wireOperation = "activateHistoryHandoff"
 	operationReclaimGeneration       wireOperation = "reclaimGeneration"
 	operationStartWriter             wireOperation = "startWriter"
 	operationReconcileWriterOpen     wireOperation = "reconcileWriterOpen"
@@ -77,15 +81,19 @@ type wireRequest struct {
 	OperationID   string        `json:"operationID"`
 	Operation     wireOperation `json:"operation"`
 
-	WriterOpen        *writerOpen                `json:"writerOpen,omitempty"`
-	WriterStart       *writerStart               `json:"writerStart,omitempty"`
-	WriterCall        *writerCall                `json:"writerCall,omitempty"`
-	ReaderOpen        *readerOpen                `json:"readerOpen,omitempty"`
-	ReaderStart       *readerStart               `json:"readerStart,omitempty"`
-	ReaderCall        *readerCall                `json:"readerCall,omitempty"`
-	Reclaim           *terminalReclaim           `json:"terminalReclaim,omitempty"`
-	HistoryMigration  *historyMigrationRequest   `json:"historyMigration,omitempty"`
-	GenerationReclaim *providerGenerationReclaim `json:"generationReclaim,omitempty"`
+	WriterOpen                *writerOpen                       `json:"writerOpen,omitempty"`
+	WriterStart               *writerStart                      `json:"writerStart,omitempty"`
+	WriterCall                *writerCall                       `json:"writerCall,omitempty"`
+	ReaderOpen                *readerOpen                       `json:"readerOpen,omitempty"`
+	ReaderStart               *readerStart                      `json:"readerStart,omitempty"`
+	ReaderCall                *readerCall                       `json:"readerCall,omitempty"`
+	Reclaim                   *terminalReclaim                  `json:"terminalReclaim,omitempty"`
+	HistoryMigration          *historyMigrationRequest          `json:"historyMigration,omitempty"`
+	HistoryHandoffExport      *historyHandoffExportRequest      `json:"historyHandoffExport,omitempty"`
+	HistoryHandoffDestination *historyHandoffDestinationRequest `json:"historyHandoffDestination,omitempty"`
+	HistoryHandoffPromotion   *historyHandoffPromotionRequest   `json:"historyHandoffPromotion,omitempty"`
+	HistoryHandoffActivation  *historyHandoffActivationRequest  `json:"historyHandoffActivation,omitempty"`
+	GenerationReclaim         *providerGenerationReclaim        `json:"generationReclaim,omitempty"`
 
 	SessionID      *string `json:"sessionID,omitempty"`
 	Token          []byte  `json:"token,omitempty"`
@@ -109,6 +117,10 @@ func (request wireRequest) validate(identity serviceIdentity) error {
 		request.ReaderCall != nil,
 		request.Reclaim != nil,
 		request.HistoryMigration != nil,
+		request.HistoryHandoffExport != nil,
+		request.HistoryHandoffDestination != nil,
+		request.HistoryHandoffPromotion != nil,
+		request.HistoryHandoffActivation != nil,
 		request.GenerationReclaim != nil,
 		request.SessionID != nil,
 		len(request.Token) != 0,
@@ -150,6 +162,26 @@ func (request wireRequest) validate(identity serviceIdentity) error {
 			return errors.New("invalid history migration payload")
 		}
 		return request.HistoryMigration.validate(identity)
+	case operationExportHistoryForHandoff:
+		if payloads != 1 || request.HistoryHandoffExport == nil {
+			return errors.New("invalid history handoff export payload")
+		}
+		return request.HistoryHandoffExport.validateSource(identity)
+	case operationPreflightHistoryHandoff:
+		if payloads != 1 || request.HistoryHandoffDestination == nil {
+			return errors.New("invalid history handoff preflight payload")
+		}
+		return request.HistoryHandoffDestination.validate(identity)
+	case operationPromoteHistoryHandoff:
+		if payloads != 1 || request.HistoryHandoffPromotion == nil {
+			return errors.New("invalid history handoff promotion payload")
+		}
+		return request.HistoryHandoffPromotion.validate(identity)
+	case operationActivateHistoryHandoff:
+		if payloads != 1 || request.HistoryHandoffActivation == nil {
+			return errors.New("invalid history handoff activation payload")
+		}
+		return request.HistoryHandoffActivation.validate(identity)
 	case operationReclaimGeneration:
 		if payloads != 1 || request.GenerationReclaim == nil {
 			return errors.New("invalid generation reclaim payload")
@@ -210,18 +242,20 @@ type wireResponse struct {
 	OperationID   string       `json:"operationID"`
 	Failure       *wireFailure `json:"failure,omitempty"`
 
-	SandboxGeneration       *uint64                  `json:"sandboxGeneration,omitempty"`
-	OpenObservation         *openObservation         `json:"openObservation,omitempty"`
-	Capabilities            *pluginCapabilities      `json:"capabilities,omitempty"`
-	Token                   []byte                   `json:"token,omitempty"`
-	WriterObservation       *string                  `json:"writerObservation,omitempty"`
-	ReaderObservation       *string                  `json:"readerObservation,omitempty"`
-	FenceReceiptDigest      *string                  `json:"fenceReceiptDigest,omitempty"`
-	TerminalDigest          *string                  `json:"terminalOutcomeDigest,omitempty"`
-	Sequence                *uint64                  `json:"sequence,omitempty"`
-	Frame                   []byte                   `json:"frame,omitempty"`
-	EndOfStream             *bool                    `json:"endOfStream,omitempty"`
-	HistoryMigrationReceipt *historyMigrationReceipt `json:"historyMigrationReceipt,omitempty"`
+	SandboxGeneration              *uint64                         `json:"sandboxGeneration,omitempty"`
+	OpenObservation                *openObservation                `json:"openObservation,omitempty"`
+	Capabilities                   *pluginCapabilities             `json:"capabilities,omitempty"`
+	Token                          []byte                          `json:"token,omitempty"`
+	WriterObservation              *string                         `json:"writerObservation,omitempty"`
+	ReaderObservation              *string                         `json:"readerObservation,omitempty"`
+	FenceReceiptDigest             *string                         `json:"fenceReceiptDigest,omitempty"`
+	TerminalDigest                 *string                         `json:"terminalOutcomeDigest,omitempty"`
+	Sequence                       *uint64                         `json:"sequence,omitempty"`
+	Frame                          []byte                          `json:"frame,omitempty"`
+	EndOfStream                    *bool                           `json:"endOfStream,omitempty"`
+	HistoryMigrationReceipt        *historyMigrationReceipt        `json:"historyMigrationReceipt,omitempty"`
+	HistoryHandoffExportReceipt    *historyHandoffExportReceipt    `json:"historyHandoffExportReceipt,omitempty"`
+	HistoryHandoffPromotionReceipt *historyHandoffPromotionReceipt `json:"historyHandoffPromotionReceipt,omitempty"`
 }
 
 func acknowledgement(operationID string) wireResponse {

@@ -84,7 +84,7 @@ extension APIServer {
                     log: log,
                     routes: &routes
                 )
-                let engineLoggingProvider = try initializeEngineLoggingProvider(
+                let engineLoggingProvider = try await initializeEngineLoggingProvider(
                     appRoot: appRootURL,
                     containersService: containersService,
                     log: log
@@ -208,7 +208,7 @@ extension APIServer {
             appRoot: URL,
             containersService: ContainersService,
             log: Logger
-        ) throws -> ContainerEngineProviderSessionServer {
+        ) async throws -> ContainerEngineProviderSessionServer {
             let stateRoot = appRoot.appendingPathComponent(
                 "engine-provider",
                 isDirectory: true
@@ -241,6 +241,22 @@ extension APIServer {
                     identifier: "engine.route.SystemInfo",
                     status: .native
                 ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.object-transfer.v1",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.provider-key-enrollment.v1",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.destination-key-possession.v1",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.part.logging.v1",
+                    status: .native
+                ),
             ]
             let declaration = try ContainerEngineProviderDeclaration(
                 profile: .enhanced,
@@ -257,6 +273,31 @@ extension APIServer {
                 stateSchemaVersion: 1,
                 capabilities: capabilities
             )
+            let fingerprint = try ContainerEngineProviderFingerprint(
+                declaration: declaration,
+                stateRootUUID: stateRootUUID
+            )
+            let codeIdentity = try ProviderHandoffCodeIdentity.current()
+            let enrollmentTime = try Self.currentUnixSeconds()
+            let providerIdentity = try ProviderHandoffProviderKeyStore(
+                account:
+                    "provider-private-keys-v1.\(stateRootUUID.uuidString.lowercased())"
+            ).loadOrCreate(
+                context: ProviderHandoffProviderKeyEnrollmentContextV1(
+                    providerFingerprint: fingerprint.digest,
+                    stateRootUUID: stateRootUUID.uuidString.lowercased(),
+                    owningBundleIdentifier: codeIdentity.signingIdentifier,
+                    codeRequirementDigestSHA256:
+                        codeIdentity.designatedRequirementDigestSHA256,
+                    teamIdentifier: codeIdentity.teamIdentifier,
+                    providerRegistrationDigestSHA256: String(
+                        fingerprint.digest.dropFirst("sha256:".count)
+                    ),
+                    enrolledAtUnixSeconds: enrollmentTime,
+                    notBeforeUnixSeconds: enrollmentTime,
+                    notAfterUnixSeconds: UInt64.max
+                )
+            )
             let backend = ContainerDockerLoggingBackend(
                 containers: containersService,
                 engineIdentity: stateRootUUID.uuidString,
@@ -266,12 +307,44 @@ extension APIServer {
                 backend: backend,
                 sharedResponseBackend: backend
             )
+            let objectStore = ProviderHandoffBundleObjectStore(
+                root: stateRoot.appendingPathComponent(
+                    "handoff-objects",
+                    isDirectory: true
+                )
+            )
+            let possessionProofStore = ProviderHandoffPossessionProofStore(
+                root: stateRoot.appendingPathComponent(
+                    "handoff-possession-proofs",
+                    isDirectory: true
+                )
+            )
+            let loggingHandoffResponder =
+                try await containersService
+                .makeLoggingHandoffControlResponder(
+                    stateRoot: stateRoot,
+                    objectStore: objectStore,
+                    possessionProofStore: possessionProofStore,
+                    trustRegistryStore: ProviderHandoffTrustRegistryStore(),
+                    providerIdentity: providerIdentity
+                )
             let socketPath =
                 stateRoot
                 .appendingPathComponent("provider.sock")
                 .path
             let provider = try ContainerEngineProviderSessionServer(
                 responder: controller,
+                handoffControlResponder:
+                    ContainerEngineProviderHandoffControlService(
+                        objectStore: objectStore,
+                        downstream:
+                            ContainerEngineProviderIdentityControlResponder(
+                                identity: providerIdentity,
+                                possessionProofStore:
+                                    possessionProofStore,
+                                downstream: loggingHandoffResponder
+                            )
+                    ),
                 socketPath: socketPath,
                 declaration: declaration,
                 stateRootUUID: stateRootUUID
@@ -284,6 +357,20 @@ extension APIServer {
                 ]
             )
             return provider
+        }
+
+        private static func currentUnixSeconds() throws -> UInt64 {
+            let value = Date().timeIntervalSince1970
+            guard
+                value.isFinite,
+                value >= 0,
+                value < Double(UInt64.max)
+            else {
+                throw ValidationError(
+                    "the current time cannot be represented for provider handoff enrollment"
+                )
+            }
+            return UInt64(value.rounded(.down))
         }
 
         private func initializePluginLoader(log: Logger) throws -> PluginLoader {

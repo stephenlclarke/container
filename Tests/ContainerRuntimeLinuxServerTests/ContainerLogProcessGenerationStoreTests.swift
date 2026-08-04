@@ -100,6 +100,53 @@ struct ContainerLogProcessGenerationStoreTests {
     }
 
     @Test
+    func adoptsImportedHistoryAndNeverReusesReservedSequences() throws {
+        try withFixture { directory in
+            var store: ContainerLogProcessGenerationStore? = try .init(
+                directoryURL: directory
+            )
+            try store?.adoptHistoryCursor(
+                terminalHistoryEpoch: 12,
+                maximumInternalSequence: 99
+            )
+            #expect(
+                try store?.reserveSequenceBlock(requestedCount: 3)
+                    == ContainerLogSequenceReservationV1(
+                        historyEpoch: 13,
+                        lowerBound: 100,
+                        upperBoundInclusive: 102
+                    )
+            )
+            try store?.adoptHistoryCursor(
+                terminalHistoryEpoch: 12,
+                maximumInternalSequence: 99
+            )
+            store = nil
+
+            let reopened = try ContainerLogProcessGenerationStore(
+                directoryURL: directory
+            )
+            #expect(
+                try reopened.reserveSequenceBlock(requestedCount: 2)
+                    == ContainerLogSequenceReservationV1(
+                        historyEpoch: 13,
+                        lowerBound: 103,
+                        upperBoundInclusive: 104
+                    )
+            )
+            #expect(
+                throws: ContainerLogProcessGenerationError
+                    .historyCursorConflict
+            ) {
+                try reopened.adoptHistoryCursor(
+                    terminalHistoryEpoch: 13,
+                    maximumInternalSequence: 99
+                )
+            }
+        }
+    }
+
+    @Test
     func refusesSymlinkAndWorldReadableStorage() throws {
         let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().appendingPathComponent(
             "container-log-generation-security-\(UUID().uuidString)",

@@ -138,6 +138,33 @@ func (handler *protocolHandler) execute(ctx context.Context, request wireRequest
 		if err == nil {
 			response.HistoryMigrationReceipt = &receipt
 		}
+	case operationExportHistoryForHandoff:
+		var receipt historyHandoffExportReceipt
+		receipt, err = handler.backend.exportHistoryForHandoff(
+			ctx,
+			*request.HistoryHandoffExport,
+		)
+		if err == nil {
+			response.HistoryHandoffExportReceipt = &receipt
+		}
+	case operationPreflightHistoryHandoff:
+		err = handler.backend.preflightHistoryHandoff(
+			ctx,
+			*request.HistoryHandoffDestination,
+		)
+	case operationPromoteHistoryHandoff:
+		var receipt historyHandoffPromotionReceipt
+		receipt, err = handler.backend.promoteHistoryHandoff(
+			ctx,
+			*request.HistoryHandoffPromotion,
+		)
+		if err == nil {
+			response.HistoryHandoffPromotionReceipt = &receipt
+		}
+	case operationActivateHistoryHandoff:
+		err = handler.backend.activateHistoryHandoff(
+			*request.HistoryHandoffActivation,
+		)
 	case operationReclaimGeneration:
 		err = handler.backend.reclaimGeneration(*request.GenerationReclaim)
 	case operationStartWriter:

@@ -1870,3 +1870,63 @@ private enum CRC32 {
         return result
     }
 }
+
+package struct DockerJSONFileHandoffSegmentInspection: Equatable, Sendable {
+    package let recordCount: UInt64
+    package let firstTimestamp: ContainerLogTimestamp?
+    package let lastTimestamp: ContainerLogTimestamp?
+}
+
+/// Exact, bounded validation for an immutable Docker json-file segment.
+/// Imported bytes are parsed without opening a writer, so migration never
+/// normalizes a record or creates a synthetic logging action.
+package enum DockerJSONFileHandoffSegmentValidator {
+    package static let maximumDecodedSegmentBytes = 128 * 1024 * 1024
+
+    package static func inspect(
+        _ bytes: Data,
+        compressed: Bool
+    ) throws -> DockerJSONFileHandoffSegmentInspection {
+        guard bytes.count <= maximumDecodedSegmentBytes else {
+            throw DockerJSONFileLogError.storageLimitExceeded
+        }
+        let decoded: Data
+        if compressed {
+            decoded = try DockerGzip.decompress(
+                bytes,
+                maximumDecodedBytes: maximumDecodedSegmentBytes
+            )
+        } else {
+            decoded = bytes
+        }
+
+        var recordStart = decoded.startIndex
+        var recordCount: UInt64 = 0
+        var firstTimestamp: ContainerLogTimestamp?
+        var lastTimestamp: ContainerLogTimestamp?
+        while let lineFeed = decoded[recordStart...].firstIndex(
+            of: UInt8(ascii: "\n")
+        ) {
+            let (nextCount, overflow) = recordCount.addingReportingOverflow(1)
+            guard !overflow else {
+                throw DockerJSONFileLogError.storageLimitExceeded
+            }
+            let record = try DockerJSONFileLogCodec.decode(
+                Data(decoded[recordStart..<lineFeed]),
+                storageSequence: nextCount
+            )
+            recordCount = nextCount
+            firstTimestamp = firstTimestamp ?? record.timestamp
+            lastTimestamp = record.timestamp
+            recordStart = decoded.index(after: lineFeed)
+        }
+        guard recordStart == decoded.endIndex else {
+            throw DockerJSONFileLogError.malformedRecord
+        }
+        return DockerJSONFileHandoffSegmentInspection(
+            recordCount: recordCount,
+            firstTimestamp: firstTimestamp,
+            lastTimestamp: lastTimestamp
+        )
+    }
+}

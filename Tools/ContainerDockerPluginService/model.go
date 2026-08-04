@@ -218,6 +218,131 @@ type historyMigrationReceipt struct {
 	ProviderOutcomeDigest string                  `json:"providerOutcomeDigest"`
 }
 
+type historyHandoffExportRequest struct {
+	SchemaVersion               uint32 `json:"schemaVersion"`
+	TokenID                     string `json:"tokenID"`
+	ManifestID                  string `json:"manifestID"`
+	ContainerID                 string `json:"containerID"`
+	SourceStateRootUUID         string `json:"sourceStateRootUUID"`
+	DestinationStateRootUUID    string `json:"destinationStateRootUUID"`
+	SourceLeaseGeneration       uint64 `json:"sourceLeaseGeneration"`
+	SourceProviderID            string `json:"sourceProviderID"`
+	SourceProviderGeneration    uint64 `json:"sourceProviderGeneration"`
+	SourceContractDigest        string `json:"sourceContractDigest"`
+	TerminalHistoryDigestSHA256 string `json:"terminalHistoryDigestSHA256"`
+}
+
+func (request historyHandoffExportRequest) validate() error {
+	if request.SchemaVersion != serviceSchemaVersion ||
+		!validBoundedText(request.TokenID, maximumMigrationIDBytes) ||
+		!validBoundedText(request.ManifestID, maximumMigrationIDBytes) ||
+		!validBoundedText(request.ContainerID, maximumMigrationIDBytes) ||
+		!validBoundedText(request.SourceStateRootUUID, maximumMigrationIDBytes) ||
+		!validBoundedText(request.DestinationStateRootUUID, maximumMigrationIDBytes) ||
+		request.SourceStateRootUUID == request.DestinationStateRootUUID ||
+		request.SourceLeaseGeneration == 0 ||
+		!validBoundedText(request.SourceProviderID, maximumMigrationIDBytes) ||
+		request.SourceProviderGeneration == 0 ||
+		!validBoundedText(request.SourceContractDigest, maximumMigrationTextBytes) ||
+		!validBoundedText(request.TerminalHistoryDigestSHA256, maximumMigrationTextBytes) {
+		return errInvalidFence
+	}
+	return nil
+}
+
+func (request historyHandoffExportRequest) validateSource(provider serviceIdentity) error {
+	if err := request.validate(); err != nil || request.SourceProviderID != provider.ID ||
+		request.SourceProviderGeneration != provider.Generation ||
+		request.SourceContractDigest != provider.ContractDigest {
+		return errInvalidFence
+	}
+	return nil
+}
+
+type historyHandoffExportReceipt struct {
+	SchemaVersion               uint32                      `json:"schemaVersion"`
+	Request                     historyHandoffExportRequest `json:"request"`
+	ProviderOutcomeDigestSHA256 string                      `json:"providerOutcomeDigestSHA256"`
+	ExportReceiptDigestSHA256   string                      `json:"exportReceiptDigestSHA256"`
+}
+
+func (receipt historyHandoffExportReceipt) validate() error {
+	if receipt.SchemaVersion != serviceSchemaVersion || receipt.Request.validate() != nil ||
+		!validBoundedText(receipt.ProviderOutcomeDigestSHA256, maximumMigrationTextBytes) ||
+		receipt.ExportReceiptDigestSHA256 != historyHandoffExportReceiptDigest(receipt) {
+		return errInvalidFence
+	}
+	return nil
+}
+
+type historyHandoffDestinationRequest struct {
+	SchemaVersion                 uint32                      `json:"schemaVersion"`
+	ExportReceipt                 historyHandoffExportReceipt `json:"exportReceipt"`
+	ManifestDigestSHA256          string                      `json:"manifestDigestSHA256"`
+	DestinationLeaseGeneration    uint64                      `json:"destinationLeaseGeneration"`
+	DestinationProviderID         string                      `json:"destinationProviderID"`
+	DestinationProviderGeneration uint64                      `json:"destinationProviderGeneration"`
+	DestinationContractDigest     string                      `json:"destinationContractDigest"`
+}
+
+func (request historyHandoffDestinationRequest) validate(provider serviceIdentity) error {
+	if request.SchemaVersion != serviceSchemaVersion || request.ExportReceipt.validate() != nil ||
+		!validBoundedText(request.ManifestDigestSHA256, maximumMigrationTextBytes) ||
+		request.DestinationLeaseGeneration == 0 || request.DestinationProviderID != provider.ID ||
+		request.DestinationProviderGeneration != provider.Generation ||
+		request.DestinationContractDigest != provider.ContractDigest ||
+		request.ExportReceipt.Request.DestinationStateRootUUID == "" {
+		return errInvalidFence
+	}
+	return nil
+}
+
+type historyHandoffPromotionRequest struct {
+	SchemaVersion                uint32                           `json:"schemaVersion"`
+	Destination                  historyHandoffDestinationRequest `json:"destination"`
+	CommitDigestSHA256           string                           `json:"commitDigestSHA256"`
+	HandoffChainHeadDigestSHA256 string                           `json:"handoffChainHeadDigestSHA256"`
+}
+
+func (request historyHandoffPromotionRequest) validate(provider serviceIdentity) error {
+	if request.SchemaVersion != serviceSchemaVersion || request.Destination.validate(provider) != nil ||
+		!validBoundedText(request.CommitDigestSHA256, maximumMigrationTextBytes) ||
+		!validBoundedText(request.HandoffChainHeadDigestSHA256, maximumMigrationTextBytes) {
+		return errInvalidFence
+	}
+	return nil
+}
+
+type historyHandoffPromotionReceipt struct {
+	SchemaVersion                uint32                         `json:"schemaVersion"`
+	Request                      historyHandoffPromotionRequest `json:"request"`
+	ProviderOutcomeDigestSHA256  string                         `json:"providerOutcomeDigestSHA256"`
+	PromotionReceiptDigestSHA256 string                         `json:"promotionReceiptDigestSHA256"`
+}
+
+func (receipt historyHandoffPromotionReceipt) validate(provider serviceIdentity) error {
+	if receipt.SchemaVersion != serviceSchemaVersion || receipt.Request.validate(provider) != nil ||
+		!validBoundedText(receipt.ProviderOutcomeDigestSHA256, maximumMigrationTextBytes) ||
+		receipt.PromotionReceiptDigestSHA256 != historyHandoffPromotionReceiptDigest(receipt) {
+		return errInvalidFence
+	}
+	return nil
+}
+
+type historyHandoffActivationRequest struct {
+	SchemaVersion               uint32                         `json:"schemaVersion"`
+	PromotionReceipt            historyHandoffPromotionReceipt `json:"promotionReceipt"`
+	TerminalOutcomeDigestSHA256 string                         `json:"terminalOutcomeDigestSHA256"`
+}
+
+func (request historyHandoffActivationRequest) validate(provider serviceIdentity) error {
+	if request.SchemaVersion != serviceSchemaVersion || request.PromotionReceipt.validate(provider) != nil ||
+		!validBoundedText(request.TerminalOutcomeDigestSHA256, maximumMigrationTextBytes) {
+		return errInvalidFence
+	}
+	return nil
+}
+
 type providerGenerationReclaim struct {
 	SchemaVersion      uint32 `json:"schemaVersion"`
 	ProviderID         string `json:"providerID"`

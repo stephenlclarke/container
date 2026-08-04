@@ -33,6 +33,7 @@ enum AuthorityRemoteLogDriverPlaneError: Error, Equatable, Sendable {
     case generationMismatch(expected: UInt64, actual: UInt64)
     case providerGenerationNotTerminal(containerID: String, generation: UInt64)
     case providerHistoryMigrationReceiptMismatch(containerID: String)
+    case providerHistoryHandoffReceiptMismatch(containerID: String)
 }
 
 package struct AuthorityRemoteLogDriverUpgradeCandidate: Equatable, Sendable {
@@ -522,6 +523,54 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         return receipt
     }
 
+    package func exportProviderHistoryForHandoff(
+        containerID: String,
+        configuration: ContainerLogConfiguration,
+        tokenID: String,
+        manifestID: String,
+        sourceStateRootUUID: String,
+        destinationStateRootUUID: String,
+        terminalHistoryDigestSHA256: String
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1 {
+        guard
+            let resolved = configuration.resolved,
+            resolved.readPolicy.source == .direct,
+            let selection = await providers.registry.selection(
+                providerID: resolved.providerIdentity.id,
+                generation: resolved.providerGenerationAtResolution
+            )
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryHandoffReceiptMismatch(
+                    containerID: containerID
+                )
+        }
+        let request = try LogDriverHistoryHandoffExportRequestV1(
+            tokenID: tokenID,
+            manifestID: manifestID,
+            containerID: containerID,
+            sourceStateRootUUID: sourceStateRootUUID,
+            destinationStateRootUUID: destinationStateRootUUID,
+            sourceLeaseGeneration: resolved.leaseGeneration,
+            sourceProviderID: resolved.providerIdentity.id,
+            sourceProviderGeneration:
+                resolved.providerGenerationAtResolution,
+            sourceContractDigest: resolved.contractDigest,
+            terminalHistoryDigestSHA256: terminalHistoryDigestSHA256
+        )
+        let receipt = try await selection.provider
+            .exportHistoryForHandoff(request)
+        guard receipt.request == request else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryHandoffReceiptMismatch(
+                    containerID: containerID
+                )
+        }
+        return receipt
+    }
+
     package func verifyProviderHistoryMigration(
         candidate: AuthorityRemoteLogDriverUpgradeCandidate,
         containerID: String,
@@ -722,9 +771,11 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             options: options
         )
 
-        let processGeneration = try ContainerLogProcessGenerationStore(
+        let sequenceStore = try ContainerLogProcessGenerationStore(
             directoryURL: bundle.containerLoggingV2
-        ).next()
+        )
+        let processGeneration = try sequenceStore.next()
+        let sequenceReservation = try sequenceStore.reserveSequenceBlock()
         let identityDigest = Self.sha256Hex(
             Data(
                 "\(containerID)\u{0}\(resolved.leaseGeneration)\u{0}\(processGeneration)"
@@ -772,6 +823,8 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         let pump = AuthorityRemoteLogPump(
             delivery: delivery,
             processGeneration: processGeneration,
+            sequenceReservation: sequenceReservation,
+            sequenceStore: sequenceStore,
             stdoutForeground: stdio[safe: 1] ?? nil,
             stderrForeground: stdio[safe: 2] ?? nil
         )
@@ -1324,10 +1377,12 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             return false
         }
         let resolved = try Self.requireResolved(configuration.logging)
-        guard let activeGeneration = try await sandboxGeneration(
-            for: resolved,
-            provider: provider
-        ) else {
+        guard
+            let activeGeneration = try await sandboxGeneration(
+                for: resolved,
+                provider: provider
+            )
+        else {
             throw AuthorityRemoteLogDriverPlaneError.incompleteConfiguration
         }
         guard activeGeneration >= requestedGeneration else {
@@ -1757,6 +1812,213 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 }
 
+extension AuthorityRemoteLogDriverPlane:
+    LoggingHandoffProviderHistoryPreflighting,
+    LoggingHandoffProviderHistoryPromoting
+{
+    func preflightProviderHistory(
+        containerID: String,
+        history: LoggingHandoffHistoryStoreV1,
+        destination: PreparedContainerLogResolution,
+        handoffManifestDigestSHA256: String,
+        destinationStateRootUUID: String
+    ) async throws {
+        let request = try Self.historyHandoffDestinationRequest(
+            containerID: containerID,
+            history: history,
+            descriptor: destination.descriptor,
+            destinationLeaseGeneration: 1,
+            manifestDigestSHA256: handoffManifestDigestSHA256,
+            destinationStateRootUUID: destinationStateRootUUID
+        )
+        guard
+            let selection = await providers.registry.selection(
+                providerID: request.destinationProviderID,
+                generation: request.destinationProviderGeneration
+            )
+        else {
+            throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                destination.descriptor.driver
+            )
+        }
+        try await selection.provider.preflightHistoryHandoff(request)
+    }
+
+    func promoteProviderHistory(
+        container: LoggingHandoffStagedContainerV1,
+        history: [LoggingHandoffHistoryStoreV1],
+        authorization: LoggingHandoffPromotionAuthorizationV1
+    ) async throws {
+        let (provider, request) = try await historyHandoffPromotion(
+            container: container,
+            history: history,
+            tokenID: authorization.tokenID,
+            manifestID: authorization.manifestID,
+            manifestDigestSHA256: authorization.manifestDigest,
+            destinationStateRootUUID: authorization.destinationStateRootUUID,
+            commitDigestSHA256: authorization.commitDigestSHA256,
+            handoffChainHeadDigestSHA256:
+                authorization.handoffChainHeadDigestSHA256
+        )
+        let receipt = try await provider.promoteHistoryHandoff(request)
+        guard receipt.request == request else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryHandoffReceiptMismatch(
+                    containerID: container.containerID
+                )
+        }
+    }
+
+    func activateProviderHistory(
+        container: LoggingHandoffStagedContainerV1,
+        history: [LoggingHandoffHistoryStoreV1],
+        promotionReceipt _: LoggingHandoffControllerPromotionReceiptV1,
+        authorization: LoggingHandoffActivationAuthorizationV1
+    ) async throws {
+        let (provider, request) = try await historyHandoffPromotion(
+            container: container,
+            history: history,
+            tokenID: authorization.tokenID,
+            manifestID: authorization.manifestID,
+            manifestDigestSHA256: authorization.manifestDigest,
+            destinationStateRootUUID: authorization.destinationStateRootUUID,
+            commitDigestSHA256: authorization.commitDigestSHA256,
+            handoffChainHeadDigestSHA256:
+                authorization.handoffChainHeadDigestSHA256
+        )
+        let receipt = try await provider.promoteHistoryHandoff(request)
+        guard receipt.request == request else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryHandoffReceiptMismatch(
+                    containerID: container.containerID
+                )
+        }
+        try await provider.activateHistoryHandoff(
+            LogDriverHistoryHandoffActivationRequestV1(
+                promotionReceipt: receipt,
+                terminalOutcomeDigestSHA256:
+                    authorization.terminalOutcomeDigestSHA256
+            )
+        )
+    }
+
+    private func historyHandoffPromotion(
+        container: LoggingHandoffStagedContainerV1,
+        history: [LoggingHandoffHistoryStoreV1],
+        tokenID: String,
+        manifestID: String,
+        manifestDigestSHA256: String,
+        destinationStateRootUUID: String,
+        commitDigestSHA256: String,
+        handoffChainHeadDigestSHA256: String
+    ) async throws -> (
+        any ContainerLogDriverProvider,
+        LogDriverHistoryHandoffPromotionRequestV1
+    ) {
+        guard
+            history.count == 1,
+            let resolved = container.configuration.resolved,
+            let export = history[0].providerExportReceipt,
+            export.request.tokenID == tokenID,
+            export.request.manifestID == manifestID
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryHandoffReceiptMismatch(
+                    containerID: container.containerID
+                )
+        }
+        let destination = try Self.historyHandoffDestinationRequest(
+            containerID: container.containerID,
+            history: history[0],
+            descriptorIdentity: (
+                resolved.providerIdentity.id,
+                resolved.providerGenerationAtResolution,
+                resolved.contractDigest
+            ),
+            destinationLeaseGeneration: resolved.leaseGeneration,
+            manifestDigestSHA256: manifestDigestSHA256,
+            destinationStateRootUUID: destinationStateRootUUID
+        )
+        guard
+            let selection = await providers.registry.selection(
+                providerID: destination.destinationProviderID,
+                generation: destination.destinationProviderGeneration
+            )
+        else {
+            throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                resolved.driver
+            )
+        }
+        return (
+            selection.provider,
+            try LogDriverHistoryHandoffPromotionRequestV1(
+                destination: destination,
+                commitDigestSHA256: commitDigestSHA256,
+                handoffChainHeadDigestSHA256: handoffChainHeadDigestSHA256
+            )
+        )
+    }
+
+    private static func historyHandoffDestinationRequest(
+        containerID: String,
+        history: LoggingHandoffHistoryStoreV1,
+        descriptor: LogDriverDescriptor,
+        destinationLeaseGeneration: UInt64,
+        manifestDigestSHA256: String,
+        destinationStateRootUUID: String
+    ) throws -> LogDriverHistoryHandoffDestinationRequestV1 {
+        try historyHandoffDestinationRequest(
+            containerID: containerID,
+            history: history,
+            descriptorIdentity: (
+                descriptor.providerIdentity.id,
+                descriptor.providerGeneration,
+                descriptor.optionContractDigest
+            ),
+            destinationLeaseGeneration: destinationLeaseGeneration,
+            manifestDigestSHA256: manifestDigestSHA256,
+            destinationStateRootUUID: destinationStateRootUUID
+        )
+    }
+
+    private static func historyHandoffDestinationRequest(
+        containerID: String,
+        history: LoggingHandoffHistoryStoreV1,
+        descriptorIdentity: (id: String, generation: UInt64, contract: String),
+        destinationLeaseGeneration: UInt64,
+        manifestDigestSHA256: String,
+        destinationStateRootUUID: String
+    ) throws -> LogDriverHistoryHandoffDestinationRequestV1 {
+        guard
+            history.kind == .providerOwned,
+            history.disposition == .providerExportVerified,
+            let export = history.providerExportReceipt,
+            history.providerExportDigestSHA256
+                == export.exportReceiptDigestSHA256,
+            export.request.containerID == containerID,
+            export.request.destinationStateRootUUID
+                == destinationStateRootUUID
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryHandoffReceiptMismatch(
+                    containerID: containerID
+                )
+        }
+        return try LogDriverHistoryHandoffDestinationRequestV1(
+            exportReceipt: export,
+            manifestDigestSHA256: manifestDigestSHA256,
+            destinationLeaseGeneration: destinationLeaseGeneration,
+            destinationProviderID: descriptorIdentity.id,
+            destinationProviderGeneration: descriptorIdentity.generation,
+            destinationContractDigest: descriptorIdentity.contract
+        )
+    }
+}
+
 private actor AuthorityRemoteLogReader: ContainerLogReader {
     private let reader: any ContainerLogReader
     private let closeLifecycle: @Sendable () async throws -> Void
@@ -1966,10 +2228,12 @@ package actor AuthorityRemoteLogDelivery {
 private actor AuthorityRemoteLogPump {
     private let delivery: AuthorityRemoteLogDelivery
     private let processGeneration: UInt64
+    private let sequenceStore: ContainerLogProcessGenerationStore
     private var stdoutSplitter = ContainerLogRecordSplitterV1(stream: .stdout)
     private var stderrSplitter = ContainerLogRecordSplitterV1(stream: .stderr)
     private var foreground: [ContainerLogStream: FileHandle]
-    private var sequence: UInt64 = 0
+    private var nextSequence: UInt64
+    private var reservedUpperBound: UInt64
     private var failedStreams = Set<ContainerLogStream>()
     private var finishedStreams = Set<ContainerLogStream>()
     private var receivedBytes: [ContainerLogStream: UInt64] = [:]
@@ -1978,11 +2242,16 @@ private actor AuthorityRemoteLogPump {
     init(
         delivery: AuthorityRemoteLogDelivery,
         processGeneration: UInt64,
+        sequenceReservation: ContainerLogSequenceReservationV1,
+        sequenceStore: ContainerLogProcessGenerationStore,
         stdoutForeground: FileHandle?,
         stderrForeground: FileHandle?
     ) {
         self.delivery = delivery
         self.processGeneration = processGeneration
+        self.sequenceStore = sequenceStore
+        nextSequence = sequenceReservation.lowerBound
+        reservedUpperBound = sequenceReservation.upperBoundInclusive
         var foreground = [ContainerLogStream: FileHandle]()
         foreground[.stdout] = stdoutForeground
         foreground[.stderr] = stderrForeground
@@ -2046,10 +2315,25 @@ private actor AuthorityRemoteLogPump {
         _ fragments: [ContainerLogRecordFragmentV1]
     ) async {
         for fragment in fragments {
-            guard sequence < UInt64.max else {
-                continue
+            if nextSequence > reservedUpperBound {
+                guard
+                    let reservation =
+                        try? sequenceStore
+                        .reserveSequenceBlock(),
+                    reservation.lowerBound > reservedUpperBound
+                else {
+                    return
+                }
+                nextSequence = reservation.lowerBound
+                reservedUpperBound = reservation.upperBoundInclusive
             }
-            sequence += 1
+            let sequence = nextSequence
+            if sequence == UInt64.max {
+                nextSequence = UInt64.max
+                reservedUpperBound = UInt64.max - 1
+            } else {
+                nextSequence = sequence + 1
+            }
             guard
                 let record = try? ContainerLogRecordV2(
                     fragment: fragment,

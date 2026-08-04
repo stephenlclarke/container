@@ -43,6 +43,10 @@ package enum DockerPluginLifecycleServiceWireOperationV1: String, Codable,
 {
     case activeSandboxGeneration
     case migrateHistory
+    case exportHistoryForHandoff
+    case preflightHistoryHandoff
+    case promoteHistoryHandoff
+    case activateHistoryHandoff
     case reclaimGeneration
     case startWriter
     case reconcileWriterOpen
@@ -211,6 +215,10 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
     package let readerCall: DockerPluginReaderCallWireV1?
     package let terminalReclaim: DockerPluginTerminalReclaimWireV1?
     package let historyMigration: LogDriverHistoryMigrationRequestV1?
+    package let historyHandoffExport: LogDriverHistoryHandoffExportRequestV1?
+    package let historyHandoffDestination: LogDriverHistoryHandoffDestinationRequestV1?
+    package let historyHandoffPromotion: LogDriverHistoryHandoffPromotionRequestV1?
+    package let historyHandoffActivation: LogDriverHistoryHandoffActivationRequestV1?
     package let generationReclaim: LogDriverProviderGenerationReclaimV1?
     package let sessionID: String?
     package let token: Data?
@@ -229,6 +237,14 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         readerCall: DockerPluginReaderCallWireV1? = nil,
         terminalReclaim: DockerPluginTerminalReclaimWireV1? = nil,
         historyMigration: LogDriverHistoryMigrationRequestV1? = nil,
+        historyHandoffExport:
+            LogDriverHistoryHandoffExportRequestV1? = nil,
+        historyHandoffDestination:
+            LogDriverHistoryHandoffDestinationRequestV1? = nil,
+        historyHandoffPromotion:
+            LogDriverHistoryHandoffPromotionRequestV1? = nil,
+        historyHandoffActivation:
+            LogDriverHistoryHandoffActivationRequestV1? = nil,
         generationReclaim: LogDriverProviderGenerationReclaimV1? = nil,
         sessionID: String? = nil,
         token: Data? = nil,
@@ -248,6 +264,10 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         self.readerCall = readerCall
         self.terminalReclaim = terminalReclaim
         self.historyMigration = historyMigration
+        self.historyHandoffExport = historyHandoffExport
+        self.historyHandoffDestination = historyHandoffDestination
+        self.historyHandoffPromotion = historyHandoffPromotion
+        self.historyHandoffActivation = historyHandoffActivation
         self.generationReclaim = generationReclaim
         self.sessionID = sessionID
         self.token = token
@@ -265,6 +285,42 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         _ request: LogDriverHistoryMigrationRequestV1
     ) -> Self {
         Self(operation: .migrateHistory, historyMigration: request)
+    }
+
+    package static func exportHistoryForHandoff(
+        _ request: LogDriverHistoryHandoffExportRequestV1
+    ) -> Self {
+        Self(
+            operation: .exportHistoryForHandoff,
+            historyHandoffExport: request
+        )
+    }
+
+    package static func preflightHistoryHandoff(
+        _ request: LogDriverHistoryHandoffDestinationRequestV1
+    ) -> Self {
+        Self(
+            operation: .preflightHistoryHandoff,
+            historyHandoffDestination: request
+        )
+    }
+
+    package static func promoteHistoryHandoff(
+        _ request: LogDriverHistoryHandoffPromotionRequestV1
+    ) -> Self {
+        Self(
+            operation: .promoteHistoryHandoff,
+            historyHandoffPromotion: request
+        )
+    }
+
+    package static func activateHistoryHandoff(
+        _ request: LogDriverHistoryHandoffActivationRequestV1
+    ) -> Self {
+        Self(
+            operation: .activateHistoryHandoff,
+            historyHandoffActivation: request
+        )
     }
 
     package static func reclaimGeneration(
@@ -416,6 +472,10 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
             readerCall: readerCall,
             terminalReclaim: terminalReclaim,
             historyMigration: historyMigration,
+            historyHandoffExport: historyHandoffExport,
+            historyHandoffDestination: historyHandoffDestination,
+            historyHandoffPromotion: historyHandoffPromotion,
+            historyHandoffActivation: historyHandoffActivation,
             generationReclaim: generationReclaim,
             sessionID: sessionID,
             token: token,
@@ -438,6 +498,13 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         readerCall: DockerPluginReaderCallWireV1?,
         terminalReclaim: DockerPluginTerminalReclaimWireV1?,
         historyMigration: LogDriverHistoryMigrationRequestV1?,
+        historyHandoffExport: LogDriverHistoryHandoffExportRequestV1?,
+        historyHandoffDestination:
+            LogDriverHistoryHandoffDestinationRequestV1?,
+        historyHandoffPromotion:
+            LogDriverHistoryHandoffPromotionRequestV1?,
+        historyHandoffActivation:
+            LogDriverHistoryHandoffActivationRequestV1?,
         generationReclaim: LogDriverProviderGenerationReclaimV1?,
         sessionID: String?,
         token: Data?,
@@ -457,6 +524,10 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         self.readerCall = readerCall
         self.terminalReclaim = terminalReclaim
         self.historyMigration = historyMigration
+        self.historyHandoffExport = historyHandoffExport
+        self.historyHandoffDestination = historyHandoffDestination
+        self.historyHandoffPromotion = historyHandoffPromotion
+        self.historyHandoffActivation = historyHandoffActivation
         self.generationReclaim = generationReclaim
         self.sessionID = sessionID
         self.token = token
@@ -485,6 +556,8 @@ public struct DockerPluginLifecycleServiceWireResponseV1: Codable, Equatable,
     package let frame: Data?
     package let endOfStream: Bool?
     package let historyMigrationReceipt: LogDriverHistoryMigrationReceiptV1?
+    package let historyHandoffExportReceipt: LogDriverHistoryHandoffExportReceiptV1?
+    package let historyHandoffPromotionReceipt: LogDriverHistoryHandoffPromotionReceiptV1?
 
     package init(
         operationID: String,
@@ -500,7 +573,11 @@ public struct DockerPluginLifecycleServiceWireResponseV1: Codable, Equatable,
         sequence: UInt64? = nil,
         frame: Data? = nil,
         endOfStream: Bool? = nil,
-        historyMigrationReceipt: LogDriverHistoryMigrationReceiptV1? = nil
+        historyMigrationReceipt: LogDriverHistoryMigrationReceiptV1? = nil,
+        historyHandoffExportReceipt:
+            LogDriverHistoryHandoffExportReceiptV1? = nil,
+        historyHandoffPromotionReceipt:
+            LogDriverHistoryHandoffPromotionReceiptV1? = nil
     ) {
         self.schemaVersion =
             DockerPluginLifecycleServiceWireRequestV1
@@ -519,6 +596,9 @@ public struct DockerPluginLifecycleServiceWireResponseV1: Codable, Equatable,
         self.frame = frame
         self.endOfStream = endOfStream
         self.historyMigrationReceipt = historyMigrationReceipt
+        self.historyHandoffExportReceipt = historyHandoffExportReceipt
+        self.historyHandoffPromotionReceipt =
+            historyHandoffPromotionReceipt
     }
 }
 
@@ -814,6 +894,8 @@ extension DockerPluginLifecycleServiceWireResponseV1 {
             frame != nil,
             endOfStream != nil,
             historyMigrationReceipt != nil,
+            historyHandoffExportReceipt != nil,
+            historyHandoffPromotionReceipt != nil,
         ].filter { $0 }.count
         if failure != nil {
             guard payloadCount == 0 else {
@@ -828,6 +910,21 @@ extension DockerPluginLifecycleServiceWireResponseV1 {
             }
         case .migrateHistory:
             guard payloadCount == 1, historyMigrationReceipt != nil else {
+                throw DockerPluginLifecycleServiceWireError.invalidEnvelope
+            }
+        case .exportHistoryForHandoff:
+            guard payloadCount == 1, historyHandoffExportReceipt != nil else {
+                throw DockerPluginLifecycleServiceWireError.invalidEnvelope
+            }
+        case .preflightHistoryHandoff, .activateHistoryHandoff:
+            guard payloadCount == 0 else {
+                throw DockerPluginLifecycleServiceWireError.invalidEnvelope
+            }
+        case .promoteHistoryHandoff:
+            guard
+                payloadCount == 1,
+                historyHandoffPromotionReceipt != nil
+            else {
                 throw DockerPluginLifecycleServiceWireError.invalidEnvelope
             }
         case .reclaimGeneration:
@@ -956,6 +1053,44 @@ public actor DockerPluginLifecycleServiceWireClientV1:
             throw LogDriverHistoryMigrationError.receiptMismatch
         }
         return receipt
+    }
+
+    public func exportHistoryForHandoff(
+        _ request: LogDriverHistoryHandoffExportRequestV1
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1 {
+        let response = try await invoke(.exportHistoryForHandoff(request))
+        guard
+            let receipt = response.historyHandoffExportReceipt,
+            receipt.request == request
+        else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+        return receipt
+    }
+
+    public func preflightHistoryHandoff(
+        _ request: LogDriverHistoryHandoffDestinationRequestV1
+    ) async throws {
+        _ = try await invoke(.preflightHistoryHandoff(request))
+    }
+
+    public func promoteHistoryHandoff(
+        _ request: LogDriverHistoryHandoffPromotionRequestV1
+    ) async throws -> LogDriverHistoryHandoffPromotionReceiptV1 {
+        let response = try await invoke(.promoteHistoryHandoff(request))
+        guard
+            let receipt = response.historyHandoffPromotionReceipt,
+            receipt.request == request
+        else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+        return receipt
+    }
+
+    public func activateHistoryHandoff(
+        _ request: LogDriverHistoryHandoffActivationRequestV1
+    ) async throws {
+        _ = try await invoke(.activateHistoryHandoff(request))
     }
 
     public func reclaimGeneration(

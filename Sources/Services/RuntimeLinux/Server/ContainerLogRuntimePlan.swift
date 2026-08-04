@@ -229,7 +229,11 @@ package enum ContainerLogRuntimePlan: Sendable {
             )
 
         case .jsonFile(let configuration, let delivery, let attributes):
-            let generation = try Self.allocateProcessGeneration(bundle: bundle)
+            let sequenceStore = try ContainerLogProcessGenerationStore(
+                directoryURL: bundle.containerLoggingV2
+            )
+            let generation = try sequenceStore.next()
+            let reservation = try sequenceStore.reserveSequenceBlock()
             let store = try DockerJSONFileLogStore(
                 directoryURL: bundle.containerJSONFileLogDirectory,
                 activeFileName: ContainerResource.Bundle.jsonFileLogName,
@@ -240,12 +244,18 @@ package enum ContainerLogRuntimePlan: Sendable {
                 delivery: delivery,
                 terminal: terminal,
                 processGeneration: generation,
+                sequenceReservation: reservation,
+                sequenceStore: sequenceStore,
                 attributes: attributes,
                 publicLogPath: store.logURL
             )
 
         case .local(let configuration, let delivery, let attributes):
-            let generation = try Self.allocateProcessGeneration(bundle: bundle)
+            let sequenceStore = try ContainerLogProcessGenerationStore(
+                directoryURL: bundle.containerLoggingV2
+            )
+            let generation = try sequenceStore.next()
+            let reservation = try sequenceStore.reserveSequenceBlock()
             let store = try NativeLocalLogStore(
                 directoryURL: bundle.containerNativeLocalLogDirectory,
                 activeFileName: ContainerResource.Bundle.nativeLocalLogName,
@@ -256,6 +266,8 @@ package enum ContainerLogRuntimePlan: Sendable {
                 delivery: delivery,
                 terminal: terminal,
                 processGeneration: generation,
+                sequenceReservation: reservation,
+                sequenceStore: sequenceStore,
                 attributes: attributes,
                 publicLogPath: nil
             )
@@ -269,12 +281,14 @@ package enum ContainerLogRuntimePlan: Sendable {
             )
 
         case .authorityForwarded(let cache?, let attributes):
-            let generation = try ContainerLogProcessGenerationStore(
+            let sequenceStore = try ContainerLogProcessGenerationStore(
                 directoryURL: bundle.containerLoggingV2
-            ).current()
+            )
+            let generation = try sequenceStore.current()
             guard generation > 0 else {
                 throw ContainerLogRuntimePlanError.incompleteConfiguration
             }
+            let reservation = try sequenceStore.reserveSequenceBlock()
             let store = try NativeLocalLogStore(
                 directoryURL: bundle.containerNativeLogCacheDirectory,
                 activeFileName: ContainerResource.Bundle.nativeLogCacheName,
@@ -289,6 +303,8 @@ package enum ContainerLogRuntimePlan: Sendable {
                 delivery: LogDeliveryConfiguration(),
                 terminal: terminal,
                 processGeneration: generation,
+                sequenceReservation: reservation,
+                sequenceStore: sequenceStore,
                 attributes: attributes,
                 publicLogPath: nil
             )
@@ -300,6 +316,8 @@ package enum ContainerLogRuntimePlan: Sendable {
         delivery: LogDeliveryConfiguration,
         terminal: Bool,
         processGeneration: UInt64,
+        sequenceReservation: ContainerLogSequenceReservationV1,
+        sequenceStore: ContainerLogProcessGenerationStore,
         attributes: [String: String],
         publicLogPath: URL?
     ) throws -> ContainerLogRuntimeCapture {
@@ -309,6 +327,10 @@ package enum ContainerLogRuntimePlan: Sendable {
             deliveryConfiguration: delivery,
             streams: streams,
             processGeneration: processGeneration,
+            sequenceReservation: sequenceReservation,
+            sequenceReservationProvider: {
+                try sequenceStore.reserveSequenceBlock()
+            },
             attributes: attributes
         )
         return ContainerLogRuntimeCapture(
@@ -317,12 +339,6 @@ package enum ContainerLogRuntimePlan: Sendable {
             session: session,
             publicLogPath: publicLogPath
         )
-    }
-
-    private static func allocateProcessGeneration(
-        bundle: ContainerResource.Bundle
-    ) throws -> UInt64 {
-        try ContainerLogProcessGenerationStore(directoryURL: bundle.containerLoggingV2).next()
     }
 
     private static func validateFileOptions(

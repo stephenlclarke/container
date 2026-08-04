@@ -83,6 +83,34 @@ struct DockerPluginLifecycleServiceWireTests {
             historyMigration
         )
         #expect(migrationReceipt.request == historyMigration)
+        let historyExportRequest = try dockerPluginWireHistoryExportRequest()
+        let historyExport = try await client.exportHistoryForHandoff(
+            historyExportRequest
+        )
+        let historyDestination = try LogDriverHistoryHandoffDestinationRequestV1(
+            exportReceipt: historyExport,
+            manifestDigestSHA256: "sha256:" + String(repeating: "b", count: 64),
+            destinationLeaseGeneration: 1,
+            destinationProviderID: dockerPluginWireProviderID,
+            destinationProviderGeneration: 7,
+            destinationContractDigest: "sha256:" + String(repeating: "c", count: 64)
+        )
+        try await client.preflightHistoryHandoff(historyDestination)
+        let historyPromotionRequest = try LogDriverHistoryHandoffPromotionRequestV1(
+            destination: historyDestination,
+            commitDigestSHA256: "sha256:" + String(repeating: "d", count: 64),
+            handoffChainHeadDigestSHA256: "sha256:" + String(repeating: "e", count: 64)
+        )
+        let historyPromotion = try await client.promoteHistoryHandoff(
+            historyPromotionRequest
+        )
+        try await client.activateHistoryHandoff(
+            LogDriverHistoryHandoffActivationRequestV1(
+                promotionReceipt: historyPromotion,
+                terminalOutcomeDigestSHA256:
+                    "sha256:" + String(repeating: "f", count: 64)
+            )
+        )
         try await client.reclaimGeneration(
             LogDriverProviderGenerationReclaimV1(
                 providerID: dockerPluginWireProviderID,
@@ -131,6 +159,10 @@ struct DockerPluginLifecycleServiceWireTests {
             requests.map(\.operation) == [
                 .activeSandboxGeneration,
                 .migrateHistory,
+                .exportHistoryForHandoff,
+                .preflightHistoryHandoff,
+                .promoteHistoryHandoff,
+                .activateHistoryHandoff,
                 .reclaimGeneration,
                 .startWriter,
                 .writeWriter,
@@ -142,8 +174,8 @@ struct DockerPluginLifecycleServiceWireTests {
                 .cancelReader,
             ]
         )
-        let encodedFrame = try #require(requests[4].frame)
-        #expect(requests[4].sequence == 1)
+        let encodedFrame = try #require(requests[8].frame)
+        #expect(requests[8].sequence == 1)
         var decoder = DockerPluginFrameDecoder()
         let entries = try decoder.append(encodedFrame)
         try decoder.finish()
@@ -412,6 +444,30 @@ private actor DockerPluginWireRecordingTransport:
                     request: request.historyMigration!,
                     providerOutcomeDigest: "sha256:provider-history"
                 )
+            )
+        case .exportHistoryForHandoff:
+            return DockerPluginLifecycleServiceWireResponseV1(
+                operationID: request.operationID,
+                historyHandoffExportReceipt:
+                    try LogDriverHistoryHandoffExportReceiptV1(
+                        request: request.historyHandoffExport!,
+                        providerOutcomeDigestSHA256:
+                            "sha256:" + String(repeating: "1", count: 64)
+                    )
+            )
+        case .preflightHistoryHandoff, .activateHistoryHandoff:
+            return DockerPluginLifecycleServiceWireResponseV1(
+                operationID: request.operationID
+            )
+        case .promoteHistoryHandoff:
+            return DockerPluginLifecycleServiceWireResponseV1(
+                operationID: request.operationID,
+                historyHandoffPromotionReceipt:
+                    try LogDriverHistoryHandoffPromotionReceiptV1(
+                        request: request.historyHandoffPromotion!,
+                        providerOutcomeDigestSHA256:
+                            "sha256:" + String(repeating: "2", count: 64)
+                    )
             )
         case .reclaimGeneration:
             return DockerPluginLifecycleServiceWireResponseV1(
@@ -710,6 +766,24 @@ private func dockerPluginWireHistoryMigrationRequest() throws
         targetProviderGeneration: 7,
         contractDigest: "sha256:plugin-contract",
         terminalHistoryDigest: "sha256:terminal-history"
+    )
+}
+
+private func dockerPluginWireHistoryExportRequest() throws
+    -> LogDriverHistoryHandoffExportRequestV1
+{
+    try LogDriverHistoryHandoffExportRequestV1(
+        tokenID: "token",
+        manifestID: "manifest",
+        containerID: dockerPluginWireContainerID,
+        sourceStateRootUUID: "source-root",
+        destinationStateRootUUID: "destination-root",
+        sourceLeaseGeneration: 2,
+        sourceProviderID: dockerPluginWireProviderID,
+        sourceProviderGeneration: 7,
+        sourceContractDigest: "sha256:" + String(repeating: "c", count: 64),
+        terminalHistoryDigestSHA256:
+            "sha256:" + String(repeating: "a", count: 64)
     )
 }
 

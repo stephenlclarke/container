@@ -1220,6 +1220,22 @@ public struct LogDriverProviderGenerationReclaimV1: Codable, Equatable,
 public protocol ContainerLogDriverProvider: Sendable {
     var descriptor: LogDriverDescriptor { get async throws }
 
+    func exportHistoryForHandoff(
+        _ request: LogDriverHistoryHandoffExportRequestV1
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1
+
+    func preflightHistoryHandoff(
+        _ request: LogDriverHistoryHandoffDestinationRequestV1
+    ) async throws
+
+    func promoteHistoryHandoff(
+        _ request: LogDriverHistoryHandoffPromotionRequestV1
+    ) async throws -> LogDriverHistoryHandoffPromotionReceiptV1
+
+    func activateHistoryHandoff(
+        _ request: LogDriverHistoryHandoffActivationRequestV1
+    ) async throws
+
     /// Revalidates or migrates provider-owned readable history from one
     /// terminal generation to the staged replacement. The exact receipt is
     /// persisted with the target lease before alias cutover.
@@ -1262,6 +1278,30 @@ public protocol ContainerLogDriverProvider: Sendable {
 }
 
 extension ContainerLogDriverProvider {
+    public func exportHistoryForHandoff(
+        _: LogDriverHistoryHandoffExportRequestV1
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1 {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
+    public func preflightHistoryHandoff(
+        _: LogDriverHistoryHandoffDestinationRequestV1
+    ) async throws {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
+    public func promoteHistoryHandoff(
+        _: LogDriverHistoryHandoffPromotionRequestV1
+    ) async throws -> LogDriverHistoryHandoffPromotionReceiptV1 {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
+    public func activateHistoryHandoff(
+        _: LogDriverHistoryHandoffActivationRequestV1
+    ) async throws {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
     public func migrateHistory(
         _: LogDriverHistoryMigrationRequestV1
     ) async throws -> LogDriverHistoryMigrationReceiptV1 {

@@ -16,6 +16,8 @@
 
 import CVersion
 import ContainerAPIClient
+import ContainerEngineProviderSession
+import ContainerEngineRuntimeSPI
 import ContainerLoggingStorage
 import ContainerPersistence
 import ContainerPlugin
@@ -3645,7 +3647,217 @@ public actor ContainersService {
     }
 }
 
+extension ContainersService: LoggingHandoffContainerPromoting {
+    func promoteContainerLogging(
+        container: LoggingHandoffStagedContainerV1,
+        history: [LoggingHandoffPromotedHistorySegmentV1],
+        authorization: LoggingHandoffPromotionAuthorizationV1
+    ) async throws {
+        if let reference = container.configuration.resolved?
+            .protectedOptionReference
+        {
+            let binding = try LoggingProtectedOptionsBinding(
+                containerID: container.containerID,
+                configuration: container.configuration
+            )
+            _ = try await loggingProtectedOptionsStore.load(
+                reference,
+                boundTo: binding
+            )
+        }
+
+        try await lock.withLock(logMetadata: [
+            "acquirer": "\(#function)",
+            "id": "\(container.containerID)",
+        ]) { context in
+            var state = try await self.getContainerState(
+                id: container.containerID,
+                context: context
+            )
+            guard
+                state.snapshot.status == .stopped,
+                state.client == nil
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message:
+                        "logging handoff promotion requires a hidden stopped destination container"
+                )
+            }
+            let placeholder = ContainerLogConfiguration(storage: .none)
+            let currentLogging = state.snapshot.configuration.logging
+            guard
+                currentLogging == container.configuration
+                    || currentLogging == placeholder
+            else {
+                throw ContainerizationError(
+                    .exists,
+                    message:
+                        "logging handoff destination configuration collides with existing state"
+                )
+            }
+            let stagedLocalEntryIDs: Set<String> = Set(
+                container.histories.compactMap { staged -> String? in
+                    guard staged.disposition == .importVerified else {
+                        return nil
+                    }
+                    switch staged.kind {
+                    case .dockerJSONFile, .nativeLocal, .dualCache:
+                        return staged.entryID
+                    default:
+                        return nil
+                    }
+                }
+            )
+            guard stagedLocalEntryIDs == Set(history.map(\.entryID)) else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "logging handoff history set changed before promotion"
+                )
+            }
+
+            let path = try Self.containerPath(
+                root: self.containerRoot,
+                id: container.containerID
+            )
+            let bundle = ContainerResource.Bundle(path: path)
+            try LoggingHandoffBundleHistoryPublisher.publish(
+                bundle: bundle,
+                segments: history,
+                transactionID:
+                    "\(authorization.tokenID):\(authorization.manifestID):\(container.containerID)"
+            )
+            if let terminalEpoch = container.histories
+                .map(\.terminalHistoryEpoch).max(),
+                let maximumSequence = container.histories
+                    .map(\.maximumInternalSequence).max()
+            {
+                try ContainerLogProcessGenerationStore(
+                    directoryURL: bundle.containerLoggingV2
+                ).adoptHistoryCursor(
+                    terminalHistoryEpoch: terminalEpoch,
+                    maximumInternalSequence: maximumSequence
+                )
+            }
+
+            if currentLogging != container.configuration {
+                var configuration = state.snapshot.configuration
+                configuration.logging = container.configuration
+                try bundle.setDurably(configuration: configuration)
+                state.snapshot.configuration = configuration
+                await self.setContainerState(
+                    container.containerID,
+                    state,
+                    context: context
+                )
+            }
+        }
+    }
+
+    func activateContainerLogging(
+        container: LoggingHandoffStagedContainerV1,
+        promotionReceipt: LoggingHandoffControllerPromotionReceiptV1,
+        authorization: LoggingHandoffActivationAuthorizationV1
+    ) async throws {
+        guard
+            promotionReceipt.handoffTokenID == authorization.tokenID,
+            promotionReceipt.handoffManifestID == authorization.manifestID,
+            promotionReceipt.handoffManifestDigest
+                == authorization.manifestDigest,
+            promotionReceipt.commitDigestSHA256
+                == authorization.commitDigestSHA256,
+            promotionReceipt.handoffChainHeadDigestSHA256
+                == authorization.handoffChainHeadDigestSHA256
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "logging handoff activation authorization changed"
+            )
+        }
+        try await lock.withLock(logMetadata: [
+            "acquirer": "\(#function)",
+            "id": "\(container.containerID)",
+        ]) { context in
+            let state = try await self.getContainerState(
+                id: container.containerID,
+                context: context
+            )
+            guard
+                state.snapshot.status == .stopped,
+                state.client == nil,
+                state.snapshot.configuration.logging
+                    == container.configuration
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message:
+                        "logging handoff activation found an unpromoted destination container"
+                )
+            }
+        }
+    }
+}
+
 extension ContainersService {
+    package func makeLoggingHandoffControlResponder(
+        stateRoot: URL,
+        objectStore: ProviderHandoffBundleObjectStore,
+        possessionProofStore: ProviderHandoffPossessionProofStore,
+        trustRegistryStore: ProviderHandoffTrustRegistryStore,
+        providerIdentity: ProviderHandoffProviderIdentityV1
+    ) throws -> any ContainerEngineProviderHandoffControlResponder {
+        let commonStore = ProviderHandoffPartStagingStore(
+            root: stateRoot.appendingPathComponent(
+                "handoff-part-staging",
+                isDirectory: true
+            )
+        )
+        let controller = LoggingHandoffStagingController(
+            defaults: containerSystemConfig.logging,
+            commonStore: commonStore,
+            protectedOptionsStore: loggingProtectedOptionsStore,
+            receiptStore: try LoggingHandoffProtectedReceiptStore(
+                rootURL: stateRoot.appendingPathComponent(
+                    "handoff-logging-protected-receipts",
+                    isDirectory: true
+                )
+            ),
+            providerHistoryPreflight: remoteLogDriverPlane,
+            destinationStateRootUUID:
+                providerIdentity.context.stateRootUUID
+        )
+        let destination = try LoggingHandoffDestinationReconciler(
+            rootURL: stateRoot.appendingPathComponent(
+                "handoff-logging-promotions",
+                isDirectory: true
+            ),
+            containerPromoter: self,
+            providerPromoter: remoteLogDriverPlane
+        )
+        return LoggingHandoffControlResponder(
+            objectStore: objectStore,
+            possessionProofStore: possessionProofStore,
+            trustRegistryStore: trustRegistryStore,
+            commonStore: commonStore,
+            providerIdentity: providerIdentity,
+            stagingController: controller,
+            destination: destination,
+            stagingContext: { [self] in
+                try await loggingHandoffStagingContext()
+            }
+        )
+    }
+
+    private func loggingHandoffStagingContext() async throws -> (
+        catalog: LogDriverCatalog,
+        occupiedContainerIDs: Set<String>
+    ) {
+        (
+            catalog: try await logDriverCatalogProvider.logDriverCatalog(),
+            occupiedContainerIDs: Set(containers.keys)
+        )
+    }
+
     func engineInspectBase(
         containerID: String
     ) throws -> ContainerEngineInspectBase {

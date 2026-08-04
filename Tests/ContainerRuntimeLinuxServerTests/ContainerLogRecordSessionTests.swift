@@ -156,6 +156,42 @@ struct ContainerLogRecordSessionTests {
     }
 
     @Test
+    func continuesAfterImportedSequenceAcrossDurableBlocks() throws {
+        let destination = CapturingRecordDestination()
+        let reservations = Mutex([
+            ContainerLogSequenceReservationV1(
+                historyEpoch: 13,
+                lowerBound: 102,
+                upperBoundInclusive: 103
+            )
+        ])
+        let session = try ContainerLogRecordSession(
+            destination: destination,
+            deliveryConfiguration: LogDeliveryConfiguration(),
+            streams: [.stdout],
+            processGeneration: 7,
+            sequenceReservation: ContainerLogSequenceReservationV1(
+                historyEpoch: 13,
+                lowerBound: 100,
+                upperBoundInclusive: 101
+            ),
+            sequenceReservationProvider: {
+                try reservations.withLock { values in
+                    guard !values.isEmpty else {
+                        throw ExpectedRecordDestinationError.write
+                    }
+                    return values.removeFirst()
+                }
+            }
+        )
+        let stdout = session.writer(for: .stdout)
+        try stdout.write(Data("one\ntwo\nthree\n".utf8))
+        try stdout.close()
+
+        #expect(destination.records.map(\.sequence) == [100, 101, 102])
+    }
+
+    @Test
     func rejectsInvalidGenerationAndInitialSequence() throws {
         let destination = CapturingRecordDestination()
         let delivery = try LogDeliveryConfiguration()

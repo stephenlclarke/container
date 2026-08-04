@@ -494,6 +494,79 @@ enum NativeLocalLogCodec {
     }
 }
 
+/// Exact structural evidence for one immutable native-local history segment.
+///
+/// Handoff promotion uses this parser instead of opening a writer so imported
+/// records cannot be repaired, re-sequenced, or emitted as new log events.
+package struct NativeLocalLogHandoffSegmentInspection: Equatable, Sendable {
+    package let recordCount: UInt64
+    package let minimumInternalSequence: UInt64?
+    package let maximumInternalSequence: UInt64
+}
+
+package enum NativeLocalLogHandoffSegmentCodec {
+    package static let maximumDecodedSegmentBytes = 128 * 1024 * 1024
+
+    package static func inspect(
+        _ bytes: Data
+    ) throws -> NativeLocalLogHandoffSegmentInspection {
+        guard
+            bytes.count >= NativeLocalLogCodec.fileHeaderSize,
+            bytes.count <= maximumDecodedSegmentBytes
+        else {
+            throw NativeLocalLogError.storageLimitExceeded
+        }
+        try NativeLocalLogCodec.validateFileHeader(
+            Data(bytes.prefix(NativeLocalLogCodec.fileHeaderSize))
+        )
+
+        var offset = NativeLocalLogCodec.fileHeaderSize
+        var recordCount: UInt64 = 0
+        var minimumSequence: UInt64?
+        var maximumSequence: UInt64 = 0
+        while offset < bytes.count {
+            guard
+                bytes.count - offset >= NativeLocalLogCodec.framePrefixSize
+            else {
+                throw NativeLocalLogError.malformedFrame
+            }
+            let prefixEnd = offset + NativeLocalLogCodec.framePrefixSize
+            let prefix = Data(bytes[offset..<prefixEnd])
+            let bodyLength = try NativeLocalLogCodec.bodyLength(
+                fromFramePrefix: prefix
+            )
+            let frameLength = try NativeLocalLogCodec.frameLength(
+                bodyLength: bodyLength
+            )
+            guard frameLength <= bytes.count - offset else {
+                throw NativeLocalLogError.malformedFrame
+            }
+            let record = try NativeLocalLogCodec.decode(
+                Data(bytes[offset..<(offset + frameLength)])
+            )
+            guard
+                minimumSequence.map({ _ in record.sequence > maximumSequence })
+                    ?? (record.sequence > 0)
+            else {
+                throw NativeLocalLogError.malformedFrame
+            }
+            let (nextCount, overflow) = recordCount.addingReportingOverflow(1)
+            guard !overflow else {
+                throw NativeLocalLogError.storageLimitExceeded
+            }
+            recordCount = nextCount
+            minimumSequence = minimumSequence ?? record.sequence
+            maximumSequence = record.sequence
+            offset += frameLength
+        }
+        return NativeLocalLogHandoffSegmentInspection(
+            recordCount: recordCount,
+            minimumInternalSequence: minimumSequence,
+            maximumInternalSequence: maximumSequence
+        )
+    }
+}
+
 private struct NativeLocalDataCursor {
     let data: Data
     private(set) var offset = 0

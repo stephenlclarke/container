@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -187,6 +188,83 @@ func TestHistoryMigrationRequiresReadableExactProviderContract(t *testing.T) {
 	wrongContract.ContractDigest = "sha256:wrong-contract"
 	if _, err := writeOnly.migrateHistory(context.Background(), wrongContract); !errors.Is(err, errInvalidFence) {
 		t.Fatalf("wrong-contract migration error = %v, want invalid fence", err)
+	}
+}
+
+func TestHistoryHandoffPromotionAndActivationAreDurableExactReplay(t *testing.T) {
+	store := &memoryStateStore{}
+	plugin := newFakePlugin(true)
+	backend := newTestBackend(t, store, plugin, newFakeFIFOFactory())
+	exportRequest := testHistoryHandoffExportRequest()
+	export, err := backend.exportHistoryForHandoff(context.Background(), exportRequest)
+	if err != nil || export.validate() != nil {
+		t.Fatalf("export history = %#v, %v", export, err)
+	}
+	destination := testHistoryHandoffDestinationRequest(export)
+	if err := backend.preflightHistoryHandoff(context.Background(), destination); err != nil {
+		t.Fatalf("preflight history: %v", err)
+	}
+	promotionRequest := historyHandoffPromotionRequest{
+		SchemaVersion:                serviceSchemaVersion,
+		Destination:                  destination,
+		CommitDigestSHA256:           "sha256:commit",
+		HandoffChainHeadDigestSHA256: "sha256:chain",
+	}
+	first, err := backend.promoteHistoryHandoff(context.Background(), promotionRequest)
+	if err != nil || first.validate(testServiceIdentity()) != nil {
+		t.Fatalf("promote history = %#v, %v", first, err)
+	}
+	replayed, err := backend.promoteHistoryHandoff(context.Background(), promotionRequest)
+	if err != nil || !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("replayed promotion = %#v, %v; want %#v", replayed, err, first)
+	}
+
+	restarted := newTestBackend(t, store, plugin, newFakeFIFOFactory())
+	afterRestart, err := restarted.promoteHistoryHandoff(context.Background(), promotionRequest)
+	if err != nil || !reflect.DeepEqual(afterRestart, first) {
+		t.Fatalf("restart promotion = %#v, %v; want %#v", afterRestart, err, first)
+	}
+	activation := historyHandoffActivationRequest{
+		SchemaVersion:               serviceSchemaVersion,
+		PromotionReceipt:            first,
+		TerminalOutcomeDigestSHA256: "sha256:complete",
+	}
+	if err := restarted.activateHistoryHandoff(activation); err != nil {
+		t.Fatalf("activate history: %v", err)
+	}
+	restarted = newTestBackend(t, store, plugin, newFakeFIFOFactory())
+	if err := restarted.activateHistoryHandoff(activation); err != nil {
+		t.Fatalf("replay activation after restart: %v", err)
+	}
+	activation.TerminalOutcomeDigestSHA256 = "sha256:different-complete"
+	if err := restarted.activateHistoryHandoff(activation); !errors.Is(err, errIdempotencyConflict) {
+		t.Fatalf("conflicting activation error = %v, want idempotency conflict", err)
+	}
+}
+
+func TestHistoryHandoffExportReceiptMatchesSwiftCanonicalVector(t *testing.T) {
+	request := historyHandoffExportRequest{
+		SchemaVersion:               serviceSchemaVersion,
+		TokenID:                     "token",
+		ManifestID:                  "manifest",
+		ContainerID:                 "container-id",
+		SourceStateRootUUID:         "source-root",
+		DestinationStateRootUUID:    "destination-root",
+		SourceLeaseGeneration:       2,
+		SourceProviderID:            "io.container.logging.plugin.test",
+		SourceProviderGeneration:    7,
+		SourceContractDigest:        "sha256:" + strings.Repeat("c", 64),
+		TerminalHistoryDigestSHA256: "sha256:" + strings.Repeat("a", 64),
+	}
+	receipt := historyHandoffExportReceipt{
+		SchemaVersion:               serviceSchemaVersion,
+		Request:                     request,
+		ProviderOutcomeDigestSHA256: "sha256:" + strings.Repeat("1", 64),
+	}
+	receipt.ExportReceiptDigestSHA256 = historyHandoffExportReceiptDigest(receipt)
+	const expected = "030a20fb337c31466c2c025cd94d4469c3967ffe40932b4a6ed0f672a13fef71"
+	if receipt.ExportReceiptDigestSHA256 != expected {
+		t.Fatalf("export receipt digest = %s, want Swift vector %s", receipt.ExportReceiptDigestSHA256, expected)
 	}
 }
 
@@ -618,6 +696,36 @@ func testHistoryMigrationRequest() historyMigrationRequest {
 		TargetProviderGeneration: testServiceIdentity().Generation,
 		ContractDigest:           testServiceIdentity().ContractDigest,
 		TerminalHistoryDigest:    "sha256:terminal-history",
+	}
+}
+
+func testHistoryHandoffExportRequest() historyHandoffExportRequest {
+	return historyHandoffExportRequest{
+		SchemaVersion:               serviceSchemaVersion,
+		TokenID:                     "token",
+		ManifestID:                  "manifest",
+		ContainerID:                 "container-id",
+		SourceStateRootUUID:         "source-root",
+		DestinationStateRootUUID:    "destination-root",
+		SourceLeaseGeneration:       2,
+		SourceProviderID:            testServiceIdentity().ID,
+		SourceProviderGeneration:    testServiceIdentity().Generation,
+		SourceContractDigest:        testServiceIdentity().ContractDigest,
+		TerminalHistoryDigestSHA256: "sha256:terminal-history",
+	}
+}
+
+func testHistoryHandoffDestinationRequest(
+	export historyHandoffExportReceipt,
+) historyHandoffDestinationRequest {
+	return historyHandoffDestinationRequest{
+		SchemaVersion:                 serviceSchemaVersion,
+		ExportReceipt:                 export,
+		ManifestDigestSHA256:          "sha256:manifest",
+		DestinationLeaseGeneration:    1,
+		DestinationProviderID:         testServiceIdentity().ID,
+		DestinationProviderGeneration: testServiceIdentity().Generation,
+		DestinationContractDigest:     testServiceIdentity().ContractDigest,
 	}
 }
 

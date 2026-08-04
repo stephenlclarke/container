@@ -462,6 +462,79 @@ public actor JournaldLogDriverProvider: ContainerLogDriverProvider {
         )
     }
 
+    public func exportHistoryForHandoff(
+        _ request: LogDriverHistoryHandoffExportRequestV1
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1 {
+        guard
+            request.sourceProviderID == descriptorValue.providerIdentity.id,
+            request.sourceProviderGeneration == descriptorValue.providerGeneration,
+            request.sourceContractDigest == descriptorValue.optionContractDigest,
+            descriptorValue.capabilities.nativeRead,
+            try await service.activeSandboxGeneration() > 0
+        else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+        return try LogDriverHistoryHandoffExportReceiptV1(
+            request: request,
+            providerOutcomeDigestSHA256: Self.digest(
+                "journald-history-handoff-export-v1",
+                values: Self.exportIdentity(request)
+            )
+        )
+    }
+
+    public func preflightHistoryHandoff(
+        _ request: LogDriverHistoryHandoffDestinationRequestV1
+    ) async throws {
+        guard
+            request.destinationProviderID == descriptorValue.providerIdentity.id,
+            request.destinationProviderGeneration == descriptorValue.providerGeneration,
+            request.destinationContractDigest == descriptorValue.optionContractDigest,
+            request.exportReceipt.request.sourceProviderID
+                == descriptorValue.providerIdentity.id,
+            request.exportReceipt.request.sourceContractDigest
+                == descriptorValue.optionContractDigest,
+            descriptorValue.capabilities.nativeRead,
+            try await service.activeSandboxGeneration() > 0
+        else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+    }
+
+    public func promoteHistoryHandoff(
+        _ request: LogDriverHistoryHandoffPromotionRequestV1
+    ) async throws -> LogDriverHistoryHandoffPromotionReceiptV1 {
+        try await preflightHistoryHandoff(request.destination)
+        return try LogDriverHistoryHandoffPromotionReceiptV1(
+            request: request,
+            providerOutcomeDigestSHA256: Self.digest(
+                "journald-history-handoff-promotion-v1",
+                values: [
+                    request.destination.exportReceipt.exportReceiptDigestSHA256,
+                    request.destination.manifestDigestSHA256,
+                    String(request.destination.destinationLeaseGeneration),
+                    request.destination.destinationProviderID,
+                    String(request.destination.destinationProviderGeneration),
+                    request.destination.destinationContractDigest,
+                    request.commitDigestSHA256,
+                    request.handoffChainHeadDigestSHA256,
+                ]
+            )
+        )
+    }
+
+    public func activateHistoryHandoff(
+        _ request: LogDriverHistoryHandoffActivationRequestV1
+    ) async throws {
+        try await preflightHistoryHandoff(request.promotionReceipt.request.destination)
+        let expected = try await promoteHistoryHandoff(
+            request.promotionReceipt.request
+        )
+        guard expected == request.promotionReceipt else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+    }
+
     public func start(
         _ request: LogDriverStartRequestV1
     ) async throws -> StartedLogDriverSessionV1 {
@@ -875,6 +948,23 @@ public actor JournaldLogDriverProvider: ContainerLogDriverProvider {
             String(request.providerGeneration),
             String(request.candidateProcessGeneration),
             request.candidateSandboxGeneration.map(String.init) ?? "",
+        ]
+    }
+
+    private static func exportIdentity(
+        _ request: LogDriverHistoryHandoffExportRequestV1
+    ) -> [String] {
+        [
+            request.tokenID,
+            request.manifestID,
+            request.containerID,
+            request.sourceStateRootUUID,
+            request.destinationStateRootUUID,
+            String(request.sourceLeaseGeneration),
+            request.sourceProviderID,
+            String(request.sourceProviderGeneration),
+            request.sourceContractDigest,
+            request.terminalHistoryDigestSHA256,
         ]
     }
 

@@ -37,6 +37,7 @@ const (
 	maximumWriters           = 4_096
 	maximumReaders           = 4_096
 	maximumHistoryMigrations = 4_096
+	maximumHistoryHandoffs   = 4_096
 	maximumStateBytes        = 64 * 1024 * 1024
 	sessionLockStripes       = 256
 )
@@ -117,11 +118,17 @@ type readerState struct {
 }
 
 type durableSnapshot struct {
-	SchemaVersion     uint32                             `json:"schemaVersion"`
-	Provider          serviceIdentity                    `json:"provider"`
-	Writers           map[string]writerState             `json:"writers"`
-	Readers           map[string]readerState             `json:"readers"`
-	HistoryMigrations map[string]historyMigrationReceipt `json:"historyMigrations"`
+	SchemaVersion     uint32                                  `json:"schemaVersion"`
+	Provider          serviceIdentity                         `json:"provider"`
+	Writers           map[string]writerState                  `json:"writers"`
+	Readers           map[string]readerState                  `json:"readers"`
+	HistoryMigrations map[string]historyMigrationReceipt      `json:"historyMigrations"`
+	HistoryHandoffs   map[string]historyHandoffPromotionState `json:"historyHandoffs"`
+}
+
+type historyHandoffPromotionState struct {
+	PromotionReceipt            historyHandoffPromotionReceipt `json:"promotionReceipt"`
+	TerminalOutcomeDigestSHA256 string                         `json:"terminalOutcomeDigestSHA256,omitempty"`
 }
 
 type writerReceipt struct {
@@ -208,6 +215,7 @@ func loadDurableBackend(
 			Writers:           make(map[string]writerState),
 			Readers:           make(map[string]readerState),
 			HistoryMigrations: make(map[string]historyMigrationReceipt),
+			HistoryHandoffs:   make(map[string]historyHandoffPromotionState),
 		}
 		if err := backend.commit(backend.snapshot); err != nil {
 			return nil, err
@@ -232,6 +240,10 @@ func loadDurableBackend(
 	}
 	if backend.snapshot.HistoryMigrations == nil {
 		backend.snapshot.HistoryMigrations = make(map[string]historyMigrationReceipt)
+		changed = true
+	}
+	if backend.snapshot.HistoryHandoffs == nil {
+		backend.snapshot.HistoryHandoffs = make(map[string]historyHandoffPromotionState)
 		changed = true
 	}
 	persistedIdentity := backend.snapshot.Provider
@@ -333,6 +345,129 @@ func (backend *durableBackend) migrateHistory(
 		return historyMigrationReceipt{}, err
 	}
 	return receipt, nil
+}
+
+func (backend *durableBackend) exportHistoryForHandoff(
+	ctx context.Context,
+	request historyHandoffExportRequest,
+) (historyHandoffExportReceipt, error) {
+	if err := request.validateSource(backend.identity); err != nil {
+		return historyHandoffExportReceipt{}, err
+	}
+	capabilities, err := backend.plugin.Capabilities(ctx)
+	if err != nil {
+		return historyHandoffExportReceipt{}, err
+	}
+	if !capabilities.ReadLogs {
+		return historyHandoffExportReceipt{}, errCapabilityMismatch
+	}
+	receipt := historyHandoffExportReceipt{
+		SchemaVersion:               serviceSchemaVersion,
+		Request:                     request,
+		ProviderOutcomeDigestSHA256: historyHandoffExportOutcomeDigest(request),
+	}
+	receipt.ExportReceiptDigestSHA256 = historyHandoffExportReceiptDigest(receipt)
+	return receipt, nil
+}
+
+func (backend *durableBackend) preflightHistoryHandoff(
+	ctx context.Context,
+	request historyHandoffDestinationRequest,
+) error {
+	if err := request.validate(backend.identity); err != nil {
+		return err
+	}
+	capabilities, err := backend.plugin.Capabilities(ctx)
+	if err != nil {
+		return err
+	}
+	if !capabilities.ReadLogs {
+		return errCapabilityMismatch
+	}
+	return nil
+}
+
+func (backend *durableBackend) promoteHistoryHandoff(
+	ctx context.Context,
+	request historyHandoffPromotionRequest,
+) (historyHandoffPromotionReceipt, error) {
+	if err := request.validate(backend.identity); err != nil {
+		return historyHandoffPromotionReceipt{}, err
+	}
+	key := historyHandoffKey(request)
+	lock := backend.sessionLock(key)
+	lock.Lock()
+	defer lock.Unlock()
+
+	backend.mu.Lock()
+	if !backend.persistenceOK {
+		backend.mu.Unlock()
+		return historyHandoffPromotionReceipt{}, errUnavailable
+	}
+	if existing, found := backend.snapshot.HistoryHandoffs[key]; found {
+		backend.mu.Unlock()
+		if !reflect.DeepEqual(existing.PromotionReceipt.Request, request) {
+			return historyHandoffPromotionReceipt{}, errIdempotencyConflict
+		}
+		return existing.PromotionReceipt, nil
+	}
+	if len(backend.snapshot.HistoryHandoffs) >= maximumHistoryHandoffs {
+		backend.mu.Unlock()
+		return historyHandoffPromotionReceipt{}, errUnavailable
+	}
+	backend.mu.Unlock()
+
+	if err := backend.preflightHistoryHandoff(ctx, request.Destination); err != nil {
+		return historyHandoffPromotionReceipt{}, err
+	}
+	receipt := historyHandoffPromotionReceipt{
+		SchemaVersion:               serviceSchemaVersion,
+		Request:                     request,
+		ProviderOutcomeDigestSHA256: historyHandoffPromotionOutcomeDigest(request),
+	}
+	receipt.PromotionReceiptDigestSHA256 = historyHandoffPromotionReceiptDigest(receipt)
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	candidate := cloneSnapshot(backend.snapshot)
+	candidate.HistoryHandoffs[key] = historyHandoffPromotionState{
+		PromotionReceipt: receipt,
+	}
+	if err := backend.commitLocked(candidate); err != nil {
+		return historyHandoffPromotionReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func (backend *durableBackend) activateHistoryHandoff(
+	request historyHandoffActivationRequest,
+) error {
+	if err := request.validate(backend.identity); err != nil {
+		return err
+	}
+	key := historyHandoffKey(request.PromotionReceipt.Request)
+	lock := backend.sessionLock(key)
+	lock.Lock()
+	defer lock.Unlock()
+
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if !backend.persistenceOK {
+		return errUnavailable
+	}
+	existing, found := backend.snapshot.HistoryHandoffs[key]
+	if !found || !reflect.DeepEqual(existing.PromotionReceipt, request.PromotionReceipt) {
+		return errIdempotencyConflict
+	}
+	if existing.TerminalOutcomeDigestSHA256 != "" {
+		if existing.TerminalOutcomeDigestSHA256 != request.TerminalOutcomeDigestSHA256 {
+			return errIdempotencyConflict
+		}
+		return nil
+	}
+	candidate := cloneSnapshot(backend.snapshot)
+	existing.TerminalOutcomeDigestSHA256 = request.TerminalOutcomeDigestSHA256
+	candidate.HistoryHandoffs[key] = existing
+	return backend.commitLocked(candidate)
 }
 
 func (backend *durableBackend) reclaimGeneration(
@@ -1208,7 +1343,8 @@ func (backend *durableBackend) validateSnapshot(snapshot durableSnapshot) error 
 func validateSnapshotForIdentity(snapshot durableSnapshot, identity serviceIdentity) error {
 	if snapshot.SchemaVersion != durableSchemaVersion || snapshot.Provider != identity ||
 		len(snapshot.Writers) > maximumWriters || len(snapshot.Readers) > maximumReaders ||
-		snapshot.HistoryMigrations == nil || len(snapshot.HistoryMigrations) > maximumHistoryMigrations {
+		snapshot.HistoryMigrations == nil || len(snapshot.HistoryMigrations) > maximumHistoryMigrations ||
+		snapshot.HistoryHandoffs == nil || len(snapshot.HistoryHandoffs) > maximumHistoryHandoffs {
 		return errCorruptState
 	}
 	for sessionID, writer := range snapshot.Writers {
@@ -1243,6 +1379,16 @@ func validateSnapshotForIdentity(snapshot durableSnapshot, identity serviceIdent
 			receipt.Request.validate(identity) != nil ||
 			key != historyMigrationKey(receipt.Request) ||
 			receipt.ProviderOutcomeDigest != historyMigrationOutcomeDigest(receipt.Request) {
+			return errCorruptState
+		}
+	}
+	for key, state := range snapshot.HistoryHandoffs {
+		if state.PromotionReceipt.validate(identity) != nil ||
+			key != historyHandoffKey(state.PromotionReceipt.Request) {
+			return errCorruptState
+		}
+		if state.TerminalOutcomeDigestSHA256 != "" &&
+			!validBoundedText(state.TerminalOutcomeDigestSHA256, maximumMigrationTextBytes) {
 			return errCorruptState
 		}
 	}
@@ -1308,6 +1454,79 @@ func historyMigrationOutcomeDigest(request historyMigrationRequest) string {
 	)
 }
 
+func historyHandoffExportOutcomeDigest(request historyHandoffExportRequest) string {
+	return stableDigest(
+		"provider-history-handoff-export-v1",
+		request.TokenID,
+		request.ManifestID,
+		request.ContainerID,
+		request.SourceStateRootUUID,
+		request.DestinationStateRootUUID,
+		fmt.Sprint(request.SourceLeaseGeneration),
+		request.SourceProviderID,
+		fmt.Sprint(request.SourceProviderGeneration),
+		request.SourceContractDigest,
+		request.TerminalHistoryDigestSHA256,
+	)
+}
+
+func historyHandoffExportReceiptDigest(receipt historyHandoffExportReceipt) string {
+	return canonicalSHA256(map[string]any{
+		"schemaVersion":               receipt.SchemaVersion,
+		"request":                     receipt.Request,
+		"providerOutcomeDigestSHA256": receipt.ProviderOutcomeDigestSHA256,
+	})
+}
+
+func historyHandoffKey(request historyHandoffPromotionRequest) string {
+	destination := request.Destination
+	return stableDigest(
+		"provider-history-handoff-scope-v1",
+		destination.ExportReceipt.ExportReceiptDigestSHA256,
+		destination.ManifestDigestSHA256,
+		fmt.Sprint(destination.DestinationLeaseGeneration),
+		destination.DestinationProviderID,
+		fmt.Sprint(destination.DestinationProviderGeneration),
+		destination.DestinationContractDigest,
+	)
+}
+
+func historyHandoffPromotionOutcomeDigest(request historyHandoffPromotionRequest) string {
+	return stableDigest(
+		"provider-history-handoff-promotion-v1",
+		historyHandoffKey(request),
+		request.CommitDigestSHA256,
+		request.HandoffChainHeadDigestSHA256,
+	)
+}
+
+func historyHandoffPromotionReceiptDigest(receipt historyHandoffPromotionReceipt) string {
+	return canonicalSHA256(map[string]any{
+		"schemaVersion":               receipt.SchemaVersion,
+		"request":                     receipt.Request,
+		"providerOutcomeDigestSHA256": receipt.ProviderOutcomeDigestSHA256,
+	})
+}
+
+func canonicalSHA256(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	var generic any
+	if err := decoder.Decode(&generic); err != nil {
+		return ""
+	}
+	canonical, err := json.Marshal(generic)
+	if err != nil {
+		return ""
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:])
+}
+
 func cloneSnapshot(snapshot durableSnapshot) durableSnapshot {
 	clone := snapshot
 	clone.Writers = make(map[string]writerState, len(snapshot.Writers))
@@ -1324,6 +1543,13 @@ func cloneSnapshot(snapshot durableSnapshot) durableSnapshot {
 	)
 	for key, value := range snapshot.HistoryMigrations {
 		clone.HistoryMigrations[key] = value
+	}
+	clone.HistoryHandoffs = make(
+		map[string]historyHandoffPromotionState,
+		len(snapshot.HistoryHandoffs),
+	)
+	for key, value := range snapshot.HistoryHandoffs {
+		clone.HistoryHandoffs[key] = value
 	}
 	return clone
 }

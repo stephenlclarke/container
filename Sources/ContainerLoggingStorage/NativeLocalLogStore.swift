@@ -2528,3 +2528,23 @@ private enum NativeLocalGzipCRC32 {
         return result
     }
 }
+
+/// Bounded physical-segment validator used by logging handoff import.
+package enum NativeLocalLogHandoffSegmentValidator {
+    package static func inspect(
+        _ bytes: Data,
+        compressed: Bool
+    ) throws -> NativeLocalLogHandoffSegmentInspection {
+        let decoded: Data
+        if compressed {
+            decoded = try NativeLocalGzip.decompress(
+                bytes,
+                maximumDecodedBytes:
+                    NativeLocalLogHandoffSegmentCodec.maximumDecodedSegmentBytes
+            )
+        } else {
+            decoded = bytes
+        }
+        return try NativeLocalLogHandoffSegmentCodec.inspect(decoded)
+    }
+}

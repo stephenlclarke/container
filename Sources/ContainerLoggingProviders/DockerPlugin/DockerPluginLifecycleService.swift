@@ -114,6 +114,22 @@ public protocol DockerPluginLifecycleService: Sendable {
         _ request: LogDriverHistoryMigrationRequestV1
     ) async throws -> LogDriverHistoryMigrationReceiptV1
 
+    func exportHistoryForHandoff(
+        _ request: LogDriverHistoryHandoffExportRequestV1
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1
+
+    func preflightHistoryHandoff(
+        _ request: LogDriverHistoryHandoffDestinationRequestV1
+    ) async throws
+
+    func promoteHistoryHandoff(
+        _ request: LogDriverHistoryHandoffPromotionRequestV1
+    ) async throws -> LogDriverHistoryHandoffPromotionReceiptV1
+
+    func activateHistoryHandoff(
+        _ request: LogDriverHistoryHandoffActivationRequestV1
+    ) async throws
+
     func reclaimGeneration(
         _ request: LogDriverProviderGenerationReclaimV1
     ) async throws
@@ -173,6 +189,30 @@ public protocol DockerPluginProviderGenerationReclaiming: Sendable {
 }
 
 extension DockerPluginLifecycleService {
+    public func exportHistoryForHandoff(
+        _: LogDriverHistoryHandoffExportRequestV1
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1 {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
+    public func preflightHistoryHandoff(
+        _: LogDriverHistoryHandoffDestinationRequestV1
+    ) async throws {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
+    public func promoteHistoryHandoff(
+        _: LogDriverHistoryHandoffPromotionRequestV1
+    ) async throws -> LogDriverHistoryHandoffPromotionReceiptV1 {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
+    public func activateHistoryHandoff(
+        _: LogDriverHistoryHandoffActivationRequestV1
+    ) async throws {
+        throw LogDriverHistoryHandoffError.unsupported
+    }
+
     public func migrateHistory(
         _: LogDriverHistoryMigrationRequestV1
     ) async throws -> LogDriverHistoryMigrationReceiptV1 {
@@ -247,6 +287,51 @@ public actor DockerPluginServiceLogDriverProvider: ContainerLogDriverProvider {
         return receipt
     }
 
+    public func exportHistoryForHandoff(
+        _ request: LogDriverHistoryHandoffExportRequestV1
+    ) async throws -> LogDriverHistoryHandoffExportReceiptV1 {
+        guard
+            request.sourceProviderID == descriptorValue.providerIdentity.id,
+            request.sourceProviderGeneration == descriptorValue.providerGeneration,
+            request.sourceContractDigest == descriptorValue.optionContractDigest,
+            descriptorValue.capabilities.nativeRead
+        else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+        let receipt = try await service.exportHistoryForHandoff(request)
+        guard receipt.request == request else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+        return receipt
+    }
+
+    public func preflightHistoryHandoff(
+        _ request: LogDriverHistoryHandoffDestinationRequestV1
+    ) async throws {
+        try validateHistoryHandoffDestination(request)
+        try await service.preflightHistoryHandoff(request)
+    }
+
+    public func promoteHistoryHandoff(
+        _ request: LogDriverHistoryHandoffPromotionRequestV1
+    ) async throws -> LogDriverHistoryHandoffPromotionReceiptV1 {
+        try validateHistoryHandoffDestination(request.destination)
+        let receipt = try await service.promoteHistoryHandoff(request)
+        guard receipt.request == request else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
+        return receipt
+    }
+
+    public func activateHistoryHandoff(
+        _ request: LogDriverHistoryHandoffActivationRequestV1
+    ) async throws {
+        try validateHistoryHandoffDestination(
+            request.promotionReceipt.request.destination
+        )
+        try await service.activateHistoryHandoff(request)
+    }
+
     public func reclaimGeneration(
         _ request: LogDriverProviderGenerationReclaimV1
     ) async throws {
@@ -265,6 +350,19 @@ public actor DockerPluginServiceLogDriverProvider: ContainerLogDriverProvider {
         }
         try await service.reclaimGeneration(request)
         try await generationReclaimer?.reclaimProviderGeneration(request)
+    }
+
+    private func validateHistoryHandoffDestination(
+        _ request: LogDriverHistoryHandoffDestinationRequestV1
+    ) throws {
+        guard
+            request.destinationProviderID == descriptorValue.providerIdentity.id,
+            request.destinationProviderGeneration == descriptorValue.providerGeneration,
+            request.destinationContractDigest == descriptorValue.optionContractDigest,
+            descriptorValue.capabilities.nativeRead
+        else {
+            throw LogDriverHistoryHandoffError.receiptMismatch
+        }
     }
 
     public func activeSandboxGeneration() async throws -> UInt64 {

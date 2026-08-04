@@ -65,6 +65,7 @@ actor LoggingProtectedOptionsStore {
     static let maximumOptionValueBytes = 1 * 1_024 * 1_024
     static let maximumEncodedBytes = 4 * 1_024 * 1_024
     static let maximumAuthenticationContextBytes = 4 * 1_024 * 1_024
+    static let maximumHandoffIdempotencyKeyBytes = 16 * 1_024
 
     static let keyFileName = ".logging-protected-options.key"
     static let objectFilePrefix = "logging-options-"
@@ -77,6 +78,9 @@ actor LoggingProtectedOptionsStore {
     private static let maximumPublicationAttempts = 8
     private static let fileMagic = Data("CLOGOPT1".utf8)
     private static let authenticationDomain = Data("container.logging.protected-options.v1\u{0}".utf8)
+    private static let handoffObjectIDDomain = Data(
+        "container.logging.protected-options.handoff-object-id.v1\u{0}".utf8
+    )
     private static let unboundAuthenticationContext = Data("unbound-test-context-v1".utf8)
 
     private let rootDescriptor: Int32
@@ -129,6 +133,59 @@ actor LoggingProtectedOptionsStore {
         try store(options, authenticationContext: binding.canonicalData())
     }
 
+    /// Publishes the one protected object owned by a handoff container.
+    ///
+    /// The object ID is a private keyed derivation of the immutable handoff
+    /// identity. Recovery therefore reopens the exact same object/reference
+    /// after response loss instead of allocating another protected object.
+    func storeForHandoff(
+        _ options: [String: String],
+        boundTo binding: LoggingProtectedOptionsBinding,
+        idempotencyKey: Data
+    ) throws -> LoggingProtectedOptionsReference {
+        let authenticationContext = try binding.canonicalData()
+        let prepared = try handoffReference(
+            options,
+            authenticationContext: authenticationContext,
+            idempotencyKey: idempotencyKey
+        )
+        do {
+            try publish(prepared.encoded, objectID: prepared.reference.objectID)
+        } catch LoggingProtectedOptionsStoreError.identifierCollision {
+            do {
+                let existing = try load(
+                    prepared.reference,
+                    authenticationContext: authenticationContext
+                )
+                guard existing == options else {
+                    throw LoggingProtectedOptionsStoreError.identifierCollision
+                }
+            } catch LoggingProtectedOptionsStoreError.notFound {
+                throw LoggingProtectedOptionsStoreError.identifierCollision
+            } catch LoggingProtectedOptionsStoreError.integrityMismatch {
+                throw LoggingProtectedOptionsStoreError.identifierCollision
+            } catch LoggingProtectedOptionsStoreError.objectIdentityMismatch {
+                throw LoggingProtectedOptionsStoreError.identifierCollision
+            }
+        }
+        return prepared.reference
+    }
+
+    /// Reconstructs the exact reference used by `storeForHandoff` without
+    /// creating an object. This is used for exact abort compensation after a
+    /// crash between object publication and protected receipt sealing.
+    func referenceForHandoff(
+        _ options: [String: String],
+        boundTo binding: LoggingProtectedOptionsBinding,
+        idempotencyKey: Data
+    ) throws -> LoggingProtectedOptionsReference {
+        try handoffReference(
+            options,
+            authenticationContext: binding.canonicalData(),
+            idempotencyKey: idempotencyKey
+        ).reference
+    }
+
     private func store(
         _ options: [String: String],
         authenticationContext: Data
@@ -157,6 +214,49 @@ actor LoggingProtectedOptionsStore {
             }
         }
         throw LoggingProtectedOptionsStoreError.identifierCollision
+    }
+
+    private func handoffReference(
+        _ options: [String: String],
+        authenticationContext: Data,
+        idempotencyKey: Data
+    ) throws -> (reference: LoggingProtectedOptionsReference, encoded: Data) {
+        guard
+            authenticationContext.count <= Self.maximumAuthenticationContextBytes,
+            !idempotencyKey.isEmpty,
+            idempotencyKey.count <= Self.maximumHandoffIdempotencyKeyBytes
+        else {
+            throw LoggingProtectedOptionsStoreError.boundsExceeded
+        }
+        try validateStoreBoundary()
+        var identity = Data()
+        identity.reserveCapacity(
+            Self.handoffObjectIDDomain.count
+                + MemoryLayout<UInt32>.size
+                + idempotencyKey.count
+        )
+        identity.append(Self.handoffObjectIDDomain)
+        identity.appendBigEndian(UInt32(idempotencyKey.count))
+        identity.append(idempotencyKey)
+        let objectID = Self.hex(
+            HMAC<SHA256>.authenticationCode(
+                for: identity,
+                using: SymmetricKey(data: keyData)
+            ).prefix(Self.objectIDByteCount)
+        )
+        let encoded = try Self.encode(options: options, objectID: objectID)
+        return (
+            LoggingProtectedOptionsReference(
+                objectID: objectID,
+                integrityDigest: Self.integrityDigest(
+                    encoded: encoded,
+                    objectID: objectID,
+                    authenticationContext: authenticationContext,
+                    keyData: keyData
+                )
+            ),
+            encoded
+        )
     }
 
     func load(_ reference: LoggingProtectedOptionsReference) throws -> [String: String] {

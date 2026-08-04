@@ -148,6 +148,61 @@ struct JournaldProviderTests {
         #expect(try complete.readRecord(sequence: 10).data == Data("line\n".utf8))
     }
 
+    @Test func providerHistoryHandoffIsBoundAndReplayStable() async throws {
+        let writer = try writerRequest()
+        let descriptor = JournaldLogDriverContract.descriptor()
+        let provider = JournaldLogDriverProvider(
+            configurationResolver: FixedJournaldConfigurationResolver(
+                JournaldConfigurationBinding(
+                    semanticRequestDigest: writer.semanticRequestDigest,
+                    containerID: writer.containerID,
+                    leaseGeneration: writer.leaseGeneration,
+                    providerID: writer.providerID,
+                    providerGeneration: writer.providerGeneration,
+                    configuration: try journaldConfiguration()
+                )
+            ),
+            service: RecordingJournaldService(readerRecords: [])
+        )
+        let exportRequest = try LogDriverHistoryHandoffExportRequestV1(
+            tokenID: "token",
+            manifestID: "manifest",
+            containerID: writer.containerID,
+            sourceStateRootUUID: "source-root",
+            destinationStateRootUUID: "destination-root",
+            sourceLeaseGeneration: writer.leaseGeneration,
+            sourceProviderID: descriptor.providerIdentity.id,
+            sourceProviderGeneration: descriptor.providerGeneration,
+            sourceContractDigest: descriptor.optionContractDigest,
+            terminalHistoryDigestSHA256: "sha256:" + String(repeating: "a", count: 64)
+        )
+        let export = try await provider.exportHistoryForHandoff(exportRequest)
+        #expect(try await provider.exportHistoryForHandoff(exportRequest) == export)
+
+        let destination = try LogDriverHistoryHandoffDestinationRequestV1(
+            exportReceipt: export,
+            manifestDigestSHA256: "sha256:" + String(repeating: "b", count: 64),
+            destinationLeaseGeneration: 1,
+            destinationProviderID: descriptor.providerIdentity.id,
+            destinationProviderGeneration: descriptor.providerGeneration,
+            destinationContractDigest: descriptor.optionContractDigest
+        )
+        try await provider.preflightHistoryHandoff(destination)
+        let promotionRequest = try LogDriverHistoryHandoffPromotionRequestV1(
+            destination: destination,
+            commitDigestSHA256: "sha256:" + String(repeating: "c", count: 64),
+            handoffChainHeadDigestSHA256: "sha256:" + String(repeating: "d", count: 64)
+        )
+        let promotion = try await provider.promoteHistoryHandoff(promotionRequest)
+        #expect(try await provider.promoteHistoryHandoff(promotionRequest) == promotion)
+        try await provider.activateHistoryHandoff(
+            LogDriverHistoryHandoffActivationRequestV1(
+                promotionReceipt: promotion,
+                terminalOutcomeDigestSHA256: "sha256:" + String(repeating: "e", count: 64)
+            )
+        )
+    }
+
     @Test func providerFencesWriterAndOwnsIdempotentReadableSessions() async throws {
         let request = try writerRequest()
         let configuration = try journaldConfiguration()

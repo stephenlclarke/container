@@ -51,7 +51,9 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
 
     private struct State {
         var splitters: [ContainerLogStream: ContainerLogRecordSplitterV1]
+        var historyEpoch: UInt64
         var nextSequence: UInt64
+        var reservedUpperBound: UInt64
         var sequenceExhausted = false
         var closedStreams: Set<ContainerLogStream> = []
         var closed = false
@@ -67,6 +69,7 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
     private let processGeneration: UInt64
     private let attributes: [String: String]
     private let observationProvider: @Sendable () -> ContainerLogObservation
+    private let sequenceReservationProvider: (@Sendable () throws -> ContainerLogSequenceReservationV1)?
     private let readCoordinator: ContainerLogCanonicalReadCoordinator?
     private let delivery: Delivery
     private var state: State
@@ -77,6 +80,9 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
         streams: Set<ContainerLogStream>,
         processGeneration: UInt64,
         initialSequence: UInt64 = 1,
+        sequenceReservation: ContainerLogSequenceReservationV1? = nil,
+        sequenceReservationProvider:
+            (@Sendable () throws -> ContainerLogSequenceReservationV1)? = nil,
         attributes: [String: String] = [:],
         maximumLiveReaderBufferSizeInBytes: Int = ContainerLogCanonicalReadCoordinator
             .defaultMaximumLiveBufferedBytes,
@@ -88,7 +94,18 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
             ContainerLogObservation.now()
         }
     ) throws {
-        guard initialSequence > 0 else {
+        let effectiveInitialSequence =
+            sequenceReservation?.lowerBound
+            ?? initialSequence
+        let effectiveUpperBound =
+            sequenceReservation?.upperBoundInclusive
+            ?? UInt64.max
+        let effectiveHistoryEpoch = sequenceReservation?.historyEpoch ?? 1
+        guard
+            effectiveInitialSequence > 0,
+            effectiveHistoryEpoch > 0,
+            effectiveInitialSequence <= effectiveUpperBound
+        else {
             throw ContainerLogRecordSessionError.invalidInitialSequence
         }
         guard processGeneration > 0 else {
@@ -121,6 +138,7 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
         self.processGeneration = processGeneration
         self.attributes = attributes
         self.observationProvider = observationProvider
+        self.sequenceReservationProvider = sequenceReservationProvider
 
         let effectiveDestination: any ContainerLogRecordDestination
         if let readableDestination = destination as? any ContainerLogCanonicalReadDestination {
@@ -147,7 +165,12 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
                         ?? LogDeliveryConfiguration.defaultNonBlockingBufferSizeInBytes
                 ))
         }
-        state = State(splitters: splitters, nextSequence: initialSequence)
+        state = State(
+            splitters: splitters,
+            historyEpoch: effectiveHistoryEpoch,
+            nextSequence: effectiveInitialSequence,
+            reservedUpperBound: effectiveUpperBound
+        )
     }
 
     deinit {
@@ -256,6 +279,32 @@ package final class ContainerLogRecordSession: @unchecked Sendable {
         guard !state.sequenceExhausted else {
             saturatingIncrement(&state.constructionFailureCount)
             return
+        }
+        if state.nextSequence > state.reservedUpperBound {
+            guard let sequenceReservationProvider else {
+                state.sequenceExhausted = true
+                saturatingIncrement(&state.constructionFailureCount)
+                return
+            }
+            do {
+                let reservation = try sequenceReservationProvider()
+                guard
+                    reservation.historyEpoch == state.historyEpoch,
+                    reservation.lowerBound > state.reservedUpperBound,
+                    reservation.lowerBound
+                        <= reservation.upperBoundInclusive
+                else {
+                    state.sequenceExhausted = true
+                    saturatingIncrement(&state.constructionFailureCount)
+                    return
+                }
+                state.nextSequence = reservation.lowerBound
+                state.reservedUpperBound = reservation.upperBoundInclusive
+            } catch {
+                state.sequenceExhausted = true
+                saturatingIncrement(&state.constructionFailureCount)
+                return
+            }
         }
         let sequence = state.nextSequence
         if sequence == UInt64.max {
