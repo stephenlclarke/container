@@ -3257,7 +3257,9 @@ extension ContainersService {
         defaultDriver: String,
         registeredDrivers: [String]
     ) {
-        let catalog = try await logDriverCatalogProvider.logDriverCatalog()
+        let catalog =
+            try await logDriverCatalogProvider
+            .advertisedLogDriverCatalog()
         return (
             defaultDriver: containerSystemConfig.logging.driver,
             registeredDrivers: catalog.registeredNames

@@ -16,6 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerEngineService
 import ContainerPersistence
 import ContainerPlugin
 import ContainerXPC
@@ -35,25 +36,29 @@ extension Application {
         @Option(
             name: .shortAndLong,
             help: "Path to the root directory for application data",
-            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) })
+            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) }
+        )
         var appRoot = ApplicationRoot.defaultPath
 
         @Option(
             name: .long,
             help: "Path to the root directory for application executables and plugins",
-            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) })
+            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) }
+        )
         var installRoot = InstallRoot.path
 
         @Option(
             name: .long,
             help: "Path to the root directory for log data, using macOS log facility if not set",
-            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) })
+            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) }
+        )
         var logRoot: FilePath? = nil
 
         @Flag(
             name: .long,
             inversion: .prefixedEnableDisable,
-            help: "Specify whether the default kernel should be installed or not (default: prompt user)")
+            help: "Specify whether the default kernel should be installed or not (default: prompt user)"
+        )
         var kernelInstall: Bool?
 
         @Option(
@@ -83,7 +88,8 @@ extension Application {
                 configurationFiles: [
                     ConfigurationLoader.configurationFile(in: appRoot, of: .appRoot),
                     ConfigurationLoader.configurationFile(in: installRoot, of: .installRoot),
-                ])
+                ]
+            )
 
             // Without the true path to the binary in the plist, `container-apiserver` won't launch properly.
             // Resolve the symlink to get the true binary path before writing the launchd plist.
@@ -154,6 +160,8 @@ extension Application {
                 )
             }
 
+            try await startContainerEngineGateway()
+
             if await !initImageExists(containerSystemConfig: containerSystemConfig) {
                 try? await installInitialFilesystem(initImage: containerSystemConfig.vminit.image)
             }
@@ -164,7 +172,93 @@ extension Application {
             try await installDefaultKernel(
                 kernelURL: containerSystemConfig.kernel.url,
                 kernelBinaryPath: containerSystemConfig.kernel.binaryPath,
-                kernelDigest: containerSystemConfig.kernel.digest)
+                kernelDigest: containerSystemConfig.kernel.digest
+            )
+        }
+
+        private func startContainerEngineGateway() async throws {
+            let configuration = ContainerEngineServiceConfiguration(
+                appRoot: appRoot
+            )
+            let executablePath = try CommandLine.executablePath
+                .removingLastComponent()
+                .appending(FilePath.Component("container-engine"))
+                .resolvingSymlinks()
+            let plist = LaunchPlist(
+                label: ContainerEngineServiceConfiguration.launchdLabel,
+                arguments: configuration.arguments(
+                    executablePath: executablePath
+                ),
+                limitLoadToSessionType: [.Aqua, .Background, .System],
+                runAtLoad: true,
+                keepAlive: true
+            )
+            try configuration.writeLaunchPlist(plist)
+
+            log.info(
+                "Launching Container Engine gateway...",
+                metadata: [
+                    "socket": "\(configuration.publicSocketPath.string)"
+                ]
+            )
+            let wasRegistered = try ServiceManager.isRegistered(
+                fullServiceLabel: ContainerEngineServiceConfiguration.launchdLabel
+            )
+            try ServiceManager.register(
+                plistPath: configuration.plistPath.string
+            )
+            do {
+                try await ContainerEngineHealthProbe
+                    .waitUntilProviderResponsive(
+                        socketPath: configuration.publicSocketPath.string,
+                        timeout: timeout
+                    )
+                return
+            } catch {
+                guard wasRegistered else {
+                    do {
+                        try ContainerEngineServiceConfiguration.deregister()
+                    } catch let cleanupError {
+                        throw ContainerizationError(
+                            .internalError,
+                            message: "failed to get a response from Container Engine gateway: \(error); launchd cleanup also failed: \(cleanupError)"
+                        )
+                    }
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "failed to get a response from Container Engine gateway: \(error)"
+                    )
+                }
+                log.info(
+                    "Restarting stale Container Engine gateway...",
+                    metadata: ["error": "\(error)"]
+                )
+                try ContainerEngineServiceConfiguration.deregister()
+                try ServiceManager.register(
+                    plistPath: configuration.plistPath.string
+                )
+            }
+
+            do {
+                try await ContainerEngineHealthProbe
+                    .waitUntilProviderResponsive(
+                        socketPath: configuration.publicSocketPath.string,
+                        timeout: timeout
+                    )
+            } catch {
+                do {
+                    try ContainerEngineServiceConfiguration.deregister()
+                } catch let cleanupError {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "failed to get a response from restarted Container Engine gateway: \(error); launchd cleanup also failed: \(cleanupError)"
+                    )
+                }
+                throw ContainerizationError(
+                    .internalError,
+                    message: "failed to get a response from restarted Container Engine gateway: \(error)"
+                )
+            }
         }
 
         static func validateAppRoot(requested: FilePath, actual: URL) throws {
@@ -217,7 +311,8 @@ extension Application {
                 tarRemoteURL: kernelURL,
                 kernelFilePath: kernelBinaryPath,
                 expectedDigest: kernelDigest,
-                force: true)
+                force: true
+            )
         }
 
         private func initImageExists(containerSystemConfig: ContainerSystemConfig) async -> Bool {

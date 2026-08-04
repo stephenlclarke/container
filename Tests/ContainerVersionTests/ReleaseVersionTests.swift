@@ -60,6 +60,12 @@ struct ReleaseVersionTests {
         #expect(lines.contains("container-builder-shim: \(ReleaseVersion.builderShimImage())"))
     }
 
+    @Test
+    func engineAPIVersionMatchesResolvedPackage() throws {
+        let expected = try Self.expectedEngineAPIVersion()
+        #expect(ReleaseVersion.containerEngineAPIVersion() == expected)
+    }
+
     private static func expectedContainerizationProvenance() throws -> String {
         let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -69,6 +75,21 @@ struct ReleaseVersionTests {
         let state = try #require(pin["state"] as? [String: Any])
         let revision = try #require(state["revision"] as? String)
         return "\(githubRepositoryPath(from: location))@\(revision)"
+    }
+
+    private static func expectedEngineAPIVersion() throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let pins = try #require(object["pins"] as? [[String: Any]])
+        let pin = try #require(
+            pins.first {
+                ($0["identity"] as? String) == "container-engine-api"
+            }
+        )
+        let state = try #require(pin["state"] as? [String: Any])
+        return try #require(state["version"] as? String)
     }
 
     private static func githubRepositoryPath(from location: String) -> String {

@@ -16,6 +16,7 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerEngineService
 import ContainerPlugin
 import ContainerizationError
 import Foundation
@@ -51,6 +52,8 @@ extension Application {
             let apiServerBuilderShimRepository: String?
             let apiServerBuilderShimVersion: String?
             let apiServerBuilderShimDigest: String?
+            let engineStatus: String
+            let engineSocket: String
 
             init(
                 status: String,
@@ -63,7 +66,11 @@ extension Application {
                 apiServerAppName: String = "",
                 apiServerBuilderShimRepository: String? = nil,
                 apiServerBuilderShimVersion: String? = nil,
-                apiServerBuilderShimDigest: String? = nil
+                apiServerBuilderShimDigest: String? = nil,
+                engineStatus: String = "unregistered",
+                engineSocket: String = ContainerEngineServiceConfiguration(
+                    appRoot: ApplicationRoot.defaultPath
+                ).publicSocketPath.string
             ) {
                 self.status = status
                 self.appRoot = appRoot
@@ -76,6 +83,8 @@ extension Application {
                 self.apiServerBuilderShimRepository = apiServerBuilderShimRepository
                 self.apiServerBuilderShimVersion = apiServerBuilderShimVersion
                 self.apiServerBuilderShimDigest = apiServerBuilderShimDigest
+                self.engineStatus = engineStatus
+                self.engineSocket = engineSocket
             }
 
             var apiServerBuilderShimImage: String? {
@@ -93,19 +102,46 @@ extension Application {
         }
 
         public func run() async throws {
+            let engineSocket = ContainerEngineServiceConfiguration(
+                appRoot: ApplicationRoot.defaultPath
+            ).publicSocketPath.string
+            let engineRegistered = try ServiceManager.isRegistered(
+                fullServiceLabel: ContainerEngineServiceConfiguration.launchdLabel
+            )
+            let engineRunning: Bool
+            do {
+                try ContainerEngineHealthProbe.systemInfo(
+                    socketPath: engineSocket
+                )
+                engineRunning = engineRegistered
+            } catch {
+                engineRunning = false
+            }
+            let engineStatus =
+                engineRunning
+                ? "running"
+                : (engineRegistered ? "not running" : "unregistered")
             let isRegistered = try ServiceManager.isRegistered(fullServiceLabel: "\(prefix)apiserver")
             if !isRegistered {
-                try Output.render(payload: PrintableStatus(status: "unregistered"), format: format) {
+                try Output.render(
+                    payload: PrintableStatus(
+                        status: "unregistered",
+                        engineStatus: engineStatus,
+                        engineSocket: engineSocket
+                    ),
+                    format: format
+                ) {
                     "apiserver is not running and not registered with launchd"
                 }
                 Application.exit(withError: ExitCode(1))
             }
 
             // Now ping our friendly daemon. Fail after 10 seconds with no response.
+            var systemIsDegraded = false
             do {
                 let systemHealth = try await ClientHealthCheck.ping(timeout: .seconds(10))
                 let status = PrintableStatus(
-                    status: "running",
+                    status: engineRunning ? "running" : "degraded",
                     appRoot: systemHealth.appRoot.path(percentEncoded: false),
                     installRoot: systemHealth.installRoot.path(percentEncoded: false),
                     logRoot: systemHealth.logRoot?.string,
@@ -115,15 +151,28 @@ extension Application {
                     apiServerAppName: systemHealth.apiServerAppName,
                     apiServerBuilderShimRepository: systemHealth.apiServerBuilderShimRepository,
                     apiServerBuilderShimVersion: systemHealth.apiServerBuilderShimVersion,
-                    apiServerBuilderShimDigest: systemHealth.apiServerBuilderShimDigest
+                    apiServerBuilderShimDigest: systemHealth.apiServerBuilderShimDigest,
+                    engineStatus: engineStatus,
+                    engineSocket: engineSocket
                 )
                 try Output.render(payload: status, format: format) {
                     Self.statusTable(status)
                 }
+                systemIsDegraded = !engineRunning
             } catch {
-                try Output.render(payload: PrintableStatus(status: "not running"), format: format) {
+                try Output.render(
+                    payload: PrintableStatus(
+                        status: "not running",
+                        engineStatus: engineStatus,
+                        engineSocket: engineSocket
+                    ),
+                    format: format
+                ) {
                     "apiserver is not running"
                 }
+                Application.exit(withError: ExitCode(1))
+            }
+            if systemIsDegraded {
                 Application.exit(withError: ExitCode(1))
             }
         }
@@ -140,6 +189,8 @@ extension Application {
                 ["apiserver.build", status.apiServerBuild],
                 ["apiserver.appName", status.apiServerAppName],
                 ["apiserver.builderShim", status.apiServerBuilderShimImage ?? ""],
+                ["engine.status", status.engineStatus],
+                ["engine.socket", status.engineSocket],
             ]
             return TableOutput(rows: rows).format()
         }

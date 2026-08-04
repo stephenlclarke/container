@@ -66,6 +66,18 @@ extension Application {
 
             let launchdDomainString = try ServiceManager.getDomainString()
             let fullLabel = "\(launchdDomainString)/\(prefix)apiserver"
+            let engineFullLabel =
+                "\(launchdDomainString)/\(ContainerEngineServiceConfiguration.launchdLabel)"
+
+            if try ServiceManager.isRegistered(
+                fullServiceLabel: ContainerEngineServiceConfiguration.launchdLabel
+            ) {
+                log.info(
+                    "stopping service",
+                    metadata: ["label": "\(engineFullLabel)"]
+                )
+                try ContainerEngineServiceConfiguration.deregister()
+            }
 
             var running = true
             do {
@@ -85,7 +97,7 @@ extension Application {
                     try await ContainerStop.stopContainers(
                         client: client,
                         containers: containers,
-                        stopOptions: opts,
+                        stopOptions: opts
                     )
                 } catch {
                     log.warning("failed to stop all containers", metadata: ["error": "\(error)"])

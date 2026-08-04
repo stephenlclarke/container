@@ -14,7 +14,9 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerPlugin
 import ContainerizationError
+import Darwin
 import Foundation
 import SystemPackage
 import Testing
@@ -22,6 +24,77 @@ import Testing
 @testable import ContainerCommands
 
 struct SystemStartTests {
+    @Test func engineConfigurationUsesPrivateShortPublicSocket() {
+        let configuration = ContainerEngineServiceConfiguration(
+            appRoot: FilePath("/tmp/container-state"),
+            effectiveUserID: 501
+        )
+        #expect(
+            configuration.publicSocketPath.string
+                == "/tmp/container-engine-501/docker.sock"
+        )
+        #expect(
+            configuration.providerSocketPath.string
+                == "/tmp/container-state/engine-provider/provider.sock"
+        )
+        #expect(
+            configuration.stateDirectory.string
+                == "/tmp/container-state/engine-gateway"
+        )
+        let pathCapacity = withUnsafeBytes(of: sockaddr_un().sun_path) {
+            $0.count
+        }
+        #expect(configuration.publicSocketPath.string.utf8.count < pathCapacity)
+        #expect(
+            configuration.arguments(executablePath: "/usr/local/bin/container-engine")
+                == [
+                    "/usr/local/bin/container-engine",
+                    "--socket", "/tmp/container-engine-501/docker.sock",
+                    "--provider-socket", "/tmp/container-state/engine-provider/provider.sock",
+                    "--state-directory", "/tmp/container-state/engine-gateway",
+                ]
+        )
+    }
+
+    @Test func engineLaunchPlistIsPrivateAndComplete() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "container-engine-config-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = ContainerEngineServiceConfiguration(
+            appRoot: FilePath(root.path(percentEncoded: false))
+        )
+        let arguments = configuration.arguments(
+            executablePath: "/usr/local/bin/container-engine"
+        )
+        try configuration.writeLaunchPlist(
+            LaunchPlist(
+                label: ContainerEngineServiceConfiguration.launchdLabel,
+                arguments: arguments,
+                runAtLoad: true,
+                keepAlive: true
+            )
+        )
+
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: configuration.plistPath.string
+        )
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let data = try Data(
+            contentsOf: URL(fileURLWithPath: configuration.plistPath.string)
+        )
+        let plist = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil)
+                as? [String: Any]
+        )
+        #expect(
+            plist["Label"] as? String
+                == ContainerEngineServiceConfiguration.launchdLabel
+        )
+        #expect(plist["ProgramArguments"] as? [String] == arguments)
+        #expect(plist["RunAtLoad"] as? Bool == true)
+        #expect(plist["KeepAlive"] as? Bool == true)
+    }
+
     @Test func acceptsMatchingAppRoot() throws {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "container-system-start-\(UUID())")

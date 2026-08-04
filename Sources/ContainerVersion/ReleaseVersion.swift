@@ -78,6 +78,11 @@ public struct ReleaseVersion {
         get_containerization_ref().map { String(cString: $0) } ?? version()
     }
 
+    public static func containerEngineAPIVersion() -> String {
+        get_container_engine_api_version().map { String(cString: $0) }
+            ?? "unknown"
+    }
+
     public static func builderShimRepository() -> String {
         get_container_builder_shim_repository().map { String(cString: $0) } ?? "ghcr.io/apple/container-builder-shim/builder"
     }

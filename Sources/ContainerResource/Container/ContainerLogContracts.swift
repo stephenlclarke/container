@@ -1006,6 +1006,20 @@ public struct LogDriverCatalog: Codable, Equatable, Sendable {
 /// are intentionally deferred until their generation-fenced lifecycle lands.
 public protocol LogDriverCatalogProviding: Sendable {
     func logDriverCatalog() async throws -> LogDriverCatalog
+
+    /// Returns the drivers that this authority can advertise without probing
+    /// or activating provider workloads.
+    ///
+    /// Create and start boundaries use ``logDriverCatalog()`` so dynamic
+    /// readiness is still revalidated before effects. Discovery surfaces such
+    /// as Docker `/info` use this catalogue and must remain side-effect free.
+    func advertisedLogDriverCatalog() async throws -> LogDriverCatalog
+}
+
+extension LogDriverCatalogProviding {
+    public func advertisedLogDriverCatalog() async throws -> LogDriverCatalog {
+        try await logDriverCatalog()
+    }
 }
 
 /// Immutable catalogue source used by the built-in authority and tests.

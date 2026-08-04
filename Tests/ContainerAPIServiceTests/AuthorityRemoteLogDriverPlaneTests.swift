@@ -41,6 +41,7 @@ private enum AuthorityCatalogJournaldServiceError: Error {
 
 private actor AuthorityCatalogJournaldService: JournaldService {
     private var generation: UInt64?
+    private(set) var readinessCalls = 0
 
     init(generation: UInt64?) {
         self.generation = generation
@@ -51,6 +52,7 @@ private actor AuthorityCatalogJournaldService: JournaldService {
     }
 
     func activeSandboxGeneration() throws -> UInt64 {
+        readinessCalls += 1
         guard let generation else {
             throw AuthorityCatalogJournaldServiceError.unavailable
         }
@@ -189,16 +191,24 @@ struct AuthorityRemoteLogDriverPlaneTests {
                 try await plane.logDriverCatalog()
                     .descriptor(named: "journald") != nil
             )
+            #expect(await service.readinessCalls == 1)
             await service.setGeneration(nil)
             #expect(
                 try await plane.logDriverCatalog()
                     .descriptor(named: "journald") == nil
             )
+            #expect(await service.readinessCalls == 2)
+            #expect(
+                try await plane.advertisedLogDriverCatalog()
+                    .descriptor(named: "journald") != nil
+            )
+            #expect(await service.readinessCalls == 2)
             await service.setGeneration(10)
             #expect(
                 try await plane.logDriverCatalog()
                     .descriptor(named: "journald") != nil
             )
+            #expect(await service.readinessCalls == 3)
         }
     }
 

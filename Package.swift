@@ -65,6 +65,7 @@ let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_RE
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-30434989734-61832d4ca917"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:b48fbf42a51bf3432bd50d64732b4d6931944f3bb30f911a9a513cf8bab9b02e"
 let scVersion = "0.40.1"
+let containerEngineAPIVersion = Version(0, 3, 5)
 let containerizationRevision = "77f06d4c44341e04241941072fb69e2b85a6f5c1"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
@@ -78,6 +79,7 @@ let package = Package(
     name: "container",
     platforms: [.macOS("15")],
     products: [
+        .executable(name: "container-engine", targets: ["container-engine"]),
         .library(name: "ContainerCommands", targets: ["ContainerCommands"]),
         .library(name: "ContainerBuild", targets: ["ContainerBuild"]),
         .library(name: "ContainerAPIService", targets: ["ContainerAPIService"]),
@@ -113,7 +115,7 @@ let package = Package(
         ),
         .package(
             url: "https://github.com/stephenlclarke/container-engine-api.git",
-            exact: "0.3.4"
+            exact: containerEngineAPIVersion
         ),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
@@ -178,6 +180,7 @@ let package = Package(
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
+                .product(name: "ContainerEngineService", package: "container-engine-api"),
                 "ContainerBuild",
                 "ContainerAPIClient",
                 "ContainerLog",
@@ -262,6 +265,13 @@ let package = Package(
                 "DNSServer",
             ],
             path: "Sources/APIServer"
+        ),
+        .executableTarget(
+            name: "container-engine",
+            dependencies: [
+                .product(name: "ContainerEngineService", package: "container-engine-api")
+            ],
+            path: "Sources/ContainerEngineServiceCommand"
         ),
         .target(
             name: "ContainerAPIService",
@@ -731,7 +741,7 @@ let package = Package(
             dependencies: [
                 .product(name: "SystemPackage", package: "swift-system"),
                 "CVersion",
-            ],
+            ]
         ),
         .testTarget(
             name: "ContainerVersionTests",
@@ -751,10 +761,11 @@ let package = Package(
                 .define("CONTAINER_SOURCE", to: "\"\(containerSource)\""),
                 .define("CONTAINERIZATION_SOURCE", to: "\"\(scSource)\""),
                 .define("CONTAINERIZATION_REF", to: "\"\(scRef)\""),
+                .define("CONTAINER_ENGINE_API_VERSION", to: "\"\(containerEngineAPIVersion)\""),
                 .define("BUILDER_SHIM_REPOSITORY", to: "\"\(builderShimRepository)\""),
                 .define("BUILDER_SHIM_VERSION", to: "\"\(builderShimVersion)\""),
                 .define("BUILDER_SHIM_DIGEST", to: "\"\(builderShimDigest)\""),
-            ],
+            ]
         ),
         .target(
             name: "CAuditToken",

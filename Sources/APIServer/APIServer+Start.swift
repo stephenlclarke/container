@@ -249,7 +249,9 @@ extension APIServer {
                 runtimeRevisions: [
                     "container": ReleaseVersion.gitCommit()
                         ?? ReleaseVersion.version(),
-                    "container-engine-api": "0.3.4",
+                    "container-engine-api":
+                        ReleaseVersion
+                        .containerEngineAPIVersion(),
                     "containerization": ReleaseVersion.containerizationRef(),
                 ],
                 stateSchemaVersion: 1,

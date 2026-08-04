@@ -116,7 +116,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 
     public func logDriverCatalog() async throws -> LogDriverCatalog {
-        let catalog = try await providers.registry.logDriverCatalog()
+        let catalog = try await advertisedLogDriverCatalog()
         guard let journald = providers.journald else {
             return catalog
         }
@@ -132,6 +132,10 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 }
             )
         }
+    }
+
+    public func advertisedLogDriverCatalog() async throws -> LogDriverCatalog {
+        try await providers.registry.logDriverCatalog()
     }
 
     /// Prepares one provider session and substitutes authority-owned pipes for
