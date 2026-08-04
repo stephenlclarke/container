@@ -45,6 +45,7 @@ struct LoggingProtectedOptionsBinding: Encodable, Equatable, Sendable {
     let providerIdentity: LogDriverProviderIdentity
     let providerGeneration: UInt64
     let contractDigest: String
+    let providerHistoryMigrationReceipt: LogDriverHistoryMigrationReceiptV1?
 
     init(
         containerID: String,
@@ -65,6 +66,7 @@ struct LoggingProtectedOptionsBinding: Encodable, Equatable, Sendable {
         self.providerIdentity = prepared.descriptor.providerIdentity
         self.providerGeneration = prepared.descriptor.providerGeneration
         self.contractDigest = prepared.descriptor.optionContractDigest
+        self.providerHistoryMigrationReceipt = nil
     }
 
     init(containerID: String, configuration: ContainerLogConfiguration) throws {
@@ -89,6 +91,42 @@ struct LoggingProtectedOptionsBinding: Encodable, Equatable, Sendable {
         self.providerIdentity = resolved.providerIdentity
         self.providerGeneration = resolved.providerGenerationAtResolution
         self.contractDigest = resolved.contractDigest
+        self.providerHistoryMigrationReceipt =
+            resolved.providerHistoryMigrationReceipt
+    }
+
+    /// Builds the authentication context for a generation migration before
+    /// the replacement protected object exists. Every semantic field remains
+    /// frozen; only the logging lease and provider generation advance.
+    init(
+        containerID: String,
+        sourceConfiguration: ContainerLogConfiguration,
+        targetDescriptor: LogDriverDescriptor,
+        targetLeaseGeneration: UInt64,
+        historyReceipt: LogDriverHistoryMigrationReceiptV1?
+    ) throws {
+        guard
+            !sourceConfiguration.isLegacy,
+            let requested = sourceConfiguration.requested,
+            let resolved = sourceConfiguration.resolved
+        else {
+            throw LoggingProtectedOptionsBindingError.incompleteConfiguration
+        }
+        self.schemaVersion = Self.currentSchemaVersion
+        self.containerID = containerID
+        self.leaseGeneration = targetLeaseGeneration
+        self.requestedDriver = requested.driver
+        self.requestedSafeOptions = requested.safeOptions
+        self.requestedProtectedOptionNames = requested.protectedOptionNames.sorted()
+        self.resolvedDriver = targetDescriptor.driver
+        self.resolvedSafeOptions = resolved.safeOptions
+        self.resolvedProtectedOptionNames = resolved.protectedOptionNames.sorted()
+        self.delivery = resolved.delivery
+        self.readPolicy = resolved.readPolicy
+        self.providerIdentity = targetDescriptor.providerIdentity
+        self.providerGeneration = targetDescriptor.providerGeneration
+        self.contractDigest = targetDescriptor.optionContractDigest
+        self.providerHistoryMigrationReceipt = historyReceipt
     }
 
     func canonicalData() throws -> Data {

@@ -428,6 +428,40 @@ public actor JournaldLogDriverProvider: ContainerLogDriverProvider {
         return generation
     }
 
+    /// Journald history is owned by the stable service journal rather than a
+    /// provider-generation actor. Readiness plus the exact immutable contract
+    /// therefore revalidates the same journal epoch for the replacement.
+    public func migrateHistory(
+        _ request: LogDriverHistoryMigrationRequestV1
+    ) async throws -> LogDriverHistoryMigrationReceiptV1 {
+        guard
+            request.providerID == descriptorValue.providerIdentity.id,
+            request.targetProviderGeneration
+                == descriptorValue.providerGeneration,
+            request.contractDigest
+                == descriptorValue.optionContractDigest,
+            try await service.activeSandboxGeneration() > 0
+        else {
+            throw LogDriverHistoryMigrationError.receiptMismatch
+        }
+        return try LogDriverHistoryMigrationReceiptV1(
+            request: request,
+            providerOutcomeDigest: Self.digest(
+                "journald-history-migration-v1",
+                values: [
+                    request.containerID,
+                    String(request.sourceLeaseGeneration),
+                    String(request.targetLeaseGeneration),
+                    request.providerID,
+                    String(request.sourceProviderGeneration),
+                    String(request.targetProviderGeneration),
+                    request.contractDigest,
+                    request.terminalHistoryDigest,
+                ]
+            )
+        )
+    }
+
     public func start(
         _ request: LogDriverStartRequestV1
     ) async throws -> StartedLogDriverSessionV1 {

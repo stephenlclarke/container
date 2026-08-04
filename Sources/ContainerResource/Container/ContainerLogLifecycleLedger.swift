@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import Darwin
 import Foundation
 
 public enum ContainerLogLifecycleLedgerLimitsV1 {
@@ -124,9 +125,42 @@ public actor FileContainerLogLifecycleLedgerPersistenceV1:
             try rejectNonRegularOrSymbolicLink(manager: manager)
         }
         let directory = fileURL.deletingLastPathComponent()
-        try manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try ensureProtectedDirectory(directory, manager: manager)
         try data.write(to: fileURL, options: [.atomic])
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        try rejectNonRegularOrSymbolicLink(manager: manager)
+        try synchronize(fileURL)
+        try synchronize(directory, directory: true)
+    }
+
+    private func ensureProtectedDirectory(
+        _ directory: URL,
+        manager: FileManager
+    ) throws {
+        if !manager.fileExists(atPath: directory.path) {
+            try manager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
+        let values = try directory.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard
+            values.isDirectory == true,
+            values.isSymbolicLink != true,
+            directory.resolvingSymlinksInPath().standardizedFileURL.path
+                == directory.path
+        else {
+            throw ContainerLogLifecycleLedgerError.corruptSnapshot(
+                "lifecycle snapshot directory must be a non-symbolic-link directory"
+            )
+        }
+        try manager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
     }
 
     private func rejectNonRegularOrSymbolicLink(manager: FileManager) throws {
@@ -135,6 +169,26 @@ public actor FileContainerLogLifecycleLedgerPersistenceV1:
             throw ContainerLogLifecycleLedgerError.corruptSnapshot(
                 "lifecycle snapshot path must be a regular non-symbolic-link file"
             )
+        }
+    }
+
+    private func synchronize(_ url: URL, directory: Bool = false) throws {
+        let flags =
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            | (directory ? O_DIRECTORY : 0)
+        let descriptor = Darwin.open(url.path, flags)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(descriptor) }
+        var status = stat()
+        let expected = directory ? S_IFDIR : S_IFREG
+        guard
+            Darwin.fstat(descriptor, &status) == 0,
+            status.st_mode & S_IFMT == expected,
+            Darwin.fsync(descriptor) == 0
+        else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 }

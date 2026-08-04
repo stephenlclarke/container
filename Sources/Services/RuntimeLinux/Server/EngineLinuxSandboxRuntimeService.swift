@@ -69,6 +69,11 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let task: Task<WorkloadProcessReceiptV1, any Error>
     }
 
+    private struct WorkloadStopInFlight: Sendable {
+        let request: EngineLinuxSandboxWorkloadStopRequestV1
+        let task: Task<EngineLinuxSandboxWorkloadStopReceiptV1, any Error>
+    }
+
     private let connection: xpc_connection_t?
     private let sandbox: any EngineLinuxSandboxInstanceV1
     private let runtimeFingerprint: String
@@ -78,8 +83,11 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     private var bootInFlight: BootInFlight?
     private var shutdownInFlight: ShutdownInFlight?
     private var workloadStartInFlight: [String: WorkloadStartInFlight] = [:]
+    private var workloadStopInFlight: [String: WorkloadStopInFlight] = [:]
     private var workloadRequests: [String: EngineLinuxSandboxWorkloadStartRequestV1] = [:]
     private var workloadReceipts: [String: WorkloadProcessReceiptV1] = [:]
+    private var workloadStopRequests: [String: EngineLinuxSandboxWorkloadStopRequestV1] = [:]
+    private var workloadStopReceipts: [String: EngineLinuxSandboxWorkloadStopReceiptV1] = [:]
     private var workloadCaptures: [String: ContainerLogRuntimeCapture] = [:]
     private var workloadTerminalMonitors: [String: Task<Void, Never>] = [:]
     private var terminalWorkloadGenerations: [String: UInt64] = [:]
@@ -139,7 +147,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         _ request: EngineLinuxSandboxBootRequestV1
     ) async throws -> EngineLinuxSandboxBootReceiptV1 {
         try validate(request)
-        guard shutdownInFlight == nil, workloadStartInFlight.isEmpty else {
+        guard shutdownInFlight == nil, workloadStartInFlight.isEmpty,
+            workloadStopInFlight.isEmpty
+        else {
             throw conflictingOperation("sandbox boot")
         }
         if let inFlight = bootInFlight {
@@ -220,6 +230,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         guard
             bootInFlight == nil,
             workloadStartInFlight.isEmpty,
+            workloadStopInFlight.isEmpty,
             serviceDialsInFlight == 0
         else {
             throw conflictingOperation("sandbox shutdown")
@@ -246,6 +257,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             cancelWorkloadTerminalMonitors()
             workloadRequests.removeAll()
             workloadReceipts.removeAll()
+            workloadStopRequests.removeAll()
+            workloadStopReceipts.removeAll()
             terminalWorkloadGenerations.removeAll()
             return receipt
         case .recoveryRequired:
@@ -275,6 +288,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             cancelWorkloadTerminalMonitors()
             workloadRequests.removeAll()
             workloadReceipts.removeAll()
+            workloadStopRequests.removeAll()
+            workloadStopReceipts.removeAll()
             terminalWorkloadGenerations.removeAll()
             shutdownInFlight = nil
             return applied
@@ -316,6 +331,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let id = request.context.containerID
         guard bootInFlight == nil, shutdownInFlight == nil else {
             throw conflictingOperation("workload start for \(id)")
+        }
+        guard workloadStopInFlight[id] == nil else {
+            throw conflictingOperation("workload stop for \(id)")
         }
         if let inFlight = workloadStartInFlight[id] {
             guard inFlight.request == request else {
@@ -375,6 +393,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 workloadCaptures.removeValue(forKey: id)?.close()
                 workloadRequests[id] = nil
                 workloadReceipts[id] = nil
+                workloadStopRequests[id] = nil
+                workloadStopReceipts[id] = nil
             }
             let loadedBundle = ContainerResource.Bundle(path: request.workloadRoot)
             let loadedRuntimeConfiguration = try RuntimeConfiguration.readRuntimeConfiguration(
@@ -534,6 +554,156 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         }
     }
 
+    public func stopWorkload(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopReceiptV1 {
+        try validate(request)
+        let id = request.workloadID
+        guard bootInFlight == nil, shutdownInFlight == nil,
+            workloadStartInFlight[id] == nil
+        else {
+            throw conflictingOperation("workload stop for \(id)")
+        }
+        if let inFlight = workloadStopInFlight[id] {
+            guard inFlight.request == request else {
+                throw conflictingOperation("workload stop for \(id)")
+            }
+            return try await inFlight.task.value
+        }
+        if let previous = workloadStopRequests[id] {
+            guard
+                previous == request,
+                let receipt = workloadStopReceipts[id]
+            else {
+                throw conflictingOperation("workload stop for \(id)")
+            }
+            let snapshot = await sandbox.snapshot()
+            guard
+                snapshot.workloads.first(where: { $0.id == id })?.state
+                    == .stopped
+            else {
+                throw unattributedState(
+                    "completed workload stop no longer has a stopped observation"
+                )
+            }
+            return receipt
+        }
+
+        let snapshot = await sandbox.snapshot()
+        guard snapshot.state == .running,
+            let bootReceipt,
+            bootReceipt.sandboxID == request.sandboxID,
+            bootReceipt.generation == request.sandboxGeneration,
+            let startRequest = workloadRequests[id],
+            let startReceipt = workloadReceipts[id],
+            startRequest.context.sandboxGeneration
+                == request.sandboxGeneration,
+            startRequest.context.candidateProcessGeneration
+                == request.workloadProcessGeneration,
+            startReceipt.processGeneration
+                == request.workloadProcessGeneration,
+            startReceipt.sandboxGeneration == request.sandboxGeneration
+        else {
+            throw unattributedState(
+                "workload stop does not match the active workload generation"
+            )
+        }
+        let observed = snapshot.workloads.first { $0.id == id }
+        let receipt = EngineLinuxSandboxWorkloadStopReceiptV1(
+            request: request
+        )
+        if observed?.state == .stopped,
+            terminalWorkloadGenerations[id]
+                == request.workloadProcessGeneration
+        {
+            workloadStopRequests[id] = request
+            workloadStopReceipts[id] = receipt
+            return receipt
+        }
+        guard observed?.state == .running || observed?.state == .paused else {
+            throw unattributedState(
+                "workload stop has no attributable active process"
+            )
+        }
+
+        let sandbox = self.sandbox
+        let task = Task<EngineLinuxSandboxWorkloadStopReceiptV1, any Error> {
+            try await sandbox.stopContainer(id)
+            let observation = await sandbox.snapshot()
+            guard
+                observation.workloads.first(where: { $0.id == id })?.state
+                    == .stopped
+            else {
+                throw ContainerizationError(
+                    .internalError,
+                    message:
+                        "workload stop returned without a stopped observation"
+                )
+            }
+            return receipt
+        }
+        workloadStopInFlight[id] = WorkloadStopInFlight(
+            request: request,
+            task: task
+        )
+        do {
+            let applied = try await task.value
+            workloadStopRequests[id] = request
+            workloadStopReceipts[id] = applied
+            terminalWorkloadGenerations[id] = request.workloadProcessGeneration
+            workloadCaptures.removeValue(forKey: id)?.close()
+            workloadTerminalMonitors.removeValue(forKey: id)?.cancel()
+            workloadStopInFlight[id] = nil
+            return applied
+        } catch {
+            workloadStopInFlight[id] = nil
+            log.error(
+                "Engine Linux sandbox workload stop failed",
+                metadata: ["containerID": "\(id)", "error": "\(error)"]
+            )
+            throw error
+        }
+    }
+
+    public func observeWorkloadStop(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopObservationV1 {
+        try validate(request)
+        let snapshot = await sandbox.snapshot()
+        guard snapshot.state == .running,
+            let bootReceipt,
+            bootReceipt.sandboxID == request.sandboxID,
+            bootReceipt.generation == request.sandboxGeneration
+        else {
+            return .unknown
+        }
+        let observed = snapshot.workloads.first { $0.id == request.workloadID }
+        if workloadStopRequests[request.workloadID] == request,
+            let receipt = workloadStopReceipts[request.workloadID],
+            observed?.state == .stopped
+        {
+            return .stopped(receipt)
+        }
+        if terminalWorkloadGenerations[request.workloadID]
+            == request.workloadProcessGeneration,
+            observed == nil || observed?.state == .stopped
+        {
+            return .absent
+        }
+        if observed?.state == .running || observed?.state == .paused,
+            let start = workloadRequests[request.workloadID],
+            let receipt = workloadReceipts[request.workloadID],
+            start.context.candidateProcessGeneration
+                == request.workloadProcessGeneration,
+            start.context.sandboxGeneration == request.sandboxGeneration,
+            receipt.processGeneration == request.workloadProcessGeneration,
+            receipt.sandboxGeneration == request.sandboxGeneration
+        {
+            return .running
+        }
+        return .unknown
+    }
+
     public func dialService(
         _ request: EngineLinuxSandboxServiceDialRequestV1
     ) async throws -> FileHandle {
@@ -651,6 +821,30 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     }
 
     @Sendable
+    public func stopWorkloadMessage(_ message: XPCMessage) async throws
+        -> XPCMessage
+    {
+        let request = try message.engineSandboxPayload(
+            EngineLinuxSandboxWorkloadStopRequestV1.self
+        )
+        let reply = message.reply()
+        try reply.setEngineSandboxPayload(try await stopWorkload(request))
+        return reply
+    }
+
+    @Sendable
+    public func observeWorkloadStopMessage(_ message: XPCMessage) async throws
+        -> XPCMessage
+    {
+        let request = try message.engineSandboxPayload(
+            EngineLinuxSandboxWorkloadStopRequestV1.self
+        )
+        let reply = message.reply()
+        try reply.setEngineSandboxPayload(try await observeWorkloadStop(request))
+        return reply
+    }
+
+    @Sendable
     public func dialServiceMessage(_ message: XPCMessage) async throws -> XPCMessage {
         let request = try message.engineSandboxPayload(
             EngineLinuxSandboxServiceDialRequestV1.self
@@ -707,6 +901,32 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             )
         }
         try WorkloadNetworkPlan.validate(request.networkEndpoints)
+    }
+
+    private func validate(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) throws {
+        let identifierLimit = EngineWorkloadLedgerLimitsV1.maximumIdentifierBytes
+        let digestLimit = EngineWorkloadLedgerLimitsV1.maximumDigestBytes
+        guard
+            request.sandboxID == sandbox.id,
+            !request.sandboxID.isEmpty,
+            request.sandboxID.utf8.count <= identifierLimit,
+            request.sandboxGeneration > 0,
+            !request.workloadID.isEmpty,
+            request.workloadID.utf8.count <= identifierLimit,
+            request.workloadProcessGeneration > 0,
+            request.operationGeneration > 0,
+            !request.idempotencyKey.isEmpty,
+            request.idempotencyKey.utf8.count <= identifierLimit,
+            !request.requestDigest.isEmpty,
+            request.requestDigest.utf8.count <= digestLimit
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid Engine Linux sandbox workload stop request"
+            )
+        }
     }
 
     private func validate(_ request: EngineLinuxSandboxServiceDialRequestV1) throws {

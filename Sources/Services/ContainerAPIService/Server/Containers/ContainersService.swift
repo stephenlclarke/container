@@ -44,6 +44,17 @@ public actor ContainersService {
         let protectedBinding: LoggingProtectedOptionsBinding?
     }
 
+    private struct LoggingProviderMigrationSource: Sendable {
+        let containerID: String
+        let configuration: ContainerConfiguration
+        let protectedOptions: [String: String]
+    }
+
+    private struct PreparedLoggingProviderMigration: Sendable {
+        let source: LoggingProviderMigrationSource
+        let historyReceipt: LogDriverHistoryMigrationReceiptV1?
+    }
+
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var client: RuntimeClient? = nil
@@ -144,6 +155,383 @@ public actor ContainersService {
         self.runtimePlugins = pluginLoader.findPlugins().filter { $0.hasType(.runtime) }
         self.loggingProtectedOptionsStore = loggingProtectedOptionsStore
         self.containers = containers
+    }
+
+    /// Completes every ready provider-generation transition before API routes
+    /// become reachable. Quiescence is durable in the provider registry;
+    /// partial configuration publication therefore resumes forward after an
+    /// authority restart and can never make source and target both admit new
+    /// effects.
+    package func reconcileLoggingProviderUpgrades(
+        afterPublishingContainer: (@Sendable (String) async throws -> Void)? = nil
+    ) async throws {
+        guard let remoteLogDriverPlane else {
+            return
+        }
+        while let candidate =
+            try await remoteLogDriverPlane
+            .providerUpgradeCandidates().first
+        {
+            try await reconcileLoggingProviderUpgrade(
+                candidate,
+                plane: remoteLogDriverPlane,
+                afterPublishingContainer: afterPublishingContainer
+            )
+        }
+        while let candidate =
+            try await remoteLogDriverPlane
+            .providerReclamationCandidates().first
+        {
+            guard
+                !containers.values.contains(where: {
+                    $0.snapshot.configuration.logging.resolved?
+                        .providerIdentity.id == candidate.providerID
+                        && $0.snapshot.configuration.logging.resolved?
+                            .providerGenerationAtResolution
+                            == candidate.generation
+                })
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message:
+                        "draining logging provider generation remains referenced by durable configuration"
+                )
+            }
+            try await remoteLogDriverPlane.reclaimProviderGeneration(
+                candidate
+            )
+        }
+    }
+
+    private func reconcileLoggingProviderUpgrade(
+        _ candidate: AuthorityRemoteLogDriverUpgradeCandidate,
+        plane: AuthorityRemoteLogDriverPlane,
+        afterPublishingContainer: (@Sendable (String) async throws -> Void)?
+    ) async throws {
+        try await plane.beginProviderUpgrade(candidate)
+        var forwardOnly = false
+        do {
+            var sources = [LoggingProviderMigrationSource]()
+            for containerID in containers.keys.sorted() {
+                guard
+                    let state = containers[containerID],
+                    let resolved = state.snapshot.configuration.logging.resolved,
+                    resolved.providerIdentity.id == candidate.upgrade.providerID
+                else {
+                    continue
+                }
+                let bundle = ContainerResource.Bundle(
+                    path: try Self.containerPath(
+                        root: containerRoot,
+                        id: containerID
+                    )
+                )
+                switch resolved.providerGenerationAtResolution {
+                case candidate.upgrade.sourceGeneration:
+                    guard state.snapshot.status == .stopped, state.client == nil else {
+                        throw ContainerizationError(
+                            .invalidState,
+                            message:
+                                "logging provider generation \(candidate.upgrade.sourceGeneration) is still live for container \(containerID)"
+                        )
+                    }
+                    try Self.validateLoggingProviderMigration(
+                        configuration: state.snapshot.configuration.logging,
+                        candidate: candidate
+                    )
+                    let protectedOptions = try await loadProtectedLoggingOptions(
+                        containerID: containerID,
+                        configuration: state.snapshot.configuration.logging
+                    )
+                    sources.append(
+                        LoggingProviderMigrationSource(
+                            containerID: containerID,
+                            configuration: state.snapshot.configuration,
+                            protectedOptions: protectedOptions
+                        )
+                    )
+                case candidate.upgrade.targetGeneration:
+                    forwardOnly = true
+                    guard resolved.leaseGeneration > 1 else {
+                        throw ContainerizationError(
+                            .invalidState,
+                            message: "migrated logging lease is missing its source generation"
+                        )
+                    }
+                    _ = try await loadProtectedLoggingOptions(
+                        containerID: containerID,
+                        configuration: state.snapshot.configuration.logging
+                    )
+                    let proof = try await plane.verifyProviderGenerationTerminal(
+                        candidate: candidate,
+                        containerID: containerID,
+                        bundle: bundle,
+                        targetConfiguration: state.snapshot.configuration,
+                        sourceLeaseGeneration: resolved.leaseGeneration - 1
+                    )
+                    try await plane.verifyProviderHistoryMigration(
+                        candidate: candidate,
+                        containerID: containerID,
+                        targetConfiguration: state.snapshot.configuration.logging,
+                        proof: proof
+                    )
+                default:
+                    throw ContainerizationError(
+                        .invalidState,
+                        message:
+                            "logging provider update found an unexpected durable generation for container \(containerID)"
+                    )
+                }
+            }
+
+            var preparedSources = [PreparedLoggingProviderMigration]()
+            preparedSources.reserveCapacity(sources.count)
+            for source in sources {
+                let bundle = ContainerResource.Bundle(
+                    path: try Self.containerPath(
+                        root: containerRoot,
+                        id: source.containerID
+                    )
+                )
+                let proof = try await plane.proveProviderGenerationTerminal(
+                    candidate: candidate,
+                    containerID: source.containerID,
+                    bundle: bundle,
+                    configuration: source.configuration,
+                    authenticatedProtectedOptions: source.protectedOptions
+                )
+                let historyReceipt = try await plane.migrateProviderHistory(
+                    candidate: candidate,
+                    containerID: source.containerID,
+                    sourceConfiguration: source.configuration.logging,
+                    proof: proof
+                )
+                preparedSources.append(
+                    PreparedLoggingProviderMigration(
+                        source: source,
+                        historyReceipt: historyReceipt
+                    )
+                )
+            }
+
+            for prepared in preparedSources {
+                try await migrateLoggingConfiguration(
+                    prepared.source,
+                    to: candidate.targetDescriptor,
+                    historyReceipt: prepared.historyReceipt
+                )
+                forwardOnly = true
+                try await afterPublishingContainer?(
+                    prepared.source.containerID
+                )
+            }
+
+            try await plane.activateProviderUpgrade(candidate)
+            guard
+                !containers.values.contains(where: {
+                    $0.snapshot.configuration.logging.resolved?
+                        .providerIdentity.id == candidate.upgrade.providerID
+                        && $0.snapshot.configuration.logging.resolved?
+                            .providerGenerationAtResolution
+                            == candidate.upgrade.sourceGeneration
+                })
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "source logging provider generation remains referenced after migration"
+                )
+            }
+            try await plane.reclaimProviderGeneration(candidate)
+        } catch {
+            if !forwardOnly {
+                try? await plane.cancelProviderUpgrade(candidate)
+            }
+            throw error
+        }
+    }
+
+    private func loadProtectedLoggingOptions(
+        containerID: String,
+        configuration: ContainerLogConfiguration
+    ) async throws -> [String: String] {
+        guard let resolved = configuration.resolved else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "logging provider migration requires resolved configuration"
+            )
+        }
+        guard let reference = resolved.protectedOptionReference else {
+            guard resolved.protectedOptionNames.isEmpty else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "logging provider migration is missing protected options"
+                )
+            }
+            return [:]
+        }
+        let binding = try LoggingProtectedOptionsBinding(
+            containerID: containerID,
+            configuration: configuration
+        )
+        let options = try await loggingProtectedOptionsStore.load(
+            reference,
+            boundTo: binding
+        )
+        guard options.keys.sorted() == resolved.protectedOptionNames.sorted() else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "logging provider migration found a protected option mismatch"
+            )
+        }
+        return options
+    }
+
+    private static func validateLoggingProviderMigration(
+        configuration: ContainerLogConfiguration,
+        candidate: AuthorityRemoteLogDriverUpgradeCandidate
+    ) throws {
+        guard
+            let resolved = configuration.resolved,
+            resolved.driver == candidate.sourceDescriptor.driver,
+            resolved.driver == candidate.targetDescriptor.driver,
+            resolved.providerIdentity == candidate.sourceDescriptor.providerIdentity,
+            resolved.providerIdentity == candidate.targetDescriptor.providerIdentity,
+            resolved.providerGenerationAtResolution
+                == candidate.upgrade.sourceGeneration,
+            candidate.sourceDescriptor.providerGeneration
+                == candidate.upgrade.sourceGeneration,
+            candidate.targetDescriptor.providerGeneration
+                == candidate.upgrade.targetGeneration,
+            resolved.contractDigest
+                == candidate.sourceDescriptor.optionContractDigest,
+            resolved.contractDigest
+                == candidate.targetDescriptor.optionContractDigest
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "logging provider generation has an incompatible frozen contract"
+            )
+        }
+    }
+
+    private func migrateLoggingConfiguration(
+        _ source: LoggingProviderMigrationSource,
+        to targetDescriptor: LogDriverDescriptor,
+        historyReceipt: LogDriverHistoryMigrationReceiptV1?
+    ) async throws {
+        guard
+            let requested = source.configuration.logging.requested,
+            let resolved = source.configuration.logging.resolved,
+            resolved.leaseGeneration < UInt64.max
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "logging provider migration cannot advance the lease"
+            )
+        }
+        let targetLeaseGeneration = resolved.leaseGeneration + 1
+        let targetBinding = try LoggingProtectedOptionsBinding(
+            containerID: source.containerID,
+            sourceConfiguration: source.configuration.logging,
+            targetDescriptor: targetDescriptor,
+            targetLeaseGeneration: targetLeaseGeneration,
+            historyReceipt: historyReceipt
+        )
+        var targetReference: LoggingProtectedOptionsReference?
+        var published = false
+        do {
+            if !source.protectedOptions.isEmpty {
+                targetReference = try await loggingProtectedOptionsStore.store(
+                    source.protectedOptions,
+                    boundTo: targetBinding
+                )
+            }
+            let targetResolved = try ResolvedContainerLogConfiguration(
+                leaseGeneration: targetLeaseGeneration,
+                driver: resolved.driver,
+                safeOptions: resolved.safeOptions,
+                protectedOptionNames: resolved.protectedOptionNames,
+                protectedOptionReference: targetReference,
+                delivery: resolved.delivery,
+                readPolicy: resolved.readPolicy,
+                providerIdentity: targetDescriptor.providerIdentity,
+                providerGenerationAtResolution: targetDescriptor.providerGeneration,
+                contractDigest: targetDescriptor.optionContractDigest,
+                providerHistoryMigrationReceipt: historyReceipt
+            )
+            var requestedOptions = requested.safeOptions
+            for name in requested.protectedOptionNames {
+                guard let value = source.protectedOptions[name] else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "logging provider migration cannot reconstruct the request"
+                    )
+                }
+                requestedOptions[name] = value
+            }
+            let targetLogging = try ContainerLogConfiguration(
+                requested: ContainerLogRequest(
+                    driver: requested.driver,
+                    options: requestedOptions
+                ),
+                resolved: targetResolved
+            )
+            guard
+                try LoggingProtectedOptionsBinding(
+                    containerID: source.containerID,
+                    configuration: targetLogging
+                ) == targetBinding
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "logging provider migration binding is not canonical"
+                )
+            }
+            var targetConfiguration = source.configuration
+            targetConfiguration.logging = targetLogging
+            guard var state = containers[source.containerID] else {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "container disappeared during logging provider migration"
+                )
+            }
+            let path = try Self.containerPath(
+                root: containerRoot,
+                id: source.containerID
+            )
+            try ContainerResource.Bundle(path: path).setDurably(
+                configuration: targetConfiguration
+            )
+            published = true
+            state.snapshot.configuration = targetConfiguration
+            containers[source.containerID] = state
+
+            if let sourceReference = resolved.protectedOptionReference {
+                let sourceBinding = try LoggingProtectedOptionsBinding(
+                    containerID: source.containerID,
+                    configuration: source.configuration.logging
+                )
+                do {
+                    try await loggingProtectedOptionsStore.delete(
+                        sourceReference,
+                        boundTo: sourceBinding
+                    )
+                } catch {
+                    log.warning(
+                        "old protected logging options will be reclaimed at authority boot",
+                        metadata: ["id": "\(source.containerID)"]
+                    )
+                }
+            }
+        } catch {
+            if !published, let targetReference {
+                try? await loggingProtectedOptionsStore.delete(
+                    targetReference,
+                    boundTo: targetBinding
+                )
+            }
+            throw error
+        }
     }
 
     public func setNetworksService(_ service: NetworksService) async {

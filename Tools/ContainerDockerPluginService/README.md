@@ -29,6 +29,7 @@ the workload. The service binary accepts:
 --sandbox-generation GENERATION
 --provider-id ID
 --provider-generation GENERATION
+--contract-digest DIGEST
 --plugin-socket /absolute/private/plugin.sock
 --port VSOCK_PORT
 --authentication-key-file /var/lib/container-docker-plugin-service/authentication.key
@@ -55,6 +56,10 @@ The service:
 - calls `StopLogging` before graceful FIFO removal and revokes the FIFO before
   an authoritative fence;
 - routes direct `ReadLogs` streams with sequence-stable response replay;
+- durably records exact provider-history migration receipts only for the
+  installed contract and a plugin advertising `ReadLogs`;
+- proves writer and reader claims are empty before acknowledging exact
+  provider-generation reclamation;
 - makes uncertain plugin effects visible instead of issuing a potentially
   duplicate `StartLogging` or `ReadLogs` call after a service crash;
 - bounds connections, replay memory, state, requests, responses, frames,

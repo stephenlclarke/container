@@ -67,6 +67,12 @@ public enum LogDriverProviderRegistryError: Error, Equatable, Sendable {
     case providerGenerationConflict(providerID: String, generation: UInt64)
     case providerGenerationNotStaged(providerID: String, generation: UInt64)
     case providerGenerationNotFound(providerID: String, generation: UInt64)
+    case providerUpgradeInProgress(providerID: String)
+    case providerUpgradeNotPrepared(
+        providerID: String,
+        sourceGeneration: UInt64,
+        targetGeneration: UInt64
+    )
     case rollbackGenerationUnavailable(providerID: String, generation: UInt64)
     case providerNotFound(String)
     case resolvedConfigurationMismatch
@@ -94,7 +100,58 @@ public enum LogDriverProviderGenerationPhaseV1: String, Codable, Equatable,
 {
     case staged
     case active
+    case quiescing
     case draining
+}
+
+/// Durable source/target fence for one provider-generation upgrade.
+public struct LogDriverProviderUpgradeV1: Codable, Equatable, Sendable {
+    public let providerID: String
+    public let sourceGeneration: UInt64
+    public let targetGeneration: UInt64
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case providerID
+        case sourceGeneration
+        case targetGeneration
+    }
+
+    public init(
+        providerID: String,
+        sourceGeneration: UInt64,
+        targetGeneration: UInt64
+    ) throws {
+        guard
+            !providerID.isEmpty,
+            sourceGeneration > 0,
+            targetGeneration > sourceGeneration
+        else {
+            throw LogDriverProviderRegistryError.invalidPersistedState
+        }
+        self.providerID = providerID
+        self.sourceGeneration = sourceGeneration
+        self.targetGeneration = targetGeneration
+    }
+
+    public init(from decoder: any Decoder) throws {
+        try rejectUnknownRegistryKeys(
+            from: decoder,
+            allowed: CodingKeys.self,
+            type: "log-driver provider upgrade"
+        )
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            providerID: container.decode(String.self, forKey: .providerID),
+            sourceGeneration: container.decode(
+                UInt64.self,
+                forKey: .sourceGeneration
+            ),
+            targetGeneration: container.decode(
+                UInt64.self,
+                forKey: .targetGeneration
+            )
+        )
+    }
 }
 
 /// Durable lifecycle state for every generation of one provider identity.
@@ -103,6 +160,7 @@ public struct LogDriverProviderIdentityStateV1: Codable, Equatable, Sendable {
     public let activeGeneration: UInt64?
     public let stagedGenerations: [UInt64]
     public let drainingGenerations: [UInt64]
+    public let upgrade: LogDriverProviderUpgradeV1?
     public let descriptors: [LogDriverDescriptor]
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
@@ -110,6 +168,7 @@ public struct LogDriverProviderIdentityStateV1: Codable, Equatable, Sendable {
         case activeGeneration
         case stagedGenerations
         case drainingGenerations
+        case upgrade
         case descriptors
     }
 
@@ -118,6 +177,7 @@ public struct LogDriverProviderIdentityStateV1: Codable, Equatable, Sendable {
         activeGeneration: UInt64?,
         stagedGenerations: [UInt64],
         drainingGenerations: [UInt64],
+        upgrade: LogDriverProviderUpgradeV1? = nil,
         descriptors: [LogDriverDescriptor]
     ) throws {
         let staged = stagedGenerations.sorted()
@@ -136,7 +196,10 @@ public struct LogDriverProviderIdentityStateV1: Codable, Equatable, Sendable {
             descriptors.allSatisfy({
                 $0.providerIdentity.id == providerID
             }),
-            descriptors.map(\.providerGeneration) == all.sorted()
+            descriptors.map(\.providerGeneration) == all.sorted(),
+            upgrade?.providerID == providerID || upgrade == nil,
+            upgrade?.sourceGeneration == activeGeneration || upgrade == nil,
+            upgrade.map({ staged.contains($0.targetGeneration) }) ?? true
         else {
             throw LogDriverProviderRegistryError.invalidPersistedState
         }
@@ -144,6 +207,7 @@ public struct LogDriverProviderIdentityStateV1: Codable, Equatable, Sendable {
         self.activeGeneration = activeGeneration
         self.stagedGenerations = staged
         self.drainingGenerations = draining
+        self.upgrade = upgrade
         self.descriptors = descriptors
     }
 
@@ -167,6 +231,10 @@ public struct LogDriverProviderIdentityStateV1: Codable, Equatable, Sendable {
             drainingGenerations: container.decode(
                 [UInt64].self,
                 forKey: .drainingGenerations
+            ),
+            upgrade: container.decodeIfPresent(
+                LogDriverProviderUpgradeV1.self,
+                forKey: .upgrade
             ),
             descriptors: container.decode(
                 [LogDriverDescriptor].self,
@@ -290,6 +358,7 @@ public struct FileLogDriverProviderRegistryPersistenceV1:
                     activeGeneration: $0.activeGeneration,
                     stagedGenerations: $0.stagedGenerations,
                     drainingGenerations: $0.drainingGenerations,
+                    upgrade: $0.upgrade,
                     descriptors: $0.descriptors
                 )
             }
@@ -376,8 +445,10 @@ public struct RegisteredLogDriverProvider: Sendable {
 /// The state file is committed before in-memory activation. A restart therefore
 /// reconstructs the same active, staged, and draining generations from the
 /// installed immutable provider objects. Catalog/name lookup exposes only the
-/// active generation; exact persisted configurations can still select a
-/// draining generation for recovery and orderly close.
+/// active generation. A quiescing generation is withdrawn from new catalogue
+/// and session admission while exact generation selection remains available
+/// for recovery. Draining generations remain available only for recovery and
+/// orderly close.
 public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
     private struct Entry: Sendable {
         let descriptor: LogDriverDescriptor
@@ -395,12 +466,14 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
         var activeGeneration: UInt64?
         var stagedGenerations: Set<UInt64>
         var drainingGenerations: Set<UInt64>
+        var upgrade: LogDriverProviderUpgradeV1?
         var descriptorsByGeneration: [UInt64: LogDriverDescriptor]
 
         init(_ state: LogDriverProviderIdentityStateV1? = nil) {
             activeGeneration = state?.activeGeneration
             stagedGenerations = Set(state?.stagedGenerations ?? [])
             drainingGenerations = Set(state?.drainingGenerations ?? [])
+            upgrade = state?.upgrade
             descriptorsByGeneration = Dictionary(
                 uniqueKeysWithValues: (state?.descriptors ?? []).map {
                     ($0.providerGeneration, $0)
@@ -409,6 +482,7 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
         }
 
         func phase(generation: UInt64) -> LogDriverProviderGenerationPhaseV1? {
+            if upgrade?.sourceGeneration == generation { return .quiescing }
             if activeGeneration == generation { return .active }
             if stagedGenerations.contains(generation) { return .staged }
             if drainingGenerations.contains(generation) { return .draining }
@@ -581,8 +655,72 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
         return .staged
     }
 
-    /// Publishes one ready staged generation. The prior active generation is
-    /// retained as draining before new lookups can observe the replacement.
+    /// Durably withdraws the active generation from new catalogue and session
+    /// admission while retaining exact selection for terminal reconciliation.
+    @discardableResult
+    public func beginUpgrade(
+        providerID: String,
+        targetGeneration: UInt64
+    ) throws -> LogDriverProviderUpgradeV1 {
+        guard var state = statesByProviderID[providerID],
+            let sourceGeneration = state.activeGeneration,
+            state.stagedGenerations.contains(targetGeneration),
+            entriesByProviderID[providerID]?[sourceGeneration] != nil,
+            entriesByProviderID[providerID]?[targetGeneration] != nil
+        else {
+            throw LogDriverProviderRegistryError.providerGenerationNotStaged(
+                providerID: providerID,
+                generation: targetGeneration
+            )
+        }
+        let upgrade = try LogDriverProviderUpgradeV1(
+            providerID: providerID,
+            sourceGeneration: sourceGeneration,
+            targetGeneration: targetGeneration
+        )
+        if let existing = state.upgrade {
+            guard existing == upgrade else {
+                throw LogDriverProviderRegistryError.providerUpgradeInProgress(
+                    providerID: providerID
+                )
+            }
+            return existing
+        }
+        state.upgrade = upgrade
+        var nextStates = statesByProviderID
+        nextStates[providerID] = state
+        try persist(nextStates)
+        statesByProviderID = nextStates
+        return upgrade
+    }
+
+    /// Restores source-generation admission after an update is proved
+    /// incompatible or otherwise cannot progress without changing state.
+    @discardableResult
+    public func cancelUpgrade(
+        providerID: String,
+        targetGeneration: UInt64
+    ) throws -> Bool {
+        guard var state = statesByProviderID[providerID],
+            let upgrade = state.upgrade
+        else {
+            return false
+        }
+        guard upgrade.targetGeneration == targetGeneration else {
+            throw LogDriverProviderRegistryError.providerUpgradeInProgress(
+                providerID: providerID
+            )
+        }
+        state.upgrade = nil
+        var nextStates = statesByProviderID
+        nextStates[providerID] = state
+        try persist(nextStates)
+        statesByProviderID = nextStates
+        return true
+    }
+
+    /// Publishes one ready, fully reconciled staged generation. The prior
+    /// quiescing generation is retained as draining for terminal reclamation.
     @discardableResult
     public func activate(
         providerID: String,
@@ -613,11 +751,28 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
         }
         let previous = state.activeGeneration
         if let previous {
+            guard
+                state.upgrade
+                    == (try LogDriverProviderUpgradeV1(
+                        providerID: providerID,
+                        sourceGeneration: previous,
+                        targetGeneration: generation
+                    ))
+            else {
+                throw LogDriverProviderRegistryError.providerUpgradeNotPrepared(
+                    providerID: providerID,
+                    sourceGeneration: previous,
+                    targetGeneration: generation
+                )
+            }
+        }
+        if let previous {
             state.drainingGenerations.insert(previous)
         }
         state.stagedGenerations.remove(generation)
         state.drainingGenerations.remove(generation)
         state.activeGeneration = generation
+        state.upgrade = nil
         var nextStates = statesByProviderID
         nextStates[providerID] = state
         try persist(nextStates)
@@ -635,6 +790,9 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
         guard var state = statesByProviderID[providerID] else { return false }
         guard state.stagedGenerations.contains(generation) else {
             return false
+        }
+        if state.upgrade?.targetGeneration == generation {
+            state.upgrade = nil
         }
         state.stagedGenerations.remove(generation)
         state.descriptorsByGeneration.removeValue(forKey: generation)
@@ -666,6 +824,11 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
             throw LogDriverProviderRegistryError.providerGenerationNotFound(
                 providerID: providerID,
                 generation: generation
+            )
+        }
+        guard state.upgrade == nil else {
+            throw LogDriverProviderRegistryError.providerUpgradeInProgress(
+                providerID: providerID
             )
         }
         let fallbackGeneration = try state.drainingGenerations
@@ -718,6 +881,11 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
             )
         }
         var state = statesByProviderID[providerID] ?? ProviderState()
+        guard state.upgrade == nil else {
+            throw LogDriverProviderRegistryError.providerUpgradeInProgress(
+                providerID: providerID
+            )
+        }
         state.stagedGenerations.remove(generation)
         state.drainingGenerations.remove(generation)
         state.descriptorsByGeneration.removeValue(forKey: generation)
@@ -783,13 +951,63 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
         statesByProviderID[providerID]?.activeGeneration
     }
 
+    public func pendingUpgrades() -> [LogDriverProviderUpgradeV1] {
+        statesByProviderID.values.compactMap(\.upgrade).sorted {
+            $0.providerID < $1.providerID
+        }
+    }
+
+    /// Returns the next loaded staged generation for each provider. Existing
+    /// durable quiescence is returned unchanged so restart resumes the exact
+    /// source/target pair rather than skipping to a newer candidate.
+    public func upgradeCandidates() throws -> [LogDriverProviderUpgradeV1] {
+        try statesByProviderID.compactMap { providerID, state in
+            if let upgrade = state.upgrade {
+                guard
+                    entriesByProviderID[providerID]?[upgrade.sourceGeneration]
+                        != nil,
+                    entriesByProviderID[providerID]?[upgrade.targetGeneration]
+                        != nil
+                else {
+                    return nil
+                }
+                return upgrade
+            }
+            guard
+                let sourceGeneration = state.activeGeneration,
+                let targetGeneration = state.stagedGenerations
+                    .filter({
+                        $0 > sourceGeneration
+                            && entriesByProviderID[providerID]?[$0] != nil
+                    })
+                    .min()
+            else {
+                return nil
+            }
+            return try LogDriverProviderUpgradeV1(
+                providerID: providerID,
+                sourceGeneration: sourceGeneration,
+                targetGeneration: targetGeneration
+            )
+        }.sorted { $0.providerID < $1.providerID }
+    }
+
+    public func stagedGenerations(providerID: String) -> [UInt64] {
+        statesByProviderID[providerID]?.stagedGenerations.sorted() ?? []
+    }
+
+    public func drainingGenerations(providerID: String) -> [UInt64] {
+        statesByProviderID[providerID]?.drainingGenerations.sorted() ?? []
+    }
+
     public func stateSnapshot() throws -> LogDriverProviderRegistryStateV1 {
         try snapshot(statesByProviderID)
     }
 
-    /// Resolves one persisted authority decision without a catalog/provider
-    /// time-of-check/time-of-use split. Active and draining generations are
-    /// both valid; a merely staged candidate cannot own container effects.
+    /// Resolves one persisted authority decision for a new writer or reader
+    /// without a catalog/provider time-of-check/time-of-use split. Only the
+    /// currently admitted active generation can create a new effect; exact
+    /// tuple selection remains available separately for recovery.
     public func selection(
         for configuration: ResolvedContainerLogConfiguration
     ) throws -> RegisteredLogDriverProvider {
@@ -802,7 +1020,7 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
             generation: generation
         )
         guard
-            phase == .active || phase == .draining,
+            phase == .active,
             let entry = entries[generation]
         else {
             throw LogDriverProviderRegistryError.resolvedConfigurationMismatch
@@ -821,6 +1039,7 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
 
     private func activeEntries() -> [Entry] {
         statesByProviderID.compactMap { providerID, state in
+            guard state.upgrade == nil else { return nil }
             guard let generation = state.activeGeneration else { return nil }
             return entriesByProviderID[providerID]?[generation]
         }.sorted {
@@ -876,6 +1095,7 @@ public actor LogDriverProviderRegistry: LogDriverCatalogProviding {
                     activeGeneration: state.activeGeneration,
                     stagedGenerations: state.stagedGenerations.sorted(),
                     drainingGenerations: state.drainingGenerations.sorted(),
+                    upgrade: state.upgrade,
                     descriptors: state.descriptorsByGeneration.values.sorted {
                         $0.providerGeneration < $1.providerGeneration
                     }

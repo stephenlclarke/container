@@ -195,6 +195,19 @@ struct EngineWorkloadLedgerTests {
         #expect(recovered.activeProcessGeneration == stopping.activeProcessGeneration)
         #expect(recovered.activeSandboxGeneration == stopping.activeSandboxGeneration)
         #expect(recovered.operation?.phase == .recoveryRequired)
+
+        let resumed = try await reloaded.resumeEffectlessStop(
+            mutation("stop-1", digest: "sha256:stop")
+        )
+        #expect(resumed.state == .stopping)
+        #expect(resumed.operation?.phase == .compensating)
+        let stopped = try await reloaded.commitStop(
+            containerID: "container-1",
+            operationGeneration: try #require(
+                resumed.operation?.operationGeneration
+            )
+        )
+        #expect(stopped.state == .stopped)
     }
 
     @Test func removePersistsCleanupIntentBeforeCompletion() async throws {
@@ -240,6 +253,13 @@ struct EngineWorkloadLedgerTests {
         _ = try await ledger.registerWorkload(containerID: "container-1", planDigest: "sha256:plan")
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: directory.path
+        )
+        #expect(
+            (directoryAttributes[.posixPermissions] as? NSNumber)?.intValue
+                == 0o700
+        )
 
         let data = try #require(try await persistence.load())
         var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -259,6 +279,24 @@ struct EngineWorkloadLedgerTests {
         let linkPersistence = try FileEngineWorkloadLedgerPersistenceV1(fileURL: linkURL)
         await #expect(throws: EngineWorkloadLedgerError.self) {
             try await linkPersistence.save(Data("{}".utf8))
+        }
+
+        let targetDirectory = directory.appending(path: "target")
+        try FileManager.default.createDirectory(
+            at: targetDirectory,
+            withIntermediateDirectories: true
+        )
+        let linkedDirectory = directory.appending(path: "linked")
+        try FileManager.default.createSymbolicLink(
+            at: linkedDirectory,
+            withDestinationURL: targetDirectory
+        )
+        let linkedParentPersistence =
+            try FileEngineWorkloadLedgerPersistenceV1(
+                fileURL: linkedDirectory.appending(path: "ledger.json")
+            )
+        await #expect(throws: EngineWorkloadLedgerError.self) {
+            try await linkedParentPersistence.save(Data("{}".utf8))
         }
     }
 

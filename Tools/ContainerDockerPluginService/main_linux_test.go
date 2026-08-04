@@ -71,6 +71,7 @@ func TestRunValidatesAuthenticationBeforeCreatingServiceState(t *testing.T) {
 		"--sandbox-generation=9",
 		"--provider-id=io.container.logging.plugin.test",
 		"--provider-generation=7",
+		"--contract-digest=sha256:test-contract",
 		"--plugin-socket=/run/docker/plugins/test.sock",
 		"--authentication-key-file=" + filepath.Join(root, "missing.key"),
 		"--state=" + statePath,

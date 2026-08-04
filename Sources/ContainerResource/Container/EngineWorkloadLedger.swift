@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import Darwin
 import Foundation
 
 public enum EngineWorkloadLedgerLimitsV1 {
@@ -101,9 +102,43 @@ public actor FileEngineWorkloadLedgerPersistenceV1: EngineWorkloadLedgerPersiste
         if manager.fileExists(atPath: fileURL.path) {
             try rejectNonRegularOrSymbolicLink()
         }
-        try manager.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let directory = fileURL.deletingLastPathComponent()
+        try ensureProtectedDirectory(directory, manager: manager)
         try data.write(to: fileURL, options: [.atomic])
         try manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        try rejectNonRegularOrSymbolicLink()
+        try synchronize(fileURL)
+        try synchronize(directory, directory: true)
+    }
+
+    private func ensureProtectedDirectory(
+        _ directory: URL,
+        manager: FileManager
+    ) throws {
+        if !manager.fileExists(atPath: directory.path) {
+            try manager.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
+        let values = try directory.resourceValues(
+            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
+        )
+        guard
+            values.isDirectory == true,
+            values.isSymbolicLink != true,
+            directory.resolvingSymlinksInPath().standardizedFileURL.path
+                == directory.path
+        else {
+            throw EngineWorkloadLedgerError.corruptSnapshot(
+                "workload ledger directory must be a non-symbolic-link directory"
+            )
+        }
+        try manager.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
     }
 
     private func rejectNonRegularOrSymbolicLink() throws {
@@ -112,6 +147,26 @@ public actor FileEngineWorkloadLedgerPersistenceV1: EngineWorkloadLedgerPersiste
             throw EngineWorkloadLedgerError.corruptSnapshot(
                 "workload ledger path must be a regular non-symbolic-link file"
             )
+        }
+    }
+
+    private func synchronize(_ url: URL, directory: Bool = false) throws {
+        let flags =
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            | (directory ? O_DIRECTORY : 0)
+        let descriptor = Darwin.open(url.path, flags)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(descriptor) }
+        var status = stat()
+        let expected = directory ? S_IFDIR : S_IFREG
+        guard
+            Darwin.fstat(descriptor, &status) == 0,
+            status.st_mode & S_IFMT == expected,
+            Darwin.fsync(descriptor) == 0
+        else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
     }
 }
@@ -1095,6 +1150,38 @@ public actor EngineWorkloadLedgerV1 {
         )
         try await replacingWorkload(record)
         return .reserved(record)
+    }
+
+    /// Reopens only an interrupted stop whose controller effects were already
+    /// empty. The caller must still reconcile the exact runtime stop before
+    /// committing; stops with compensating or unknown effects remain fenced.
+    public func resumeEffectlessStop(
+        _ request: EngineWorkloadMutationRequestV1
+    ) async throws -> EngineWorkloadRecordV1 {
+        var record = try requireWorkload(request.containerID)
+        guard
+            record.state == .recoveryRequired,
+            let operation = record.operation,
+            operation.kind == .stop,
+            operation.phase == .recoveryRequired,
+            operation.effects.isEmpty,
+            operation.idempotencyKey == request.idempotencyKey,
+            operation.requestDigest == request.requestDigest,
+            operation.candidateProcessGeneration
+                == record.activeProcessGeneration,
+            operation.sandboxGeneration == record.activeSandboxGeneration
+        else {
+            throw EngineWorkloadLedgerError.recoveryRequired
+        }
+        let resumed = try operation.replacing(phase: .compensating)
+        record = try record.replacing(
+            state: .stopping,
+            transitionRevision: record.transitionRevision + 1,
+            operation: .some(resumed),
+            recoveryReason: .some(nil)
+        )
+        try await replacingWorkload(record)
+        return record
     }
 
     public func commitStop(containerID: String, operationGeneration: UInt64) async throws -> EngineWorkloadRecordV1 {

@@ -111,6 +111,98 @@ func TestFileStateStoreRoundTripIsProtectedAndSymlinkSafe(t *testing.T) {
 	}
 }
 
+func TestHistoryMigrationReceiptIsDurableAndReplayStable(t *testing.T) {
+	store := &memoryStateStore{}
+	plugin := newFakePlugin(true)
+	backend := newTestBackend(t, store, plugin, newFakeFIFOFactory())
+	request := testHistoryMigrationRequest()
+
+	first, err := backend.migrateHistory(context.Background(), request)
+	if err != nil {
+		t.Fatalf("migrate history: %v", err)
+	}
+	if first.Request != request || first.ProviderOutcomeDigest == "" {
+		t.Fatalf("migration receipt = %#v", first)
+	}
+	replayed, err := backend.migrateHistory(context.Background(), request)
+	if err != nil || !reflect.DeepEqual(replayed, first) {
+		t.Fatalf("replayed receipt = %#v, %v; want %#v", replayed, err, first)
+	}
+	restarted := newTestBackend(t, store, plugin, newFakeFIFOFactory())
+	afterRestart, err := restarted.migrateHistory(context.Background(), request)
+	if err != nil || !reflect.DeepEqual(afterRestart, first) {
+		t.Fatalf("restart receipt = %#v, %v; want %#v", afterRestart, err, first)
+	}
+	if got := plugin.capabilitiesCallCount(); got != 1 {
+		t.Fatalf("capability calls = %d, want one durable effect proof", got)
+	}
+
+	conflict := request
+	conflict.TerminalHistoryDigest = "sha256:other-history"
+	if _, err := restarted.migrateHistory(context.Background(), conflict); !errors.Is(err, errIdempotencyConflict) {
+		t.Fatalf("conflicting migration error = %v, want idempotency conflict", err)
+	}
+}
+
+func TestHistoryMigrationRequiresReadableExactProviderContract(t *testing.T) {
+	request := testHistoryMigrationRequest()
+	writeOnly := newTestBackend(
+		t,
+		&memoryStateStore{},
+		newFakePlugin(false),
+		newFakeFIFOFactory(),
+	)
+	if _, err := writeOnly.migrateHistory(context.Background(), request); !errors.Is(err, errCapabilityMismatch) {
+		t.Fatalf("write-only migration error = %v, want capability mismatch", err)
+	}
+
+	wrongContract := request
+	wrongContract.ContractDigest = "sha256:wrong-contract"
+	if _, err := writeOnly.migrateHistory(context.Background(), wrongContract); !errors.Is(err, errInvalidFence) {
+		t.Fatalf("wrong-contract migration error = %v, want invalid fence", err)
+	}
+}
+
+func TestGenerationReclaimRequiresEmptyDurableEffectClaims(t *testing.T) {
+	backend := newTestBackend(
+		t,
+		&memoryStateStore{},
+		newFakePlugin(false),
+		newFakeFIFOFactory(),
+	)
+	request := providerGenerationReclaim{
+		SchemaVersion:      serviceSchemaVersion,
+		ProviderID:         testServiceIdentity().ID,
+		ProviderGeneration: testServiceIdentity().Generation,
+	}
+	if err := backend.reclaimGeneration(request); err != nil {
+		t.Fatalf("empty generation reclaim: %v", err)
+	}
+	open := testWriterOpen(false)
+	receipt, err := backend.openWriter(context.Background(), open)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	if err := backend.reclaimGeneration(request); !errors.Is(err, errInvalidFence) {
+		t.Fatalf("active generation reclaim error = %v, want invalid fence", err)
+	}
+	if err := backend.finishWriter(context.Background(), open.Request.SessionID, receipt.Token, false); err != nil {
+		t.Fatalf("finish writer: %v", err)
+	}
+	if err := backend.reclaim(terminalReclaim{
+		SchemaVersion:      serviceSchemaVersion,
+		Kind:               "writerSession",
+		EffectID:           open.Request.SessionID,
+		ProviderID:         testServiceIdentity().ID,
+		ProviderGeneration: testServiceIdentity().Generation,
+	}); err != nil {
+		t.Fatalf("reclaim writer: %v", err)
+	}
+	if err := backend.reclaimGeneration(request); err != nil {
+		t.Fatalf("terminal generation reclaim: %v", err)
+	}
+}
+
 func TestUncertainWriterStartCannotRepeatPluginEffect(t *testing.T) {
 	store := &memoryStateStore{}
 	plugin := newFakePlugin(false)
@@ -362,6 +454,21 @@ func testServiceIdentity() serviceIdentity {
 		ID:                "io.container.logging.plugin.test",
 		Generation:        7,
 		SandboxGeneration: 9,
+		ContractDigest:    "sha256:test-contract",
+	}
+}
+
+func testHistoryMigrationRequest() historyMigrationRequest {
+	return historyMigrationRequest{
+		SchemaVersion:            serviceSchemaVersion,
+		ContainerID:              "container-id",
+		SourceLeaseGeneration:    2,
+		TargetLeaseGeneration:    3,
+		ProviderID:               testServiceIdentity().ID,
+		SourceProviderGeneration: 6,
+		TargetProviderGeneration: testServiceIdentity().Generation,
+		ContractDigest:           testServiceIdentity().ContractDigest,
+		TerminalHistoryDigest:    "sha256:terminal-history",
 	}
 }
 
@@ -447,17 +554,18 @@ func (fixedTokenGenerator) Generate(count int) ([]byte, error) {
 }
 
 type fakePlugin struct {
-	mu          sync.Mutex
-	readLogs    bool
-	startErrors []error
-	startCalls  int
-	startPaths  map[string]struct{}
-	stopCalls   int
-	readFrames  [][]byte
-	readErrors  []error
-	nextCalls   int
-	readCalls   int
-	events      *eventRecorder
+	mu                sync.Mutex
+	readLogs          bool
+	startErrors       []error
+	startCalls        int
+	startPaths        map[string]struct{}
+	stopCalls         int
+	readFrames        [][]byte
+	readErrors        []error
+	nextCalls         int
+	readCalls         int
+	events            *eventRecorder
+	capabilitiesCalls int
 }
 
 func newFakePlugin(readLogs bool) *fakePlugin {
@@ -465,7 +573,16 @@ func newFakePlugin(readLogs bool) *fakePlugin {
 }
 
 func (plugin *fakePlugin) Capabilities(context.Context) (pluginCapabilities, error) {
+	plugin.mu.Lock()
+	plugin.capabilitiesCalls++
+	plugin.mu.Unlock()
 	return pluginCapabilities{ReadLogs: plugin.readLogs}, nil
+}
+
+func (plugin *fakePlugin) capabilitiesCallCount() int {
+	plugin.mu.Lock()
+	defer plugin.mu.Unlock()
+	return plugin.capabilitiesCalls
 }
 
 func (plugin *fakePlugin) StartLogging(_ context.Context, path string, _ json.RawMessage) error {

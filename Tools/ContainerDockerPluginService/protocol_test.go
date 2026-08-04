@@ -104,6 +104,16 @@ func TestProtocolHandlerDrivesCompleteWriterAndReaderLifecycles(t *testing.T) {
 	if generation.SandboxGeneration == nil || *generation.SandboxGeneration != testServiceIdentity().SandboxGeneration {
 		t.Fatalf("sandbox generation response = %#v", generation)
 	}
+	migrationRequest := testHistoryMigrationRequest()
+	migration := call(wireRequest{
+		Operation:        operationMigrateHistory,
+		HistoryMigration: &migrationRequest,
+	})
+	if migration.HistoryMigrationReceipt == nil ||
+		migration.HistoryMigrationReceipt.Request != migrationRequest ||
+		migration.HistoryMigrationReceipt.ProviderOutcomeDigest == "" {
+		t.Fatalf("history migration response = %#v", migration)
+	}
 
 	closedWriter := namedWriterOpen("writer-close", true)
 	closedReceipt := call(wireRequest{Operation: operationStartWriter, WriterOpen: &closedWriter})
@@ -212,6 +222,15 @@ func TestProtocolHandlerDrivesCompleteWriterAndReaderLifecycles(t *testing.T) {
 		backend.snapshot.Readers == nil || len(backend.snapshot.Readers) != 0 {
 		t.Fatalf("terminal effects were not reclaimed: %#v", backend.snapshot)
 	}
+	generationReclaim := providerGenerationReclaim{
+		SchemaVersion:      serviceSchemaVersion,
+		ProviderID:         testServiceIdentity().ID,
+		ProviderGeneration: testServiceIdentity().Generation,
+	}
+	call(wireRequest{
+		Operation:         operationReclaimGeneration,
+		GenerationReclaim: &generationReclaim,
+	})
 }
 
 func TestProtocolRejectsUnknownAndOversizedPayloadsWithoutEffects(t *testing.T) {

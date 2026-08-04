@@ -73,7 +73,7 @@ struct LogDriverProviderRegistryTests {
     }
 
     @Test
-    func higherGenerationReplacesAtomicallyAndOldSelectionStaysUsable() async throws {
+    func higherGenerationQuiescesBeforeAtomicReplacement() async throws {
         let registry = LogDriverProviderRegistry()
         let first = RegistryTestProvider(
             descriptor: try Self.descriptor(
@@ -94,7 +94,33 @@ struct LogDriverProviderRegistryTests {
 
         #expect(try await registry.install(first) == .installed)
         let retained = try #require(await registry.selection(named: "remote"))
-        #expect(try await registry.install(second) == .replaced(previousGeneration: 1))
+        #expect(try await registry.stage(second) == .staged)
+        #expect(
+            try await registry.beginUpgrade(
+                providerID: "test.remote",
+                targetGeneration: 2
+            ).sourceGeneration == 1
+        )
+        #expect(await registry.selection(named: "remote") == nil)
+        await #expect(
+            throws: LogDriverProviderRegistryError.resolvedConfigurationMismatch
+        ) {
+            try await registry.selection(
+                for: Self.resolved(descriptor: first.storedDescriptor)
+            )
+        }
+        #expect(
+            await registry.generationPhase(
+                providerID: "test.remote",
+                generation: 1
+            ) == .quiescing
+        )
+        #expect(
+            try await registry.activate(
+                providerID: "test.remote",
+                generation: 2
+            ) == .activated(previousGeneration: 1)
+        )
 
         let draining = try #require(
             await registry.selection(providerID: "test.remote", generation: 1)
@@ -159,11 +185,18 @@ struct LogDriverProviderRegistryTests {
             )
         }
 
+        _ = try await registry.beginUpgrade(
+            providerID: "test.remote",
+            targetGeneration: 2
+        )
+        #expect(await registry.selection(named: "remote") == nil)
+
         #expect(
             try await registry.activate(
                 providerID: "test.remote",
                 generation: 2
-            ) == .activated(previousGeneration: 1)
+            )
+                == .activated(previousGeneration: 1)
         )
         #expect(
             await registry.generationPhase(
@@ -207,6 +240,77 @@ struct LogDriverProviderRegistryTests {
     }
 
     @Test
+    func durableRestartResumesQuiescenceWithoutDualAdmission() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "container-provider-registry-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = try FileLogDriverProviderRegistryPersistenceV1(
+            fileURL: directory.appendingPathComponent("state-v1.json")
+        )
+        let firstDescriptor = try Self.descriptor(
+            driver: "remote",
+            providerID: "test.remote",
+            generation: 1
+        )
+        let secondDescriptor = try Self.descriptor(
+            driver: "remote",
+            providerID: "test.remote",
+            generation: 2
+        )
+        let firstRegistry = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        try await firstRegistry.install(
+            RegistryTestProvider(descriptor: firstDescriptor)
+        )
+        try await firstRegistry.stage(
+            RegistryTestProvider(descriptor: secondDescriptor)
+        )
+        let upgrade = try await firstRegistry.beginUpgrade(
+            providerID: "test.remote",
+            targetGeneration: 2
+        )
+
+        let reconstructed = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        #expect(
+            try await reconstructed.stage(
+                RegistryTestProvider(descriptor: firstDescriptor)
+            ) == .recovered(.quiescing)
+        )
+        #expect(
+            try await reconstructed.stage(
+                RegistryTestProvider(descriptor: secondDescriptor)
+            ) == .recovered(.staged)
+        )
+        #expect(try await reconstructed.upgradeCandidates() == [upgrade])
+        #expect(await reconstructed.selection(named: "remote") == nil)
+        #expect(
+            await reconstructed.selection(
+                providerID: "test.remote",
+                generation: 1
+            ) != nil
+        )
+        await #expect(
+            throws: LogDriverProviderRegistryError.resolvedConfigurationMismatch
+        ) {
+            try await reconstructed.selection(
+                for: Self.resolved(descriptor: firstDescriptor)
+            )
+        }
+        #expect(
+            try await reconstructed.cancelUpgrade(
+                providerID: "test.remote",
+                targetGeneration: 2
+            )
+        )
+        #expect(await reconstructed.selection(named: "remote") != nil)
+    }
+
+    @Test
     func durableRestartRestoresOneActiveGenerationAndRetainedDrain() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "container-provider-registry-\(UUID().uuidString)",
@@ -235,8 +339,16 @@ struct LogDriverProviderRegistryTests {
         try await firstRegistry.install(
             RegistryTestProvider(descriptor: firstDescriptor)
         )
-        try await firstRegistry.install(
+        try await firstRegistry.stage(
             RegistryTestProvider(descriptor: secondDescriptor)
+        )
+        _ = try await firstRegistry.beginUpgrade(
+            providerID: "test.remote",
+            targetGeneration: 2
+        )
+        _ = try await firstRegistry.activate(
+            providerID: "test.remote",
+            generation: 2
         )
         let expectedState = try await firstRegistry.stateSnapshot()
 
@@ -363,6 +475,25 @@ struct LogDriverProviderRegistryTests {
         try await registry.stage(second)
         persistence.failNextSave()
         await #expect(throws: RegistryTestPersistenceError.save) {
+            try await registry.beginUpgrade(
+                providerID: "test.remote",
+                targetGeneration: 2
+            )
+        }
+        #expect(await registry.activeGeneration(providerID: "test.remote") == 1)
+        #expect(
+            await registry.generationPhase(
+                providerID: "test.remote",
+                generation: 1
+            ) == .active
+        )
+
+        _ = try await registry.beginUpgrade(
+            providerID: "test.remote",
+            targetGeneration: 2
+        )
+        persistence.failNextSave()
+        await #expect(throws: RegistryTestPersistenceError.save) {
             try await registry.activate(
                 providerID: "test.remote",
                 generation: 2
@@ -375,10 +506,7 @@ struct LogDriverProviderRegistryTests {
                 generation: 2
             ) == .staged
         )
-        #expect(
-            try await registry.logDriverCatalog().descriptor(named: "remote")?
-                .driver == "remote"
-        )
+        #expect(try await registry.logDriverCatalog().descriptor(named: "remote") == nil)
     }
 
     @Test

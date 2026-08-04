@@ -57,6 +57,77 @@ struct BuiltinRemoteLogDriverProviderSetTests {
         }
     }
 
+    @Test func restartStagesCompatibleNativeGenerationsForAuthorityCutover() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "container-native-provider-set-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = try FileLogDriverProviderRegistryPersistenceV1(
+            fileURL: directory.appendingPathComponent("state-v1.json")
+        )
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        do {
+            _ = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                providerGeneration: 7,
+                registryPersistence: persistence
+            )
+            let reconstructed = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                providerGeneration: 8,
+                registryPersistence: persistence
+            )
+
+            let providerID = SyslogLogDriverContract.providerIdentity.id
+            #expect(
+                await reconstructed.registry.activeGeneration(
+                    providerID: providerID
+                ) == 7
+            )
+            #expect(
+                await reconstructed.registry.generationPhase(
+                    providerID: providerID,
+                    generation: 7
+                ) == .active
+            )
+            #expect(
+                await reconstructed.registry.generationPhase(
+                    providerID: providerID,
+                    generation: 8
+                ) == .staged
+            )
+            #expect(
+                await reconstructed.registry.selection(
+                    providerID: providerID,
+                    generation: 7
+                )?.descriptor.providerGeneration == 7
+            )
+            let upgrades = try await reconstructed.registry.upgradeCandidates()
+            #expect(upgrades.count == 6)
+            let expectedUpgrade = try LogDriverProviderUpgradeV1(
+                providerID: providerID,
+                sourceGeneration: 7,
+                targetGeneration: 8
+            )
+            #expect(upgrades.contains(expectedUpgrade))
+            let catalog = try await reconstructed.registry.logDriverCatalog()
+            #expect(
+                catalog.descriptor(named: "syslog")?.providerGeneration == 7
+            )
+            try await group.shutdownGracefully()
+        } catch {
+            try? await group.shutdownGracefully()
+            throw error
+        }
+    }
+
     @Test func configurationRegistryIsExactReplaySafeAndGenerationFenced() async throws {
         let registry = BuiltinRemoteLogDriverConfigurationRegistry()
         let request = try Self.request()
@@ -175,7 +246,7 @@ struct BuiltinRemoteLogDriverProviderSetTests {
         }
     }
 
-    @Test func restartRecoversSingleAdvertisedPluginGenerationWithoutEffects() async throws {
+    @Test func restartStagesHealthyUpgradeWithoutPrematureCutoverOrEffects() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "container-provider-set-\(UUID().uuidString)",
             isDirectory: true
@@ -197,13 +268,7 @@ struct BuiltinRemoteLogDriverProviderSetTests {
                         service: ProviderGenerationLifecycleFixture(
                             readiness: .healthy(11)
                         )
-                    ),
-                    Self.pluginInstallation(
-                        generation: 2,
-                        service: ProviderGenerationLifecycleFixture(
-                            readiness: .healthy(12)
-                        )
-                    ),
+                    )
                 ],
                 providerGeneration: 7,
                 registryPersistence: persistence
@@ -212,12 +277,12 @@ struct BuiltinRemoteLogDriverProviderSetTests {
                 await first.registry.generationPhase(
                     providerID: Self.pluginProviderIdentity.id,
                     generation: 1
-                ) == .draining
+                ) == .active
             )
             #expect(
                 await first.registry.activeGeneration(
                     providerID: Self.pluginProviderIdentity.id
-                ) == 2
+                ) == 1
             )
 
             let reconstructedFirst = ProviderGenerationLifecycleFixture(
@@ -249,7 +314,7 @@ struct BuiltinRemoteLogDriverProviderSetTests {
             let descriptor = try #require(
                 catalog.descriptor(named: "durable-plugin")
             )
-            #expect(descriptor.providerGeneration == 2)
+            #expect(descriptor.providerGeneration == 1)
             #expect(
                 catalog.descriptors.filter {
                     $0.providerIdentity == Self.pluginProviderIdentity
@@ -259,41 +324,67 @@ struct BuiltinRemoteLogDriverProviderSetTests {
                 await reconstructed.registry.generationPhase(
                     providerID: Self.pluginProviderIdentity.id,
                     generation: 1
-                ) == .draining
+                ) == .active
             )
-            #expect(await reconstructedFirst.readinessProbeCount == 0)
+            #expect(
+                await reconstructed.registry.generationPhase(
+                    providerID: Self.pluginProviderIdentity.id,
+                    generation: 2
+                ) == .staged
+            )
+            let candidate = try #require(
+                try await reconstructed.registry.upgradeCandidates().first
+            )
+            #expect(candidate.sourceGeneration == 1)
+            #expect(candidate.targetGeneration == 2)
+            #expect(await reconstructedFirst.readinessProbeCount == 1)
             #expect(await reconstructedSecond.readinessProbeCount == 1)
             #expect(await reconstructedFirst.effectCallCount == 0)
             #expect(await reconstructedSecond.effectCallCount == 0)
 
-            let fallbackService = ProviderGenerationLifecycleFixture(
+            _ = try await reconstructed.registry.beginUpgrade(
+                providerID: Self.pluginProviderIdentity.id,
+                targetGeneration: 2
+            )
+            _ = try await reconstructed.registry.activate(
+                providerID: Self.pluginProviderIdentity.id,
+                generation: 2
+            )
+            #expect(
+                try await reconstructed.registry.uninstall(
+                    providerID: Self.pluginProviderIdentity.id,
+                    generation: 1
+                )
+            )
+
+            let activeService = ProviderGenerationLifecycleFixture(
                 readiness: .healthy(31)
             )
-            let recoveredFallback = try await BuiltinRemoteLogDriverProviderSet.install(
+            let recoveredActive = try await BuiltinRemoteLogDriverProviderSet.install(
                 eventLoopGroup: group,
                 awsLogsClientFactory: FixedAWSLogsClientFactory(
                     client: RecordingAWSLogsClient()
                 ),
                 dockerPluginInstallations: [
                     Self.pluginInstallation(
-                        generation: 1,
-                        service: fallbackService
+                        generation: 2,
+                        service: activeService
                     )
                 ],
                 providerGeneration: 7,
                 registryPersistence: persistence
             )
             #expect(
-                await recoveredFallback.registry.activeGeneration(
+                await recoveredActive.registry.activeGeneration(
                     providerID: Self.pluginProviderIdentity.id
-                ) == 1
+                ) == 2
             )
-            #expect(await fallbackService.readinessProbeCount == 1)
-            let missingGeneration = await recoveredFallback.registry.selection(
+            #expect(await activeService.readinessProbeCount == 1)
+            let reclaimedGeneration = await recoveredActive.registry.selection(
                 providerID: Self.pluginProviderIdentity.id,
-                generation: 2
+                generation: 1
             )
-            #expect(missingGeneration?.descriptor == nil)
+            #expect(reclaimedGeneration?.descriptor == nil)
             try await group.shutdownGracefully()
         } catch {
             try? await group.shutdownGracefully()

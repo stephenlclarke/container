@@ -1150,12 +1150,86 @@ public struct LogDriverTerminalEffectReclaimV1: Equatable, Sendable {
     }
 }
 
+public enum LogDriverProviderGenerationReclaimError: Error, Equatable,
+    Sendable
+{
+    case invalidRequest
+    case unsupported
+}
+
+/// Exact terminal provider generation released only after the authority has
+/// removed every durable configuration, reader, writer, cleanup, and history
+/// reference. Isolated providers use this to stop and reclaim their workload;
+/// in-process providers have no external generation resource to release.
+public struct LogDriverProviderGenerationReclaimV1: Codable, Equatable,
+    Sendable
+{
+    public static let currentSchemaVersion: UInt32 = 1
+
+    public let schemaVersion: UInt32
+    public let providerID: String
+    public let providerGeneration: UInt64
+
+    private enum CodingKeys: String, CodingKey, CaseIterable {
+        case schemaVersion
+        case providerID
+        case providerGeneration
+    }
+
+    public init(providerID: String, providerGeneration: UInt64) throws {
+        guard
+            !providerID.isEmpty,
+            providerID.utf8.count
+                <= LogDriverLifecycleLimitsV1.maximumIdentifierUTF8Bytes,
+            providerGeneration > 0
+        else {
+            throw LogDriverProviderGenerationReclaimError.invalidRequest
+        }
+        self.schemaVersion = Self.currentSchemaVersion
+        self.providerID = providerID
+        self.providerGeneration = providerGeneration
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try LogDriverProviderLifecycleValidation.rejectUnknownKeys(
+            from: decoder,
+            allowed: CodingKeys.self,
+            type: "provider generation reclaim request"
+        )
+        _ = try LogDriverProviderLifecycleValidation.schemaVersion(
+            from: container,
+            forKey: .schemaVersion,
+            expected: Self.currentSchemaVersion,
+            type: "provider generation reclaim request"
+        )
+        try self.init(
+            providerID: container.decode(String.self, forKey: .providerID),
+            providerGeneration: container.decode(
+                UInt64.self,
+                forKey: .providerGeneration
+            )
+        )
+    }
+}
+
 /// Generation-fenced lifecycle boundary implemented by native and isolated
 /// logging providers. Create-time option resolution remains the authority's
 /// side-effect-free descriptor contract; this interface begins at effectful
 /// writer or reader preparation.
 public protocol ContainerLogDriverProvider: Sendable {
     var descriptor: LogDriverDescriptor { get async throws }
+
+    /// Revalidates or migrates provider-owned readable history from one
+    /// terminal generation to the staged replacement. The exact receipt is
+    /// persisted with the target lease before alias cutover.
+    func migrateHistory(
+        _ request: LogDriverHistoryMigrationRequestV1
+    ) async throws -> LogDriverHistoryMigrationReceiptV1
+
+    func reclaimGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws
 
     func start(_ request: LogDriverStartRequestV1) async throws -> StartedLogDriverSessionV1
     func reconcileStart(_ request: LogDriverStartRequestV1) async throws -> LogDriverStartReconciliationV1
@@ -1188,6 +1262,16 @@ public protocol ContainerLogDriverProvider: Sendable {
 }
 
 extension ContainerLogDriverProvider {
+    public func migrateHistory(
+        _: LogDriverHistoryMigrationRequestV1
+    ) async throws -> LogDriverHistoryMigrationReceiptV1 {
+        throw LogDriverHistoryMigrationError.unsupported
+    }
+
+    public func reclaimGeneration(
+        _: LogDriverProviderGenerationReclaimV1
+    ) async throws {}
+
     public func reclaimTerminalEffect(
         _: LogDriverTerminalEffectReclaimV1
     ) async throws {}

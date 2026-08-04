@@ -293,6 +293,56 @@ struct EngineLinuxSandboxDockerPluginServiceTests {
                 )
         }
     }
+
+    @Test func generationReclaimerStopsExactPluginWorkloadOnce() async throws {
+        let assetFixture = try InstalledDockerPluginAssetFixture()
+        defer { assetFixture.remove() }
+        let assets = try InstalledDockerPluginWorkloadManifestV1.verify(
+            resourceRoot: assetFixture.root
+        )
+        let connectorFixture = try DockerPluginConnectorFixture()
+        defer { connectorFixture.remove() }
+        let authority = FakeDockerPluginAuthority(
+            sandboxGeneration: 9,
+            assets: assets
+        )
+        let materializer = FakeDockerPluginMaterializer(
+            assets: assets,
+            configuration: connectorFixture.configuration,
+            workloadRoot: connectorFixture.workloadRoot
+        )
+        _ = try await authority.startWorkload(
+            planDigest: assets.planDigest,
+            configuration: connectorFixture.configuration,
+            workloadRoot: connectorFixture.workloadRoot,
+            dynamicEnvironment: [:],
+            networkEndpoints: [],
+            stdio: [],
+            controllers: [],
+            monitorTerminal: true
+        )
+        let reclaimer =
+            EngineLinuxSandboxDockerPluginGenerationReclaimerV1(
+                authority: authority,
+                materializer: materializer
+            )
+        let request = try LogDriverProviderGenerationReclaimV1(
+            providerID: assets.manifest.providerID,
+            providerGeneration: assets.manifest.providerGeneration
+        )
+
+        #expect(
+            try await reclaimer.isProviderGenerationReclaimed(request)
+                == false
+        )
+        try await reclaimer.reclaimProviderGeneration(request)
+        #expect(
+            try await reclaimer.isProviderGenerationReclaimed(request)
+                == true
+        )
+        try await reclaimer.reclaimProviderGeneration(request)
+        #expect(await authority.stopCount == 1)
+    }
 }
 
 private struct InstalledDockerPluginAssetFixture {
@@ -439,6 +489,8 @@ private actor FakeDockerPluginAuthority:
     private(set) var startCount = 0
     private(set) var dialCount = 0
     private(set) var lastDialProcessGeneration: UInt64?
+    private(set) var stopCount = 0
+    private var workloadRecord: EngineWorkloadRecordV1?
 
     init(
         sandboxGeneration: UInt64,
@@ -446,6 +498,25 @@ private actor FakeDockerPluginAuthority:
     ) {
         self.sandboxGeneration = sandboxGeneration
         self.assets = assets
+    }
+
+    func snapshot() -> EngineWorkloadLedgerSnapshotV1 {
+        try! EngineWorkloadLedgerSnapshotV1(
+            owningControllerID: "docker-plugin-test",
+            sandbox: EngineLinuxSandboxRecordV1(
+                sandboxID: "engine-linux-sandbox",
+                generation: sandboxGeneration,
+                revision: 2,
+                state: .ready,
+                operationKind: .boot,
+                idempotencyKey: "boot-key",
+                requestDigest: "sha256:" + String(repeating: "d", count: 64),
+                effectID: "boot-effect",
+                runtimeFingerprint:
+                    "sha256:" + String(repeating: "e", count: 64)
+            ),
+            workloads: workloadRecord.map { [$0] } ?? []
+        )
     }
 
     func ensureReady(
@@ -485,7 +556,7 @@ private actor FakeDockerPluginAuthority:
         _ = dynamicEnvironment
         _ = stdio
         _ = controllers
-        return try EngineWorkloadRecordV1(
+        let record = try EngineWorkloadRecordV1(
             containerID: assets.workloadID,
             planDigest: planDigest,
             state: .running,
@@ -494,6 +565,8 @@ private actor FakeDockerPluginAuthority:
             activeProcessGeneration: 3,
             activeSandboxGeneration: sandboxGeneration
         )
+        workloadRecord = record
+        return record
     }
 
     func dialService(
@@ -510,6 +583,24 @@ private actor FakeDockerPluginAuthority:
         return try dockerPluginServicePair(
             generation: sandboxGeneration
         ).client
+    }
+
+    func stopWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) throws -> EngineWorkloadRecordV1 {
+        _ = configuration
+        stopCount += 1
+        let record = try EngineWorkloadRecordV1(
+            containerID: workloadID,
+            planDigest: assets.planDigest,
+            state: .stopped,
+            transitionRevision: 4,
+            latestProcessGeneration: workloadProcessGeneration
+        )
+        workloadRecord = record
+        return record
     }
 }
 

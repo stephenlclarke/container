@@ -436,6 +436,7 @@ extension APIServer {
                 debugHelpers: debug,
                 remoteLogDriverPlane: remoteLogDriverPlane
             )
+            try await service.reconcileLoggingProviderUpgrades()
             let harness = ContainersHarness(service: service, log: log)
 
             routes[XPCRoute.containerList] = XPCServer.route(harness.list)

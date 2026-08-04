@@ -52,6 +52,58 @@ public struct EngineLinuxSandboxWorkloadStartRequestV1: Codable, Equatable, Send
     }
 }
 
+/// Exact authority-owned stop intent for one active workload generation.
+/// The runtime retains the matching receipt so a lost response can be
+/// reconciled without stopping a replacement generation.
+public struct EngineLinuxSandboxWorkloadStopRequestV1: Codable, Equatable,
+    Sendable
+{
+    public let sandboxID: String
+    public let sandboxGeneration: UInt64
+    public let workloadID: String
+    public let workloadProcessGeneration: UInt64
+    public let operationGeneration: UInt64
+    public let idempotencyKey: String
+    public let requestDigest: String
+
+    public init(
+        sandboxID: String,
+        sandboxGeneration: UInt64,
+        workloadID: String,
+        workloadProcessGeneration: UInt64,
+        operationGeneration: UInt64,
+        idempotencyKey: String,
+        requestDigest: String
+    ) {
+        self.sandboxID = sandboxID
+        self.sandboxGeneration = sandboxGeneration
+        self.workloadID = workloadID
+        self.workloadProcessGeneration = workloadProcessGeneration
+        self.operationGeneration = operationGeneration
+        self.idempotencyKey = idempotencyKey
+        self.requestDigest = requestDigest
+    }
+}
+
+public struct EngineLinuxSandboxWorkloadStopReceiptV1: Codable, Equatable,
+    Sendable
+{
+    public let request: EngineLinuxSandboxWorkloadStopRequestV1
+
+    public init(request: EngineLinuxSandboxWorkloadStopRequestV1) {
+        self.request = request
+    }
+}
+
+public enum EngineLinuxSandboxWorkloadStopObservationV1: Codable, Equatable,
+    Sendable
+{
+    case stopped(EngineLinuxSandboxWorkloadStopReceiptV1)
+    case absent
+    case running
+    case unknown
+}
+
 public protocol EngineLinuxSandboxWorkloadRuntimeV1: Sendable {
     func startWorkload(
         _ request: EngineLinuxSandboxWorkloadStartRequestV1,
@@ -61,6 +113,14 @@ public protocol EngineLinuxSandboxWorkloadRuntimeV1: Sendable {
     func observeWorkloadStart(
         _ request: EngineLinuxSandboxWorkloadStartRequestV1
     ) async throws -> WorkloadProcessObservationV1
+
+    func stopWorkload(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopReceiptV1
+
+    func observeWorkloadStop(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopObservationV1
 }
 
 /// Binds one sealed workload intent to the generic transaction resolver.

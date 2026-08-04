@@ -165,6 +165,45 @@ struct EngineLinuxSandboxAuthorityTests {
                 == restartedGeneration
         )
     }
+
+    @Test
+    func exactWorkloadReclamationStopsRuntimeBeforeLedgerCommit() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime(failFirstStopResponse: true)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:reclaimable-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+        let processGeneration = try #require(
+            running.activeProcessGeneration
+        )
+
+        let stopped = try await authority.stopWorkload(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: processGeneration
+        )
+        #expect(stopped.state == .stopped)
+        #expect(stopped.activeProcessGeneration == nil)
+        #expect(await runtime.workloadStopCount == 1)
+
+        let replay = try await authority.stopWorkload(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: processGeneration
+        )
+        #expect(replay == stopped)
+        #expect(await runtime.workloadStopCount == 1)
+    }
 }
 
 private actor FakeAuthorityLauncher: EngineLinuxSandboxLaunchingV1 {
@@ -191,15 +230,27 @@ private actor FakeAuthorityLauncher: EngineLinuxSandboxLaunchingV1 {
 }
 
 private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
+    private enum Failure: Error {
+        case lostStopResponse
+    }
+
+    private let failFirstStopResponse: Bool
     private var bootReceipt: EngineLinuxSandboxBootReceiptV1?
     private var workloadReceipt: WorkloadProcessReceiptV1?
+    private var workloadStopReceipt: EngineLinuxSandboxWorkloadStopReceiptV1?
     private var workloadTerminal = false
+    private var didFailStopResponse = false
     private(set) var bootCount = 0
     private(set) var bootObservationCount = 0
     private(set) var workloadStartCount = 0
     private(set) var workloadObservationCount = 0
+    private(set) var workloadStopCount = 0
     private(set) var serviceDialCount = 0
     private(set) var lastServiceDial: EngineLinuxSandboxServiceDialRequestV1?
+
+    init(failFirstStopResponse: Bool = false) {
+        self.failFirstStopResponse = failFirstStopResponse
+    }
 
     func boot(
         _ request: EngineLinuxSandboxBootRequestV1
@@ -301,6 +352,38 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
             workloadReceipt.requestDigest == request.context.requestDigest
         else { return .absent }
         return .started(workloadReceipt)
+    }
+
+    func stopWorkload(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopReceiptV1 {
+        if let workloadStopReceipt,
+            workloadStopReceipt.request == request
+        {
+            return workloadStopReceipt
+        }
+        let receipt = EngineLinuxSandboxWorkloadStopReceiptV1(
+            request: request
+        )
+        workloadStopCount += 1
+        workloadStopReceipt = receipt
+        workloadTerminal = true
+        if failFirstStopResponse, !didFailStopResponse {
+            didFailStopResponse = true
+            throw Failure.lostStopResponse
+        }
+        return receipt
+    }
+
+    func observeWorkloadStop(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopObservationV1 {
+        if let workloadStopReceipt,
+            workloadStopReceipt.request == request
+        {
+            return .stopped(workloadStopReceipt)
+        }
+        return workloadTerminal ? .absent : .running
     }
 
     func markWorkloadTerminal() {

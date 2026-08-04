@@ -416,6 +416,18 @@ package actor InstalledDockerPluginWorkloadMaterializerV1:
         try Self.ensureProtectedDirectory(workloadRoot)
 
         let manifest = assets.manifest
+        let descriptor = try DockerPluginLogDriverContract.descriptor(
+            driver: manifest.driver,
+            aliases: manifest.aliases,
+            providerIdentity: LogDriverProviderIdentity(
+                id: manifest.providerID,
+                version: manifest.providerVersion,
+                kind: .dockerPlugin
+            ),
+            providerGeneration: manifest.providerGeneration,
+            readLogs: manifest.readLogs,
+            trust: .approved
+        )
         let process = ProcessConfiguration(
             executable:
                 "/usr/local/libexec/container-docker-plugin-entrypoint",
@@ -423,6 +435,7 @@ package actor InstalledDockerPluginWorkloadMaterializerV1:
                 "--sandbox-generation", "\(sandboxGeneration)",
                 "--provider-id", manifest.providerID,
                 "--provider-generation", "\(manifest.providerGeneration)",
+                "--contract-digest", descriptor.optionContractDigest,
                 "--plugin-socket", manifest.pluginSocket,
                 "--port", "\(manifest.servicePort)",
                 "--authentication-key-file",
@@ -709,6 +722,7 @@ package actor InstalledDockerPluginWorkloadMaterializerV1:
 }
 
 package protocol EngineLinuxSandboxDockerPluginAuthorityV1: Sendable {
+    func snapshot() async -> EngineWorkloadLedgerSnapshotV1
     func ensureReady(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1
     ) async throws -> EngineLinuxSandboxRecordV1
@@ -728,6 +742,11 @@ package protocol EngineLinuxSandboxDockerPluginAuthorityV1: Sendable {
         workloadProcessGeneration: UInt64,
         port: UInt32
     ) async throws -> FileHandle
+    func stopWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) async throws -> EngineWorkloadRecordV1
 }
 
 extension EngineLinuxSandboxAuthorityV1:
@@ -853,6 +872,93 @@ package actor EngineLinuxSandboxDockerPluginConnectorV1 {
     }
 }
 
+package actor EngineLinuxSandboxDockerPluginGenerationReclaimerV1:
+    DockerPluginProviderGenerationReclaiming
+{
+    private let authority: any EngineLinuxSandboxDockerPluginAuthorityV1
+    private let materializer: any EngineLinuxSandboxDockerPluginWorkloadMaterializingV1
+
+    package init(
+        authority: any EngineLinuxSandboxDockerPluginAuthorityV1,
+        materializer:
+            any EngineLinuxSandboxDockerPluginWorkloadMaterializingV1
+    ) {
+        self.authority = authority
+        self.materializer = materializer
+    }
+
+    package func isProviderGenerationReclaimed(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws -> Bool {
+        try validate(request)
+        let workloadID = materializer.assets.workloadID
+        guard
+            let workload = await authority.snapshot().workloads.first(
+                where: { $0.containerID == workloadID }
+            )
+        else {
+            return true
+        }
+        switch workload.state {
+        case .stopped, .removed:
+            return true
+        case .running, .paused, .stopping:
+            return false
+        case .created, .starting, .pausing, .resuming, .removing,
+            .recoveryRequired:
+            throw EngineLinuxSandboxDockerPluginServiceError
+                .invalidWorkloadReceipt
+        }
+    }
+
+    package func reclaimProviderGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws {
+        try validate(request)
+        let assets = materializer.assets
+        guard
+            let workload = await authority.snapshot().workloads.first(
+                where: { $0.containerID == assets.workloadID }
+            )
+        else {
+            return
+        }
+        if workload.state == .stopped || workload.state == .removed {
+            return
+        }
+        guard
+            workload.state == .running || workload.state == .paused
+                || workload.state == .stopping,
+            let processGeneration = workload.activeProcessGeneration
+        else {
+            throw EngineLinuxSandboxDockerPluginServiceError
+                .invalidWorkloadReceipt
+        }
+        let configuration = try await materializer.sandboxConfiguration()
+        let stopped = try await authority.stopWorkload(
+            configuration: configuration,
+            workloadID: assets.workloadID,
+            workloadProcessGeneration: processGeneration
+        )
+        guard stopped.state == .stopped else {
+            throw EngineLinuxSandboxDockerPluginServiceError
+                .invalidWorkloadReceipt
+        }
+    }
+
+    private func validate(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) throws {
+        let manifest = materializer.assets.manifest
+        guard
+            request.providerID == manifest.providerID,
+            request.providerGeneration == manifest.providerGeneration
+        else {
+            throw LogDriverProviderGenerationReclaimError.invalidRequest
+        }
+    }
+}
+
 /// Production composition for one operator-approved plugin bundle.
 public enum EngineLinuxSandboxDockerPluginServiceV1 {
     public static func create(
@@ -873,6 +979,11 @@ public enum EngineLinuxSandboxDockerPluginServiceV1 {
             authority: authority,
             materializer: materializer
         )
+        let generationReclaimer =
+            EngineLinuxSandboxDockerPluginGenerationReclaimerV1(
+                authority: authority,
+                materializer: materializer
+            )
         let transport = try DockerPluginLifecycleServiceFileHandleTransportV1(
             authenticationKey: materializer.authenticationKey
         ) {
@@ -893,7 +1004,8 @@ public enum EngineLinuxSandboxDockerPluginServiceV1 {
             providerGeneration: assets.manifest.providerGeneration,
             readLogs: assets.manifest.readLogs,
             trust: .approved,
-            lifecycleService: service
+            lifecycleService: service,
+            generationReclaimer: generationReclaimer
         )
     }
 }

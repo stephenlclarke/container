@@ -98,6 +98,40 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func exactWorkloadStopIsIdempotentAndObservable() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let start = try workloadRequest(root: fixture.root)
+        _ = try await service.startWorkload(start, stdio: [])
+        let stop = workloadStopRequest()
+
+        let receipt = try await service.stopWorkload(stop)
+        #expect(receipt.request == stop)
+        #expect(try await service.stopWorkload(stop) == receipt)
+        #expect(try await service.observeWorkloadStop(stop) == .stopped(receipt))
+        #expect(try await service.observeWorkloadStart(start) == .absent)
+        #expect(await sandbox.stopContainerCount == 1)
+
+        var conflicting = workloadStopRequest()
+        conflicting = EngineLinuxSandboxWorkloadStopRequestV1(
+            sandboxID: conflicting.sandboxID,
+            sandboxGeneration: conflicting.sandboxGeneration,
+            workloadID: conflicting.workloadID,
+            workloadProcessGeneration: conflicting.workloadProcessGeneration,
+            operationGeneration: conflicting.operationGeneration,
+            idempotencyKey: conflicting.idempotencyKey,
+            requestDigest: "different-stop-digest"
+        )
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.stopWorkload(conflicting)
+        }
+        #expect(await sandbox.stopContainerCount == 1)
+    }
+
+    @Test
     func changedWorkloadBundleIsRejectedBeforeMaterialization() async throws {
         let sandbox = FakeEngineLinuxSandbox()
         let service = try makeService(sandbox: sandbox)
@@ -221,6 +255,13 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 requestDigest: workloadRequest.context.requestDigest
             )
         )
+        let workloadStopRequest = workloadStopRequest()
+        let workloadStopObservation =
+            EngineLinuxSandboxWorkloadStopObservationV1.stopped(
+                EngineLinuxSandboxWorkloadStopReceiptV1(
+                    request: workloadStopRequest
+                )
+            )
         let dial = EngineLinuxSandboxServiceDialRequestV1(
             sandboxID: "engine-sandbox",
             sandboxGeneration: 1,
@@ -252,6 +293,12 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 WorkloadProcessObservationV1.self,
                 from: JSONEncoder().encode(workloadObservation)
             ) == workloadObservation
+        )
+        #expect(
+            try JSONDecoder().decode(
+                EngineLinuxSandboxWorkloadStopObservationV1.self,
+                from: JSONEncoder().encode(workloadStopObservation)
+            ) == workloadStopObservation
         )
         #expect(
             try JSONDecoder().decode(
@@ -311,6 +358,20 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             workloadConfigurationDigest: digest,
             dynamicEnvironment: ["BUILD_ID": "42"],
             monitorTerminal: monitorTerminal
+        )
+    }
+
+    private func workloadStopRequest()
+        -> EngineLinuxSandboxWorkloadStopRequestV1
+    {
+        .init(
+            sandboxID: "engine-sandbox",
+            sandboxGeneration: 1,
+            workloadID: "workload-1",
+            workloadProcessGeneration: 3,
+            operationGeneration: 4,
+            idempotencyKey: "stop-workload-1",
+            requestDigest: "stop-workload-digest"
         )
     }
 

@@ -22,6 +22,7 @@ import ContainerRuntimeClient
 import Containerization
 import ContainerizationError
 import ContainerizationOCI
+import CryptoKit
 import Darwin
 import Foundation
 import Logging
@@ -31,6 +32,588 @@ import Testing
 @testable import ContainerPlugin
 
 struct ContainerLoggingAuthorityIntegrationTests {
+    @Test func providerUpgradeMigratesAndResealsDurableConfigurationBeforeCutover() async throws {
+        try await withTemporaryRoot { root in
+            let identity = LogDriverProviderIdentity(
+                id: "test.logging.migration-plugin",
+                version: "1.0.0",
+                kind: .dockerPlugin
+            )
+            let sourcePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 11
+                        )
+                    )
+                ]
+            )
+            let sourceService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: sourcePlane
+            )
+            let protectedValue = "DO_NOT_EXPOSE_MIGRATION_VALUE"
+            let plan = try await sourceService.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(
+                    driver: "migration-plugin",
+                    options: ["opaque": protectedValue]
+                )
+            )
+            let sealed = try await sourceService.sealLoggingForCreate(
+                containerID: "migrated-provider",
+                plan: plan
+            )
+            let sourceReference = try #require(sealed.protectedReference)
+            let bundle = try persistConfiguration(
+                appRoot: root,
+                id: "migrated-provider",
+                logging: sealed.configuration
+            )
+
+            let upgradePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 21
+                        )
+                    ),
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 22
+                        )
+                    ),
+                ]
+            )
+            let upgradeService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: upgradePlane
+            )
+            try await upgradeService.reconcileLoggingProviderUpgrades()
+
+            let migrated = try bundle.configuration
+            let migratedResolved = try #require(migrated.logging.resolved)
+            #expect(migratedResolved.providerGenerationAtResolution == 2)
+            #expect(migratedResolved.leaseGeneration == 2)
+            #expect(migratedResolved.contractDigest == sealed.configuration.resolved?.contractDigest)
+            #expect(
+                migratedResolved.protectedOptionReference?.objectID
+                    != sourceReference.objectID
+            )
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: protectedObjectURL(
+                        appRoot: root,
+                        objectID: sourceReference.objectID
+                    ).path
+                )
+            )
+            #expect(
+                try await upgradeService.validateLoggingForStart(
+                    containerID: "migrated-provider",
+                    configuration: migrated.logging
+                )["opaque"] == protectedValue
+            )
+            #expect(
+                try await upgradePlane.logDriverCatalog()
+                    .descriptor(named: "migration-plugin")?
+                    .providerGeneration == 2
+            )
+            #expect(try await upgradePlane.providerUpgradeCandidates().isEmpty)
+
+            let restartedPlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 32
+                        )
+                    )
+                ]
+            )
+            let restartedService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: restartedPlane
+            )
+            try await restartedService.reconcileLoggingProviderUpgrades()
+            #expect(
+                try await restartedService.validateLoggingForStart(
+                    containerID: "migrated-provider",
+                    configuration: bundle.configuration.logging
+                )["opaque"] == protectedValue
+            )
+        }
+    }
+
+    @Test func interruptedProviderUpgradeResumesForwardWithoutDualAdmission() async throws {
+        try await withTemporaryRoot { root in
+            let identity = LogDriverProviderIdentity(
+                id: "test.logging.restart-migration-plugin",
+                version: "1.0.0",
+                kind: .dockerPlugin
+            )
+            let sourcePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 41
+                        )
+                    )
+                ]
+            )
+            let sourceService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: sourcePlane
+            )
+            var bundles = [ContainerResource.Bundle]()
+            for id in ["migration-a", "migration-b"] {
+                let plan = try await sourceService.prepareLoggingForCreate(
+                    configuration: .default,
+                    request: ContainerLogRequest(
+                        driver: "migration-plugin",
+                        options: ["opaque": "protected-\(id)"]
+                    )
+                )
+                let sealed = try await sourceService.sealLoggingForCreate(
+                    containerID: id,
+                    plan: plan
+                )
+                bundles.append(
+                    try persistConfiguration(
+                        appRoot: root,
+                        id: id,
+                        logging: sealed.configuration
+                    )
+                )
+            }
+
+            let interruptedPlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 51
+                        )
+                    ),
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 52
+                        )
+                    ),
+                ]
+            )
+            let interruptedService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: interruptedPlane
+            )
+            await #expect(throws: AuthorityMigrationPluginError.injectedRestart) {
+                try await interruptedService.reconcileLoggingProviderUpgrades {
+                    _ in
+                    throw AuthorityMigrationPluginError.injectedRestart
+                }
+            }
+            #expect(
+                try await interruptedPlane.logDriverCatalog()
+                    .descriptor(named: "migration-plugin") == nil
+            )
+            let interruptedGenerations = try bundles.map {
+                try #require($0.configuration.logging.resolved)
+                    .providerGenerationAtResolution
+            }.sorted()
+            #expect(interruptedGenerations == [1, 2])
+
+            let resumedPlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 61
+                        )
+                    ),
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 62
+                        )
+                    ),
+                ]
+            )
+            let resumedService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: resumedPlane
+            )
+            try await resumedService.reconcileLoggingProviderUpgrades()
+
+            for bundle in bundles {
+                let resolved = try #require(
+                    bundle.configuration.logging.resolved
+                )
+                #expect(resolved.providerGenerationAtResolution == 2)
+                #expect(resolved.leaseGeneration == 2)
+            }
+            #expect(
+                try await resumedPlane.logDriverCatalog()
+                    .descriptor(named: "migration-plugin")?
+                    .providerGeneration == 2
+            )
+            #expect(try await resumedPlane.providerUpgradeCandidates().isEmpty)
+        }
+    }
+
+    @Test func incompatibleProviderContractCancelsQuiescenceWithoutMutation() async throws {
+        try await withTemporaryRoot { root in
+            let identity = LogDriverProviderIdentity(
+                id: "test.logging.incompatible-migration-plugin",
+                version: "1.0.0",
+                kind: .dockerPlugin
+            )
+            let sourcePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 71
+                        )
+                    )
+                ]
+            )
+            let sourceService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: sourcePlane
+            )
+            let plan = try await sourceService.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(driver: "migration-plugin")
+            )
+            let sealed = try await sourceService.sealLoggingForCreate(
+                containerID: "incompatible-migration",
+                plan: plan
+            )
+            let bundle = try persistConfiguration(
+                appRoot: root,
+                id: "incompatible-migration",
+                logging: sealed.configuration
+            )
+
+            let upgradePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 81
+                        )
+                    ),
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        readLogs: false,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 82
+                        )
+                    ),
+                ]
+            )
+            let upgradeService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: upgradePlane
+            )
+            let error = await #expect(throws: ContainerizationError.self) {
+                try await upgradeService.reconcileLoggingProviderUpgrades()
+            }
+            #expect(error?.code == .invalidState)
+            #expect(error?.message.contains("incompatible frozen contract") == true)
+            let unchanged = try #require(bundle.configuration.logging.resolved)
+            #expect(unchanged.providerGenerationAtResolution == 1)
+            #expect(unchanged.leaseGeneration == 1)
+            #expect(
+                try await upgradePlane.logDriverCatalog()
+                    .descriptor(named: "migration-plugin")?
+                    .providerGeneration == 1
+            )
+        }
+    }
+
+    @Test func unsupportedHistoryMigrationCancelsQuiescenceWithoutMutation()
+        async throws
+    {
+        try await withTemporaryRoot { root in
+            let identity = LogDriverProviderIdentity(
+                id: "test.logging.unsupported-history-plugin",
+                version: "1.0.0",
+                kind: .dockerPlugin
+            )
+            let sourcePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory:
+                    AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 83
+                        )
+                    )
+                ]
+            )
+            let sourceService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: sourcePlane
+            )
+            let plan = try await sourceService.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(
+                    driver: "migration-plugin",
+                    options: ["opaque": "protected-history"]
+                )
+            )
+            let sealed = try await sourceService.sealLoggingForCreate(
+                containerID: "unsupported-history",
+                plan: plan
+            )
+            let bundle = try persistConfiguration(
+                appRoot: root,
+                id: "unsupported-history",
+                logging: sealed.configuration
+            )
+            try await persistTerminalWriterHistory(
+                bundle: bundle,
+                configuration: bundle.configuration,
+                sandboxGeneration: 83
+            )
+            let sourceReference = sealed.protectedReference
+
+            let unsupportedTarget = AuthorityMigrationPluginService(
+                sandboxGeneration: 85,
+                supportsHistoryMigration: false
+            )
+            let upgradePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory:
+                    AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 84
+                        )
+                    ),
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        service: unsupportedTarget
+                    ),
+                ]
+            )
+            let upgradeService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: upgradePlane
+            )
+            await #expect(
+                throws: LogDriverHistoryMigrationError.unsupported
+            ) {
+                try await upgradeService.reconcileLoggingProviderUpgrades()
+            }
+
+            let unchanged = try #require(
+                bundle.configuration.logging.resolved
+            )
+            #expect(unchanged.providerGenerationAtResolution == 1)
+            #expect(unchanged.leaseGeneration == 1)
+            #expect(unchanged.providerHistoryMigrationReceipt == nil)
+            #expect(
+                unchanged.protectedOptionReference == sourceReference
+            )
+            #expect(await unsupportedTarget.historyMigrationRequestCount == 1)
+            #expect(
+                try await upgradePlane.logDriverCatalog()
+                    .descriptor(named: "migration-plugin")?
+                    .providerGeneration == 1
+            )
+        }
+    }
+
+    @Test func providerHistoryReceiptSurvivesCrashAfterConfigurationPublication() async throws {
+        try await withTemporaryRoot { root in
+            let identity = LogDriverProviderIdentity(
+                id: "test.logging.history-migration-plugin",
+                version: "1.0.0",
+                kind: .dockerPlugin
+            )
+            let sourcePlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 91
+                        )
+                    )
+                ]
+            )
+            let sourceService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: sourcePlane
+            )
+            let plan = try await sourceService.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(
+                    driver: "migration-plugin",
+                    options: ["opaque": "history-protected-value"]
+                )
+            )
+            let sealed = try await sourceService.sealLoggingForCreate(
+                containerID: "history-migration",
+                plan: plan
+            )
+            let bundle = try persistConfiguration(
+                appRoot: root,
+                id: "history-migration",
+                logging: sealed.configuration
+            )
+            try await persistTerminalWriterHistory(
+                bundle: bundle,
+                configuration: bundle.configuration,
+                sandboxGeneration: 91
+            )
+
+            let interruptedTarget = AuthorityMigrationPluginService(
+                sandboxGeneration: 102
+            )
+            let interruptedPlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 101
+                        )
+                    ),
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        service: interruptedTarget
+                    ),
+                ]
+            )
+            let interruptedService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: interruptedPlane
+            )
+            await #expect(throws: AuthorityMigrationPluginError.injectedRestart) {
+                try await interruptedService.reconcileLoggingProviderUpgrades {
+                    _ in
+                    throw AuthorityMigrationPluginError.injectedRestart
+                }
+            }
+            let interrupted = try #require(
+                bundle.configuration.logging.resolved
+            )
+            let receipt = try #require(
+                interrupted.providerHistoryMigrationReceipt
+            )
+            #expect(interrupted.providerGenerationAtResolution == 2)
+            #expect(interrupted.leaseGeneration == 2)
+            #expect(receipt.request.sourceProviderGeneration == 1)
+            #expect(receipt.request.targetProviderGeneration == 2)
+            #expect(await interruptedTarget.historyMigrationRequestCount == 1)
+            #expect(
+                try await interruptedPlane.logDriverCatalog()
+                    .descriptor(named: "migration-plugin") == nil
+            )
+
+            let resumedTarget = AuthorityMigrationPluginService(
+                sandboxGeneration: 112
+            )
+            let resumedPlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityMigrationAWSLogsClientFactory(),
+                dockerPluginInstallations: [
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 1,
+                        service: AuthorityMigrationPluginService(
+                            sandboxGeneration: 111
+                        )
+                    ),
+                    Self.migrationPluginInstallation(
+                        identity: identity,
+                        generation: 2,
+                        service: resumedTarget
+                    ),
+                ]
+            )
+            let resumedService = try makeService(
+                appRoot: root,
+                includeRuntime: true,
+                remoteLogDriverPlane: resumedPlane
+            )
+            try await resumedService.reconcileLoggingProviderUpgrades()
+
+            #expect(await resumedTarget.historyMigrationRequestCount == 0)
+            #expect(
+                try await resumedService.validateLoggingForStart(
+                    containerID: "history-migration",
+                    configuration: bundle.configuration.logging
+                )["opaque"] == "history-protected-value"
+            )
+            #expect(
+                try await resumedPlane.logDriverCatalog()
+                    .descriptor(named: "migration-plugin")?
+                    .providerGeneration == 2
+            )
+        }
+    }
+
     @Test func engineInspectAuthenticatesProtectedOptionsAtAuthorityBoundary() async throws {
         try await withTemporaryRoot { root in
             let id = "engine-protected-inspect"
@@ -433,7 +1016,8 @@ struct ContainerLoggingAuthorityIntegrationTests {
         includeRuntime: Bool,
         logDriverCatalogProvider: any LogDriverCatalogProviding = StaticLogDriverCatalogProvider(
             catalog: BuiltinLogDriverDescriptors.current
-        )
+        ),
+        remoteLogDriverPlane: AuthorityRemoteLogDriverPlane? = nil
     ) throws -> ContainersService {
         try ContainersService(
             appRoot: appRoot,
@@ -443,7 +1027,23 @@ struct ContainerLoggingAuthorityIntegrationTests {
             ),
             containerSystemConfig: ContainerSystemConfig(),
             log: Logger(label: "ContainerLoggingAuthorityIntegrationTests"),
-            logDriverCatalogProvider: logDriverCatalogProvider
+            logDriverCatalogProvider: logDriverCatalogProvider,
+            remoteLogDriverPlane: remoteLogDriverPlane
+        )
+    }
+
+    private static func migrationPluginInstallation(
+        identity: LogDriverProviderIdentity,
+        generation: UInt64,
+        readLogs: Bool = true,
+        service: any DockerPluginLifecycleService
+    ) -> DockerPluginLogDriverInstallation {
+        DockerPluginLogDriverInstallation(
+            driver: "migration-plugin",
+            providerIdentity: identity,
+            providerGeneration: generation,
+            readLogs: readLogs,
+            lifecycleService: service
         )
     }
 
@@ -523,6 +1123,75 @@ struct ContainerLoggingAuthorityIntegrationTests {
         return bundle
     }
 
+    private func persistTerminalWriterHistory(
+        bundle: ContainerResource.Bundle,
+        configuration: ContainerConfiguration,
+        sandboxGeneration: UInt64
+    ) async throws {
+        let resolved = try #require(configuration.logging.resolved)
+        let digest = SHA256.hash(data: Data(configuration.id.utf8)).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let controllerID =
+            "container-\(digest)-lease-\(resolved.leaseGeneration)"
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                "provider-lifecycle-\(resolved.leaseGeneration)-v1.json"
+            )
+        )
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: controllerID,
+            persistence: persistence
+        )
+        let request = try LogDriverStartRequestV1(
+            operationGeneration: 1,
+            idempotencyKey: "writer-history-key",
+            semanticRequestDigest: "sha256:writer-history-request",
+            sessionID: "writer-history-session",
+            containerID: configuration.id,
+            leaseGeneration: resolved.leaseGeneration,
+            candidateProcessGeneration: 1,
+            providerID: resolved.providerIdentity.id,
+            providerGeneration: resolved.providerGenerationAtResolution,
+            candidateSandboxGeneration: sandboxGeneration
+        )
+        let reference = try ProtectedLoggingEffectReferenceV1(
+            effectID: request.sessionID,
+            owningControllerID: controllerID,
+            providerID: request.providerID,
+            providerGeneration: request.providerGeneration,
+            protectedStoreObjectID: "terminal-history-object",
+            integrityDigest: "hmac:terminal-history"
+        )
+        _ = try await ledger.reserveWriter(request)
+        _ = try await ledger.recordWriterPreparation(
+            LoggingSessionPreparationV1(
+                operationGeneration: request.operationGeneration,
+                idempotencyKey: request.idempotencyKey,
+                semanticRequestDigest: request.semanticRequestDigest,
+                sessionID: request.sessionID,
+                containerID: request.containerID,
+                leaseGeneration: request.leaseGeneration,
+                candidateProcessGeneration: request.candidateProcessGeneration,
+                providerID: request.providerID,
+                providerGeneration: request.providerGeneration,
+                candidateSandboxGeneration: request.candidateSandboxGeneration,
+                effectTokenReference: reference
+            ),
+            for: request
+        )
+        let active = try await ledger.commitWriterActivation(for: request)
+        let draining = try await ledger.beginWriterDrain(active)
+        _ = try await ledger.completeWriterClose(draining)
+        let removal = try #require(
+            await ledger.pendingEffectRemoval(
+                kind: .writerSession,
+                ownerID: request.sessionID
+            )
+        )
+        try await ledger.acknowledgeEffectRemoval(removal)
+    }
+
     private func testConfiguration(id: String) -> ContainerConfiguration {
         ContainerConfiguration(
             id: id,
@@ -589,6 +1258,130 @@ private actor RecordingLogDriverCatalogProvider: LogDriverCatalogProviding {
             return catalogs.removeFirst()
         }
         return catalogs[0]
+    }
+}
+
+private struct AuthorityMigrationAWSLogsClientFactory: AWSLogsClientFactory {
+    func makeClient(
+        configuration: AWSLogsDriverConfiguration
+    ) async throws -> any AWSLogsClient {
+        _ = configuration
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+}
+
+private enum AuthorityMigrationPluginError: Error {
+    case injectedRestart
+    case unexpectedEffect
+}
+
+private actor AuthorityMigrationPluginService: DockerPluginLifecycleService {
+    private let sandboxGeneration: UInt64
+    private let supportsHistoryMigration: Bool
+    private(set) var historyMigrationRequestCount = 0
+    private(set) var generationReclaimRequestCount = 0
+
+    init(
+        sandboxGeneration: UInt64,
+        supportsHistoryMigration: Bool = true
+    ) {
+        self.sandboxGeneration = sandboxGeneration
+        self.supportsHistoryMigration = supportsHistoryMigration
+    }
+
+    func activeSandboxGeneration() -> UInt64 {
+        sandboxGeneration
+    }
+
+    func migrateHistory(
+        _ request: LogDriverHistoryMigrationRequestV1
+    ) throws -> LogDriverHistoryMigrationReceiptV1 {
+        historyMigrationRequestCount += 1
+        guard supportsHistoryMigration else {
+            throw LogDriverHistoryMigrationError.unsupported
+        }
+        return try LogDriverHistoryMigrationReceiptV1(
+            request: request,
+            providerOutcomeDigest:
+                "sha256:accepted-\(request.terminalHistoryDigest)"
+        )
+    }
+
+    func reclaimGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) {
+        _ = request
+        generationReclaimRequestCount += 1
+    }
+
+    func startWriter(
+        _ request: DockerPluginWriterOpenRequest
+    ) throws -> DockerPluginServiceStartedWriter {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func reconcileWriterOpen(
+        _ request: LogDriverStartRequestV1
+    ) throws -> DockerPluginServiceWriterReconciliation {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func reconcileWriter(
+        _ request: LogDriverSessionCallV1
+    ) throws -> LogDriverSessionAcknowledgementV1 {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func fenceWriter(
+        _ request: LogDriverSessionCallV1
+    ) throws -> LogDriverSessionAcknowledgementV1 {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func closeWriter(
+        _ request: LogDriverSessionCallV1
+    ) throws -> LogDriverSessionAcknowledgementV1 {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func openReader(
+        _ request: DockerPluginReaderOpenRequest
+    ) throws -> DockerPluginServiceStartedReader {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func reconcileReaderOpen(
+        _ request: LogDriverReaderOpenRequestV1
+    ) throws -> DockerPluginServiceReaderReconciliation {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func reconcileReader(
+        _ request: LogDriverReaderCallV1
+    ) throws -> LogDriverReaderAcknowledgementV1 {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func closeReader(
+        _ request: LogDriverReaderCallV1
+    ) throws -> LogDriverReaderAcknowledgementV1 {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
+    }
+
+    func reclaimTerminalEffect(
+        _ request: LogDriverTerminalEffectReclaimV1
+    ) throws {
+        _ = request
+        throw AuthorityMigrationPluginError.unexpectedEffect
     }
 }
 

@@ -110,6 +110,14 @@ public enum DockerPluginServiceReaderReconciliation: Sendable {
 public protocol DockerPluginLifecycleService: Sendable {
     func activeSandboxGeneration() async throws -> UInt64
 
+    func migrateHistory(
+        _ request: LogDriverHistoryMigrationRequestV1
+    ) async throws -> LogDriverHistoryMigrationReceiptV1
+
+    func reclaimGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws
+
     func startWriter(
         _ request: DockerPluginWriterOpenRequest
     ) async throws -> DockerPluginServiceStartedWriter
@@ -151,6 +159,33 @@ public protocol DockerPluginLifecycleService: Sendable {
     ) async throws
 }
 
+/// Host-side owner for an isolated provider-generation workload. The status
+/// probe makes reclamation response-loss safe: once the exact workload has
+/// stopped, retries do not need to reconnect to the service that was stopped.
+public protocol DockerPluginProviderGenerationReclaiming: Sendable {
+    func isProviderGenerationReclaimed(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws -> Bool
+
+    func reclaimProviderGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws
+}
+
+extension DockerPluginLifecycleService {
+    public func migrateHistory(
+        _: LogDriverHistoryMigrationRequestV1
+    ) async throws -> LogDriverHistoryMigrationReceiptV1 {
+        throw LogDriverHistoryMigrationError.unsupported
+    }
+
+    public func reclaimGeneration(
+        _: LogDriverProviderGenerationReclaimV1
+    ) async throws {
+        throw LogDriverProviderGenerationReclaimError.unsupported
+    }
+}
+
 /// Production provider facade for one installed service generation.
 ///
 /// All mutable lifecycle ownership remains behind
@@ -161,6 +196,7 @@ public actor DockerPluginServiceLogDriverProvider: ContainerLogDriverProvider {
     private let descriptorValue: LogDriverDescriptor
     private let configurationResolver: any DockerPluginConfigurationResolving
     private let service: any DockerPluginLifecycleService
+    private let generationReclaimer: (any DockerPluginProviderGenerationReclaiming)?
 
     public init(
         driver: String,
@@ -170,7 +206,9 @@ public actor DockerPluginServiceLogDriverProvider: ContainerLogDriverProvider {
         readLogs: Bool,
         trust: LogDriverTrust = .approved,
         configurationResolver: any DockerPluginConfigurationResolving,
-        service: any DockerPluginLifecycleService
+        service: any DockerPluginLifecycleService,
+        generationReclaimer:
+            (any DockerPluginProviderGenerationReclaiming)? = nil
     ) throws {
         self.descriptorValue = try DockerPluginLogDriverContract.descriptor(
             driver: driver,
@@ -182,10 +220,51 @@ public actor DockerPluginServiceLogDriverProvider: ContainerLogDriverProvider {
         )
         self.configurationResolver = configurationResolver
         self.service = service
+        self.generationReclaimer = generationReclaimer
     }
 
     public var descriptor: LogDriverDescriptor {
         get async throws { descriptorValue }
+    }
+
+    public func migrateHistory(
+        _ request: LogDriverHistoryMigrationRequestV1
+    ) async throws -> LogDriverHistoryMigrationReceiptV1 {
+        guard
+            request.providerID == descriptorValue.providerIdentity.id,
+            request.targetProviderGeneration
+                == descriptorValue.providerGeneration,
+            request.contractDigest
+                == descriptorValue.optionContractDigest,
+            descriptorValue.capabilities.nativeRead
+        else {
+            throw LogDriverHistoryMigrationError.receiptMismatch
+        }
+        let receipt = try await service.migrateHistory(request)
+        guard receipt.request == request else {
+            throw LogDriverHistoryMigrationError.receiptMismatch
+        }
+        return receipt
+    }
+
+    public func reclaimGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws {
+        guard
+            request.providerID == descriptorValue.providerIdentity.id,
+            request.providerGeneration == descriptorValue.providerGeneration
+        else {
+            throw LogDriverProviderGenerationReclaimError.invalidRequest
+        }
+        if let generationReclaimer,
+            try await generationReclaimer.isProviderGenerationReclaimed(
+                request
+            )
+        {
+            return
+        }
+        try await service.reclaimGeneration(request)
+        try await generationReclaimer?.reclaimProviderGeneration(request)
     }
 
     public func activeSandboxGeneration() async throws -> UInt64 {

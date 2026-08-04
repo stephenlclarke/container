@@ -136,10 +136,35 @@ struct DockerPluginLifecycleServiceProviderTests {
         }
     }
 
+    @Test func generationReclaimSkipsStoppedServiceOnResponseReplay() async throws {
+        let service = LifecycleServiceFixture(readLogs: true)
+        let reclaimer = LifecycleGenerationReclaimer()
+        let provider = try makeProvider(
+            readLogs: true,
+            resolver: try LifecycleConfigurationResolver(),
+            service: service,
+            generationReclaimer: reclaimer
+        )
+        let request = try LogDriverProviderGenerationReclaimV1(
+            providerID: lifecycleProviderIdentity.id,
+            providerGeneration: lifecycleProviderGeneration
+        )
+
+        try await provider.reclaimGeneration(request)
+        #expect(await service.generationReclaimCount == 1)
+        #expect(await reclaimer.reclaimCount == 1)
+
+        try await provider.reclaimGeneration(request)
+        #expect(await service.generationReclaimCount == 1)
+        #expect(await reclaimer.reclaimCount == 1)
+    }
+
     private func makeProvider(
         readLogs: Bool,
         resolver: LifecycleConfigurationResolver,
-        service: LifecycleServiceFixture
+        service: LifecycleServiceFixture,
+        generationReclaimer:
+            (any DockerPluginProviderGenerationReclaiming)? = nil
     ) throws -> DockerPluginServiceLogDriverProvider {
         try DockerPluginServiceLogDriverProvider(
             driver: "durable-plugin",
@@ -147,7 +172,8 @@ struct DockerPluginLifecycleServiceProviderTests {
             providerGeneration: lifecycleProviderGeneration,
             readLogs: readLogs,
             configurationResolver: resolver,
-            service: service
+            service: service,
+            generationReclaimer: generationReclaimer
         )
     }
 
@@ -324,6 +350,7 @@ private actor LifecycleServiceFixture: DockerPluginLifecycleService {
     private var readerObservation: LogDriverReaderObservationV1 = .active
     private(set) var writerEffectCount = 0
     private(set) var readerEffectCount = 0
+    private(set) var generationReclaimCount = 0
 
     init(readLogs: Bool) {
         self.capabilities = DockerPluginCapabilities(readLogs: readLogs)
@@ -456,6 +483,18 @@ private actor LifecycleServiceFixture: DockerPluginLifecycleService {
         }
     }
 
+    func reclaimGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws {
+        guard
+            request.providerID == lifecycleProviderIdentity.id,
+            request.providerGeneration == lifecycleProviderGeneration
+        else {
+            throw LogDriverProviderGenerationReclaimError.invalidRequest
+        }
+        generationReclaimCount += 1
+    }
+
     private func writer(
         _ request: LogDriverStartRequestV1
     ) -> DockerPluginServiceStartedWriter {
@@ -510,6 +549,26 @@ private actor LifecycleServiceFixture: DockerPluginLifecycleService {
         else {
             throw DockerPluginProtocolError.invalidEffectToken
         }
+    }
+}
+
+private actor LifecycleGenerationReclaimer:
+    DockerPluginProviderGenerationReclaiming
+{
+    private var reclaimed = false
+    private(set) var reclaimCount = 0
+
+    func isProviderGenerationReclaimed(
+        _: LogDriverProviderGenerationReclaimV1
+    ) -> Bool {
+        reclaimed
+    }
+
+    func reclaimProviderGeneration(
+        _: LogDriverProviderGenerationReclaimV1
+    ) {
+        reclaimCount += 1
+        reclaimed = true
     }
 }
 

@@ -30,6 +30,26 @@ enum AuthorityRemoteLogDriverPlaneError: Error, Equatable, Sendable {
     case runAlreadyActivated(String)
     case runNotActivated(String)
     case generationMismatch(expected: UInt64, actual: UInt64)
+    case providerGenerationNotTerminal(containerID: String, generation: UInt64)
+    case providerHistoryMigrationReceiptMismatch(containerID: String)
+}
+
+package struct AuthorityRemoteLogDriverUpgradeCandidate: Equatable, Sendable {
+    package let upgrade: LogDriverProviderUpgradeV1
+    package let sourceDescriptor: LogDriverDescriptor
+    package let targetDescriptor: LogDriverDescriptor
+}
+
+package struct AuthorityRemoteLogDriverTerminalProof: Equatable, Sendable {
+    package let terminalHistoryDigest: String?
+}
+
+package struct AuthorityRemoteLogDriverReclamationCandidate: Equatable,
+    Sendable
+{
+    package let providerID: String
+    package let generation: UInt64
+    package let descriptor: LogDriverDescriptor
 }
 
 package typealias AuthorityGCPLoggingServiceFactory =
@@ -170,6 +190,472 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
 
     public func advertisedLogDriverCatalog() async throws -> LogDriverCatalog {
         try await providers.registry.logDriverCatalog()
+    }
+
+    package func providerUpgradeCandidates() async throws
+        -> [AuthorityRemoteLogDriverUpgradeCandidate]
+    {
+        let upgrades = try await providers.registry.upgradeCandidates()
+        var candidates = [AuthorityRemoteLogDriverUpgradeCandidate]()
+        candidates.reserveCapacity(upgrades.count)
+        for upgrade in upgrades {
+            guard
+                let source = await providers.registry.selection(
+                    providerID: upgrade.providerID,
+                    generation: upgrade.sourceGeneration
+                ),
+                let target = await providers.registry.selection(
+                    providerID: upgrade.providerID,
+                    generation: upgrade.targetGeneration
+                )
+            else {
+                throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                    upgrade.providerID
+                )
+            }
+            candidates.append(
+                AuthorityRemoteLogDriverUpgradeCandidate(
+                    upgrade: upgrade,
+                    sourceDescriptor: source.descriptor,
+                    targetDescriptor: target.descriptor
+                )
+            )
+        }
+        return candidates
+    }
+
+    package func providerReclamationCandidates() async throws
+        -> [AuthorityRemoteLogDriverReclamationCandidate]
+    {
+        let snapshot = try await providers.registry.stateSnapshot()
+        var candidates = [AuthorityRemoteLogDriverReclamationCandidate]()
+        for state in snapshot.providers {
+            for generation in state.drainingGenerations {
+                guard
+                    let selection = await providers.registry.selection(
+                        providerID: state.providerID,
+                        generation: generation
+                    )
+                else {
+                    continue
+                }
+                candidates.append(
+                    AuthorityRemoteLogDriverReclamationCandidate(
+                        providerID: state.providerID,
+                        generation: generation,
+                        descriptor: selection.descriptor
+                    )
+                )
+            }
+        }
+        return candidates.sorted {
+            ($0.providerID, $0.generation) < ($1.providerID, $1.generation)
+        }
+    }
+
+    package func beginProviderUpgrade(
+        _ candidate: AuthorityRemoteLogDriverUpgradeCandidate
+    ) async throws {
+        if let selection = await providers.registry.selection(
+            providerID: candidate.upgrade.providerID,
+            generation: candidate.upgrade.targetGeneration
+        ),
+            let provider = selection.provider
+                as? any EngineLinuxSandboxLogDriverProvider
+        {
+            guard try await provider.activeSandboxGeneration() > 0 else {
+                throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                    candidate.upgrade.providerID
+                )
+            }
+        }
+        _ = try await providers.registry.beginUpgrade(
+            providerID: candidate.upgrade.providerID,
+            targetGeneration: candidate.upgrade.targetGeneration
+        )
+    }
+
+    package func cancelProviderUpgrade(
+        _ candidate: AuthorityRemoteLogDriverUpgradeCandidate
+    ) async throws {
+        _ = try await providers.registry.cancelUpgrade(
+            providerID: candidate.upgrade.providerID,
+            targetGeneration: candidate.upgrade.targetGeneration
+        )
+    }
+
+    package func activateProviderUpgrade(
+        _ candidate: AuthorityRemoteLogDriverUpgradeCandidate
+    ) async throws {
+        _ = try await providers.registry.activate(
+            providerID: candidate.upgrade.providerID,
+            generation: candidate.upgrade.targetGeneration
+        )
+    }
+
+    package func reclaimProviderGeneration(
+        _ candidate: AuthorityRemoteLogDriverUpgradeCandidate
+    ) async throws {
+        guard
+            let selection = await providers.registry.selection(
+                providerID: candidate.upgrade.providerID,
+                generation: candidate.upgrade.sourceGeneration
+            )
+        else {
+            throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                candidate.upgrade.providerID
+            )
+        }
+        try await reclaimProviderGeneration(
+            AuthorityRemoteLogDriverReclamationCandidate(
+                providerID: candidate.upgrade.providerID,
+                generation: candidate.upgrade.sourceGeneration,
+                descriptor: selection.descriptor
+            )
+        )
+    }
+
+    package func reclaimProviderGeneration(
+        _ candidate: AuthorityRemoteLogDriverReclamationCandidate
+    ) async throws {
+        guard
+            let selection = await providers.registry.selection(
+                providerID: candidate.providerID,
+                generation: candidate.generation
+            ),
+            selection.descriptor == candidate.descriptor
+        else {
+            throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                candidate.providerID
+            )
+        }
+        try await selection.provider.reclaimGeneration(
+            LogDriverProviderGenerationReclaimV1(
+                providerID: candidate.providerID,
+                providerGeneration: candidate.generation
+            )
+        )
+        _ = try await providers.registry.uninstall(
+            providerID: candidate.providerID,
+            generation: candidate.generation
+        )
+    }
+
+    /// Reconciles every source-generation effect in one container ledger and
+    /// returns only after the durable snapshot proves no effect or protected
+    /// cleanup reference can still reach the provider.
+    package func proveProviderGenerationTerminal(
+        candidate: AuthorityRemoteLogDriverUpgradeCandidate,
+        containerID: String,
+        bundle: ContainerResource.Bundle,
+        configuration: ContainerConfiguration,
+        authenticatedProtectedOptions: [String: String]
+    ) async throws -> AuthorityRemoteLogDriverTerminalProof {
+        guard
+            configuration.id == containerID,
+            let resolved = configuration.logging.resolved,
+            resolved.providerIdentity.id == candidate.upgrade.providerID,
+            resolved.providerGenerationAtResolution
+                == candidate.upgrade.sourceGeneration,
+            runs[containerID] == nil,
+            !readerRuns.values.contains(where: {
+                $0.request.containerID == containerID
+                    && $0.request.providerGeneration
+                        == candidate.upgrade.sourceGeneration
+            }),
+            let selection = await providers.registry.selection(
+                providerID: candidate.upgrade.providerID,
+                generation: candidate.upgrade.sourceGeneration
+            )
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerGenerationNotTerminal(
+                    containerID: containerID,
+                    generation: candidate.upgrade.sourceGeneration
+                )
+        }
+        let controllerID = Self.controllerID(
+            containerID: containerID,
+            leaseGeneration: resolved.leaseGeneration
+        )
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                "provider-lifecycle-\(resolved.leaseGeneration)-v1.json"
+            )
+        )
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: controllerID,
+            persistence: persistence
+        )
+        let controller = ContainerLogLifecycleControllerV1(
+            ledger: ledger,
+            protectedEffects: protectedEffects
+        )
+        let options = try Self.mergedOptions(
+            resolved: resolved,
+            protected: authenticatedProtectedOptions
+        )
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+        try await reconcilePriorRuns(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options,
+            semanticDigest: try Self.semanticDigest(
+                containerID: containerID,
+                configuration: configuration.logging
+            )
+        )
+        try await reconcilePriorReaders(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options
+        )
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+        let snapshot = await ledger.snapshot()
+        guard
+            Self.isTerminal(
+                snapshot,
+                providerID: candidate.upgrade.providerID,
+                generation: candidate.upgrade.sourceGeneration
+            )
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerGenerationNotTerminal(
+                    containerID: containerID,
+                    generation: candidate.upgrade.sourceGeneration
+                )
+        }
+        return try Self.terminalProof(
+            snapshot: snapshot,
+            configuration: configuration
+        )
+    }
+
+    /// Verifies the already-durable terminal proof when restart occurs after
+    /// configuration publication but before alias activation.
+    package func verifyProviderGenerationTerminal(
+        candidate: AuthorityRemoteLogDriverUpgradeCandidate,
+        containerID: String,
+        bundle: ContainerResource.Bundle,
+        targetConfiguration: ContainerConfiguration,
+        sourceLeaseGeneration: UInt64
+    ) async throws -> AuthorityRemoteLogDriverTerminalProof {
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                "provider-lifecycle-\(sourceLeaseGeneration)-v1.json"
+            )
+        )
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: Self.controllerID(
+                containerID: containerID,
+                leaseGeneration: sourceLeaseGeneration
+            ),
+            persistence: persistence
+        )
+        let snapshot = await ledger.snapshot()
+        guard
+            Self.isTerminal(
+                snapshot,
+                providerID: candidate.upgrade.providerID,
+                generation: candidate.upgrade.sourceGeneration
+            )
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerGenerationNotTerminal(
+                    containerID: containerID,
+                    generation: candidate.upgrade.sourceGeneration
+                )
+        }
+        return try Self.terminalProof(
+            snapshot: snapshot,
+            configuration: targetConfiguration
+        )
+    }
+
+    package func migrateProviderHistory(
+        candidate: AuthorityRemoteLogDriverUpgradeCandidate,
+        containerID: String,
+        sourceConfiguration: ContainerLogConfiguration,
+        proof: AuthorityRemoteLogDriverTerminalProof
+    ) async throws -> LogDriverHistoryMigrationReceiptV1? {
+        guard let terminalHistoryDigest = proof.terminalHistoryDigest else {
+            return nil
+        }
+        guard
+            let resolved = sourceConfiguration.resolved,
+            resolved.leaseGeneration < UInt64.max,
+            let selection = await providers.registry.selection(
+                providerID: candidate.upgrade.providerID,
+                generation: candidate.upgrade.targetGeneration
+            )
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryMigrationReceiptMismatch(
+                    containerID: containerID
+                )
+        }
+        let request = try LogDriverHistoryMigrationRequestV1(
+            containerID: containerID,
+            sourceLeaseGeneration: resolved.leaseGeneration,
+            targetLeaseGeneration: resolved.leaseGeneration + 1,
+            providerID: candidate.upgrade.providerID,
+            sourceProviderGeneration: candidate.upgrade.sourceGeneration,
+            targetProviderGeneration: candidate.upgrade.targetGeneration,
+            contractDigest: resolved.contractDigest,
+            terminalHistoryDigest: terminalHistoryDigest
+        )
+        let receipt = try await selection.provider.migrateHistory(request)
+        guard receipt.request == request else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryMigrationReceiptMismatch(
+                    containerID: containerID
+                )
+        }
+        return receipt
+    }
+
+    package func verifyProviderHistoryMigration(
+        candidate: AuthorityRemoteLogDriverUpgradeCandidate,
+        containerID: String,
+        targetConfiguration: ContainerLogConfiguration,
+        proof: AuthorityRemoteLogDriverTerminalProof
+    ) throws {
+        guard
+            let resolved = targetConfiguration.resolved,
+            resolved.leaseGeneration > 1
+        else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryMigrationReceiptMismatch(
+                    containerID: containerID
+                )
+        }
+        let receipt = resolved.providerHistoryMigrationReceipt
+        guard let terminalHistoryDigest = proof.terminalHistoryDigest else {
+            guard receipt == nil else {
+                throw
+                    AuthorityRemoteLogDriverPlaneError
+                    .providerHistoryMigrationReceiptMismatch(
+                        containerID: containerID
+                    )
+            }
+            return
+        }
+        let request = try LogDriverHistoryMigrationRequestV1(
+            containerID: containerID,
+            sourceLeaseGeneration: resolved.leaseGeneration - 1,
+            targetLeaseGeneration: resolved.leaseGeneration,
+            providerID: candidate.upgrade.providerID,
+            sourceProviderGeneration: candidate.upgrade.sourceGeneration,
+            targetProviderGeneration: candidate.upgrade.targetGeneration,
+            contractDigest: resolved.contractDigest,
+            terminalHistoryDigest: terminalHistoryDigest
+        )
+        guard receipt?.request == request else {
+            throw
+                AuthorityRemoteLogDriverPlaneError
+                .providerHistoryMigrationReceiptMismatch(
+                    containerID: containerID
+                )
+        }
+    }
+
+    private static func terminalProof(
+        snapshot: ContainerLogLifecycleLedgerSnapshotV1,
+        configuration: ContainerConfiguration
+    ) throws -> AuthorityRemoteLogDriverTerminalProof {
+        guard configuration.logging.resolved?.readPolicy.source == .direct,
+            snapshot.writerOperations.contains(where: {
+                if case .activated = $0.result { return true }
+                return false
+            })
+        else {
+            return AuthorityRemoteLogDriverTerminalProof(
+                terminalHistoryDigest: nil
+            )
+        }
+        return AuthorityRemoteLogDriverTerminalProof(
+            terminalHistoryDigest: try terminalHistoryDigest(snapshot)
+        )
+    }
+
+    private static func terminalHistoryDigest(
+        _ snapshot: ContainerLogLifecycleLedgerSnapshotV1
+    ) throws -> String? {
+        guard
+            snapshot.writerOperations.contains(where: {
+                if case .activated = $0.result { return true }
+                return false
+            })
+        else {
+            return nil
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var material = Data("provider-terminal-history-v1\u{0}".utf8)
+        material.append(try encoder.encode(snapshot))
+        return "sha256:" + sha256Hex(material)
+    }
+
+    private static func isTerminal(
+        _ snapshot: ContainerLogLifecycleLedgerSnapshotV1,
+        providerID: String,
+        generation: UInt64
+    ) -> Bool {
+        guard snapshot.pendingEffectRemovals.isEmpty else {
+            return false
+        }
+        let writersTerminal = snapshot.writerOperations.allSatisfy { record in
+            guard
+                record.request.providerID == providerID,
+                record.request.providerGeneration == generation
+            else {
+                return false
+            }
+            switch record.result {
+            case .candidateClosed:
+                return true
+            case .activated(let activation):
+                return activation.state == .closed
+                    || activation.state == .tombstoned
+            default:
+                return false
+            }
+        }
+        let readersTerminal = snapshot.readerOperations.allSatisfy { record in
+            guard
+                record.request.providerID == providerID,
+                record.request.providerGeneration == generation
+            else {
+                return false
+            }
+            switch record.result {
+            case .candidateClosed:
+                return true
+            case .activated(let session):
+                return session.state == .closed
+                    || session.state == .tombstoned
+            default:
+                return false
+            }
+        }
+        let cleanupsTerminal = snapshot.detachedCleanups.allSatisfy {
+            $0.providerID == providerID
+                && $0.providerGeneration == generation
+                && ($0.state == .complete || $0.state == .tombstoned)
+        }
+        return writersTerminal && readersTerminal && cleanupsTerminal
     }
 
     private func recoverHealthyPluginGeneration(

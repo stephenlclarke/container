@@ -78,6 +78,18 @@ struct DockerPluginLifecycleServiceWireTests {
         )
         #expect(try await client.activeSandboxGeneration() == 9)
 
+        let historyMigration = try dockerPluginWireHistoryMigrationRequest()
+        let migrationReceipt = try await client.migrateHistory(
+            historyMigration
+        )
+        #expect(migrationReceipt.request == historyMigration)
+        try await client.reclaimGeneration(
+            LogDriverProviderGenerationReclaimV1(
+                providerID: dockerPluginWireProviderID,
+                providerGeneration: 7
+            )
+        )
+
         let writerRequest = try dockerPluginWireWriterRequest()
         let started = try await client.startWriter(
             DockerPluginWriterOpenRequest(
@@ -118,6 +130,8 @@ struct DockerPluginLifecycleServiceWireTests {
         #expect(
             requests.map(\.operation) == [
                 .activeSandboxGeneration,
+                .migrateHistory,
+                .reclaimGeneration,
                 .startWriter,
                 .writeWriter,
                 .flushWriter,
@@ -128,8 +142,8 @@ struct DockerPluginLifecycleServiceWireTests {
                 .cancelReader,
             ]
         )
-        let encodedFrame = try #require(requests[2].frame)
-        #expect(requests[2].sequence == 1)
+        let encodedFrame = try #require(requests[4].frame)
+        #expect(requests[4].sequence == 1)
         var decoder = DockerPluginFrameDecoder()
         let entries = try decoder.append(encodedFrame)
         try decoder.finish()
@@ -321,6 +335,18 @@ private actor DockerPluginWireRecordingTransport:
             return DockerPluginLifecycleServiceWireResponseV1(
                 operationID: request.operationID,
                 sandboxGeneration: 9
+            )
+        case .migrateHistory:
+            return DockerPluginLifecycleServiceWireResponseV1(
+                operationID: request.operationID,
+                historyMigrationReceipt: try LogDriverHistoryMigrationReceiptV1(
+                    request: request.historyMigration!,
+                    providerOutcomeDigest: "sha256:provider-history"
+                )
+            )
+        case .reclaimGeneration:
+            return DockerPluginLifecycleServiceWireResponseV1(
+                operationID: request.operationID
             )
         case .startWriter:
             return DockerPluginLifecycleServiceWireResponseV1(
@@ -519,6 +545,21 @@ private func dockerPluginWireReaderRequest() throws
         providerGeneration: 7,
         source: .stoppedContainer,
         read: ContainerLogReadRequest(tail: 10)
+    )
+}
+
+private func dockerPluginWireHistoryMigrationRequest() throws
+    -> LogDriverHistoryMigrationRequestV1
+{
+    try LogDriverHistoryMigrationRequestV1(
+        containerID: dockerPluginWireContainerID,
+        sourceLeaseGeneration: 2,
+        targetLeaseGeneration: 3,
+        providerID: dockerPluginWireProviderID,
+        sourceProviderGeneration: 6,
+        targetProviderGeneration: 7,
+        contractDigest: "sha256:plugin-contract",
+        terminalHistoryDigest: "sha256:terminal-history"
     )
 }
 

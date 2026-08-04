@@ -342,6 +342,131 @@ public actor EngineLinuxSandboxAuthorityV1 {
         )
     }
 
+    /// Stops only the exact active workload generation after all controller
+    /// effects have been released. A durable stop reservation precedes the
+    /// runtime call, and a lost response is reconciled before the ledger can
+    /// forget the active process tuple.
+    public func stopWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) async throws -> EngineWorkloadRecordV1 {
+        let ready = try await ensureReady(configuration: configuration)
+        guard let runtime else {
+            throw ContainerizationError(
+                .internalError,
+                message: "Engine Linux sandbox runtime was not initialized"
+            )
+        }
+        guard var workload = await ledger.workload(containerID: workloadID)
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "Engine Linux sandbox workload is not registered"
+            )
+        }
+        if workload.state == .stopped,
+            workload.lastOperation?.kind == .stop,
+            workload.lastOperation?.outcome == .stopped,
+            workload.lastOperation?.processGeneration
+                == workloadProcessGeneration
+        {
+            return workload
+        }
+        guard
+            workload.activeEffects.isEmpty,
+            workload.activeProcessGeneration == workloadProcessGeneration,
+            workload.activeSandboxGeneration == ready.generation,
+            workload.state == .running || workload.state == .paused
+                || workload.state == .stopping
+                || workload.state == .recoveryRequired
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message:
+                    "Engine Linux sandbox workload is not reclaimable for the requested generation"
+            )
+        }
+        let requestDigest = Self.digest(
+            "reclaim:\(workloadID):\(workloadProcessGeneration):\(ready.generation)"
+        )
+        let mutation: EngineWorkloadMutationRequestV1
+        if let operation = workload.operation, operation.kind == .stop {
+            guard
+                operation.requestDigest == requestDigest,
+                operation.candidateProcessGeneration
+                    == workloadProcessGeneration,
+                operation.sandboxGeneration == ready.generation
+            else {
+                throw EngineWorkloadLedgerError.idempotencyConflict
+            }
+            mutation = EngineWorkloadMutationRequestV1(
+                containerID: workloadID,
+                idempotencyKey: operation.idempotencyKey,
+                requestDigest: operation.requestDigest
+            )
+        } else {
+            mutation = EngineWorkloadMutationRequestV1(
+                containerID: workloadID,
+                idempotencyKey:
+                    "reclaim-\(workloadID)-\(workloadProcessGeneration)",
+                requestDigest: requestDigest,
+                expectedTransitionRevision: workload.transitionRevision
+            )
+        }
+        if workload.state == .recoveryRequired {
+            workload = try await ledger.resumeEffectlessStop(mutation)
+        } else {
+            switch try await ledger.beginStop(mutation) {
+            case .reserved(let value), .replay(let value):
+                workload = value
+            }
+        }
+        guard
+            workload.state == .stopping,
+            let operation = workload.operation,
+            operation.kind == .stop,
+            operation.effects.isEmpty,
+            operation.candidateProcessGeneration
+                == workloadProcessGeneration,
+            operation.sandboxGeneration == ready.generation
+        else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        let request = EngineLinuxSandboxWorkloadStopRequestV1(
+            sandboxID: sandboxID,
+            sandboxGeneration: ready.generation,
+            workloadID: workloadID,
+            workloadProcessGeneration: workloadProcessGeneration,
+            operationGeneration: operation.operationGeneration,
+            idempotencyKey: operation.idempotencyKey,
+            requestDigest: operation.requestDigest
+        )
+        do {
+            let receipt = try await runtime.stopWorkload(request)
+            guard receipt.request == request else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+        } catch {
+            switch try await runtime.observeWorkloadStop(request) {
+            case .stopped(let receipt):
+                guard receipt.request == request else {
+                    throw WorkloadPlanResolverError.recoveryRequired
+                }
+            case .absent:
+                break
+            case .running:
+                throw error
+            case .unknown:
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+        }
+        return try await ledger.commitStop(
+            containerID: workloadID,
+            operationGeneration: operation.operationGeneration
+        )
+    }
+
     public func shutdownIfIdle(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1
     ) async throws -> EngineLinuxSandboxRecordV1 {

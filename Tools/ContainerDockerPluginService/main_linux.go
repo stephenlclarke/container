@@ -46,6 +46,7 @@ func run() error {
 	sandboxGeneration := flags.Uint64("sandbox-generation", 0, "active EngineLinuxSandbox generation")
 	providerID := flags.String("provider-id", "", "installed provider identity")
 	providerGeneration := flags.Uint64("provider-generation", 0, "installed provider generation")
+	contractDigest := flags.String("contract-digest", "", "installed provider contract digest")
 	pluginSocket := flags.String("plugin-socket", "", "protected Docker plugin Unix socket")
 	authenticationKeyFile := flags.String("authentication-key-file", "", "private 32-byte request authentication key")
 	statePath := flags.String("state", "/var/lib/container-docker-plugin-service/state.json", "private durable state path")
@@ -59,6 +60,7 @@ func run() error {
 		ID:                *providerID,
 		Generation:        *providerGeneration,
 		SandboxGeneration: *sandboxGeneration,
+		ContractDigest:    *contractDigest,
 	}
 	if flags.NArg() != 0 || identity.validate() != nil || *port == 0 ||
 		*port > uint(^uint32(0)) || *maximumConnections <= 0 {

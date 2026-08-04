@@ -41,6 +41,8 @@ package enum DockerPluginLifecycleServiceWireOperationV1: String, Codable,
     Sendable
 {
     case activeSandboxGeneration
+    case migrateHistory
+    case reclaimGeneration
     case startWriter
     case reconcileWriterOpen
     case writeWriter
@@ -206,6 +208,8 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
     package let readerStart: LogDriverReaderOpenRequestV1?
     package let readerCall: DockerPluginReaderCallWireV1?
     package let terminalReclaim: DockerPluginTerminalReclaimWireV1?
+    package let historyMigration: LogDriverHistoryMigrationRequestV1?
+    package let generationReclaim: LogDriverProviderGenerationReclaimV1?
     package let sessionID: String?
     package let token: Data?
     package let frame: Data?
@@ -222,6 +226,8 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         readerStart: LogDriverReaderOpenRequestV1? = nil,
         readerCall: DockerPluginReaderCallWireV1? = nil,
         terminalReclaim: DockerPluginTerminalReclaimWireV1? = nil,
+        historyMigration: LogDriverHistoryMigrationRequestV1? = nil,
+        generationReclaim: LogDriverProviderGenerationReclaimV1? = nil,
         sessionID: String? = nil,
         token: Data? = nil,
         frame: Data? = nil,
@@ -239,6 +245,8 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         self.readerStart = readerStart
         self.readerCall = readerCall
         self.terminalReclaim = terminalReclaim
+        self.historyMigration = historyMigration
+        self.generationReclaim = generationReclaim
         self.sessionID = sessionID
         self.token = token
         self.frame = frame
@@ -249,6 +257,18 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
 
     package static func generation() -> Self {
         Self(operation: .activeSandboxGeneration)
+    }
+
+    package static func migrateHistory(
+        _ request: LogDriverHistoryMigrationRequestV1
+    ) -> Self {
+        Self(operation: .migrateHistory, historyMigration: request)
+    }
+
+    package static func reclaimGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) -> Self {
+        Self(operation: .reclaimGeneration, generationReclaim: request)
     }
 
     package static func startWriter(
@@ -393,6 +413,8 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
             readerStart: readerStart,
             readerCall: readerCall,
             terminalReclaim: terminalReclaim,
+            historyMigration: historyMigration,
+            generationReclaim: generationReclaim,
             sessionID: sessionID,
             token: token,
             frame: frame,
@@ -413,6 +435,8 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         readerStart: LogDriverReaderOpenRequestV1?,
         readerCall: DockerPluginReaderCallWireV1?,
         terminalReclaim: DockerPluginTerminalReclaimWireV1?,
+        historyMigration: LogDriverHistoryMigrationRequestV1?,
+        generationReclaim: LogDriverProviderGenerationReclaimV1?,
         sessionID: String?,
         token: Data?,
         frame: Data?,
@@ -430,6 +454,8 @@ public struct DockerPluginLifecycleServiceWireRequestV1: Codable, Equatable,
         self.readerStart = readerStart
         self.readerCall = readerCall
         self.terminalReclaim = terminalReclaim
+        self.historyMigration = historyMigration
+        self.generationReclaim = generationReclaim
         self.sessionID = sessionID
         self.token = token
         self.frame = frame
@@ -456,6 +482,7 @@ public struct DockerPluginLifecycleServiceWireResponseV1: Codable, Equatable,
     package let sequence: UInt64?
     package let frame: Data?
     package let endOfStream: Bool?
+    package let historyMigrationReceipt: LogDriverHistoryMigrationReceiptV1?
 
     package init(
         operationID: String,
@@ -470,7 +497,8 @@ public struct DockerPluginLifecycleServiceWireResponseV1: Codable, Equatable,
         terminalOutcomeDigest: String? = nil,
         sequence: UInt64? = nil,
         frame: Data? = nil,
-        endOfStream: Bool? = nil
+        endOfStream: Bool? = nil,
+        historyMigrationReceipt: LogDriverHistoryMigrationReceiptV1? = nil
     ) {
         self.schemaVersion =
             DockerPluginLifecycleServiceWireRequestV1
@@ -488,6 +516,7 @@ public struct DockerPluginLifecycleServiceWireResponseV1: Codable, Equatable,
         self.sequence = sequence
         self.frame = frame
         self.endOfStream = endOfStream
+        self.historyMigrationReceipt = historyMigrationReceipt
     }
 }
 
@@ -782,6 +811,7 @@ extension DockerPluginLifecycleServiceWireResponseV1 {
             sequence != nil,
             frame != nil,
             endOfStream != nil,
+            historyMigrationReceipt != nil,
         ].filter { $0 }.count
         if failure != nil {
             guard payloadCount == 0 else {
@@ -792,6 +822,14 @@ extension DockerPluginLifecycleServiceWireResponseV1 {
         switch operation {
         case .activeSandboxGeneration:
             guard payloadCount == 1, sandboxGeneration != nil else {
+                throw DockerPluginLifecycleServiceWireError.invalidEnvelope
+            }
+        case .migrateHistory:
+            guard payloadCount == 1, historyMigrationReceipt != nil else {
+                throw DockerPluginLifecycleServiceWireError.invalidEnvelope
+            }
+        case .reclaimGeneration:
+            guard payloadCount == 0 else {
                 throw DockerPluginLifecycleServiceWireError.invalidEnvelope
             }
         case .startWriter:
@@ -903,6 +941,25 @@ public actor DockerPluginLifecycleServiceWireClientV1:
             throw DockerPluginLifecycleServiceWireError.invalidEnvelope
         }
         return generation
+    }
+
+    public func migrateHistory(
+        _ request: LogDriverHistoryMigrationRequestV1
+    ) async throws -> LogDriverHistoryMigrationReceiptV1 {
+        let response = try await invoke(.migrateHistory(request))
+        guard
+            let receipt = response.historyMigrationReceipt,
+            receipt.request == request
+        else {
+            throw LogDriverHistoryMigrationError.receiptMismatch
+        }
+        return receipt
+    }
+
+    public func reclaimGeneration(
+        _ request: LogDriverProviderGenerationReclaimV1
+    ) async throws {
+        _ = try await invoke(.reclaimGeneration(request))
     }
 
     public func startWriter(

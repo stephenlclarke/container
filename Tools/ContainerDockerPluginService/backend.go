@@ -33,11 +33,12 @@ import (
 )
 
 const (
-	durableSchemaVersion = uint32(1)
-	maximumWriters       = 4_096
-	maximumReaders       = 4_096
-	maximumStateBytes    = 64 * 1024 * 1024
-	sessionLockStripes   = 256
+	durableSchemaVersion     = uint32(1)
+	maximumWriters           = 4_096
+	maximumReaders           = 4_096
+	maximumHistoryMigrations = 4_096
+	maximumStateBytes        = 64 * 1024 * 1024
+	sessionLockStripes       = 256
 )
 
 type durableStateStore interface {
@@ -116,10 +117,11 @@ type readerState struct {
 }
 
 type durableSnapshot struct {
-	SchemaVersion uint32                 `json:"schemaVersion"`
-	Provider      serviceIdentity        `json:"provider"`
-	Writers       map[string]writerState `json:"writers"`
-	Readers       map[string]readerState `json:"readers"`
+	SchemaVersion     uint32                             `json:"schemaVersion"`
+	Provider          serviceIdentity                    `json:"provider"`
+	Writers           map[string]writerState             `json:"writers"`
+	Readers           map[string]readerState             `json:"readers"`
+	HistoryMigrations map[string]historyMigrationReceipt `json:"historyMigrations"`
 }
 
 type writerReceipt struct {
@@ -201,10 +203,11 @@ func loadDurableBackend(
 	}
 	if data == nil {
 		backend.snapshot = durableSnapshot{
-			SchemaVersion: durableSchemaVersion,
-			Provider:      identity,
-			Writers:       make(map[string]writerState),
-			Readers:       make(map[string]readerState),
+			SchemaVersion:     durableSchemaVersion,
+			Provider:          identity,
+			Writers:           make(map[string]writerState),
+			Readers:           make(map[string]readerState),
+			HistoryMigrations: make(map[string]historyMigrationReceipt),
 		}
 		if err := backend.commit(backend.snapshot); err != nil {
 			return nil, err
@@ -220,15 +223,26 @@ func loadDurableBackend(
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errCorruptState
 	}
+	changed := false
+	if backend.snapshot.Provider.ContractDigest == "" &&
+		backend.snapshot.Provider.ID == identity.ID &&
+		backend.snapshot.Provider.Generation == identity.Generation &&
+		backend.snapshot.Provider.SandboxGeneration == identity.SandboxGeneration {
+		backend.snapshot.Provider.ContractDigest = identity.ContractDigest
+		changed = true
+	}
 	if backend.snapshot.SchemaVersion != durableSchemaVersion ||
 		backend.snapshot.Provider != identity || backend.snapshot.Writers == nil ||
 		backend.snapshot.Readers == nil {
 		return nil, errCorruptState
 	}
+	if backend.snapshot.HistoryMigrations == nil {
+		backend.snapshot.HistoryMigrations = make(map[string]historyMigrationReceipt)
+		changed = true
+	}
 	if err := backend.validateSnapshot(backend.snapshot); err != nil {
 		return nil, err
 	}
-	changed := false
 	for sessionID, writer := range backend.snapshot.Writers {
 		if writer.Phase == writerStarting || writer.Phase == writerActive {
 			writer.Phase = writerUncertain
@@ -253,6 +267,75 @@ func loadDurableBackend(
 
 func (backend *durableBackend) generation() uint64 {
 	return backend.identity.SandboxGeneration
+}
+
+func (backend *durableBackend) migrateHistory(
+	ctx context.Context,
+	request historyMigrationRequest,
+) (historyMigrationReceipt, error) {
+	if err := request.validate(backend.identity); err != nil {
+		return historyMigrationReceipt{}, err
+	}
+	key := historyMigrationKey(request)
+	lock := backend.sessionLock(key)
+	lock.Lock()
+	defer lock.Unlock()
+
+	backend.mu.Lock()
+	if !backend.persistenceOK {
+		backend.mu.Unlock()
+		return historyMigrationReceipt{}, errUnavailable
+	}
+	if existing, found := backend.snapshot.HistoryMigrations[key]; found {
+		backend.mu.Unlock()
+		if !reflect.DeepEqual(existing.Request, request) {
+			return historyMigrationReceipt{}, errIdempotencyConflict
+		}
+		return existing, nil
+	}
+	if len(backend.snapshot.HistoryMigrations) >= maximumHistoryMigrations {
+		backend.mu.Unlock()
+		return historyMigrationReceipt{}, errUnavailable
+	}
+	backend.mu.Unlock()
+
+	capabilities, err := backend.plugin.Capabilities(ctx)
+	if err != nil {
+		return historyMigrationReceipt{}, err
+	}
+	if !capabilities.ReadLogs {
+		return historyMigrationReceipt{}, errCapabilityMismatch
+	}
+	receipt := historyMigrationReceipt{
+		SchemaVersion:         serviceSchemaVersion,
+		Request:               request,
+		ProviderOutcomeDigest: historyMigrationOutcomeDigest(request),
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	candidate := cloneSnapshot(backend.snapshot)
+	candidate.HistoryMigrations[key] = receipt
+	if err := backend.commitLocked(candidate); err != nil {
+		return historyMigrationReceipt{}, err
+	}
+	return receipt, nil
+}
+
+func (backend *durableBackend) reclaimGeneration(
+	request providerGenerationReclaim,
+) error {
+	if err := request.validate(backend.identity); err != nil {
+		return err
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if !backend.persistenceOK {
+		return errUnavailable
+	}
+	if len(backend.snapshot.Writers) != 0 || len(backend.snapshot.Readers) != 0 {
+		return errInvalidFence
+	}
+	return nil
 }
 
 func (backend *durableBackend) openWriter(ctx context.Context, open writerOpen) (writerReceipt, error) {
@@ -1000,7 +1083,8 @@ func (backend *durableBackend) commitLocked(snapshot durableSnapshot) error {
 
 func (backend *durableBackend) validateSnapshot(snapshot durableSnapshot) error {
 	if snapshot.SchemaVersion != durableSchemaVersion || snapshot.Provider != backend.identity ||
-		len(snapshot.Writers) > maximumWriters || len(snapshot.Readers) > maximumReaders {
+		len(snapshot.Writers) > maximumWriters || len(snapshot.Readers) > maximumReaders ||
+		snapshot.HistoryMigrations == nil || len(snapshot.HistoryMigrations) > maximumHistoryMigrations {
 		return errCorruptState
 	}
 	for sessionID, writer := range snapshot.Writers {
@@ -1027,6 +1111,14 @@ func (backend *durableBackend) validateSnapshot(snapshot durableSnapshot) error 
 		switch reader.Phase {
 		case readerClaimed, readerStarting, readerActive, readerEnded, readerCancelled, readerUncertain:
 		default:
+			return errCorruptState
+		}
+	}
+	for key, receipt := range snapshot.HistoryMigrations {
+		if receipt.SchemaVersion != serviceSchemaVersion ||
+			receipt.Request.validate(backend.identity) != nil ||
+			key != historyMigrationKey(receipt.Request) ||
+			receipt.ProviderOutcomeDigest != historyMigrationOutcomeDigest(receipt.Request) {
 			return errCorruptState
 		}
 	}
@@ -1068,6 +1160,30 @@ func stableDigest(domain string, values ...string) string {
 	return "sha256:" + hex.EncodeToString(digest[:])
 }
 
+func historyMigrationKey(request historyMigrationRequest) string {
+	return stableDigest(
+		"provider-history-migration-scope-v1",
+		request.ContainerID,
+		fmt.Sprint(request.TargetLeaseGeneration),
+		request.ProviderID,
+		fmt.Sprint(request.TargetProviderGeneration),
+	)
+}
+
+func historyMigrationOutcomeDigest(request historyMigrationRequest) string {
+	return stableDigest(
+		"provider-history-migration-outcome-v1",
+		request.ContainerID,
+		fmt.Sprint(request.SourceLeaseGeneration),
+		fmt.Sprint(request.TargetLeaseGeneration),
+		request.ProviderID,
+		fmt.Sprint(request.SourceProviderGeneration),
+		fmt.Sprint(request.TargetProviderGeneration),
+		request.ContractDigest,
+		request.TerminalHistoryDigest,
+	)
+}
+
 func cloneSnapshot(snapshot durableSnapshot) durableSnapshot {
 	clone := snapshot
 	clone.Writers = make(map[string]writerState, len(snapshot.Writers))
@@ -1077,6 +1193,13 @@ func cloneSnapshot(snapshot durableSnapshot) durableSnapshot {
 	clone.Readers = make(map[string]readerState, len(snapshot.Readers))
 	for key, value := range snapshot.Readers {
 		clone.Readers[key] = value
+	}
+	clone.HistoryMigrations = make(
+		map[string]historyMigrationReceipt,
+		len(snapshot.HistoryMigrations),
+	)
+	for key, value := range snapshot.HistoryMigrations {
+		clone.HistoryMigrations[key] = value
 	}
 	return clone
 }

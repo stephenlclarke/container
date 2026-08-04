@@ -455,6 +455,7 @@ public struct DockerPluginLogDriverInstallation: Sendable {
     public let readLogs: Bool
     public let trust: LogDriverTrust
     public let lifecycleService: (any DockerPluginLifecycleService)?
+    public let generationReclaimer: (any DockerPluginProviderGenerationReclaiming)?
     public let providerAcquirer: (any DockerPluginProviderAcquiring)?
     public let fifoFactory: (any DockerPluginFIFOFactory)?
 
@@ -468,7 +469,9 @@ public struct DockerPluginLogDriverInstallation: Sendable {
         providerGeneration: UInt64,
         readLogs: Bool,
         trust: LogDriverTrust = .approved,
-        lifecycleService: any DockerPluginLifecycleService
+        lifecycleService: any DockerPluginLifecycleService,
+        generationReclaimer:
+            (any DockerPluginProviderGenerationReclaiming)? = nil
     ) {
         self.driver = driver
         self.aliases = aliases
@@ -477,6 +480,7 @@ public struct DockerPluginLogDriverInstallation: Sendable {
         self.readLogs = readLogs
         self.trust = trust
         self.lifecycleService = lifecycleService
+        self.generationReclaimer = generationReclaimer
         self.providerAcquirer = nil
         self.fifoFactory = nil
     }
@@ -501,6 +505,7 @@ public struct DockerPluginLogDriverInstallation: Sendable {
         self.readLogs = readLogs
         self.trust = trust
         self.lifecycleService = nil
+        self.generationReclaimer = nil
         self.providerAcquirer = providerAcquirer
         self.fifoFactory = fifoFactory
     }
@@ -612,7 +617,8 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                         readLogs: installation.readLogs,
                         trust: installation.trust,
                         configurationResolver: configurations,
-                        service: service
+                        service: service,
+                        generationReclaimer: installation.generationReclaimer
                     )
                 }
                 guard
@@ -642,14 +648,69 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         } else {
             registry = LogDriverProviderRegistry(baseCatalog: baseCatalog)
         }
-        try await registry.install(syslog)
-        try await registry.install(fluentd)
-        try await registry.install(gelf)
-        try await registry.install(splunk)
-        try await registry.install(awslogs)
-        try await registry.install(gcplogs)
-        if let journald {
-            try await registry.install(journald)
+        try await installNativeGeneration(
+            syslog,
+            registry: registry
+        ) {
+            SyslogLogDriverProvider(
+                providerGeneration: $0,
+                configurationResolver: configurations,
+                transportFactory: NIOSyslogTransportFactory(
+                    eventLoopGroup: eventLoopGroup
+                )
+            )
+        }
+        try await installNativeGeneration(
+            fluentd,
+            registry: registry
+        ) {
+            FluentdLogDriverProvider(
+                providerGeneration: $0,
+                configurationResolver: configurations,
+                transportFactory: NIOFluentdTransportFactory(
+                    eventLoopGroup: eventLoopGroup
+                )
+            )
+        }
+        try await installNativeGeneration(gelf, registry: registry) {
+            GELFLogDriverProvider(
+                providerGeneration: $0,
+                configurationResolver: configurations,
+                transportFactory: NIOGELFTransportFactory(
+                    eventLoopGroup: eventLoopGroup
+                )
+            )
+        }
+        try await installNativeGeneration(splunk, registry: registry) {
+            SplunkLogDriverProvider(
+                providerGeneration: $0,
+                configurationResolver: configurations
+            )
+        }
+        try await installNativeGeneration(awslogs, registry: registry) {
+            AWSLogsLogDriverProvider(
+                providerGeneration: $0,
+                configurationResolver: configurations,
+                clientFactory: awsLogsClientFactory
+            )
+        }
+        try await installNativeGeneration(gcplogs, registry: registry) {
+            GCPLogsLogDriverProvider(
+                providerGeneration: $0,
+                configurationResolver: configurations
+            )
+        }
+        if let journald, let journaldService {
+            try await installNativeGeneration(
+                journald,
+                registry: registry
+            ) {
+                JournaldLogDriverProvider(
+                    providerGeneration: $0,
+                    configurationResolver: configurations,
+                    service: journaldService
+                )
+            }
         }
         try await installDockerPluginGenerations(
             dockerPlugins,
@@ -667,6 +728,40 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
             journald: journald,
             dockerPlugins: dockerPlugins
         )
+    }
+
+    /// Reconstructs the exact compatible source adapter before staging the
+    /// current native generation. This lets authority-led quiescence reconcile
+    /// old durable references after a binary restart without publishing the
+    /// new generation prematurely. A changed descriptor fails closed because
+    /// registry recovery compares it with the persisted source contract.
+    private static func installNativeGeneration<Provider>(
+        _ current: Provider,
+        registry: LogDriverProviderRegistry,
+        makeProvider: (UInt64) -> Provider
+    ) async throws where Provider: ContainerLogDriverProvider {
+        let descriptor = try await current.descriptor
+        let providerID = descriptor.providerIdentity.id
+        let currentGeneration = descriptor.providerGeneration
+        if let active = await registry.activeGeneration(
+            providerID: providerID
+        ), active != currentGeneration {
+            guard active < currentGeneration else {
+                throw LogDriverProviderRegistryError.staleProviderGeneration(
+                    providerID: providerID,
+                    installedGeneration: active,
+                    requestedGeneration: currentGeneration
+                )
+            }
+            _ = try await registry.stage(makeProvider(active))
+        }
+        _ = try await registry.stage(current)
+        if await registry.activeGeneration(providerID: providerID) == nil {
+            _ = try await registry.activate(
+                providerID: providerID,
+                generation: currentGeneration
+            )
+        }
     }
 
     private static func installDockerPluginGenerations(
@@ -693,6 +788,7 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                 providerID: providerID,
                 registry: registry
             )
+            var highestHealthyGeneration: UInt64?
             for (generation, provider) in candidates {
                 guard
                     await registry.generationPhase(
@@ -718,10 +814,7 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                     guard sandboxGeneration > 0 else {
                         throw DockerPluginProtocolError.invalidSessionFence
                     }
-                    _ = try await registry.activate(
-                        providerID: providerID,
-                        generation: generation
-                    )
+                    highestHealthyGeneration = generation
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -730,6 +823,22 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                         generation: generation
                     )
                 }
+            }
+            if await registry.activeGeneration(providerID: providerID) == nil,
+                let highestHealthyGeneration
+            {
+                for generation in await registry.stagedGenerations(
+                    providerID: providerID
+                ) where generation < highestHealthyGeneration {
+                    _ = try await registry.rollbackStaged(
+                        providerID: providerID,
+                        generation: generation
+                    )
+                }
+                _ = try await registry.activate(
+                    providerID: providerID,
+                    generation: highestHealthyGeneration
+                )
             }
         }
     }

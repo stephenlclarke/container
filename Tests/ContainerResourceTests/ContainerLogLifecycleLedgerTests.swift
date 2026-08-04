@@ -71,6 +71,13 @@ struct ContainerLogLifecycleLedgerTests {
 
         let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: directory.path
+        )
+        #expect(
+            (directoryAttributes[.posixPermissions] as? NSNumber)?.intValue
+                == 0o700
+        )
 
         let data = try #require(try await persistence.load())
         var object = try #require(
@@ -87,6 +94,46 @@ struct ContainerLogLifecycleLedgerTests {
                 persistence: corruptPersistence
             )
         }
+    }
+
+    @Test func filePersistenceRejectsSymbolicLinkDirectory() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(
+            path: "container-log-ledger-symlink-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        let realDirectory = root.appending(
+            path: "real",
+            directoryHint: .isDirectory
+        )
+        let linkedDirectory = root.appending(
+            path: "linked",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(
+            at: realDirectory,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: linkedDirectory,
+            withDestinationURL: realDirectory
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: linkedDirectory.appending(path: "lifecycle.json")
+        )
+        await #expect(
+            throws: ContainerLogLifecycleLedgerError.corruptSnapshot(
+                "lifecycle snapshot directory must be a non-symbolic-link directory"
+            )
+        ) {
+            try await persistence.save(Data("{}".utf8))
+        }
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: realDirectory.appending(path: "lifecycle.json").path
+            )
+        )
     }
 
     @Test func deadlineFenceTransfersExactReferenceAtomicallyAndCanReplay() async throws {

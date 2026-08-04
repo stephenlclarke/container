@@ -349,6 +349,158 @@ public struct LogReadPolicy: Codable, Equatable, Sendable {
     }
 }
 
+public enum LogDriverHistoryMigrationError: Error, Equatable, Sendable {
+    case invalidRequest(String)
+    case unsupported
+    case receiptMismatch
+}
+
+/// Redaction-safe, replay-stable request for provider-owned readable history.
+///
+/// The authority derives `terminalHistoryDigest` from the fully terminal
+/// source lifecycle ledger. Protected option values and provider tokens are
+/// deliberately excluded; providers receive those only through their existing
+/// authenticated configuration boundary when an implementation needs them.
+public struct LogDriverHistoryMigrationRequestV1: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion: UInt32 = 1
+
+    public let schemaVersion: UInt32
+    public let containerID: String
+    public let sourceLeaseGeneration: UInt64
+    public let targetLeaseGeneration: UInt64
+    public let providerID: String
+    public let sourceProviderGeneration: UInt64
+    public let targetProviderGeneration: UInt64
+    public let contractDigest: String
+    public let terminalHistoryDigest: String
+
+    public init(
+        containerID: String,
+        sourceLeaseGeneration: UInt64,
+        targetLeaseGeneration: UInt64,
+        providerID: String,
+        sourceProviderGeneration: UInt64,
+        targetProviderGeneration: UInt64,
+        contractDigest: String,
+        terminalHistoryDigest: String
+    ) throws {
+        guard
+            !containerID.isEmpty,
+            containerID.utf8.count <= 4_096,
+            sourceLeaseGeneration > 0,
+            sourceLeaseGeneration < UInt64.max,
+            targetLeaseGeneration == sourceLeaseGeneration + 1,
+            !providerID.isEmpty,
+            providerID.utf8.count <= 4_096,
+            sourceProviderGeneration > 0,
+            targetProviderGeneration > sourceProviderGeneration,
+            !contractDigest.isEmpty,
+            contractDigest.utf8.count <= 1_024,
+            !terminalHistoryDigest.isEmpty,
+            terminalHistoryDigest.utf8.count <= 1_024
+        else {
+            throw LogDriverHistoryMigrationError.invalidRequest(
+                "provider history migration identity is incomplete"
+            )
+        }
+        self.schemaVersion = Self.currentSchemaVersion
+        self.containerID = containerID
+        self.sourceLeaseGeneration = sourceLeaseGeneration
+        self.targetLeaseGeneration = targetLeaseGeneration
+        self.providerID = providerID
+        self.sourceProviderGeneration = sourceProviderGeneration
+        self.targetProviderGeneration = targetProviderGeneration
+        self.contractDigest = contractDigest
+        self.terminalHistoryDigest = terminalHistoryDigest
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        _ = try decodeCurrentSchemaVersion(
+            from: container,
+            forKey: .schemaVersion,
+            expected: Self.currentSchemaVersion,
+            type: "log driver history migration request"
+        )
+        try self.init(
+            containerID: container.decode(String.self, forKey: .containerID),
+            sourceLeaseGeneration: container.decode(
+                UInt64.self,
+                forKey: .sourceLeaseGeneration
+            ),
+            targetLeaseGeneration: container.decode(
+                UInt64.self,
+                forKey: .targetLeaseGeneration
+            ),
+            providerID: container.decode(String.self, forKey: .providerID),
+            sourceProviderGeneration: container.decode(
+                UInt64.self,
+                forKey: .sourceProviderGeneration
+            ),
+            targetProviderGeneration: container.decode(
+                UInt64.self,
+                forKey: .targetProviderGeneration
+            ),
+            contractDigest: container.decode(
+                String.self,
+                forKey: .contractDigest
+            ),
+            terminalHistoryDigest: container.decode(
+                String.self,
+                forKey: .terminalHistoryDigest
+            )
+        )
+    }
+}
+
+/// Provider acknowledgement persisted with the target logging lease before
+/// alias cutover. Replaying the exact request must return the same outcome
+/// digest; a provider that cannot guarantee history continuity rejects it.
+public struct LogDriverHistoryMigrationReceiptV1: Codable, Equatable, Sendable {
+    public static let currentSchemaVersion: UInt32 = 1
+
+    public let schemaVersion: UInt32
+    public let request: LogDriverHistoryMigrationRequestV1
+    public let providerOutcomeDigest: String
+
+    public init(
+        request: LogDriverHistoryMigrationRequestV1,
+        providerOutcomeDigest: String
+    ) throws {
+        guard
+            !providerOutcomeDigest.isEmpty,
+            providerOutcomeDigest.utf8.count <= 1_024
+        else {
+            throw LogDriverHistoryMigrationError.invalidRequest(
+                "provider history migration outcome is incomplete"
+            )
+        }
+        self.schemaVersion = Self.currentSchemaVersion
+        self.request = request
+        self.providerOutcomeDigest = providerOutcomeDigest
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        _ = try decodeCurrentSchemaVersion(
+            from: container,
+            forKey: .schemaVersion,
+            expected: Self.currentSchemaVersion,
+            type: "log driver history migration receipt"
+        )
+        try self.init(
+            request: container.decode(
+                LogDriverHistoryMigrationRequestV1.self,
+                forKey: .request
+            ),
+            providerOutcomeDigest: container.decode(
+                String.self,
+                forKey: .providerOutcomeDigest
+            )
+        )
+    }
+}
+
 /// Immutable logging configuration selected by the Container authority.
 /// Secret option values never enter this ordinary persisted object.
 public struct ResolvedContainerLogConfiguration: Codable, Equatable, Sendable {
@@ -365,6 +517,7 @@ public struct ResolvedContainerLogConfiguration: Codable, Equatable, Sendable {
     public let providerIdentity: LogDriverProviderIdentity
     public let providerGenerationAtResolution: UInt64
     public let contractDigest: String
+    public let providerHistoryMigrationReceipt: LogDriverHistoryMigrationReceiptV1?
 
     public init(
         leaseGeneration: UInt64,
@@ -376,7 +529,9 @@ public struct ResolvedContainerLogConfiguration: Codable, Equatable, Sendable {
         readPolicy: LogReadPolicy,
         providerIdentity: LogDriverProviderIdentity,
         providerGenerationAtResolution: UInt64,
-        contractDigest: String
+        contractDigest: String,
+        providerHistoryMigrationReceipt:
+            LogDriverHistoryMigrationReceiptV1? = nil
     ) throws {
         let protectedNames = Set(protectedOptionNames)
         guard protectedNames.count == protectedOptionNames.count else {
@@ -387,6 +542,21 @@ public struct ResolvedContainerLogConfiguration: Codable, Equatable, Sendable {
         }
         guard protectedNames.isEmpty == (protectedOptionReference == nil) else {
             throw LogDriverContractError.invalidResolvedConfiguration("protected option reference does not match names")
+        }
+        if let receipt = providerHistoryMigrationReceipt {
+            let request = receipt.request
+            guard
+                readPolicy.source == .direct,
+                request.targetLeaseGeneration == leaseGeneration,
+                request.providerID == providerIdentity.id,
+                request.targetProviderGeneration
+                    == providerGenerationAtResolution,
+                request.contractDigest == contractDigest
+            else {
+                throw LogDriverContractError.invalidResolvedConfiguration(
+                    "provider history migration receipt does not match the target lease"
+                )
+            }
         }
         self.schemaVersion = Self.currentSchemaVersion
         self.leaseGeneration = leaseGeneration
@@ -399,6 +569,8 @@ public struct ResolvedContainerLogConfiguration: Codable, Equatable, Sendable {
         self.providerIdentity = providerIdentity
         self.providerGenerationAtResolution = providerGenerationAtResolution
         self.contractDigest = contractDigest
+        self.providerHistoryMigrationReceipt =
+            providerHistoryMigrationReceipt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -422,7 +594,11 @@ public struct ResolvedContainerLogConfiguration: Codable, Equatable, Sendable {
             readPolicy: container.decode(LogReadPolicy.self, forKey: .readPolicy),
             providerIdentity: container.decode(LogDriverProviderIdentity.self, forKey: .providerIdentity),
             providerGenerationAtResolution: container.decode(UInt64.self, forKey: .providerGenerationAtResolution),
-            contractDigest: container.decode(String.self, forKey: .contractDigest)
+            contractDigest: container.decode(String.self, forKey: .contractDigest),
+            providerHistoryMigrationReceipt: container.decodeIfPresent(
+                LogDriverHistoryMigrationReceiptV1.self,
+                forKey: .providerHistoryMigrationReceipt
+            )
         )
     }
 

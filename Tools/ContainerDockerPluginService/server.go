@@ -120,6 +120,14 @@ func (handler *protocolHandler) execute(ctx context.Context, request wireRequest
 	case operationActiveSandboxGeneration:
 		generation := handler.backend.generation()
 		response.SandboxGeneration = &generation
+	case operationMigrateHistory:
+		var receipt historyMigrationReceipt
+		receipt, err = handler.backend.migrateHistory(ctx, *request.HistoryMigration)
+		if err == nil {
+			response.HistoryMigrationReceipt = &receipt
+		}
+	case operationReclaimGeneration:
+		err = handler.backend.reclaimGeneration(*request.GenerationReclaim)
 	case operationStartWriter:
 		var receipt writerReceipt
 		receipt, err = handler.backend.openWriter(ctx, *request.WriterOpen)

@@ -30,6 +30,8 @@ const (
 	maximumPluginRequestBytes = 256 * 1024
 	maximumTokenBytes         = 4 * 1024
 	maximumLogFrameBytes      = 16 * 1024 * 1024
+	maximumMigrationIDBytes   = 4 * 1024
+	maximumMigrationTextBytes = 1024
 )
 
 var (
@@ -170,15 +172,65 @@ type terminalReclaim struct {
 	ProviderGeneration uint64 `json:"providerGeneration"`
 }
 
+type historyMigrationRequest struct {
+	SchemaVersion            uint32 `json:"schemaVersion"`
+	ContainerID              string `json:"containerID"`
+	SourceLeaseGeneration    uint64 `json:"sourceLeaseGeneration"`
+	TargetLeaseGeneration    uint64 `json:"targetLeaseGeneration"`
+	ProviderID               string `json:"providerID"`
+	SourceProviderGeneration uint64 `json:"sourceProviderGeneration"`
+	TargetProviderGeneration uint64 `json:"targetProviderGeneration"`
+	ContractDigest           string `json:"contractDigest"`
+	TerminalHistoryDigest    string `json:"terminalHistoryDigest"`
+}
+
+func (request historyMigrationRequest) validate(provider serviceIdentity) error {
+	if request.SchemaVersion != serviceSchemaVersion ||
+		request.ContainerID == "" || len(request.ContainerID) > maximumMigrationIDBytes ||
+		request.SourceLeaseGeneration == 0 || request.SourceLeaseGeneration == ^uint64(0) ||
+		request.TargetLeaseGeneration != request.SourceLeaseGeneration+1 ||
+		request.ProviderID != provider.ID ||
+		request.SourceProviderGeneration == 0 ||
+		request.TargetProviderGeneration != provider.Generation ||
+		request.TargetProviderGeneration <= request.SourceProviderGeneration ||
+		request.ContractDigest != provider.ContractDigest ||
+		!validBoundedText(request.TerminalHistoryDigest, maximumMigrationTextBytes) {
+		return errInvalidFence
+	}
+	return nil
+}
+
+type historyMigrationReceipt struct {
+	SchemaVersion         uint32                  `json:"schemaVersion"`
+	Request               historyMigrationRequest `json:"request"`
+	ProviderOutcomeDigest string                  `json:"providerOutcomeDigest"`
+}
+
+type providerGenerationReclaim struct {
+	SchemaVersion      uint32 `json:"schemaVersion"`
+	ProviderID         string `json:"providerID"`
+	ProviderGeneration uint64 `json:"providerGeneration"`
+}
+
+func (request providerGenerationReclaim) validate(provider serviceIdentity) error {
+	if request.SchemaVersion != serviceSchemaVersion || request.ProviderID != provider.ID ||
+		request.ProviderGeneration != provider.Generation {
+		return errInvalidFence
+	}
+	return nil
+}
+
 type serviceIdentity struct {
 	ID                string `json:"providerID"`
 	Generation        uint64 `json:"providerGeneration"`
 	SandboxGeneration uint64 `json:"sandboxGeneration"`
+	ContractDigest    string `json:"contractDigest"`
 }
 
 func (identity serviceIdentity) validate() error {
 	if !validIdentifier(identity.ID) || identity.Generation == 0 ||
-		identity.SandboxGeneration == 0 {
+		identity.SandboxGeneration == 0 ||
+		!validBoundedText(identity.ContractDigest, maximumMigrationTextBytes) {
 		return errInvalidFence
 	}
 	return nil

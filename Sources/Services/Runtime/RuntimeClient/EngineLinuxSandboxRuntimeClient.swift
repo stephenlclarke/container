@@ -70,6 +70,24 @@ extension RuntimeClient: EngineLinuxSandboxWorkloadRuntimeV1 {
             request: request
         )
     }
+
+    public func stopWorkload(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopReceiptV1 {
+        try await engineSandboxCall(
+            route: .engineSandboxStopWorkload,
+            request: request
+        )
+    }
+
+    public func observeWorkloadStop(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopObservationV1 {
+        try await engineSandboxCall(
+            route: .engineSandboxObserveWorkloadStop,
+            request: request
+        )
+    }
 }
 
 extension RuntimeClient: EngineLinuxSandboxServiceRuntimeV1 {
