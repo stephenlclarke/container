@@ -27,6 +27,68 @@ import Testing
 
 struct LoggingHandoffControlResponderTests {
     @Test
+    func `source exports once, replays exactly, and signs only its durable contribution`() async throws {
+        let fixture = try LoggingPartStageFixture()
+        defer { fixture.cleanup() }
+
+        let export = try fixture.sourceExportControlRequest()
+        let first = await fixture.sourceResponder.respond(
+            to: export.request,
+            body: export.body,
+            context: fixture.sourceControlContext
+        )
+        #expect(first.response.disposition == .completed)
+        #expect(
+            first.response.bodyMediaType
+                == ProviderHandoffSourceControlCodec.contributionMediaType
+        )
+        #expect(first.body.range(of: Data("secret-value".utf8)) == nil)
+        let contribution = try ProviderHandoffSourceControlCodec
+            .decodeContribution(first.body)
+        #expect(contribution.part.kind == .logging)
+        #expect(contribution.sourceObjectRecord.state == .verified)
+
+        let replay = await fixture.sourceResponder.respond(
+            to: export.request,
+            body: export.body,
+            context: fixture.sourceControlContext
+        )
+        #expect(replay.response.disposition == .completed)
+        #expect(replay.body == first.body)
+
+        let signing = try fixture.sourceSignControlRequest(
+            contribution: contribution
+        )
+        let signed = await fixture.sourceResponder.respond(
+            to: signing.request,
+            body: signing.body,
+            context: fixture.sourceControlContext
+        )
+        #expect(signed.response.disposition == .completed)
+        let receipt = try ProviderHandoffSourceControlCodec
+            .decodeSignReceipt(signed.body)
+        #expect(
+            receipt.contributionDigestSHA256
+                == contribution.contributionDigestSHA256
+        )
+        try fixture.verifySourceSignature(receipt)
+
+        let changed = try fixture.sourceSignControlRequest(
+            contribution: contribution,
+            mutateManifest: { manifest in
+                manifest.parts[0].requiredCapabilities.append("logging.changed")
+            }
+        )
+        let rejected = await fixture.sourceResponder.respond(
+            to: changed.request,
+            body: changed.body,
+            context: fixture.sourceControlContext
+        )
+        #expect(rejected.response.disposition == .rejected)
+        #expect(rejected.body.isEmpty)
+    }
+
+    @Test
     func `provider stages signed logging payload and replays bounded receipt`() async throws {
         let fixture = try LoggingPartStageFixture()
         defer { fixture.cleanup() }
@@ -235,9 +297,11 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
     let root: URL
     let keychainService: String
     let responder: LoggingHandoffControlResponder
+    let sourceResponder: LoggingHandoffSourceControlResponder
     let controlRequest: ContainerEngineProviderHandoffControlRequestV1
     let requestBody: Data
     let controlContext: ContainerEngineProviderHandoffControlContextV1
+    let sourceControlContext: ContainerEngineProviderHandoffControlContextV1
     let stageRequest: ProviderHandoffPartStageRequestV1
 
     private let commonStore: ProviderHandoffPartStagingStore
@@ -248,7 +312,9 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
     private let promoter: LoggingPartControlPromoter
     private let protectedRoot: URL
     private let sourceExpectation: ProviderHandoffHeaderExpectationV1
+    private let sourceExportRequest: ProviderHandoffPartExportRequestV1
     private let sourceFingerprint: ContainerEngineProviderFingerprint
+    private let sourceSigningKey: ProviderHandoffTrustKeyV1
     private let validatedManifest: ProviderHandoffValidatedManifestV1
     private let validatedTrustRegistry: ProviderHandoffValidatedTrustRegistryV1
 
@@ -339,12 +405,13 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             possessionStore: possessionStore
         )
         let driver = try Self.remoteDescriptor()
+        let exportContainer = try Self.exportContainer(driver: driver)
         let sourceLineageKey = Data(repeating: 0x41, count: 32)
         let destinationPayloadKey = try destinationIdentity.trustKey(
             for: .destinationPayloadEncryption
         )
         let preparedLogging = try LoggingHandoffPayloadCodec.prepareSealed(
-            containers: [try Self.exportContainer(driver: driver)],
+            containers: [exportContainer],
             tokenID: Self.tokenID,
             manifestID: Self.manifestID,
             sourceStateRootUUID: Self.sourceRoot,
@@ -416,6 +483,37 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             state: .destinationStaged,
             abortState: .none,
             snapshot: nil
+        )
+        sourceSigningKey = try sourceIdentity.trustKey(
+            for: .sourceManifestSigning
+        )
+        sourceExportRequest = ProviderHandoffPartExportRequestV1(
+            partKind: .logging,
+            bootstrap: gatewayIdentity.bootstrap,
+            tokenID: Self.tokenID,
+            manifestID: Self.manifestID,
+            trustRegistryRevision: Self.trustRevision,
+            sourceProviderFingerprint: sourceFingerprint.digest,
+            sourceStateRootUUID: Self.sourceRoot,
+            authorityLineageUUID: Self.sourceLineage,
+            lineageDigestKeyVersion: 7,
+            sourcePreCommitExpectation: sourceExpectation,
+            destinationProviderFingerprint: destinationFingerprint.digest,
+            destinationStateRootUUID: Self.destinationRoot,
+            destinationPreCommitExpectation: destinationExpectation,
+            destinationPayloadEncryptionKey: destinationPayloadKey,
+            destinationLineageKeyEncryptionKey: destinationLineageKey,
+            destinationKeyPossessionProofs: try possessionDigests.map {
+                try possessionStore.load($0)
+            }.sorted {
+                $0.destinationKeyPurpose.rawValue.utf8
+                    .lexicographicallyPrecedes(
+                        $1.destinationKeyPurpose.rawValue.utf8
+                    )
+            },
+            resultingAuthorityLineageUUID: Self.resultingLineage,
+            resultingLineageDigestKeyVersion: 2,
+            selectedResourceIDs: [exportContainer.containerID]
         )
         let parts = try ProviderHandoffPartKindV1.allCases.map { kind in
             let payload: ProviderHandoffPayloadDescriptorV1
@@ -572,7 +670,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             ),
             containerPromoter: promoter
         )
-        responder = LoggingHandoffControlResponder(
+        let destinationResponder = LoggingHandoffControlResponder(
             objectStore: objectStore,
             possessionProofStore: possessionStore,
             trustRegistryStore: trustStore,
@@ -590,6 +688,32 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                 )
             },
             nowUnixSeconds: { Self.useTime }
+        )
+        responder = destinationResponder
+        sourceResponder = LoggingHandoffSourceControlResponder(
+            objectStore: objectStore,
+            contributionStore: ProviderHandoffSourceContributionStore(
+                root: root.appendingPathComponent(
+                    "source-contributions",
+                    isDirectory: true
+                )
+            ),
+            lineageKeyStore: ProviderHandoffLineageKeyStore(
+                service: keychainService,
+                accountPrefix: "source-lineage"
+            ),
+            trustRegistryStore: trustStore,
+            providerIdentity: sourceIdentity,
+            exportContainers: { request in
+                guard request.selectedResourceIDs == [exportContainer.containerID]
+                else {
+                    throw LoggingHandoffSourceControlResponderError
+                        .invalidRequest
+                }
+                return [exportContainer]
+            },
+            nowUnixSeconds: { Self.useTime },
+            downstream: destinationResponder
         )
         self.manifest = manifest
         stageRequest = ProviderHandoffPartStageRequestV1(
@@ -610,6 +734,105 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
         controlContext = ContainerEngineProviderHandoffControlContextV1(
             providerFingerprint: destinationFingerprint,
             authenticatedGatewayCodeIdentity: codeIdentity
+        )
+        sourceControlContext = ContainerEngineProviderHandoffControlContextV1(
+            providerFingerprint: sourceFingerprint,
+            authenticatedGatewayCodeIdentity: codeIdentity
+        )
+    }
+
+    func sourceExportControlRequest() throws -> (
+        request: ContainerEngineProviderHandoffControlRequestV1,
+        body: Data
+    ) {
+        let body = try ProviderHandoffSourceControlCodec.encodeExportRequest(
+            sourceExportRequest
+        )
+        return (
+            try ContainerEngineProviderHandoffControlRequestV1(
+                requestID: "export-logging-1",
+                operation: .partExport,
+                bodyMediaType:
+                    ProviderHandoffSourceControlCodec.exportRequestMediaType,
+                body: body
+            ),
+            body
+        )
+    }
+
+    func sourceSignControlRequest(
+        contribution: ProviderHandoffSourceContributionV1,
+        mutateManifest: (inout ProviderHandoffManifestV1) -> Void = { _ in }
+    ) throws -> (
+        request: ContainerEngineProviderHandoffControlRequestV1,
+        body: Data
+    ) {
+        var candidate = ProviderHandoffManifestV1(
+            manifestID: Self.manifestID,
+            tokenID: Self.tokenID,
+            trustRegistryRevision: Self.trustRevision,
+            destinationKeyPossessionProofDigestsSHA256:
+                contribution.destinationKeyPossessionProofDigestsSHA256,
+            sources: [
+                ProviderHandoffSourceV1(
+                    providerFingerprint: sourceFingerprint.digest,
+                    stateRootUUID: Self.sourceRoot,
+                    authorityLineageUUID: Self.sourceLineage,
+                    lineageDigestKeyVersion: 7,
+                    preCommitExpectation: sourceExpectation,
+                    sourceSignature: Self.placeholderSignature(
+                        purpose: .sourceManifestSigning,
+                        role: .sourceProvider,
+                        provider: sourceFingerprint.digest,
+                        root: Self.sourceRoot
+                    )
+                )
+            ],
+            resultingAuthorityLineageUUID: Self.resultingLineage,
+            resultingLineageDigestKeyVersion: 2,
+            destinationSealedLineageKeyEnvelopes: [
+                contribution.destinationSealedLineageKeyEnvelope
+            ],
+            destinationProviderFingerprint: destinationFingerprint.digest,
+            destinationStateRootUUID: Self.destinationRoot,
+            destinationPreCommitExpectation: destinationExpectation,
+            parts: [contribution.part],
+            manifestDigest: String(repeating: "0", count: 64),
+            coordinatorSignature: Self.placeholderSignature(
+                purpose: .coordinatorManifestSigning,
+                role: .gatewayCoordinator,
+                provider: nil,
+                root: nil
+            )
+        )
+        mutateManifest(&candidate)
+        let body = try ProviderHandoffSourceControlCodec.encodeSignRequest(
+            ProviderHandoffSourceManifestSignRequestV1(
+                bootstrap: gatewayIdentity.bootstrap,
+                partKind: .logging,
+                contributionDigestSHA256:
+                    contribution.contributionDigestSHA256,
+                candidateManifest: candidate
+            )
+        )
+        return (
+            try ContainerEngineProviderHandoffControlRequestV1(
+                requestID: "source-sign-logging-1",
+                operation: .sourceSignManifest,
+                bodyMediaType:
+                    ProviderHandoffSourceControlCodec.signRequestMediaType,
+                body: body
+            ),
+            body
+        )
+    }
+
+    func verifySourceSignature(
+        _ receipt: ProviderHandoffSourceManifestSignReceiptV1
+    ) throws {
+        try ProviderHandoffCrypto.verify(
+            receipt.sourceSignature,
+            publicKey: sourceSigningKey.rawPublicKey
         )
     }
 

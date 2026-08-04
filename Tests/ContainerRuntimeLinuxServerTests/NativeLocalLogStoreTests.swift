@@ -113,6 +113,35 @@ struct NativeLocalLogStoreTests {
     }
 
     @Test
+    func handoffSnapshotPinsAndExportsExactStoredBytes() throws {
+        let fixture = try NativeLocalLogFixture()
+        defer { fixture.remove() }
+        let store = try NativeLocalLogStore(
+            directoryURL: fixture.logDirectory,
+            activeFileName: fixture.activeFileName
+        )
+        try store.write(
+            ordinaryRecord(payload: Data("handoff".utf8), sequence: 1)
+        )
+        try store.close()
+        let expected = try Data(contentsOf: store.storageURL)
+
+        let segments = try NativeLocalLogHandoffSegmentExporter.snapshot(
+            directoryURL: fixture.logDirectory,
+            activeFileName: fixture.activeFileName
+        )
+
+        let segment = try #require(segments.first)
+        #expect(segments.count == 1)
+        #expect(segment.rotationIndex == 0)
+        #expect(!segment.compressed)
+        #expect(segment.sourceDeviceID > 0)
+        #expect(segment.sourceInode > 0)
+        #expect(segment.bytes == expected)
+        #expect(try Data(contentsOf: store.storageURL) == expected)
+    }
+
+    @Test
     func createsCurrentUserPrivateStorageAndRejectsSymlinks() throws {
         let fixture = try NativeLocalLogFixture()
         defer { fixture.remove() }

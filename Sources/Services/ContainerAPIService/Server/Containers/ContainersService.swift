@@ -3812,11 +3812,11 @@ extension ContainersService {
                 isDirectory: true
             )
         )
-        let controller = LoggingHandoffStagingController(
+        let controller = try LoggingHandoffStagingController(
             defaults: containerSystemConfig.logging,
             commonStore: commonStore,
             protectedOptionsStore: loggingProtectedOptionsStore,
-            receiptStore: try LoggingHandoffProtectedReceiptStore(
+            receiptStore: LoggingHandoffProtectedReceiptStore(
                 rootURL: stateRoot.appendingPathComponent(
                     "handoff-logging-protected-receipts",
                     isDirectory: true
@@ -3824,7 +3824,7 @@ extension ContainersService {
             ),
             providerHistoryPreflight: remoteLogDriverPlane,
             destinationStateRootUUID:
-                providerIdentity.context.stateRootUUID
+            providerIdentity.context.stateRootUUID
         )
         let destination = try LoggingHandoffDestinationReconciler(
             rootURL: stateRoot.appendingPathComponent(
@@ -3834,7 +3834,7 @@ extension ContainersService {
             containerPromoter: self,
             providerPromoter: remoteLogDriverPlane
         )
-        return LoggingHandoffControlResponder(
+        let destinationResponder = LoggingHandoffControlResponder(
             objectStore: objectStore,
             possessionProofStore: possessionProofStore,
             trustRegistryStore: trustRegistryStore,
@@ -3845,6 +3845,284 @@ extension ContainersService {
             stagingContext: { [self] in
                 try await loggingHandoffStagingContext()
             }
+        )
+        return LoggingHandoffSourceControlResponder(
+            objectStore: objectStore,
+            contributionStore: ProviderHandoffSourceContributionStore(
+                root: stateRoot.appendingPathComponent(
+                    "handoff-source-contributions",
+                    isDirectory: true
+                )
+            ),
+            lineageKeyStore: ProviderHandoffLineageKeyStore(),
+            trustRegistryStore: trustRegistryStore,
+            providerIdentity: providerIdentity,
+            exportContainers: { [self] request in
+                try await loggingHandoffExportContainers(request)
+            },
+            downstream: destinationResponder
+        )
+    }
+
+    private func loggingHandoffExportContainers(
+        _ request: ProviderHandoffPartExportRequestV1
+    ) async throws -> [LoggingHandoffExportContainerV1] {
+        var result: [LoggingHandoffExportContainerV1] = []
+        result.reserveCapacity(request.selectedResourceIDs.count)
+        for containerID in request.selectedResourceIDs {
+            guard let state = containers[containerID] else {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "logging handoff source container was not found"
+                )
+            }
+            let configuration = state.snapshot.configuration
+            guard
+                state.snapshot.status == .stopped,
+                state.client == nil,
+                !configuration.logging.isLegacy,
+                let resolved = configuration.logging.resolved
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message:
+                    "logging handoff source requires stopped resolved containers"
+                )
+            }
+            let protectedOptions = try await loadProtectedLoggingOptions(
+                containerID: containerID,
+                configuration: configuration.logging
+            )
+            let bundle = try ContainerResource.Bundle(
+                path: Self.containerPath(
+                    root: containerRoot,
+                    id: containerID
+                )
+            )
+            let lifecycleSnapshot: ContainerLogLifecycleLedgerSnapshotV1
+            let histories: [LoggingHandoffHistoryStoreV1]
+            if resolved.providerIdentity.kind == .core {
+                lifecycleSnapshot = try ContainerLogLifecycleLedgerSnapshotV1(
+                    owningControllerID:
+                    "logging-handoff-local-\(containerID)"
+                )
+                histories = try Self.loggingHandoffLocalHistories(
+                    resolved: resolved,
+                    bundle: bundle
+                )
+            } else {
+                guard let remoteLogDriverPlane else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message:
+                        "logging handoff source provider is unavailable"
+                    )
+                }
+                let terminal = try await remoteLogDriverPlane
+                    .proveHandoffTerminal(
+                        containerID: containerID,
+                        bundle: bundle,
+                        configuration: configuration,
+                        authenticatedProtectedOptions: protectedOptions
+                    )
+                lifecycleSnapshot = terminal.snapshot
+                switch resolved.readPolicy.source {
+                case .dualCache:
+                    histories = try Self.loggingHandoffLocalHistories(
+                        resolved: resolved,
+                        bundle: bundle
+                    )
+                case .direct:
+                    if let digest = terminal.proof.terminalHistoryDigest {
+                        let receipt = try await remoteLogDriverPlane
+                            .exportProviderHistoryForHandoff(
+                                containerID: containerID,
+                                configuration: configuration.logging,
+                                tokenID: request.tokenID,
+                                manifestID: request.manifestID,
+                                sourceStateRootUUID:
+                                request.sourceStateRootUUID,
+                                destinationStateRootUUID:
+                                request.destinationStateRootUUID,
+                                terminalHistoryDigestSHA256: digest
+                            )
+                        histories = try [
+                            LoggingHandoffHistoryStoreV1(
+                                storeID: "provider-owned",
+                                kind: .providerOwned,
+                                disposition: .providerExportVerified,
+                                formatVersion: 1,
+                                rotationIndex: 0,
+                                terminalHistoryEpoch:
+                                resolved.leaseGeneration,
+                                maximumInternalSequence: 0,
+                                sourceDeviceID: nil,
+                                sourceInode: nil,
+                                bytes: nil,
+                                providerExportReceipt: receipt
+                            ),
+                        ]
+                    } else {
+                        histories = try [
+                            Self.loggingHandoffEmptyHistory(
+                                storeID: "provider-owned",
+                                kind: .providerOwned,
+                                terminalHistoryEpoch:
+                                resolved.leaseGeneration
+                            ),
+                        ]
+                    }
+                case .unavailable:
+                    histories = []
+                case .legacyLocalV1:
+                    throw ContainerizationError(
+                        .invalidState,
+                        message:
+                        "logging handoff source cannot export legacy history"
+                    )
+                }
+            }
+            try result.append(
+                LoggingHandoffExportContainerV1(
+                    containerID: containerID,
+                    configuration: configuration.logging,
+                    protectedOptions: protectedOptions,
+                    historyStores: histories,
+                    lifecycleSnapshot: lifecycleSnapshot
+                )
+            )
+        }
+        return result
+    }
+
+    private static func loggingHandoffLocalHistories(
+        resolved: ResolvedContainerLogConfiguration,
+        bundle: ContainerResource.Bundle
+    ) throws -> [LoggingHandoffHistoryStoreV1] {
+        let kind: LoggingHandoffHistoryKindV1
+        let directory: URL
+        let activeFileName: String
+        let snapshots: [ContainerLogHandoffSegmentSnapshot]
+        if resolved.providerIdentity.kind == .core,
+           resolved.driver == "json-file"
+        {
+            kind = .dockerJSONFile
+            directory = bundle.containerJSONFileLogDirectory
+            activeFileName = ContainerResource.Bundle.jsonFileLogName
+            guard FileManager.default.fileExists(atPath: directory.path) else {
+                return try [
+                    loggingHandoffEmptyHistory(
+                        storeID: "docker-json-file-0",
+                        kind: kind,
+                        terminalHistoryEpoch: 0
+                    ),
+                ]
+            }
+            snapshots = try DockerJSONFileHandoffSegmentExporter.snapshot(
+                directoryURL: directory,
+                activeFileName: activeFileName
+            )
+        } else if resolved.providerIdentity.kind == .core,
+                  resolved.driver == "local"
+        {
+            kind = .nativeLocal
+            directory = bundle.containerNativeLocalLogDirectory
+            activeFileName = ContainerResource.Bundle.nativeLocalLogName
+            guard FileManager.default.fileExists(atPath: directory.path) else {
+                return try [
+                    loggingHandoffEmptyHistory(
+                        storeID: "native-local-0",
+                        kind: kind,
+                        terminalHistoryEpoch: 0
+                    ),
+                ]
+            }
+            snapshots = try NativeLocalLogHandoffSegmentExporter.snapshot(
+                directoryURL: directory,
+                activeFileName: activeFileName
+            )
+        } else if resolved.readPolicy.source == .dualCache {
+            kind = .dualCache
+            directory = bundle.containerNativeLogCacheDirectory
+            activeFileName = ContainerResource.Bundle.nativeLogCacheName
+            guard FileManager.default.fileExists(atPath: directory.path) else {
+                return try [
+                    loggingHandoffEmptyHistory(
+                        storeID: "dual-cache-0",
+                        kind: kind,
+                        terminalHistoryEpoch: 0
+                    ),
+                ]
+            }
+            snapshots = try NativeLocalLogHandoffSegmentExporter.snapshot(
+                directoryURL: directory,
+                activeFileName: activeFileName
+            )
+        } else {
+            return []
+        }
+
+        let terminalEpoch = try ContainerLogProcessGenerationStore(
+            directoryURL: bundle.containerLoggingV2
+        ).current()
+        guard !snapshots.isEmpty else {
+            return try [
+                loggingHandoffEmptyHistory(
+                    storeID: "\(kind.rawValue)-0",
+                    kind: kind,
+                    terminalHistoryEpoch: terminalEpoch
+                ),
+            ]
+        }
+        return try snapshots.map { snapshot in
+            let maximumSequence: UInt64
+            switch kind {
+            case .nativeLocal, .dualCache:
+                maximumSequence = try NativeLocalLogHandoffSegmentValidator
+                    .inspect(
+                        snapshot.bytes,
+                        compressed: snapshot.compressed
+                    ).maximumInternalSequence
+            case .dockerJSONFile:
+                maximumSequence = 0
+            case .legacyLocalV1, .providerOwned:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "logging handoff local history kind is invalid"
+                )
+            }
+            return try LoggingHandoffHistoryStoreV1(
+                storeID: "\(kind.rawValue)-\(snapshot.rotationIndex)",
+                kind: kind,
+                disposition: .importVerified,
+                formatVersion: 1,
+                rotationIndex: snapshot.rotationIndex,
+                compressed: snapshot.compressed,
+                terminalHistoryEpoch: terminalEpoch,
+                maximumInternalSequence: maximumSequence,
+                sourceDeviceID: snapshot.sourceDeviceID,
+                sourceInode: snapshot.sourceInode,
+                bytes: snapshot.bytes
+            )
+        }
+    }
+
+    private static func loggingHandoffEmptyHistory(
+        storeID: String,
+        kind: LoggingHandoffHistoryKindV1,
+        terminalHistoryEpoch: UInt64
+    ) throws -> LoggingHandoffHistoryStoreV1 {
+        try LoggingHandoffHistoryStoreV1(
+            storeID: storeID,
+            kind: kind,
+            disposition: .empty,
+            formatVersion: 1,
+            rotationIndex: 0,
+            terminalHistoryEpoch: terminalHistoryEpoch,
+            maximumInternalSequence: 0,
+            sourceDeviceID: nil,
+            sourceInode: nil,
+            bytes: nil
         )
     }
 

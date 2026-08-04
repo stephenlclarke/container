@@ -2548,3 +2548,57 @@ package enum NativeLocalLogHandoffSegmentValidator {
         return try NativeLocalLogHandoffSegmentCodec.inspect(decoded)
     }
 }
+/// Read-only export of every retained native-local physical segment.
+///
+/// Exact stored bytes are captured from already-open pinned inodes. No writer
+/// is opened and no interrupted-rotation recovery is performed on the source
+/// evidence path.
+package enum NativeLocalLogHandoffSegmentExporter {
+    package static func snapshot(
+        directoryURL: URL,
+        activeFileName: String
+    ) throws -> [ContainerLogHandoffSegmentSnapshot] {
+        try NativeLocalSecureDirectory.validateActiveFileName(activeFileName)
+        let directory = try NativeLocalSecureDirectory(
+            url: directoryURL,
+            createIfAbsent: false
+        )
+        let files = try directory.pinnedFiles(
+            activeFileName: activeFileName,
+            maximumFileCount: 4097,
+            activeCompletedSize: nil,
+            didEnumerate: nil
+        )
+        return try files.map { file in
+            guard
+                file.index >= 0,
+                file.byteCount <= UInt64(
+                    NativeLocalLogHandoffSegmentCodec.maximumDecodedSegmentBytes
+                ),
+                file.byteCount <= UInt64(Int.max)
+            else {
+                throw NativeLocalLogError.storageLimitExceeded
+            }
+            let bytes = try NativeLocalFileSystem.readExactly(
+                from: file.descriptor,
+                count: Int(file.byteCount),
+                offset: 0
+            )
+            _ = try NativeLocalLogHandoffSegmentValidator.inspect(
+                bytes,
+                compressed: file.compressed
+            )
+            var metadata = stat()
+            guard Darwin.fstat(file.descriptor, &metadata) == 0 else {
+                throw NativeLocalLogError.io(.metadata, errno)
+            }
+            return ContainerLogHandoffSegmentSnapshot(
+                rotationIndex: UInt64(file.index),
+                compressed: file.compressed,
+                sourceDeviceID: UInt64(metadata.st_dev),
+                sourceInode: UInt64(metadata.st_ino),
+                bytes: bytes
+            )
+        }
+    }
+}

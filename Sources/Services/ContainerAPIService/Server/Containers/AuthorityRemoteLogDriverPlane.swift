@@ -437,6 +437,104 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         )
     }
 
+    /// Reconciles the selected provider generation to a terminal, immutable
+    /// ledger snapshot for cross-provider handoff export.
+    package func proveHandoffTerminal(
+        containerID: String,
+        bundle: ContainerResource.Bundle,
+        configuration: ContainerConfiguration,
+        authenticatedProtectedOptions: [String: String]
+    ) async throws -> (
+        snapshot: ContainerLogLifecycleLedgerSnapshotV1,
+        proof: AuthorityRemoteLogDriverTerminalProof
+    ) {
+        guard
+            configuration.id == containerID,
+            let resolved = configuration.logging.resolved,
+            resolved.providerIdentity.kind != .core,
+            runs[containerID] == nil,
+            !readerRuns.values.contains(where: {
+                $0.request.containerID == containerID
+                    && $0.request.providerGeneration
+                    == resolved.providerGenerationAtResolution
+            }),
+            let selection = await providers.registry.selection(
+                providerID: resolved.providerIdentity.id,
+                generation: resolved.providerGenerationAtResolution
+            )
+        else {
+            throw AuthorityRemoteLogDriverPlaneError
+                .providerGenerationNotTerminal(
+                    containerID: containerID,
+                    generation: configuration.logging.resolved?
+                        .providerGenerationAtResolution ?? 0
+                )
+        }
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                "provider-lifecycle-\(resolved.leaseGeneration)-v1.json"
+            )
+        )
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: Self.controllerID(
+                containerID: containerID,
+                leaseGeneration: resolved.leaseGeneration
+            ),
+            persistence: persistence
+        )
+        let controller = ContainerLogLifecycleControllerV1(
+            ledger: ledger,
+            protectedEffects: protectedEffects
+        )
+        let options = try Self.mergedOptions(
+            resolved: resolved,
+            protected: authenticatedProtectedOptions
+        )
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+        try await reconcilePriorRuns(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options,
+            semanticDigest: Self.semanticDigest(
+                containerID: containerID,
+                configuration: configuration.logging
+            )
+        )
+        try await reconcilePriorReaders(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options
+        )
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+        let snapshot = await ledger.snapshot()
+        guard
+            Self.isTerminal(
+                snapshot,
+                providerID: resolved.providerIdentity.id,
+                generation: resolved.providerGenerationAtResolution
+            )
+        else {
+            throw AuthorityRemoteLogDriverPlaneError
+                .providerGenerationNotTerminal(
+                    containerID: containerID,
+                    generation: resolved.providerGenerationAtResolution
+                )
+        }
+        return try (
+            snapshot,
+            Self.terminalProof(
+                snapshot: snapshot,
+                configuration: configuration
+            )
+        )
+    }
+
     /// Verifies the already-durable terminal proof when restart occurs after
     /// configuration publication but before alias activation.
     package func verifyProviderGenerationTerminal(

@@ -1930,3 +1930,59 @@ package enum DockerJSONFileHandoffSegmentValidator {
         )
     }
 }
+/// Read-only export of every retained Docker json-file physical segment.
+///
+/// Directory enumeration pins each exact inode before any bytes are read. The
+/// source must already be quiesced; this path deliberately does not construct
+/// a writer or run storage recovery that could mutate migration evidence.
+package enum DockerJSONFileHandoffSegmentExporter {
+    package static func snapshot(
+        directoryURL: URL,
+        activeFileName: String
+    ) throws -> [ContainerLogHandoffSegmentSnapshot] {
+        try DockerJSONFileSecureDirectory.validateActiveFileName(activeFileName)
+        let directory = try DockerJSONFileSecureDirectory(
+            url: directoryURL,
+            createIfAbsent: false
+        )
+        let files = try directory.pinnedFiles(
+            activeFileName: activeFileName,
+            maximumFileCount:
+            DockerJSONFileSecureDirectory.maximumDirectoryEntries + 1,
+            activeCompletedSize: nil,
+            didEnumerate: nil
+        )
+        return try files.map { file in
+            guard
+                file.index >= 0,
+                file.byteCount <= UInt64(
+                    DockerJSONFileHandoffSegmentValidator
+                        .maximumDecodedSegmentBytes
+                ),
+                file.byteCount <= UInt64(Int.max)
+            else {
+                throw DockerJSONFileLogError.storageLimitExceeded
+            }
+            let bytes = try DockerJSONFileSystem.readAll(
+                from: file.descriptor,
+                byteCount: file.byteCount,
+                maximumBytes: Int(file.byteCount)
+            )
+            _ = try DockerJSONFileHandoffSegmentValidator.inspect(
+                bytes,
+                compressed: file.compressed
+            )
+            var metadata = stat()
+            guard Darwin.fstat(file.descriptor, &metadata) == 0 else {
+                throw DockerJSONFileLogError.io(.metadata, errno)
+            }
+            return ContainerLogHandoffSegmentSnapshot(
+                rotationIndex: UInt64(file.index),
+                compressed: file.compressed,
+                sourceDeviceID: UInt64(metadata.st_dev),
+                sourceInode: UInt64(metadata.st_ino),
+                bytes: bytes
+            )
+        }
+    }
+}

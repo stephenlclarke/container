@@ -204,6 +204,7 @@ struct LoggingHandoffControlResponder:
                 )
             case .destinationKeyPossession, .destinationKeySnapshot,
                 .objectAppend, .objectDeclare, .objectRead, .objectVerify,
+                .partExport, .sourceSignManifest,
                 .rootApply, .rootPrepare, .rootRelease, .rootSnapshot:
                 throw LoggingHandoffControlResponderError.unsupportedOperation
             }

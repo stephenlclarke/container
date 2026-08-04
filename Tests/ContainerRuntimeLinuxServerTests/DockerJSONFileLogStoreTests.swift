@@ -141,6 +141,33 @@ struct DockerJSONFileLogStoreTests {
     }
 
     @Test
+    func handoffSnapshotPinsAndExportsExactStoredBytes() throws {
+        let fixture = try LogDirectoryFixture()
+        defer { fixture.remove() }
+        let store = try DockerJSONFileLogStore(
+            directoryURL: fixture.logDirectory,
+            activeFileName: fixture.activeFileName
+        )
+        try store.write(ordinaryRecord(payload: Data("handoff".utf8)))
+        try store.close()
+        let expected = try Data(contentsOf: store.logURL)
+
+        let segments = try DockerJSONFileHandoffSegmentExporter.snapshot(
+            directoryURL: fixture.logDirectory,
+            activeFileName: fixture.activeFileName
+        )
+
+        let segment = try #require(segments.first)
+        #expect(segments.count == 1)
+        #expect(segment.rotationIndex == 0)
+        #expect(!segment.compressed)
+        #expect(segment.sourceDeviceID > 0)
+        #expect(segment.sourceInode > 0)
+        #expect(segment.bytes == expected)
+        #expect(try Data(contentsOf: store.logURL) == expected)
+    }
+
+    @Test
     func createsPrivateDirectoryAndDockerModeCurrentUserFile() throws {
         let fixture = try LogDirectoryFixture()
         defer { fixture.remove() }
