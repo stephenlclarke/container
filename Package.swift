@@ -286,6 +286,7 @@ let package = Package(
                 .product(name: "SystemPackage", package: "swift-system"),
                 "CVersion",
                 "ContainerAPIClient",
+                "ContainerLoggingProviders",
                 "ContainerLoggingStorage",
                 "ContainerNetworkClient",
                 "ContainerPersistence",

@@ -3345,6 +3345,37 @@ extension ContainersService {
         )
         let bundle = ContainerResource.Bundle(path: path)
 
+        if let resolved = configuration.logging.resolved,
+            resolved.readPolicy.source == .direct,
+            resolved.providerIdentity.kind != .core
+        {
+            guard let remoteLogDriverPlane else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "direct logging provider is unavailable"
+                )
+            }
+            var protectedOptions = [String: String]()
+            if let reference = resolved.protectedOptionReference {
+                let binding = try LoggingProtectedOptionsBinding(
+                    containerID: containerID,
+                    configuration: configuration.logging
+                )
+                protectedOptions = try await loggingProtectedOptionsStore.load(
+                    reference,
+                    boundTo: binding
+                )
+            }
+            let reader = try await remoteLogDriverPlane.openReader(
+                containerID: containerID,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: protectedOptions,
+                read: request
+            )
+            return .direct(reader: reader, terminal: terminal)
+        }
+
         if request.follow, isLiveForLogFollow(id: containerID) {
             do {
                 let file = try await state.getClient().followLogReadRecordsV1(

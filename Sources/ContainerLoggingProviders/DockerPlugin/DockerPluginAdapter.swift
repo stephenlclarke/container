@@ -128,6 +128,86 @@ public struct DockerPluginStartedSession: Sendable {
     }
 }
 
+/// One acquired capability/FIFO tuple whose `StartLogging` outcome can be
+/// reconciled without allocating a second FIFO or provider lease.
+///
+/// The higher-level provider persists the request identity and opaque receipt
+/// before calling ``start(info:deadline:)``. If the response is lost, it keeps
+/// this object and replays the exact call against the same FIFO. Standalone
+/// callers can use ``abandon()`` to perform bounded best-effort stop followed
+/// by authoritative local revocation.
+public actor DockerPluginPreparedWriter: Sendable {
+    public let capabilities: DockerPluginCapabilities
+    public let readRouting: DockerPluginReadRouting
+
+    private let client: DockerPluginProtocolClient
+    private let lease: any DockerPluginProviderLease
+    private let fifo: any DockerPluginFIFO
+    private var started: DockerPluginDriverSession?
+    private var abandoned = false
+
+    fileprivate init(
+        capabilities: DockerPluginCapabilities,
+        client: DockerPluginProtocolClient,
+        lease: any DockerPluginProviderLease,
+        fifo: any DockerPluginFIFO
+    ) {
+        self.capabilities = capabilities
+        self.readRouting = DockerPluginReadRouting(capabilities: capabilities)
+        self.client = client
+        self.lease = lease
+        self.fifo = fifo
+    }
+
+    public func start(
+        info: DockerPluginInfo,
+        deadline: ContinuousClock.Instant? = nil
+    ) async throws -> DockerPluginStartedSession {
+        guard !abandoned else {
+            throw DockerPluginProtocolError.writerUnavailable
+        }
+        if let started {
+            return DockerPluginStartedSession(
+                capabilities: capabilities,
+                readRouting: readRouting,
+                session: started
+            )
+        }
+        try await client.startLogging(
+            fifo: fifo.reference,
+            info: info,
+            deadline: deadline
+        )
+        let session = DockerPluginDriverSession(
+            client: client,
+            lease: lease,
+            fifo: fifo
+        )
+        started = session
+        return DockerPluginStartedSession(
+            capabilities: capabilities,
+            readRouting: readRouting,
+            session: session
+        )
+    }
+
+    public func abandon() async {
+        guard !abandoned, started == nil else {
+            return
+        }
+        abandoned = true
+        let cleanup = Task.detached { [client, fifo] in
+            try? await client.stopLogging(
+                fifo: fifo.reference,
+                deadline: ContinuousClock().now + .seconds(5)
+            )
+        }
+        _ = await cleanup.value
+        await fifo.revokeAndRemove()
+        await lease.release()
+    }
+}
+
 /// Lifecycle-safe writer for one Docker logging-plugin FIFO.
 ///
 /// Start order is capability handshake, FIFO creation, then `StartLogging`.
@@ -168,7 +248,7 @@ public actor DockerPluginDriverSession: ContainerLogDriverSession {
     private var operationActive = false
     private var operationWaiters = [CheckedContinuation<Void, Never>]()
 
-    private init(
+    fileprivate init(
         client: DockerPluginProtocolClient,
         lease: any DockerPluginProviderLease,
         fifo: any DockerPluginFIFO
@@ -186,6 +266,32 @@ public actor DockerPluginDriverSession: ContainerLogDriverSession {
         fifoFactory: any DockerPluginFIFOFactory,
         deadline: ContinuousClock.Instant? = nil
     ) async throws -> DockerPluginStartedSession {
+        let prepared = try await prepare(
+            sessionID: sessionID,
+            providerGeneration: providerGeneration,
+            lease: lease,
+            fifoFactory: fifoFactory,
+            deadline: deadline
+        )
+        do {
+            return try await prepared.start(info: info, deadline: deadline)
+        } catch {
+            await prepared.abandon()
+            throw error
+        }
+    }
+
+    /// Acquires capabilities and the exact FIFO while deliberately leaving the
+    /// effect unstarted. A provider can persist its claim before the first
+    /// `StartLogging` call and retain this object when the response is
+    /// uncertain.
+    public static func prepare(
+        sessionID: String,
+        providerGeneration: UInt64,
+        lease: any DockerPluginProviderLease,
+        fifoFactory: any DockerPluginFIFOFactory,
+        deadline: ContinuousClock.Instant? = nil
+    ) async throws -> DockerPluginPreparedWriter {
         guard
             !sessionID.isEmpty,
             providerGeneration > 0,
@@ -231,38 +337,11 @@ public actor DockerPluginDriverSession: ContainerLogDriverSession {
             throw CancellationError()
         }
 
-        do {
-            try await client.startLogging(
-                fifo: fifo.reference,
-                info: info,
-                deadline: deadline
-            )
-        } catch {
-            // The plugin may have committed StartLogging before its response
-            // was lost or the caller was cancelled. Resolve that uncertainty
-            // with the exact FIFO identity on a fresh bounded task before the
-            // local capability is revoked and its lease is released.
-            let cleanup = Task.detached {
-                try? await client.stopLogging(
-                    fifo: fifo.reference,
-                    deadline: ContinuousClock().now + .seconds(5)
-                )
-            }
-            _ = await cleanup.value
-            await fifo.revokeAndRemove()
-            await lease.release()
-            throw error
-        }
-
-        let session = DockerPluginDriverSession(
+        return DockerPluginPreparedWriter(
+            capabilities: capabilities,
             client: client,
             lease: lease,
             fifo: fifo
-        )
-        return DockerPluginStartedSession(
-            capabilities: capabilities,
-            readRouting: DockerPluginReadRouting(capabilities: capabilities),
-            session: session
         )
     }
 
@@ -506,11 +585,13 @@ public actor DockerPluginLogReader: ContainerLogReader {
     private init(
         stream: any DockerPluginResponseStream,
         request: ContainerLogReadRequest,
-        processGeneration: UInt64?
+        processGeneration: UInt64?,
+        initialSequence: UInt64 = 1
     ) {
         self.stream = stream
         self.request = request
         self.processGeneration = processGeneration
+        self.nextSequence = initialSequence
         sinceGate = request.since
     }
 
@@ -537,6 +618,28 @@ public actor DockerPluginLogReader: ContainerLogReader {
             request: request,
             processGeneration: processGeneration
         )
+    }
+
+    /// Attaches the standard Docker frame/filter adapter to an already-opened
+    /// service-owned `ReadLogs` stream. The service has durably claimed the
+    /// reader before returning this stream, so this path must not issue a
+    /// second plugin request.
+    public static func attach(
+        stream: any DockerPluginResponseStream,
+        request: ContainerLogReadRequest,
+        processGeneration: UInt64? = nil,
+        initialSequence: UInt64 = 1
+    ) throws -> DockerPluginLogReader {
+        guard initialSequence > 0 else {
+            throw DockerPluginProtocolError.partialOrdinalOutOfRange
+        }
+        let reader = DockerPluginLogReader(
+            stream: stream,
+            request: request,
+            processGeneration: processGeneration,
+            initialSequence: initialSequence
+        )
+        return reader
     }
 
     public func next() async throws -> ContainerLogReaderEventV1 {

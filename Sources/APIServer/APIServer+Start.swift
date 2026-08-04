@@ -399,12 +399,25 @@ extension APIServer {
             // TODO: Remove when we convert ContainersService to FilePath
             let appRootURL = URL(fileURLWithPath: appRoot.string)
             let installRootURL = URL(fileURLWithPath: installRoot.string)
+            let providerSandboxAuthority = await initializeProviderSandboxAuthority(
+                appRoot: appRootURL,
+                pluginLoader: pluginLoader,
+                log: log
+            )
             let journaldService = await initializeJournaldService(
                 appRoot: appRootURL,
                 installRoot: installRootURL,
+                kernelService: kernelService,
+                containerSystemConfig: containerSystemConfig,
+                authority: providerSandboxAuthority,
+                log: log
+            )
+            let dockerPluginInstallations = await initializeDockerLoggingPlugins(
+                appRoot: appRootURL,
                 pluginLoader: pluginLoader,
                 kernelService: kernelService,
                 containerSystemConfig: containerSystemConfig,
+                authority: providerSandboxAuthority,
                 log: log
             )
             let remoteLogDriverPlane =
@@ -412,7 +425,8 @@ extension APIServer {
                 .create(
                     appRoot: appRootURL,
                     awsLogsClientFactory: AWSCloudWatchLogsClientFactory(),
-                    journaldService: journaldService
+                    journaldService: journaldService,
+                    dockerPluginInstallations: dockerPluginInstallations
                 )
             let service = try ContainersService(
                 appRoot: appRootURL,
@@ -457,42 +471,19 @@ extension APIServer {
         private func initializeJournaldService(
             appRoot: URL,
             installRoot: URL,
-            pluginLoader: PluginLoader,
             kernelService: KernelService,
             containerSystemConfig: ContainerSystemConfig,
+            authority: EngineLinuxSandboxAuthorityV1?,
             log: Logger
         ) async -> (any JournaldService)? {
             do {
-                guard
-                    let runtimePlugin = pluginLoader.findPlugins().first(
-                        where: {
-                            $0.name
-                                == LaunchdEngineLinuxSandboxLauncherV1
-                                .runtimePluginName
-                                && $0.hasType(.runtime)
-                        }
-                    )
-                else {
+                guard let authority else {
                     throw ContainerizationError(
                         .notFound,
                         message:
                             "container-runtime-linux is unavailable for the journald service"
                     )
                 }
-                let launcher = try LaunchdEngineLinuxSandboxLauncherV1(
-                    loader: pluginLoader,
-                    plugin: runtimePlugin,
-                    debug: debug
-                )
-                let authority = try await EngineLinuxSandboxAuthorityV1.open(
-                    root: appRoot.appendingPathComponent(
-                        "engine-linux-sandbox",
-                        isDirectory: true
-                    ),
-                    owningControllerID: "container-apiserver-journald",
-                    sandboxID: "engine-linux-sandbox",
-                    launcher: launcher
-                )
                 let service = try EngineLinuxSandboxJournaldServiceV1.create(
                     appRoot: appRoot,
                     installRoot: installRoot,
@@ -515,6 +506,165 @@ extension APIServer {
                 )
                 return nil
             }
+        }
+
+        private func initializeProviderSandboxAuthority(
+            appRoot: URL,
+            pluginLoader: PluginLoader,
+            log: Logger
+        ) async -> EngineLinuxSandboxAuthorityV1? {
+            do {
+                guard
+                    let runtimePlugin = pluginLoader.findPlugins().first(
+                        where: {
+                            $0.name
+                                == LaunchdEngineLinuxSandboxLauncherV1
+                                .runtimePluginName
+                                && $0.hasType(.runtime)
+                        }
+                    )
+                else {
+                    throw ContainerizationError(
+                        .notFound,
+                        message:
+                            "container-runtime-linux is unavailable for provider services"
+                    )
+                }
+                let launcher = try LaunchdEngineLinuxSandboxLauncherV1(
+                    loader: pluginLoader,
+                    plugin: runtimePlugin,
+                    debug: debug
+                )
+                return try await EngineLinuxSandboxAuthorityV1.open(
+                    root: appRoot.appendingPathComponent(
+                        "engine-linux-sandbox",
+                        isDirectory: true
+                    ),
+                    owningControllerID: "container-apiserver-provider-services",
+                    sandboxID: "engine-linux-sandbox",
+                    launcher: launcher
+                )
+            } catch {
+                log.warning(
+                    "Engine Linux provider sandbox is unavailable",
+                    metadata: ["error": "\(error)"]
+                )
+                return nil
+            }
+        }
+
+        private func initializeDockerLoggingPlugins(
+            appRoot: URL,
+            pluginLoader: PluginLoader,
+            kernelService: KernelService,
+            containerSystemConfig: ContainerSystemConfig,
+            authority: EngineLinuxSandboxAuthorityV1?,
+            log: Logger
+        ) async -> [DockerPluginLogDriverInstallation] {
+            let plugins = pluginLoader.findPlugins()
+                .filter { $0.hasType(.logging) }
+                .sorted { $0.name < $1.name }
+            guard !plugins.isEmpty else { return [] }
+            guard let authority else {
+                log.warning(
+                    "Docker logging plugins are unavailable without the Engine Linux provider sandbox"
+                )
+                return []
+            }
+
+            var installations = [DockerPluginLogDriverInstallation]()
+            let builtInProviders = [
+                SyslogLogDriverContract.descriptor(),
+                FluentdLogDriverContract.descriptor(),
+                GELFLogDriverContract.descriptor(),
+                SplunkLogDriverContract.descriptor(),
+                AWSLogsLogDriverContract.descriptor(),
+                GCPLogsLogDriverContract.descriptor(),
+                JournaldLogDriverContract.descriptor(),
+            ]
+            var registeredNames = Set(
+                BuiltinLogDriverDescriptors.current.registeredNames
+                    + builtInProviders.flatMap(\.registeredNames)
+            )
+            var servicePorts = Set<UInt32>()
+            var providerIDs = Set(
+                [BuiltinLogDriverDescriptors.coreProvider.id]
+                    + builtInProviders.map(\.providerIdentity.id)
+            )
+            var providerGenerations = Set<String>()
+            for plugin in plugins {
+                do {
+                    guard let resourceRoot = plugin.resourceURL else {
+                        throw
+                            EngineLinuxSandboxDockerPluginServiceError
+                            .invalidInstalledAsset(
+                                "logging plugin has no protected resource bundle"
+                            )
+                    }
+                    let assets =
+                        try InstalledDockerPluginWorkloadManifestV1
+                        .verify(resourceRoot: resourceRoot)
+                    let manifest = assets.manifest
+                    let names = [manifest.driver] + manifest.aliases
+                    guard registeredNames.isDisjoint(with: names) else {
+                        throw
+                            EngineLinuxSandboxDockerPluginServiceError
+                            .invalidInstalledAsset(
+                                "logging plugin name collides with an installed provider"
+                            )
+                    }
+                    guard !servicePorts.contains(manifest.servicePort) else {
+                        throw
+                            EngineLinuxSandboxDockerPluginServiceError
+                            .invalidInstalledAsset(
+                                "logging plugin service port collides with an installed provider"
+                            )
+                    }
+                    let providerGeneration =
+                        "\(manifest.providerID)\u{0}\(manifest.providerGeneration)"
+                    guard
+                        !providerIDs.contains(manifest.providerID),
+                        !providerGenerations.contains(providerGeneration)
+                    else {
+                        throw
+                            EngineLinuxSandboxDockerPluginServiceError
+                            .invalidInstalledAsset(
+                                "logging plugin provider generation is duplicated"
+                            )
+                    }
+                    let installation =
+                        try EngineLinuxSandboxDockerPluginServiceV1.create(
+                            appRoot: appRoot,
+                            resourceRoot: resourceRoot,
+                            kernelService: kernelService,
+                            containerSystemConfig: containerSystemConfig,
+                            authority: authority
+                        )
+                    installations.append(installation)
+                    registeredNames.formUnion(names)
+                    servicePorts.insert(manifest.servicePort)
+                    providerIDs.insert(manifest.providerID)
+                    providerGenerations.insert(providerGeneration)
+                    log.info(
+                        "verified lazy Docker logging plugin",
+                        metadata: [
+                            "plugin": "\(plugin.name)",
+                            "driver": "\(manifest.driver)",
+                            "providerGeneration":
+                                "\(manifest.providerGeneration)",
+                        ]
+                    )
+                } catch {
+                    log.warning(
+                        "Docker logging plugin is unavailable",
+                        metadata: [
+                            "plugin": "\(plugin.name)",
+                            "error": "\(error)",
+                        ]
+                    )
+                }
+            }
+            return installations
         }
 
         private func initializeNetworksService(

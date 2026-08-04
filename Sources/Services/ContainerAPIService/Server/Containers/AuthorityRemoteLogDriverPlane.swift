@@ -57,11 +57,20 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         var activation: LoggingSessionActivationV1?
     }
 
+    private struct ReaderRun: Sendable {
+        let request: LogDriverReaderOpenRequestV1
+        let provider: any ContainerLogDriverProvider
+        let controller: ContainerLogLifecycleControllerV1
+        let session: LoggingReaderSessionV1
+    }
+
     private let providers: BuiltinRemoteLogDriverProviderSet
     private let protectedEffects: ProtectedLoggingEffectStore
     private let eventLoopOwner: AuthorityRemoteLogEventLoopOwner
     private let gcpLoggingServiceFactory: AuthorityGCPLoggingServiceFactory
     private var runs = [String: Run]()
+    private var readerRuns = [String: ReaderRun]()
+    private var closingReaderIDs = Set<String>()
 
     private init(
         providers: BuiltinRemoteLogDriverProviderSet,
@@ -79,6 +88,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         appRoot: URL,
         awsLogsClientFactory: any AWSLogsClientFactory,
         journaldService: (any JournaldService)? = nil,
+        dockerPluginInstallations: [DockerPluginLogDriverInstallation] = [],
         gcpLoggingServiceFactory: @escaping AuthorityGCPLoggingServiceFactory = {
             generation in
             try DockerSemanticHelperClient.shared(
@@ -99,6 +109,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             eventLoopGroup: eventLoopOwner.group,
             awsLogsClientFactory: awsLogsClientFactory,
             journaldService: journaldService,
+            dockerPluginInstallations: dockerPluginInstallations,
             providerGeneration: providerGeneration
         )
         let protectedEffects = try ProtectedLoggingEffectStore(
@@ -117,21 +128,35 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
 
     public func logDriverCatalog() async throws -> LogDriverCatalog {
         let catalog = try await advertisedLogDriverCatalog()
-        guard let journald = providers.journald else {
+        var unavailableProviderIDs = Set<String>()
+        if let journald = providers.journald {
+            do {
+                _ = try await journald.activeSandboxGeneration()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let descriptor = try await journald.descriptor
+                unavailableProviderIDs.insert(descriptor.providerIdentity.id)
+            }
+        }
+        for dockerPlugin in providers.dockerPlugins {
+            do {
+                _ = try await dockerPlugin.activeSandboxGeneration()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let descriptor = try await dockerPlugin.descriptor
+                unavailableProviderIDs.insert(descriptor.providerIdentity.id)
+            }
+        }
+        guard !unavailableProviderIDs.isEmpty else {
             return catalog
         }
-        do {
-            _ = try await journald.activeSandboxGeneration()
-            return catalog
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            return try LogDriverCatalog(
-                descriptors: catalog.descriptors.filter {
-                    $0.driver != "journald"
-                }
-            )
-        }
+        return try LogDriverCatalog(
+            descriptors: catalog.descriptors.filter {
+                !unavailableProviderIDs.contains($0.providerIdentity.id)
+            }
+        )
     }
 
     public func advertisedLogDriverCatalog() async throws -> LogDriverCatalog {
@@ -198,6 +223,12 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             options: options,
             semanticDigest: semanticDigest
         )
+        try await reconcilePriorReaders(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options
+        )
 
         let processGeneration = try ContainerLogProcessGenerationStore(
             directoryURL: bundle.containerLoggingV2
@@ -219,7 +250,8 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             providerID: resolved.providerIdentity.id,
             providerGeneration: resolved.providerGenerationAtResolution,
             candidateSandboxGeneration: try await sandboxGeneration(
-                for: resolved
+                for: resolved,
+                provider: selection.provider
             )
         )
         try await registerConfiguration(
@@ -423,6 +455,145 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         }
     }
 
+    /// Opens a generation-fenced direct reader for a non-core provider. The
+    /// same durable lifecycle ledger used by the writer owns reader intent,
+    /// the sealed provider token, close recovery, and terminal reclamation.
+    package func openReader(
+        containerID: String,
+        bundle: ContainerResource.Bundle,
+        configuration: ContainerConfiguration,
+        authenticatedProtectedOptions: [String: String],
+        read: ContainerLogReadRequest
+    ) async throws -> any ContainerLogReader {
+        guard
+            configuration.id == containerID,
+            let resolved = configuration.logging.resolved,
+            resolved.providerIdentity.kind != .core,
+            resolved.readPolicy.source == .direct
+        else {
+            throw AuthorityRemoteLogDriverPlaneError
+                .incompleteConfiguration
+        }
+        let selection = try await providers.registry.selection(for: resolved)
+        let controllerID = Self.controllerID(
+            containerID: containerID,
+            leaseGeneration: resolved.leaseGeneration
+        )
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                "provider-lifecycle-\(resolved.leaseGeneration)-v1.json"
+            )
+        )
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: controllerID,
+            persistence: persistence
+        )
+        let controller = ContainerLogLifecycleControllerV1(
+            ledger: ledger,
+            protectedEffects: protectedEffects
+        )
+        let options = try Self.mergedOptions(
+            resolved: resolved,
+            protected: authenticatedProtectedOptions
+        )
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+        try await reconcilePriorReaders(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options
+        )
+
+        let source = try readerSource(
+            containerID: containerID,
+            resolved: resolved
+        )
+        let operationGeneration = try Self.nextReaderOperationGeneration(
+            await ledger.snapshot()
+        )
+        let semanticDigest = try Self.readerSemanticDigest(
+            containerID: containerID,
+            configuration: configuration.logging,
+            source: source,
+            read: read
+        )
+        let identityDigest = Self.sha256Hex(
+            Data(
+                "\(containerID)\u{0}\(resolved.leaseGeneration)\u{0}\(operationGeneration)\u{0}\(semanticDigest)"
+                    .utf8
+            )
+        )
+        let request = try LogDriverReaderOpenRequestV1(
+            operationGeneration: operationGeneration,
+            idempotencyKey: "reader-\(identityDigest)",
+            semanticRequestDigest: semanticDigest,
+            readerSessionID: "reader-session-\(identityDigest)",
+            containerID: containerID,
+            leaseGeneration: resolved.leaseGeneration,
+            providerID: resolved.providerIdentity.id,
+            providerGeneration: resolved.providerGenerationAtResolution,
+            source: source,
+            read: read
+        )
+        try await registerReaderConfiguration(
+            request: request,
+            options: options,
+            configuration: configuration
+        )
+
+        let started: StartedLogDriverReaderV1
+        do {
+            started = try await controller.prepareReader(
+                request,
+                using: selection.provider
+            )
+        } catch {
+            _ = try? await providers.configurations.unregister(request)
+            throw error
+        }
+        let session: LoggingReaderSessionV1
+        do {
+            session = try await controller.activateReader(request)
+        } catch {
+            _ = try? await controller.closePreparedReader(
+                request,
+                using: selection.provider
+            )
+            _ = try? await providers.configurations.unregister(request)
+            throw error
+        }
+        readerRuns[request.readerSessionID] = ReaderRun(
+            request: request,
+            provider: selection.provider,
+            controller: controller,
+            session: session
+        )
+        return AuthorityRemoteLogReader(reader: started.reader) {
+            try await self.closeReader(
+                readerSessionID: request.readerSessionID
+            )
+        }
+    }
+
+    private func closeReader(readerSessionID: String) async throws {
+        guard !closingReaderIDs.contains(readerSessionID) else {
+            return
+        }
+        guard let run = readerRuns[readerSessionID] else {
+            return
+        }
+        closingReaderIDs.insert(readerSessionID)
+        defer { closingReaderIDs.remove(readerSessionID) }
+        _ = try await run.controller.closeReader(
+            run.session,
+            using: run.provider
+        )
+        _ = try await providers.configurations.unregister(run.request)
+        readerRuns.removeValue(forKey: readerSessionID)
+    }
+
     private func finishPipes(_ run: Run) async throws {
         for handle in run.authorityWriteHandles {
             try? handle.close()
@@ -532,6 +703,87 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         }
     }
 
+    private func reconcilePriorReaders(
+        ledger: ContainerLogLifecycleLedgerV1,
+        controller: ContainerLogLifecycleControllerV1,
+        configuration: ContainerConfiguration,
+        options: [String: String]
+    ) async throws {
+        let snapshot = await ledger.snapshot()
+        for record in snapshot.readerOperations {
+            guard
+                let selection = await providers.registry.selection(
+                    providerID: record.request.providerID,
+                    generation: record.request.providerGeneration
+                )
+            else {
+                throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                    record.request.providerID
+                )
+            }
+            switch record.result {
+            case .reserved, .openRecoveryRequired:
+                try await registerReaderConfiguration(
+                    request: record.request,
+                    options: options,
+                    configuration: configuration
+                )
+                do {
+                    _ = try await controller.prepareReader(
+                        record.request,
+                        using: selection.provider
+                    )
+                    _ = try await controller.closePreparedReader(
+                        record.request,
+                        using: selection.provider
+                    )
+                    _ = try await providers.configurations.unregister(
+                        record.request
+                    )
+                } catch {
+                    _ = try? await providers.configurations.unregister(
+                        record.request
+                    )
+                    throw error
+                }
+            case .prepared, .candidateClosing,
+                .candidateRecoveryRequired:
+                try await registerReaderConfiguration(
+                    request: record.request,
+                    options: options,
+                    configuration: configuration
+                )
+                do {
+                    _ = try await controller.closePreparedReader(
+                        record.request,
+                        using: selection.provider
+                    )
+                    _ = try await providers.configurations.unregister(
+                        record.request
+                    )
+                } catch {
+                    _ = try? await providers.configurations.unregister(
+                        record.request
+                    )
+                    throw error
+                }
+            case .candidateClosed:
+                continue
+            case .activated(let session):
+                guard
+                    session.state != .closed,
+                    session.state != .tombstoned
+                else {
+                    continue
+                }
+                _ = try await controller.closeReader(
+                    session,
+                    using: selection.provider
+                )
+            }
+        }
+    }
+
     private func registerConfiguration(
         request: LogDriverStartRequestV1,
         options: [String: String],
@@ -551,6 +803,23 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             hostname: configuration.hostname
                 ?? ProcessInfo.processInfo.hostName
         )
+        if resolved.providerIdentity.kind == .dockerPlugin {
+            try await providers.configurations.register(
+                DockerPluginConfigurationBinding(
+                    semanticRequestDigest: request.semanticRequestDigest,
+                    containerID: request.containerID,
+                    leaseGeneration: request.leaseGeneration,
+                    providerID: request.providerID,
+                    providerGeneration: request.providerGeneration,
+                    info: try Self.dockerPluginInfo(
+                        configuration: configuration,
+                        options: options
+                    )
+                ),
+                for: request
+            )
+            return
+        }
         switch resolved.driver {
         case "syslog":
             let helper = try DockerSemanticHelperClient.shared(
@@ -717,6 +986,51 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         }
     }
 
+    private func registerReaderConfiguration(
+        request: LogDriverReaderOpenRequestV1,
+        options: [String: String],
+        configuration: ContainerConfiguration
+    ) async throws {
+        let resolved = try Self.requireResolved(configuration.logging)
+        guard resolved.providerIdentity.kind == .dockerPlugin else {
+            return
+        }
+        try await providers.configurations.register(
+            DockerPluginConfigurationBinding(
+                semanticRequestDigest: request.semanticRequestDigest,
+                containerID: request.containerID,
+                leaseGeneration: request.leaseGeneration,
+                providerID: request.providerID,
+                providerGeneration: request.providerGeneration,
+                info: try Self.dockerPluginInfo(
+                    configuration: configuration,
+                    options: options
+                )
+            ),
+            for: request
+        )
+    }
+
+    private static func dockerPluginInfo(
+        configuration: ContainerConfiguration,
+        options: [String: String]
+    ) throws -> DockerPluginInfo {
+        try DockerPluginInfo(
+            config: options,
+            containerID: configuration.id,
+            containerName: "/\(configuration.id)",
+            containerEntrypoint: configuration.initProcess.executable,
+            containerArgs: configuration.initProcess.arguments,
+            containerImageID: configuration.image.digest,
+            containerImageName: configuration.image.reference,
+            containerCreated: configuration.creationDate,
+            containerEnv: configuration.initProcess.environment,
+            containerLabels: configuration.labels,
+            logPath: "",
+            daemonName: "docker"
+        )
+    }
+
     private static func mergedOptions(
         resolved: ResolvedContainerLogConfiguration,
         protected: [String: String]
@@ -735,17 +1049,49 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 
     private func sandboxGeneration(
-        for resolved: ResolvedContainerLogConfiguration
+        for resolved: ResolvedContainerLogConfiguration,
+        provider: any ContainerLogDriverProvider
     ) async throws -> UInt64? {
-        guard resolved.driver == "journald" else {
+        guard
+            resolved.providerIdentity.kind == .linuxService
+                || resolved.providerIdentity.kind == .dockerPlugin
+        else {
             return nil
         }
-        guard let journald = providers.journald else {
+        guard
+            let sandboxProvider =
+                provider as? any EngineLinuxSandboxLogDriverProvider
+        else {
             throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
                 resolved.driver
             )
         }
-        return try await journald.activeSandboxGeneration()
+        return try await sandboxProvider.activeSandboxGeneration()
+    }
+
+    private func readerSource(
+        containerID: String,
+        resolved: ResolvedContainerLogConfiguration
+    ) throws -> LoggingReaderSourceV1 {
+        guard let activation = runs[containerID]?.activation else {
+            return .stoppedContainer
+        }
+        guard
+            activation.providerID == resolved.providerIdentity.id,
+            activation.providerGeneration
+                == resolved.providerGenerationAtResolution,
+            activation.leaseGeneration == resolved.leaseGeneration
+        else {
+            throw AuthorityRemoteLogDriverPlaneError
+                .incompleteConfiguration
+        }
+        return .activeWriter(
+            sessionID: activation.sessionID,
+            writerProviderID: activation.providerID,
+            writerProviderGeneration: activation.providerGeneration,
+            activeProcessGeneration: activation.activeProcessGeneration,
+            activeSandboxGeneration: activation.activeSandboxGeneration
+        )
     }
 
     private static func semanticDigest(
@@ -764,6 +1110,41 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         data.append(0)
         data.append(Data((reference?.integrityDigest ?? "-").utf8))
         return "sha256:" + sha256Hex(data)
+    }
+
+    private static func readerSemanticDigest(
+        containerID: String,
+        configuration: ContainerLogConfiguration,
+        source: LoggingReaderSourceV1,
+        read: ContainerLogReadRequest
+    ) throws -> String {
+        let writerDigest = try semanticDigest(
+            containerID: containerID,
+            configuration: configuration
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        var data = Data("container.logging.reader.semantic-request.v1\u{0}".utf8)
+        data.append(Data(writerDigest.utf8))
+        data.append(0)
+        data.append(try encoder.encode(source))
+        data.append(0)
+        data.append(try encoder.encode(read))
+        return "sha256:" + sha256Hex(data)
+    }
+
+    private static func nextReaderOperationGeneration(
+        _ snapshot: ContainerLogLifecycleLedgerSnapshotV1
+    ) throws -> UInt64 {
+        let current =
+            snapshot.readerOperations.map {
+                $0.request.operationGeneration
+            }.max() ?? 0
+        guard current < UInt64.max else {
+            throw AuthorityRemoteLogDriverPlaneError
+                .incompleteConfiguration
+        }
+        return current + 1
     }
 
     private static func controllerID(
@@ -811,6 +1192,48 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 await pump.fail(stream: stream)
             }
         }
+    }
+}
+
+private actor AuthorityRemoteLogReader: ContainerLogReader {
+    private let reader: any ContainerLogReader
+    private let closeLifecycle: @Sendable () async throws -> Void
+    private var ended = false
+
+    init(
+        reader: any ContainerLogReader,
+        closeLifecycle: @escaping @Sendable () async throws -> Void
+    ) {
+        self.reader = reader
+        self.closeLifecycle = closeLifecycle
+    }
+
+    func next() async throws -> ContainerLogReaderEventV1 {
+        guard !ended else {
+            throw ContainerLogReaderError.alreadyEnded
+        }
+        do {
+            let event = try await reader.next()
+            if event == .endOfStream {
+                ended = true
+                try await closeLifecycle()
+            }
+            return event
+        } catch {
+            ended = true
+            await reader.cancel()
+            try? await closeLifecycle()
+            throw error
+        }
+    }
+
+    func cancel() async {
+        guard !ended else {
+            return
+        }
+        ended = true
+        await reader.cancel()
+        try? await closeLifecycle()
     }
 }
 

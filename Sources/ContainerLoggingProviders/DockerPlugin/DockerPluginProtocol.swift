@@ -41,6 +41,11 @@ public enum DockerPluginProtocolError: Error, Equatable, Sendable, CustomStringC
     case transportFailure(endpoint: DockerPluginEndpoint)
     case invalidFIFOReference
     case providerGenerationMismatch
+    case invalidProviderIdentity
+    case invalidEffectToken
+    case invalidSessionFence
+    case idempotencyConflict
+    case capabilityMismatch
     case lineTooLarge(maximumBytes: Int)
     case frameTooLarge(maximumBytes: Int)
     case malformedFrame
@@ -69,6 +74,16 @@ public enum DockerPluginProtocolError: Error, Equatable, Sendable, CustomStringC
             "Docker logging-plugin FIFO reference is invalid"
         case .providerGenerationMismatch:
             "Docker logging-plugin provider generation does not match the acquired lease"
+        case .invalidProviderIdentity:
+            "Docker logging-plugin provider identity is invalid"
+        case .invalidEffectToken:
+            "Docker logging-plugin effect token is invalid"
+        case .invalidSessionFence:
+            "Docker logging-plugin session fence is invalid"
+        case .idempotencyConflict:
+            "Docker logging-plugin request conflicts with an existing effect"
+        case .capabilityMismatch:
+            "Docker logging-plugin capabilities do not match the installed generation"
         case .lineTooLarge(let maximumBytes):
             "Docker logging-plugin line exceeds \(maximumBytes) bytes"
         case .frameTooLarge(let maximumBytes):
@@ -179,7 +194,9 @@ public struct DockerPluginInfo: Equatable, Sendable, CustomStringConvertible,
         self.logPath = logPath
         self.daemonName = daemonName
 
-        let encoded = try JSONEncoder.dockerPlugin.encode(WireInfo(self))
+        let encoded = try JSONEncoder.dockerPlugin.encode(
+            DockerPluginInfoWireV1(self)
+        )
         guard encoded.count <= Self.maximumEncodedBytes else {
             throw DockerPluginProtocolError.requestTooLarge(
                 endpoint: .startLogging,
@@ -276,7 +293,10 @@ public struct DockerPluginProtocolClient: Sendable {
         info: DockerPluginInfo,
         deadline: ContinuousClock.Instant? = nil
     ) async throws {
-        let request = StartRequest(file: fifo.pluginPath, info: WireInfo(info))
+        let request = StartRequest(
+            file: fifo.pluginPath,
+            info: DockerPluginInfoWireV1(info)
+        )
         let response = try await call(
             endpoint: .startLogging,
             request: try encode(request, endpoint: .startLogging),
@@ -311,9 +331,9 @@ public struct DockerPluginProtocolClient: Sendable {
         if let until = configuration.until {
             try DockerPluginTimestampCodec.validate(until)
         }
-        let request = ReadRequest(
-            info: WireInfo(info),
-            config: WireReadConfiguration(configuration)
+        let request = DockerPluginReadRequestWireV1(
+            info: DockerPluginInfoWireV1(info),
+            config: DockerPluginReadConfigurationWireV1(configuration)
         )
         let body = try encode(request, endpoint: .readLogs)
         let resolvedDeadline = deadline ?? (ContinuousClock().now + Self.streamOpenTimeout)
@@ -422,7 +442,7 @@ public struct DockerPluginProtocolClient: Sendable {
     }
 }
 
-private struct WireInfo: Encodable {
+package struct DockerPluginInfoWireV1: Codable, Equatable, Sendable {
     let config: [String: String]
     let containerID: String
     let containerName: String
@@ -451,7 +471,7 @@ private struct WireInfo: Encodable {
         case daemonName = "DaemonName"
     }
 
-    init(_ info: DockerPluginInfo) {
+    package init(_ info: DockerPluginInfo) {
         self.config = info.config
         self.containerID = info.containerID
         self.containerName = info.containerName
@@ -469,7 +489,7 @@ private struct WireInfo: Encodable {
 
 private struct StartRequest: Encodable {
     let file: String
-    let info: WireInfo
+    let info: DockerPluginInfoWireV1
 
     private enum CodingKeys: String, CodingKey {
         case file = "File"
@@ -485,9 +505,9 @@ private struct StopRequest: Encodable {
     }
 }
 
-private struct ReadRequest: Encodable {
-    let info: WireInfo
-    let config: WireReadConfiguration
+package struct DockerPluginReadRequestWireV1: Codable, Equatable, Sendable {
+    package let info: DockerPluginInfoWireV1
+    package let config: DockerPluginReadConfigurationWireV1
 
     private enum CodingKeys: String, CodingKey {
         case info = "Info"
@@ -495,7 +515,7 @@ private struct ReadRequest: Encodable {
     }
 }
 
-private struct WireReadConfiguration: Encodable {
+package struct DockerPluginReadConfigurationWireV1: Codable, Equatable, Sendable {
     let since: String
     let until: String
     let tail: Int
@@ -508,7 +528,7 @@ private struct WireReadConfiguration: Encodable {
         case follow = "Follow"
     }
 
-    init(_ configuration: DockerPluginReadConfiguration) {
+    package init(_ configuration: DockerPluginReadConfiguration) {
         self.since = configuration.since.map(DockerPluginTimestampCodec.string) ?? DockerPluginTimestampCodec.zero
         self.until = configuration.until.map(DockerPluginTimestampCodec.string) ?? DockerPluginTimestampCodec.zero
         self.tail = configuration.tail

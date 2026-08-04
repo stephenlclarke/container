@@ -17,6 +17,23 @@
 import ContainerResource
 import NIOCore
 
+/// Provider whose effect identity is fenced to one Engine Linux sandbox
+/// generation. The authority must bind that generation into every writer
+/// request before the first provider effect.
+public protocol EngineLinuxSandboxLogDriverProvider:
+    ContainerLogDriverProvider
+{
+    func activeSandboxGeneration() async throws -> UInt64
+}
+
+extension JournaldLogDriverProvider: EngineLinuxSandboxLogDriverProvider {}
+extension DockerPluginLogDriverProvider:
+    EngineLinuxSandboxLogDriverProvider
+{}
+extension DockerPluginServiceLogDriverProvider:
+    EngineLinuxSandboxLogDriverProvider
+{}
+
 public enum BuiltinRemoteLogDriverConfigurationError: Error, Equatable,
     Sendable
 {
@@ -37,7 +54,7 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
     SyslogConfigurationResolving, FluentdConfigurationResolving,
     GELFConfigurationResolving, SplunkConfigurationResolving,
     AWSLogsConfigurationResolving, GCPLogsConfigurationResolving,
-    JournaldConfigurationResolving
+    JournaldConfigurationResolving, DockerPluginConfigurationResolving
 {
     private enum Entry: Sendable {
         case syslog(
@@ -68,13 +85,18 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             request: LogDriverStartRequestV1,
             binding: JournaldConfigurationBinding
         )
+        case dockerPlugin(
+            request: LogDriverStartRequestV1,
+            binding: DockerPluginConfigurationBinding
+        )
 
         var request: LogDriverStartRequestV1 {
             switch self {
             case .syslog(let request, _), .fluentd(let request, _),
                 .gelf(let request, _), .splunk(let request, _),
                 .awslogs(let request, _), .gcplogs(let request, _),
-                .journald(let request, _):
+                .journald(let request, _),
+                .dockerPlugin(let request, _):
                 request
             }
         }
@@ -88,11 +110,18 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             case .awslogs: "awslogs"
             case .gcplogs: "gcplogs"
             case .journald: "journald"
+            case .dockerPlugin: "docker-plugin"
             }
         }
     }
 
+    private struct ReaderEntry: Sendable {
+        let request: LogDriverReaderOpenRequestV1
+        let binding: DockerPluginConfigurationBinding
+    }
+
     private var entries = [String: Entry]()
+    private var readerEntries = [String: ReaderEntry]()
 
     public init() {}
 
@@ -145,6 +174,32 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
         try register(.journald(request: request, binding: binding))
     }
 
+    public func register(
+        _ binding: DockerPluginConfigurationBinding,
+        for request: LogDriverStartRequestV1
+    ) throws {
+        try register(.dockerPlugin(request: request, binding: binding))
+    }
+
+    public func register(
+        _ binding: DockerPluginConfigurationBinding,
+        for request: LogDriverReaderOpenRequestV1
+    ) throws {
+        let entry = ReaderEntry(request: request, binding: binding)
+        if let existing = readerEntries[request.readerSessionID] {
+            guard
+                existing.request == request,
+                existing.binding == binding
+            else {
+                throw
+                    BuiltinRemoteLogDriverConfigurationError
+                    .contextConflict(request.readerSessionID)
+            }
+            return
+        }
+        readerEntries[request.readerSessionID] = entry
+    }
+
     /// Removes only the exact request identity. A stale cleanup cannot erase a
     /// later session which happens to reuse the same externally supplied ID.
     @discardableResult
@@ -160,6 +215,23 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
                 .requestIdentityMismatch(request.sessionID)
         }
         entries.removeValue(forKey: request.sessionID)
+        return true
+    }
+
+    /// Removes only the exact reader request identity.
+    @discardableResult
+    public func unregister(
+        _ request: LogDriverReaderOpenRequestV1
+    ) throws -> Bool {
+        guard let entry = readerEntries[request.readerSessionID] else {
+            return false
+        }
+        guard entry.request == request else {
+            throw
+                BuiltinRemoteLogDriverConfigurationError
+                .requestIdentityMismatch(request.readerSessionID)
+        }
+        readerEntries.removeValue(forKey: request.readerSessionID)
         return true
     }
 
@@ -268,8 +340,39 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
         return binding
     }
 
+    public func configuration(
+        for request: LogDriverStartRequestV1
+    ) throws -> DockerPluginConfigurationBinding {
+        let entry = try exactEntry(for: request)
+        guard case .dockerPlugin(_, let binding) = entry else {
+            throw
+                BuiltinRemoteLogDriverConfigurationError
+                .contextDriverMismatch(
+                    expected: "docker-plugin",
+                    actual: entry.driver
+                )
+        }
+        return binding
+    }
+
+    public func configuration(
+        for request: LogDriverReaderOpenRequestV1
+    ) throws -> DockerPluginConfigurationBinding {
+        guard let entry = readerEntries[request.readerSessionID] else {
+            throw
+                BuiltinRemoteLogDriverConfigurationError
+                .contextNotFound(request.readerSessionID)
+        }
+        guard entry.request == request else {
+            throw
+                BuiltinRemoteLogDriverConfigurationError
+                .requestIdentityMismatch(request.readerSessionID)
+        }
+        return entry.binding
+    }
+
     package var registeredContextCount: Int {
-        entries.count
+        entries.count + readerEntries.count
     }
 
     private func register(_ entry: Entry) throws {
@@ -329,9 +432,77 @@ public actor BuiltinRemoteLogDriverConfigurationRegistry:
             .journald(let rightRequest, let right)
         ):
             leftRequest == rightRequest && left == right
+        case (
+            .dockerPlugin(let leftRequest, let left),
+            .dockerPlugin(let rightRequest, let right)
+        ):
+            leftRequest == rightRequest && left == right
         default:
             false
         }
+    }
+}
+
+/// Trusted, already-installed Docker logging-plugin generation supplied by the
+/// production service plane. Distribution and trust approval stay outside the
+/// logging lifecycle; this immutable value installs only the resolved driver
+/// contract and authenticated acquisition boundary.
+public struct DockerPluginLogDriverInstallation: Sendable {
+    public let driver: String
+    public let aliases: [String]
+    public let providerIdentity: LogDriverProviderIdentity
+    public let providerGeneration: UInt64
+    public let readLogs: Bool
+    public let trust: LogDriverTrust
+    public let lifecycleService: (any DockerPluginLifecycleService)?
+    public let providerAcquirer: (any DockerPluginProviderAcquiring)?
+    public let fifoFactory: (any DockerPluginFIFOFactory)?
+
+    /// Installs the production, service-owned lifecycle boundary. Installed
+    /// plugins are operator-approved unless a higher layer has verified a
+    /// signature and explicitly supplies `.signed`.
+    public init(
+        driver: String,
+        aliases: [String] = [],
+        providerIdentity: LogDriverProviderIdentity,
+        providerGeneration: UInt64,
+        readLogs: Bool,
+        trust: LogDriverTrust = .approved,
+        lifecycleService: any DockerPluginLifecycleService
+    ) {
+        self.driver = driver
+        self.aliases = aliases
+        self.providerIdentity = providerIdentity
+        self.providerGeneration = providerGeneration
+        self.readLogs = readLogs
+        self.trust = trust
+        self.lifecycleService = lifecycleService
+        self.providerAcquirer = nil
+        self.fifoFactory = nil
+    }
+
+    /// Retains the low-level adapter seam for protocol conformance tests. The
+    /// production install path uses the lifecycle-service initializer above
+    /// because this variant cannot survive reconstruction of its host actor.
+    public init(
+        driver: String,
+        aliases: [String] = [],
+        providerIdentity: LogDriverProviderIdentity,
+        providerGeneration: UInt64,
+        readLogs: Bool,
+        trust: LogDriverTrust = .signed,
+        providerAcquirer: any DockerPluginProviderAcquiring,
+        fifoFactory: any DockerPluginFIFOFactory
+    ) {
+        self.driver = driver
+        self.aliases = aliases
+        self.providerIdentity = providerIdentity
+        self.providerGeneration = providerGeneration
+        self.readLogs = readLogs
+        self.trust = trust
+        self.lifecycleService = nil
+        self.providerAcquirer = providerAcquirer
+        self.fifoFactory = fifoFactory
     }
 }
 
@@ -352,6 +523,7 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
     public let awslogs: AWSLogsLogDriverProvider
     public let gcplogs: GCPLogsLogDriverProvider
     public let journald: JournaldLogDriverProvider?
+    public let dockerPlugins: [any EngineLinuxSandboxLogDriverProvider]
 
     private init(
         registry: LogDriverProviderRegistry,
@@ -362,7 +534,8 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         splunk: SplunkLogDriverProvider,
         awslogs: AWSLogsLogDriverProvider,
         gcplogs: GCPLogsLogDriverProvider,
-        journald: JournaldLogDriverProvider?
+        journald: JournaldLogDriverProvider?,
+        dockerPlugins: [any EngineLinuxSandboxLogDriverProvider]
     ) {
         self.registry = registry
         self.configurations = configurations
@@ -373,12 +546,14 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         self.awslogs = awslogs
         self.gcplogs = gcplogs
         self.journald = journald
+        self.dockerPlugins = dockerPlugins
     }
 
     public static func install(
         eventLoopGroup: any EventLoopGroup,
         awsLogsClientFactory: any AWSLogsClientFactory,
         journaldService: (any JournaldService)? = nil,
+        dockerPluginInstallations: [DockerPluginLogDriverInstallation] = [],
         providerGeneration: UInt64 = 1,
         baseCatalog: LogDriverCatalog = BuiltinLogDriverDescriptors.current
     ) async throws -> Self {
@@ -424,6 +599,38 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                 service: $0
             )
         }
+        let dockerPlugins: [any EngineLinuxSandboxLogDriverProvider] =
+            try dockerPluginInstallations.map { installation in
+                if let service = installation.lifecycleService {
+                    return try DockerPluginServiceLogDriverProvider(
+                        driver: installation.driver,
+                        aliases: installation.aliases,
+                        providerIdentity: installation.providerIdentity,
+                        providerGeneration: installation.providerGeneration,
+                        readLogs: installation.readLogs,
+                        trust: installation.trust,
+                        configurationResolver: configurations,
+                        service: service
+                    )
+                }
+                guard
+                    let providerAcquirer = installation.providerAcquirer,
+                    let fifoFactory = installation.fifoFactory
+                else {
+                    throw DockerPluginProtocolError.invalidProviderIdentity
+                }
+                return try DockerPluginLogDriverProvider(
+                    driver: installation.driver,
+                    aliases: installation.aliases,
+                    providerIdentity: installation.providerIdentity,
+                    providerGeneration: installation.providerGeneration,
+                    readLogs: installation.readLogs,
+                    trust: installation.trust,
+                    configurationResolver: configurations,
+                    providerAcquirer: providerAcquirer,
+                    fifoFactory: fifoFactory
+                )
+            }
         let registry = LogDriverProviderRegistry(baseCatalog: baseCatalog)
         try await registry.install(syslog)
         try await registry.install(fluentd)
@@ -434,6 +641,9 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         if let journald {
             try await registry.install(journald)
         }
+        for dockerPlugin in dockerPlugins {
+            try await registry.install(dockerPlugin)
+        }
         return Self(
             registry: registry,
             configurations: configurations,
@@ -443,7 +653,8 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
             splunk: splunk,
             awslogs: awslogs,
             gcplogs: gcplogs,
-            journald: journald
+            journald: journald,
+            dockerPlugins: dockerPlugins
         )
     }
 }

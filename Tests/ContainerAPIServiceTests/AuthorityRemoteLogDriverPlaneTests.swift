@@ -213,6 +213,103 @@ struct AuthorityRemoteLogDriverPlaneTests {
     }
 
     @Test
+    func dockerPluginDirectReaderUsesAuthorityLedgerAndTerminalReclamation()
+        async throws
+    {
+        try await withTemporaryRoot { root in
+            let frame = try DockerPluginLogEntryCodec.encodeFrame(
+                DockerPluginLogEntry(
+                    source: "stderr",
+                    timeNano: 42_500_000_000,
+                    line: Data("plugin-history\n".utf8),
+                    partial: false,
+                    partialMetadata: nil
+                )
+            )
+            let stream = AuthorityDockerPluginStream(chunks: [frame])
+            let transport = AuthorityDockerPluginTransport(stream: stream)
+            let lease = AuthorityDockerPluginLease(transport: transport)
+            let acquirer = AuthorityDockerPluginAcquirer(lease: lease)
+            let fifoFactory = try AuthorityDockerPluginFIFOFactory()
+            let installation = DockerPluginLogDriverInstallation(
+                driver: "example-plugin",
+                providerIdentity: authorityDockerPluginIdentity,
+                providerGeneration: authorityDockerPluginGeneration,
+                readLogs: true,
+                providerAcquirer: acquirer,
+                fifoFactory: fifoFactory
+            )
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory:
+                    AuthorityUnavailableAWSLogsClientFactory(),
+                dockerPluginInstallations: [installation]
+            )
+            #expect(
+                try await plane.logDriverCatalog()
+                    .descriptor(named: "example-plugin") != nil
+            )
+
+            let id = "docker-plugin-reader"
+            let bundle = ContainerResource.Bundle(
+                path: root.appendingPathComponent(id, isDirectory: true)
+            )
+            try FileManager.default.createDirectory(
+                at: bundle.path,
+                withIntermediateDirectories: true
+            )
+            let configuration = try dockerPluginConfiguration(id: id)
+            let reader = try await plane.openReader(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                read: ContainerLogReadRequest(tail: 10)
+            )
+
+            #expect(
+                try await reader.next()
+                    == .record(
+                        try ContainerLogReadRecordV1(
+                            stream: .stderr,
+                            timestamp: ContainerLogTimestamp(
+                                secondsSinceUnixEpoch: 42,
+                                nanoseconds: 500_000_000
+                            ),
+                            data: Data("plugin-history\n".utf8),
+                            sequence: 1
+                        )
+                    )
+            )
+            #expect(try await reader.next() == .endOfStream)
+            #expect(await stream.closeCount == 1)
+            #expect(await lease.releaseCount == 1)
+            #expect(await acquirer.acquireCount == 1)
+            #expect(await fifoFactory.createCount == 0)
+
+            let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+                fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                    "provider-lifecycle-1-v1.json"
+                )
+            )
+            let ledger = try await ContainerLogLifecycleLedgerV1.open(
+                owningControllerID: controllerID(
+                    id: id,
+                    leaseGeneration: 1
+                ),
+                persistence: persistence
+            )
+            let snapshot = await ledger.snapshot()
+            #expect(snapshot.readerOperations.count == 1)
+            #expect(
+                snapshot.readerOperations[0].result.session?.state
+                    == .closed
+            )
+            #expect(snapshot.pendingEffectRemovals.isEmpty)
+        }
+    }
+
+    @Test
     func nonBlockingDeliveryPreservesOrderAcrossQueueCompaction() async throws {
         let session = AuthorityRecordingLogDriverSession()
         let delivery = AuthorityRemoteLogDelivery(
@@ -543,6 +640,54 @@ struct AuthorityRemoteLogDriverPlaneTests {
         return configuration
     }
 
+    private func dockerPluginConfiguration(
+        id: String
+    ) throws -> ContainerConfiguration {
+        let options = ["arbitrary-option": "preserved"]
+        let descriptor = try DockerPluginLogDriverContract.descriptor(
+            driver: "example-plugin",
+            providerIdentity: authorityDockerPluginIdentity,
+            providerGeneration: authorityDockerPluginGeneration,
+            readLogs: true
+        )
+        let resolved = try ResolvedContainerLogConfiguration(
+            leaseGeneration: 1,
+            driver: descriptor.driver,
+            safeOptions: options,
+            delivery: LogDeliveryConfiguration(),
+            readPolicy: LogReadPolicy(source: .direct),
+            providerIdentity: descriptor.providerIdentity,
+            providerGenerationAtResolution: descriptor.providerGeneration,
+            contractDigest: descriptor.optionContractDigest
+        )
+        var configuration = ContainerConfiguration(
+            id: id,
+            image: ImageDescription(
+                reference: "docker.io/library/alpine:latest",
+                descriptor: .init(
+                    mediaType:
+                        "application/vnd.oci.image.manifest.v1+json",
+                    digest: "sha256:" + String(repeating: "0", count: 64),
+                    size: 0
+                )
+            ),
+            process: ProcessConfiguration(
+                executable: "/bin/sh",
+                arguments: ["-c", "true"],
+                environment: ["ENV=value"],
+                terminal: false
+            )
+        )
+        configuration.logging = try ContainerLogConfiguration(
+            requested: ContainerLogRequest(
+                driver: descriptor.driver,
+                options: options
+            ),
+            resolved: resolved
+        )
+        return configuration
+    }
+
     private func awsLogsConfiguration(id: String) throws -> ContainerConfiguration {
         let options = [
             "awslogs-group": "container-tests",
@@ -715,6 +860,190 @@ struct AuthorityRemoteLogDriverPlaneTests {
         defer { try? FileManager.default.removeItem(at: root) }
         try await operation(root)
     }
+}
+
+private let authorityDockerPluginGeneration: UInt64 = 7
+private let authorityDockerPluginSandboxGeneration: UInt64 = 9
+private let authorityDockerPluginIdentity = LogDriverProviderIdentity(
+    id: "io.container.logging.plugin.authority-test",
+    version: "1.0.0",
+    kind: .dockerPlugin
+)
+
+private actor AuthorityDockerPluginStream: DockerPluginResponseStream {
+    private var chunks: [Data]
+    private(set) var closeCount = 0
+
+    init(chunks: [Data]) {
+        self.chunks = chunks
+    }
+
+    func nextChunk(maximumBytes: Int) async throws -> Data? {
+        guard let chunk = chunks.first else {
+            return nil
+        }
+        guard chunk.count <= maximumBytes else {
+            throw DockerPluginProtocolError.frameTooLarge(
+                maximumBytes: maximumBytes
+            )
+        }
+        chunks.removeFirst()
+        return chunk
+    }
+
+    func close() async {
+        closeCount += 1
+    }
+}
+
+private actor AuthorityDockerPluginTransport: DockerPluginRPCTransport {
+    private let stream: AuthorityDockerPluginStream
+    private(set) var endpoints = [DockerPluginEndpoint]()
+
+    init(stream: AuthorityDockerPluginStream) {
+        self.stream = stream
+    }
+
+    func call(
+        endpoint: DockerPluginEndpoint,
+        request: Data,
+        maximumResponseBytes: Int,
+        deadline: ContinuousClock.Instant?
+    ) async throws -> Data {
+        _ = request
+        _ = maximumResponseBytes
+        _ = deadline
+        endpoints.append(endpoint)
+        switch endpoint {
+        case .capabilities:
+            return Data(
+                "{\"Cap\":{\"ReadLogs\":true},\"Err\":\"\"}".utf8
+            )
+        case .startLogging, .stopLogging:
+            return Data("{}".utf8)
+        case .readLogs:
+            throw DockerPluginProtocolError.transportFailure(
+                endpoint: endpoint
+            )
+        }
+    }
+
+    func openStream(
+        endpoint: DockerPluginEndpoint,
+        request: Data,
+        maximumChunkBytes: Int,
+        deadline: ContinuousClock.Instant
+    ) async throws -> any DockerPluginResponseStream {
+        _ = request
+        _ = maximumChunkBytes
+        _ = deadline
+        guard endpoint == .readLogs else {
+            throw DockerPluginProtocolError.transportFailure(
+                endpoint: endpoint
+            )
+        }
+        endpoints.append(endpoint)
+        return stream
+    }
+}
+
+private actor AuthorityDockerPluginLease: DockerPluginProviderLease {
+    nonisolated let providerGeneration = authorityDockerPluginGeneration
+    nonisolated let transport: any DockerPluginRPCTransport
+    private(set) var releaseCount = 0
+
+    init(transport: any DockerPluginRPCTransport) {
+        self.transport = transport
+    }
+
+    func release() async {
+        releaseCount += 1
+    }
+}
+
+private actor AuthorityDockerPluginAcquirer:
+    DockerPluginProviderAcquiring
+{
+    private let lease: AuthorityDockerPluginLease
+    private(set) var acquireCount = 0
+
+    init(lease: AuthorityDockerPluginLease) {
+        self.lease = lease
+    }
+
+    func activeSandboxGeneration(
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws -> UInt64 {
+        try validate(
+            providerID: providerID,
+            providerGeneration: providerGeneration
+        )
+        return authorityDockerPluginSandboxGeneration
+    }
+
+    func acquire(
+        providerID: String,
+        providerGeneration: UInt64
+    ) async throws -> any DockerPluginProviderLease {
+        try validate(
+            providerID: providerID,
+            providerGeneration: providerGeneration
+        )
+        acquireCount += 1
+        return lease
+    }
+
+    private func validate(
+        providerID: String,
+        providerGeneration: UInt64
+    ) throws {
+        guard
+            providerID == authorityDockerPluginIdentity.id,
+            providerGeneration == authorityDockerPluginGeneration
+        else {
+            throw DockerPluginProtocolError.invalidProviderIdentity
+        }
+    }
+}
+
+private actor AuthorityDockerPluginFIFOFactory: DockerPluginFIFOFactory {
+    private let fifo: AuthorityDockerPluginFIFO
+    private(set) var createCount = 0
+
+    init() throws {
+        self.fifo = try AuthorityDockerPluginFIFO()
+    }
+
+    func createFIFO(
+        sessionID: String,
+        providerGeneration: UInt64
+    ) async throws -> any DockerPluginFIFO {
+        _ = sessionID
+        guard providerGeneration == authorityDockerPluginGeneration else {
+            throw DockerPluginProtocolError.providerGenerationMismatch
+        }
+        createCount += 1
+        return fifo
+    }
+}
+
+private actor AuthorityDockerPluginFIFO: DockerPluginFIFO {
+    nonisolated let reference: DockerPluginFIFOReference
+
+    init() throws {
+        self.reference = try DockerPluginFIFOReference(
+            validatingPluginPath: "/run/docker/logging/authority-test"
+        )
+    }
+
+    func writeFrame(_ frame: Data) async throws {
+        _ = frame
+    }
+
+    func closeAndRemove() async {}
+
+    func revokeAndRemove() async {}
 }
 
 private actor AuthorityRecordingLogDriverSession: ContainerLogDriverSession {
