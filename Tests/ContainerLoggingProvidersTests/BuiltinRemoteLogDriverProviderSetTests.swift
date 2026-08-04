@@ -126,6 +126,181 @@ struct BuiltinRemoteLogDriverProviderSetTests {
         }
     }
 
+    @Test func failedPluginCandidateLeavesHealthyGenerationActive() async throws {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        do {
+            let firstService = ProviderGenerationLifecycleFixture(
+                readiness: .healthy(11)
+            )
+            let secondService = ProviderGenerationLifecycleFixture(
+                readiness: .unavailable
+            )
+            let providers = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                dockerPluginInstallations: [
+                    Self.pluginInstallation(
+                        generation: 1,
+                        service: firstService
+                    ),
+                    Self.pluginInstallation(
+                        generation: 2,
+                        service: secondService
+                    ),
+                ],
+                providerGeneration: 7
+            )
+
+            #expect(
+                await providers.registry.activeGeneration(
+                    providerID: Self.pluginProviderIdentity.id
+                ) == 1
+            )
+            #expect(
+                await providers.registry.generationPhase(
+                    providerID: Self.pluginProviderIdentity.id,
+                    generation: 2
+                ) == nil
+            )
+            #expect(await firstService.readinessProbeCount == 1)
+            #expect(await secondService.readinessProbeCount == 1)
+            #expect(await firstService.effectCallCount == 0)
+            #expect(await secondService.effectCallCount == 0)
+            try await group.shutdownGracefully()
+        } catch {
+            try? await group.shutdownGracefully()
+            throw error
+        }
+    }
+
+    @Test func restartRecoversSingleAdvertisedPluginGenerationWithoutEffects() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "container-provider-set-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = try FileLogDriverProviderRegistryPersistenceV1(
+            fileURL: directory.appendingPathComponent("state-v1.json")
+        )
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        do {
+            let first = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                dockerPluginInstallations: [
+                    Self.pluginInstallation(
+                        generation: 1,
+                        service: ProviderGenerationLifecycleFixture(
+                            readiness: .healthy(11)
+                        )
+                    ),
+                    Self.pluginInstallation(
+                        generation: 2,
+                        service: ProviderGenerationLifecycleFixture(
+                            readiness: .healthy(12)
+                        )
+                    ),
+                ],
+                providerGeneration: 7,
+                registryPersistence: persistence
+            )
+            #expect(
+                await first.registry.generationPhase(
+                    providerID: Self.pluginProviderIdentity.id,
+                    generation: 1
+                ) == .draining
+            )
+            #expect(
+                await first.registry.activeGeneration(
+                    providerID: Self.pluginProviderIdentity.id
+                ) == 2
+            )
+
+            let reconstructedFirst = ProviderGenerationLifecycleFixture(
+                readiness: .healthy(21)
+            )
+            let reconstructedSecond = ProviderGenerationLifecycleFixture(
+                readiness: .healthy(22)
+            )
+            let reconstructed = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                dockerPluginInstallations: [
+                    Self.pluginInstallation(
+                        generation: 1,
+                        service: reconstructedFirst
+                    ),
+                    Self.pluginInstallation(
+                        generation: 2,
+                        service: reconstructedSecond
+                    ),
+                ],
+                providerGeneration: 7,
+                registryPersistence: persistence
+            )
+
+            let catalog = try await reconstructed.registry.logDriverCatalog()
+            let descriptor = try #require(
+                catalog.descriptor(named: "durable-plugin")
+            )
+            #expect(descriptor.providerGeneration == 2)
+            #expect(
+                catalog.descriptors.filter {
+                    $0.providerIdentity == Self.pluginProviderIdentity
+                }.count == 1
+            )
+            #expect(
+                await reconstructed.registry.generationPhase(
+                    providerID: Self.pluginProviderIdentity.id,
+                    generation: 1
+                ) == .draining
+            )
+            #expect(await reconstructedFirst.readinessProbeCount == 0)
+            #expect(await reconstructedSecond.readinessProbeCount == 1)
+            #expect(await reconstructedFirst.effectCallCount == 0)
+            #expect(await reconstructedSecond.effectCallCount == 0)
+
+            let fallbackService = ProviderGenerationLifecycleFixture(
+                readiness: .healthy(31)
+            )
+            let recoveredFallback = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                dockerPluginInstallations: [
+                    Self.pluginInstallation(
+                        generation: 1,
+                        service: fallbackService
+                    )
+                ],
+                providerGeneration: 7,
+                registryPersistence: persistence
+            )
+            #expect(
+                await recoveredFallback.registry.activeGeneration(
+                    providerID: Self.pluginProviderIdentity.id
+                ) == 1
+            )
+            #expect(await fallbackService.readinessProbeCount == 1)
+            let missingGeneration = await recoveredFallback.registry.selection(
+                providerID: Self.pluginProviderIdentity.id,
+                generation: 2
+            )
+            #expect(missingGeneration?.descriptor == nil)
+            try await group.shutdownGracefully()
+        } catch {
+            try? await group.shutdownGracefully()
+            throw error
+        }
+    }
+
     private static func request(
         providerGeneration: UInt64 = 7
     ) throws -> LogDriverStartRequestV1 {
@@ -171,5 +346,125 @@ struct BuiltinRemoteLogDriverProviderSetTests {
             tls: nil,
             policy: .dockerCompatible
         )
+    }
+
+    private static let pluginProviderIdentity = LogDriverProviderIdentity(
+        id: "io.container.logging.plugin.generation-tests",
+        version: "1.0.0",
+        kind: .dockerPlugin
+    )
+
+    private static func pluginInstallation(
+        generation: UInt64,
+        service: any DockerPluginLifecycleService
+    ) -> DockerPluginLogDriverInstallation {
+        DockerPluginLogDriverInstallation(
+            driver: "durable-plugin",
+            aliases: ["durable-plugin-alias"],
+            providerIdentity: pluginProviderIdentity,
+            providerGeneration: generation,
+            readLogs: true,
+            lifecycleService: service
+        )
+    }
+}
+
+private enum ProviderGenerationReadiness: Sendable {
+    case healthy(UInt64)
+    case unavailable
+}
+
+private enum ProviderGenerationLifecycleFixtureError: Error {
+    case unavailable
+    case unexpectedEffect
+}
+
+private actor ProviderGenerationLifecycleFixture: DockerPluginLifecycleService {
+    private let readiness: ProviderGenerationReadiness
+    private(set) var readinessProbeCount = 0
+    private(set) var effectCallCount = 0
+
+    init(readiness: ProviderGenerationReadiness) {
+        self.readiness = readiness
+    }
+
+    func activeSandboxGeneration() throws -> UInt64 {
+        readinessProbeCount += 1
+        switch readiness {
+        case .healthy(let generation):
+            return generation
+        case .unavailable:
+            throw ProviderGenerationLifecycleFixtureError.unavailable
+        }
+    }
+
+    func startWriter(
+        _ request: DockerPluginWriterOpenRequest
+    ) throws -> DockerPluginServiceStartedWriter {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func reconcileWriterOpen(
+        _ request: LogDriverStartRequestV1
+    ) throws -> DockerPluginServiceWriterReconciliation {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func reconcileWriter(
+        _ request: LogDriverSessionCallV1
+    ) throws -> LogDriverSessionAcknowledgementV1 {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func fenceWriter(
+        _ request: LogDriverSessionCallV1
+    ) throws -> LogDriverSessionAcknowledgementV1 {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func closeWriter(
+        _ request: LogDriverSessionCallV1
+    ) throws -> LogDriverSessionAcknowledgementV1 {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func openReader(
+        _ request: DockerPluginReaderOpenRequest
+    ) throws -> DockerPluginServiceStartedReader {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func reconcileReaderOpen(
+        _ request: LogDriverReaderOpenRequestV1
+    ) throws -> DockerPluginServiceReaderReconciliation {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func reconcileReader(
+        _ request: LogDriverReaderCallV1
+    ) throws -> LogDriverReaderAcknowledgementV1 {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func closeReader(
+        _ request: LogDriverReaderCallV1
+    ) throws -> LogDriverReaderAcknowledgementV1 {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
+    }
+
+    func reclaimTerminalEffect(
+        _ request: LogDriverTerminalEffectReclaimV1
+    ) throws {
+        effectCallCount += 1
+        throw ProviderGenerationLifecycleFixtureError.unexpectedEffect
     }
 }

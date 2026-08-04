@@ -26,6 +26,106 @@ import Testing
 @testable import ContainerAPIService
 
 struct EngineLinuxSandboxDockerPluginServiceTests {
+    @Test func discoveryAllowsExactGenerationsOfOneProviderToCoexist() throws {
+        var registry = DockerPluginInstallationCollisionRegistry(
+            reservedDescriptors:
+                BuiltinLogDriverDescriptors.current.descriptors
+                + [SyslogLogDriverContract.descriptor()]
+        )
+
+        try registry.register(
+            driver: "example-plugin",
+            aliases: ["example-plugin-alias"],
+            providerID: "io.container.logging.plugin.example",
+            providerGeneration: 1,
+            servicePort: 12_001
+        )
+        try registry.register(
+            driver: "example-plugin",
+            aliases: ["example-plugin-alias"],
+            providerID: "io.container.logging.plugin.example",
+            providerGeneration: 2,
+            servicePort: 12_002
+        )
+
+        #expect(
+            throws:
+                EngineLinuxSandboxDockerPluginServiceError
+                .invalidInstalledAsset(
+                    "logging plugin provider generation is duplicated"
+                )
+        ) {
+            try registry.register(
+                driver: "example-plugin",
+                aliases: ["example-plugin-alias"],
+                providerID: "io.container.logging.plugin.example",
+                providerGeneration: 2,
+                servicePort: 12_003
+            )
+        }
+    }
+
+    @Test func discoveryStillRejectsCrossProviderNamesAndSharedPorts() throws {
+        var registry = DockerPluginInstallationCollisionRegistry(
+            reservedDescriptors:
+                BuiltinLogDriverDescriptors.current.descriptors
+                + [SyslogLogDriverContract.descriptor()]
+        )
+        try registry.register(
+            driver: "example-plugin",
+            aliases: ["example-plugin-alias"],
+            providerID: "io.container.logging.plugin.example",
+            providerGeneration: 1,
+            servicePort: 12_001
+        )
+
+        #expect(
+            throws:
+                EngineLinuxSandboxDockerPluginServiceError
+                .invalidInstalledAsset(
+                    "logging plugin name collides with an installed provider"
+                )
+        ) {
+            try registry.register(
+                driver: "other-plugin",
+                aliases: ["example-plugin-alias"],
+                providerID: "io.container.logging.plugin.other",
+                providerGeneration: 1,
+                servicePort: 12_002
+            )
+        }
+        #expect(
+            throws:
+                EngineLinuxSandboxDockerPluginServiceError
+                .invalidInstalledAsset(
+                    "logging plugin service port collides with an installed provider"
+                )
+        ) {
+            try registry.register(
+                driver: "other-plugin",
+                aliases: [],
+                providerID: "io.container.logging.plugin.other",
+                providerGeneration: 1,
+                servicePort: 12_001
+            )
+        }
+        #expect(
+            throws:
+                EngineLinuxSandboxDockerPluginServiceError
+                .invalidInstalledAsset(
+                    "logging plugin name collides with an installed provider"
+                )
+        ) {
+            try registry.register(
+                driver: "syslog",
+                aliases: [],
+                providerID: "io.container.logging.plugin.other",
+                providerGeneration: 1,
+                servicePort: 12_002
+            )
+        }
+    }
+
     @Test func authenticationKeyIsPersistentProtectedAndNotReplaceable()
         throws
     {

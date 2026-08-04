@@ -582,16 +582,11 @@ extension APIServer {
                 GCPLogsLogDriverContract.descriptor(),
                 JournaldLogDriverContract.descriptor(),
             ]
-            var registeredNames = Set(
-                BuiltinLogDriverDescriptors.current.registeredNames
-                    + builtInProviders.flatMap(\.registeredNames)
+            var collisions = DockerPluginInstallationCollisionRegistry(
+                reservedDescriptors:
+                    BuiltinLogDriverDescriptors.current.descriptors
+                    + builtInProviders
             )
-            var servicePorts = Set<UInt32>()
-            var providerIDs = Set(
-                [BuiltinLogDriverDescriptors.coreProvider.id]
-                    + builtInProviders.map(\.providerIdentity.id)
-            )
-            var providerGenerations = Set<String>()
             for plugin in plugins {
                 do {
                     guard let resourceRoot = plugin.resourceURL else {
@@ -605,33 +600,14 @@ extension APIServer {
                         try InstalledDockerPluginWorkloadManifestV1
                         .verify(resourceRoot: resourceRoot)
                     let manifest = assets.manifest
-                    let names = [manifest.driver] + manifest.aliases
-                    guard registeredNames.isDisjoint(with: names) else {
-                        throw
-                            EngineLinuxSandboxDockerPluginServiceError
-                            .invalidInstalledAsset(
-                                "logging plugin name collides with an installed provider"
-                            )
-                    }
-                    guard !servicePorts.contains(manifest.servicePort) else {
-                        throw
-                            EngineLinuxSandboxDockerPluginServiceError
-                            .invalidInstalledAsset(
-                                "logging plugin service port collides with an installed provider"
-                            )
-                    }
-                    let providerGeneration =
-                        "\(manifest.providerID)\u{0}\(manifest.providerGeneration)"
-                    guard
-                        !providerIDs.contains(manifest.providerID),
-                        !providerGenerations.contains(providerGeneration)
-                    else {
-                        throw
-                            EngineLinuxSandboxDockerPluginServiceError
-                            .invalidInstalledAsset(
-                                "logging plugin provider generation is duplicated"
-                            )
-                    }
+                    var candidateCollisions = collisions
+                    try candidateCollisions.register(
+                        driver: manifest.driver,
+                        aliases: manifest.aliases,
+                        providerID: manifest.providerID,
+                        providerGeneration: manifest.providerGeneration,
+                        servicePort: manifest.servicePort
+                    )
                     let installation =
                         try EngineLinuxSandboxDockerPluginServiceV1.create(
                             appRoot: appRoot,
@@ -641,10 +617,7 @@ extension APIServer {
                             authority: authority
                         )
                     installations.append(installation)
-                    registeredNames.formUnion(names)
-                    servicePorts.insert(manifest.servicePort)
-                    providerIDs.insert(manifest.providerID)
-                    providerGenerations.insert(providerGeneration)
+                    collisions = candidateCollisions
                     log.info(
                         "verified lazy Docker logging plugin",
                         metadata: [

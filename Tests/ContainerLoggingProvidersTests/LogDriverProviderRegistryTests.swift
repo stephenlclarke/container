@@ -96,16 +96,366 @@ struct LogDriverProviderRegistryTests {
         let retained = try #require(await registry.selection(named: "remote"))
         #expect(try await registry.install(second) == .replaced(previousGeneration: 1))
 
-        let staleSelection = await registry.selection(providerID: "test.remote", generation: 1)
-        #expect(staleSelection?.descriptor == nil)
+        let draining = try #require(
+            await registry.selection(providerID: "test.remote", generation: 1)
+        )
         let current = try #require(
             await registry.selection(providerID: "test.remote", generation: 2)
         )
         let retainedProvider = try #require(retained.provider as? RegistryTestProvider)
+        let drainingProvider = try #require(
+            draining.provider as? RegistryTestProvider
+        )
         let currentProvider = try #require(current.provider as? RegistryTestProvider)
         #expect(retainedProvider === first)
+        #expect(drainingProvider === first)
         #expect(currentProvider === second)
+        #expect(
+            await registry.generationPhase(
+                providerID: "test.remote",
+                generation: 1
+            ) == .draining
+        )
         #expect(try await registry.logDriverCatalog().descriptor(named: "remote")?.driver == "remote-v2")
+    }
+
+    @Test
+    func stageIsInvisibleUntilActivationAndRollbacksAreDeterministic() async throws {
+        let registry = LogDriverProviderRegistry()
+        let first = RegistryTestProvider(
+            descriptor: try Self.descriptor(
+                driver: "remote",
+                providerID: "test.remote",
+                generation: 1
+            )
+        )
+        let second = RegistryTestProvider(
+            descriptor: try Self.descriptor(
+                driver: "remote-v2",
+                aliases: ["remote"],
+                providerID: "test.remote",
+                generation: 2,
+                version: "2"
+            )
+        )
+        try await registry.install(first)
+
+        #expect(try await registry.stage(second) == .staged)
+        #expect(
+            await registry.generationPhase(
+                providerID: "test.remote",
+                generation: 2
+            ) == .staged
+        )
+        #expect(
+            try await registry.logDriverCatalog().descriptor(named: "remote")?
+                .driver == "remote"
+        )
+        await #expect(
+            throws: LogDriverProviderRegistryError.resolvedConfigurationMismatch
+        ) {
+            try await registry.selection(
+                for: Self.resolved(descriptor: second.storedDescriptor)
+            )
+        }
+
+        #expect(
+            try await registry.activate(
+                providerID: "test.remote",
+                generation: 2
+            ) == .activated(previousGeneration: 1)
+        )
+        #expect(
+            await registry.generationPhase(
+                providerID: "test.remote",
+                generation: 1
+            ) == .draining
+        )
+        #expect(
+            try await registry.logDriverCatalog().descriptor(named: "remote")?
+                .driver == "remote-v2"
+        )
+
+        let fallback = try await registry.rollbackActive(
+            providerID: "test.remote",
+            generation: 2
+        )
+        let fallbackProvider = try #require(
+            fallback.provider as? RegistryTestProvider
+        )
+        #expect(fallbackProvider === first)
+        #expect(await registry.activeGeneration(providerID: "test.remote") == 1)
+        let rolledBackActive = await registry.selection(
+            providerID: "test.remote",
+            generation: 2
+        )
+        #expect(rolledBackActive?.descriptor == nil)
+
+        #expect(try await registry.stage(second) == .staged)
+        #expect(
+            try await registry.rollbackStaged(
+                providerID: "test.remote",
+                generation: 2
+            )
+        )
+        let rolledBackStage = await registry.selection(
+            providerID: "test.remote",
+            generation: 2
+        )
+        #expect(rolledBackStage?.descriptor == nil)
+        #expect(await registry.activeGeneration(providerID: "test.remote") == 1)
+    }
+
+    @Test
+    func durableRestartRestoresOneActiveGenerationAndRetainedDrain() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "container-provider-registry-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("state-v1.json")
+        let persistence = try FileLogDriverProviderRegistryPersistenceV1(
+            fileURL: fileURL
+        )
+        let firstDescriptor = try Self.descriptor(
+            driver: "remote",
+            providerID: "test.remote",
+            generation: 1
+        )
+        let secondDescriptor = try Self.descriptor(
+            driver: "remote-v2",
+            aliases: ["remote"],
+            providerID: "test.remote",
+            generation: 2,
+            version: "2"
+        )
+        let firstRegistry = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        try await firstRegistry.install(
+            RegistryTestProvider(descriptor: firstDescriptor)
+        )
+        try await firstRegistry.install(
+            RegistryTestProvider(descriptor: secondDescriptor)
+        )
+        let expectedState = try await firstRegistry.stateSnapshot()
+
+        let reconstructed = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        let reconstructedFirst = RegistryTestProvider(
+            descriptor: firstDescriptor
+        )
+        let reconstructedSecond = RegistryTestProvider(
+            descriptor: secondDescriptor
+        )
+        #expect(
+            try await reconstructed.stage(reconstructedFirst)
+                == .recovered(.draining)
+        )
+        #expect(
+            try await reconstructed.stage(reconstructedSecond)
+                == .recovered(.active)
+        )
+        #expect(try await reconstructed.stateSnapshot() == expectedState)
+        #expect(await reconstructed.activeGeneration(providerID: "test.remote") == 2)
+        let active = try #require(await reconstructed.selection(named: "remote"))
+        let activeProvider = try #require(
+            active.provider as? RegistryTestProvider
+        )
+        #expect(activeProvider === reconstructedSecond)
+        let draining = try #require(
+            await reconstructed.selection(
+                providerID: "test.remote",
+                generation: 1
+            )
+        )
+        let drainingProvider = try #require(
+            draining.provider as? RegistryTestProvider
+        )
+        #expect(drainingProvider === reconstructedFirst)
+
+        let permissions =
+            try FileManager.default.attributesOfItem(
+                atPath: fileURL.path
+            )[.posixPermissions] as? NSNumber
+        #expect(permissions?.uint16Value == 0o600)
+    }
+
+    @Test
+    func durableRestartRejectsChangedDescriptorForExistingGeneration() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "container-provider-registry-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let persistence = try FileLogDriverProviderRegistryPersistenceV1(
+            fileURL: directory.appendingPathComponent("state-v1.json")
+        )
+        let firstRegistry = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        try await firstRegistry.install(
+            RegistryTestProvider(
+                descriptor: try Self.descriptor(
+                    driver: "remote",
+                    providerID: "test.remote",
+                    generation: 1
+                )
+            )
+        )
+
+        let reconstructed = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        let changed = RegistryTestProvider(
+            descriptor: try Self.descriptor(
+                driver: "changed",
+                providerID: "test.remote",
+                generation: 1
+            )
+        )
+        await #expect(
+            throws: LogDriverProviderRegistryError.providerGenerationConflict(
+                providerID: "test.remote",
+                generation: 1
+            )
+        ) {
+            try await reconstructed.stage(changed)
+        }
+    }
+
+    @Test
+    func persistenceFailureNeverPublishesAnUncommittedTransition() async throws {
+        let persistence = RegistryFailingPersistence()
+        let registry = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        let first = RegistryTestProvider(
+            descriptor: try Self.descriptor(
+                driver: "remote",
+                providerID: "test.remote",
+                generation: 1
+            )
+        )
+        let second = RegistryTestProvider(
+            descriptor: try Self.descriptor(
+                driver: "remote-v2",
+                aliases: ["remote"],
+                providerID: "test.remote",
+                generation: 2,
+                version: "2"
+            )
+        )
+        try await registry.install(first)
+
+        persistence.failNextSave()
+        await #expect(throws: RegistryTestPersistenceError.save) {
+            try await registry.stage(second)
+        }
+        #expect(await registry.activeGeneration(providerID: "test.remote") == 1)
+        let uncommittedStage = await registry.selection(
+            providerID: "test.remote",
+            generation: 2
+        )
+        #expect(uncommittedStage?.descriptor == nil)
+
+        try await registry.stage(second)
+        persistence.failNextSave()
+        await #expect(throws: RegistryTestPersistenceError.save) {
+            try await registry.activate(
+                providerID: "test.remote",
+                generation: 2
+            )
+        }
+        #expect(await registry.activeGeneration(providerID: "test.remote") == 1)
+        #expect(
+            await registry.generationPhase(
+                providerID: "test.remote",
+                generation: 2
+            ) == .staged
+        )
+        #expect(
+            try await registry.logDriverCatalog().descriptor(named: "remote")?
+                .driver == "remote"
+        )
+    }
+
+    @Test
+    func filePersistenceRejectsLoosePermissionsUnknownFieldsAndSymlinks() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "container-provider-registry-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let fileURL = directory.appendingPathComponent("state-v1.json")
+        let persistence = try FileLogDriverProviderRegistryPersistenceV1(
+            fileURL: fileURL
+        )
+        let registry = try await LogDriverProviderRegistry.open(
+            persistence: persistence
+        )
+        try await registry.install(
+            RegistryTestProvider(
+                descriptor: try Self.descriptor(
+                    driver: "remote",
+                    providerID: "test.remote",
+                    generation: 1
+                )
+            )
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o644],
+            ofItemAtPath: fileURL.path
+        )
+        await #expect(
+            throws: LogDriverProviderRegistryError.invalidPersistedState
+        ) {
+            _ = try await LogDriverProviderRegistry.open(
+                persistence: persistence
+            )
+        }
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: fileURL.path
+        )
+        var object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: fileURL))
+                as? [String: Any]
+        )
+        object["unexpected"] = true
+        try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+            .write(to: fileURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: fileURL.path
+        )
+        await #expect(throws: DecodingError.self) {
+            _ = try await LogDriverProviderRegistry.open(
+                persistence: persistence
+            )
+        }
+
+        let targetURL = directory.appendingPathComponent("target.json")
+        try Data("{}".utf8).write(to: targetURL)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: targetURL.path
+        )
+        try FileManager.default.removeItem(at: fileURL)
+        try FileManager.default.createSymbolicLink(
+            at: fileURL,
+            withDestinationURL: targetURL
+        )
+        await #expect(
+            throws: LogDriverProviderRegistryError.invalidPersistedState
+        ) {
+            _ = try await LogDriverProviderRegistry.open(
+                persistence: persistence
+            )
+        }
     }
 
     @Test
@@ -385,6 +735,36 @@ struct LogDriverProviderRegistryTests {
 
 private enum RegistryTestProviderError: Error {
     case unsupported
+}
+
+private enum RegistryTestPersistenceError: Error {
+    case save
+}
+
+private final class RegistryFailingPersistence:
+    LogDriverProviderRegistryPersisting, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var state: LogDriverProviderRegistryStateV1?
+    private var shouldFailNextSave = false
+
+    func load() -> LogDriverProviderRegistryStateV1? {
+        lock.withLock { state }
+    }
+
+    func save(_ state: LogDriverProviderRegistryStateV1) throws {
+        try lock.withLock {
+            if shouldFailNextSave {
+                shouldFailNextSave = false
+                throw RegistryTestPersistenceError.save
+            }
+            self.state = state
+        }
+    }
+
+    func failNextSave() {
+        lock.withLock { shouldFailNextSave = true }
+    }
 }
 
 private final class RegistryTestProvider: ContainerLogDriverProvider, @unchecked Sendable {

@@ -555,7 +555,9 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         journaldService: (any JournaldService)? = nil,
         dockerPluginInstallations: [DockerPluginLogDriverInstallation] = [],
         providerGeneration: UInt64 = 1,
-        baseCatalog: LogDriverCatalog = BuiltinLogDriverDescriptors.current
+        baseCatalog: LogDriverCatalog = BuiltinLogDriverDescriptors.current,
+        registryPersistence:
+            (any LogDriverProviderRegistryPersisting)? = nil
     ) async throws -> Self {
         let configurations = BuiltinRemoteLogDriverConfigurationRegistry()
         let syslog = SyslogLogDriverProvider(
@@ -631,7 +633,15 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                     fifoFactory: fifoFactory
                 )
             }
-        let registry = LogDriverProviderRegistry(baseCatalog: baseCatalog)
+        let registry: LogDriverProviderRegistry
+        if let registryPersistence {
+            registry = try await LogDriverProviderRegistry.open(
+                baseCatalog: baseCatalog,
+                persistence: registryPersistence
+            )
+        } else {
+            registry = LogDriverProviderRegistry(baseCatalog: baseCatalog)
+        }
         try await registry.install(syslog)
         try await registry.install(fluentd)
         try await registry.install(gelf)
@@ -641,9 +651,10 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         if let journald {
             try await registry.install(journald)
         }
-        for dockerPlugin in dockerPlugins {
-            try await registry.install(dockerPlugin)
-        }
+        try await installDockerPluginGenerations(
+            dockerPlugins,
+            registry: registry
+        )
         return Self(
             registry: registry,
             configurations: configurations,
@@ -656,5 +667,122 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
             journald: journald,
             dockerPlugins: dockerPlugins
         )
+    }
+
+    private static func installDockerPluginGenerations(
+        _ providers: [any EngineLinuxSandboxLogDriverProvider],
+        registry: LogDriverProviderRegistry
+    ) async throws {
+        var generations = [String: [(UInt64, any EngineLinuxSandboxLogDriverProvider)]]()
+        for provider in providers {
+            let descriptor = try await provider.descriptor
+            generations[descriptor.providerIdentity.id, default: []].append(
+                (descriptor.providerGeneration, provider)
+            )
+        }
+
+        for providerID in generations.keys.sorted() {
+            let candidates = generations[providerID, default: []].sorted {
+                $0.0 < $1.0
+            }
+            for (_, provider) in candidates {
+                _ = try await registry.stage(provider)
+            }
+
+            try await recoverHealthyActiveGeneration(
+                providerID: providerID,
+                registry: registry
+            )
+            for (generation, provider) in candidates {
+                guard
+                    await registry.generationPhase(
+                        providerID: providerID,
+                        generation: generation
+                    ) == .staged
+                else {
+                    continue
+                }
+                if let active = await registry.activeGeneration(
+                    providerID: providerID
+                ), generation < active {
+                    _ = try await registry.rollbackStaged(
+                        providerID: providerID,
+                        generation: generation
+                    )
+                    continue
+                }
+                do {
+                    let sandboxGeneration =
+                        try await provider
+                        .activeSandboxGeneration()
+                    guard sandboxGeneration > 0 else {
+                        throw DockerPluginProtocolError.invalidSessionFence
+                    }
+                    _ = try await registry.activate(
+                        providerID: providerID,
+                        generation: generation
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    _ = try await registry.rollbackStaged(
+                        providerID: providerID,
+                        generation: generation
+                    )
+                }
+            }
+        }
+    }
+
+    private static func recoverHealthyActiveGeneration(
+        providerID: String,
+        registry: LogDriverProviderRegistry
+    ) async throws {
+        while let active = await registry.activeGeneration(
+            providerID: providerID
+        ) {
+            guard
+                let selection = await registry.selection(
+                    providerID: providerID,
+                    generation: active
+                ),
+                let provider = selection.provider
+                    as? any EngineLinuxSandboxLogDriverProvider
+            else {
+                do {
+                    _ = try await registry.rollbackActive(
+                        providerID: providerID,
+                        generation: active
+                    )
+                    continue
+                } catch LogDriverProviderRegistryError
+                    .rollbackGenerationUnavailable
+                {
+                    return
+                }
+            }
+            do {
+                let sandboxGeneration =
+                    try await provider
+                    .activeSandboxGeneration()
+                guard sandboxGeneration > 0 else {
+                    throw DockerPluginProtocolError.invalidSessionFence
+                }
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                do {
+                    _ = try await registry.rollbackActive(
+                        providerID: providerID,
+                        generation: active
+                    )
+                } catch LogDriverProviderRegistryError
+                    .rollbackGenerationUnavailable
+                {
+                    return
+                }
+            }
+        }
     }
 }

@@ -105,12 +105,20 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         let eventLoopOwner = AuthorityRemoteLogEventLoopOwner(
             threadCount: threadCount
         )
+        let registryPersistence = try FileLogDriverProviderRegistryPersistenceV1(
+            fileURL:
+                appRoot
+                .appendingPathComponent("engine-services", isDirectory: true)
+                .appendingPathComponent("docker-plugins", isDirectory: true)
+                .appendingPathComponent("provider-generations-v1.json")
+        )
         let providers = try await BuiltinRemoteLogDriverProviderSet.install(
             eventLoopGroup: eventLoopOwner.group,
             awsLogsClientFactory: awsLogsClientFactory,
             journaldService: journaldService,
             dockerPluginInstallations: dockerPluginInstallations,
-            providerGeneration: providerGeneration
+            providerGeneration: providerGeneration,
+            registryPersistence: registryPersistence
         )
         let protectedEffects = try ProtectedLoggingEffectStore(
             rootURL: appRoot.appendingPathComponent(
@@ -127,7 +135,6 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 
     public func logDriverCatalog() async throws -> LogDriverCatalog {
-        let catalog = try await advertisedLogDriverCatalog()
         var unavailableProviderIDs = Set<String>()
         if let journald = providers.journald {
             do {
@@ -139,21 +146,23 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 unavailableProviderIDs.insert(descriptor.providerIdentity.id)
             }
         }
-        for dockerPlugin in providers.dockerPlugins {
-            do {
-                _ = try await dockerPlugin.activeSandboxGeneration()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                let descriptor = try await dockerPlugin.descriptor
-                unavailableProviderIDs.insert(descriptor.providerIdentity.id)
+        let pluginProviderIDs = Set(
+            await providers.registry.activeSelections(kind: .dockerPlugin)
+                .map { $0.descriptor.providerIdentity.id }
+        )
+        for providerID in pluginProviderIDs {
+            if try await !recoverHealthyPluginGeneration(
+                providerID: providerID
+            ) {
+                unavailableProviderIDs.insert(providerID)
             }
         }
+        let currentCatalog = try await advertisedLogDriverCatalog()
         guard !unavailableProviderIDs.isEmpty else {
-            return catalog
+            return currentCatalog
         }
         return try LogDriverCatalog(
-            descriptors: catalog.descriptors.filter {
+            descriptors: currentCatalog.descriptors.filter {
                 !unavailableProviderIDs.contains($0.providerIdentity.id)
             }
         )
@@ -161,6 +170,42 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
 
     public func advertisedLogDriverCatalog() async throws -> LogDriverCatalog {
         try await providers.registry.logDriverCatalog()
+    }
+
+    private func recoverHealthyPluginGeneration(
+        providerID: String
+    ) async throws -> Bool {
+        while let active = await providers.registry.activeGeneration(
+            providerID: providerID
+        ) {
+            guard
+                let selection = await providers.registry.selection(
+                    providerID: providerID,
+                    generation: active
+                ),
+                let provider = selection.provider
+                    as? any EngineLinuxSandboxLogDriverProvider
+            else {
+                return false
+            }
+            do {
+                return try await provider.activeSandboxGeneration() > 0
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                do {
+                    _ = try await providers.registry.rollbackActive(
+                        providerID: providerID,
+                        generation: active
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    return false
+                }
+            }
+        }
+        return false
     }
 
     /// Prepares one provider session and substitutes authority-owned pipes for
