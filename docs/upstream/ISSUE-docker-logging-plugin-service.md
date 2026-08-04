@@ -50,6 +50,17 @@ claims, or provider-generation-specific workload.
   pooling and immediate queued-waiter cancellation.
 - [x] Durable writer and reader claims, stable tokens, reconciliation,
   uncertainty, replay, terminal effects, and reclamation.
+- [x] Suspension-safe writer admission prevents concurrent stdout and stderr
+  pumps from assigning one sequence to different Docker frames.
+- [x] Accepted mutating operations survive connection HUP and remain
+  replayable under the service lifetime; blocking reader-next calls remain
+  connection-cancellable.
+- [x] Definitive plugin rejection releases a new local claim for safe replay,
+  while non-definitive starts remain durably uncertain and cannot repeat the
+  plugin effect.
+- [x] Service readiness admits the workload once and retries only the exact
+  running generation's dial/probe; terminal starts cannot generate a mutation
+  loop.
 - [x] Real Linux FIFO write, cancellation, stop ordering, and fence ordering.
 - [x] Real readable and write-only Unix HTTP plugin conformance, including the
   absence of `ReadLogs` for the write-only case.
@@ -82,6 +93,11 @@ claims, or provider-generation-specific workload.
 - [x] The focused cutover/runtime gate passes 63 tests in 9 suites and the
   scoped Container gate passes 1,868 Swift Testing tests in 216 suites plus 94
   XCTest tests under warnings-as-errors.
+- [x] The exact rebuilt MBP artifact completed five consecutive genuine
+  two-stream workloads: every run reached `stopped`, appended one stdout and
+  one stderr Docker frame (76 bytes total), closed its process generation with
+  disposition `complete`, and left no active service writer, reader, or pending
+  effect removal.
 
 ## Remaining programme work
 
@@ -112,6 +128,11 @@ handoff is held until all parity development waves are complete.
 - `6e462443dd744bda0b605bf26e093833d7818e77` — signed provider-generation
   quiescence, durable configuration/history migration, terminal proof, atomic
   cutover, exact workload stop, and final generation reclamation.
+- `5a9802499bc720994d50d055a63a1710a75795d5` — signed installed-fixture,
+  two-stream delivery, native read, sandbox-loss recovery, secure runtime,
+  deterministic terminalisation, and lifecycle diagnostics checkpoint.
+- `0c4738c4a273730ec98bd948d90faa991c25e5b8` — signed single-admission
+  protected-service readiness and exact-generation dial/probe retry checkpoint.
 - [container#47](https://github.com/stephenlclarke/container/issues/47) records
   the queued connection-lane cancellation defect and is closed with regression
   coverage.
@@ -120,3 +141,9 @@ handoff is held until all parity development waves are complete.
 - [container#49](https://github.com/stephenlclarke/container/issues/49) records
   the rejected/discarded plugin-generation defect and is closed with durable
   registry and discovery coverage.
+- [container#50](https://github.com/stephenlclarke/container/issues/50) through
+  [container#59](https://github.com/stephenlclarke/container/issues/59) record
+  the staged installation, virtiofs, fixture shutdown, catalog, XPC reply,
+  readiness, journald runtime, native read, sandbox recovery, and two-stream
+  delivery defects. All are closed with focused regressions, signed local
+  checkpoints, and exact MBP runtime evidence.

@@ -92,6 +92,12 @@ connection-cancellable so a disconnected reader does not remain parked. A
 connection already known to be closed is rejected before any buffered request
 is admitted.
 
+The host connector admits the sandbox and protected service workload once per
+connection attempt. After the exact workload generation is running, only its
+dial and generation probe are retried during the readiness window. A terminal
+workload-start error therefore returns immediately instead of allocating new
+operation or process generations in a tight loop.
+
 Blocked FIFO writes wait in the kernel rather than spin and observe peer
 disconnect/cancellation. A cancelled caller waiting for a busy connection lane
 is removed immediately. Provider service crashes fail only their exact

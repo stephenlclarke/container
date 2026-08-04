@@ -68,11 +68,33 @@ lane, then replays the byte-identical authenticated operation once. Queued
 cancellation removes the exact waiter immediately; active cancellation shuts
 down the socket so a blocked read or FIFO write can unwind.
 
+Each Swift writer also serializes its suspension points. Concurrent stdout and
+stderr pumps cannot observe the same next sequence: a write advances the
+sequence only after the lifecycle service accepts that exact frame, and
+`flush`, `close`, and `fence` share the same cancellation-safe admission gate.
+
 The Go service authenticates and validates every bounded request, stores
 claims atomically before effects, and keeps an in-memory bounded response
 ledger for same-process replay. Durable writer state prevents a second plugin
 start after a service crash; durable reader state prevents a second read stream.
 Unprovable outcomes remain explicitly uncertain for authority reconciliation.
+
+An authenticated mutating request executes under the service lifetime after
+admission rather than under its connection lifetime. A peer HUP may lose the
+reply but cannot cancel an accepted plugin or durable-state effect; an exact
+replay observes the completed operation. Only the blocking reader-next call
+retains connection cancellation, and a connection already known to be closed
+cannot admit a buffered request. Successful exact plugin capabilities are
+cached for the service process lifetime. A definitive plugin rejection removes
+the newly claimed FIFO and writer so replay is safe, whereas transport and
+ambiguous plugin failures retain an uncertain claim and prevent a second
+effect.
+
+The host connector admits the sandbox and protected service workload once per
+connection attempt. Once that exact process generation is running, readiness
+retries only dial and generation probing. A terminal start error returns
+immediately, preserving its first cause without allocating repeated lifecycle
+operations.
 
 Writer records carry monotonically increasing sequences and stable frame
 digests. Replaying the same sequence and frame is a no-op; changing the bytes is
@@ -173,12 +195,30 @@ Current development MacBook Pro evidence after provider-generation cutover:
   FIFO, readable plugin, write-only plugin, cancellation, private-key/state,
   listener, and connection-HUP tests.
 - `make check`, Markdown lint, and `git diff --check` passed.
+- The final rebuilt lifecycle-service artifact completed five consecutive
+  genuine `logging-plugin-e2e` starts. Each reached `stopped`, appended exactly
+  76 bytes (one stdout and one stderr Docker frame), and process generations
+  48-52 closed with disposition `complete`; the service retained zero writers
+  and readers and the authority ledger retained zero pending effect removals.
+- After the bounded-readiness follow-up was installed, both protected services
+  reached `running` on sandbox generation 27 with only operation generation 1;
+  workload process generation 53 then appended the expected 76 bytes and
+  closed `complete`.
+- Focused current-head regressions pass for suspension-safe sequence ordering,
+  two-stream authority delivery, accepted-operation connection loss, protocol
+  replay, definitive rejection recovery, uncertain ownership, capability
+  caching, fenced close, public failure projection, and connection-HUP
+  cancellation.
 - Signed implementation commit:
   `08677dc8b5a677533de80cf634fee1d14f4da069`.
 - Signed staged-generation implementation commit:
   `70f976611bd5e39a9bfeb4965df7c073bbd789ad`.
 - Signed provider-generation cutover implementation commit:
   `6e462443dd744bda0b605bf26e093833d7818e77`.
+- Signed lifecycle recovery implementation commit:
+  `5a9802499bc720994d50d055a63a1710a75795d5`.
+- Signed bounded-readiness implementation commit:
+  `0c4738c4a273730ec98bd948d90faa991c25e5b8`.
 
 The local SwiftPM mirror intentionally replaces the remote Containerization
 package during development. SwiftPM therefore removes that remote pin from its
@@ -193,6 +233,13 @@ logging behavior failure.
 - [x] The Linux service, not a reconstructible macOS actor, owns protected
   writer and reader effects.
 - [x] Lost responses replay one operation and cannot duplicate plugin effects.
+- [x] Concurrent stdout and stderr delivery cannot reuse one writer sequence.
+- [x] Connection loss cannot cancel an accepted mutating effect; reader-next
+  remains disconnect-cancellable.
+- [x] Definitive plugin rejection is retryable without weakening uncertain
+  ownership fencing.
+- [x] Terminal protected-service starts return once; only an exact running
+  generation's dial/probe is retried.
 - [x] Every lifecycle call is provider, generation, lease, session, and token
   fenced.
 - [x] Readable and write-only plugin behavior is independently exercised.
@@ -223,3 +270,7 @@ be published coherently.
   closed with private runtime-mount regression coverage.
 - [container#49](https://github.com/stephenlclarke/container/issues/49) is
   closed with durable multi-generation activation and rollback coverage.
+- [container#50](https://github.com/stephenlclarke/container/issues/50) through
+  [container#59](https://github.com/stephenlclarke/container/issues/59) are
+  closed with signed local checkpoints, focused regressions, and exact staged
+  MBP evidence for the complete installed-service lifecycle.
