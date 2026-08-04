@@ -114,6 +114,50 @@ struct LoggingHandoffPayloadTests {
     }
 
     @Test
+    func `provider neutral portable history decodes as native logging handoff`() throws {
+        let package = try ProviderHandoffPortableLoggingPayloadCodec.package(
+            containers: [
+                ProviderHandoffPortableLoggingContainerV1(
+                    containerID: "portable-container",
+                    providerID: "devcontainer.apple-container",
+                    providerVersion: "1",
+                    records: [
+                        ProviderHandoffPortableLogRecordV1(
+                            secondsSinceUnixEpoch: 1_786_000_000,
+                            nanoseconds: 123_000_000,
+                            stream: .stderr,
+                            data: Data("portable history\n".utf8)
+                        )
+                    ]
+                )
+            ],
+            sourceStateRootUUID: sourceRoot
+        )
+
+        let decoded = try LoggingHandoffPayloadCodec.decodeVerified(
+            package,
+            sourceStateRootUUID: sourceRoot,
+            sourceAuthorityLineageUUID: sourceLineage,
+            sourceLineageKeyVersion: 7,
+            sourceLineageHMACSHA256Key: lineageKey
+        )
+
+        let container = try #require(decoded.containers.first)
+        let history = try #require(decoded.historyStores.values.first)
+        #expect(container.containerID == "portable-container")
+        #expect(container.requested.driver == nil)
+        #expect(container.sourceResolved.driver == "json-file")
+        #expect(container.sourceResolved.delivery.effectiveMode == .blocking)
+        #expect(container.sourceResolved.readPolicy.source == .direct)
+        #expect(history.kind == .dockerJSONFile)
+        #expect(history.disposition == .importVerified)
+        #expect(
+            history.bytes?.range(of: Data("portable history\\n".utf8))
+                != nil
+        )
+    }
+
+    @Test
     func `legacy logging requires explicit resolution before export`() throws {
         let configuration = ContainerLogConfiguration(
             storage: .local,
