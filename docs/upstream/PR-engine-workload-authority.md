@@ -8,6 +8,8 @@
   validates exact receipts, and reconciles lost boot or shutdown responses.
 - Preserve typed lease/effect identity across start, compensation, stop,
   remove, crash recovery, and idempotent replay.
+- Add exact workload-stop intent, observation, response-loss reconciliation,
+  and durable effectless-stop recovery for provider workload reclamation.
 
 ## Type of change
 
@@ -54,6 +56,8 @@ its remaining cutover boundary are documented in
   effect counts, and effect uniqueness are validated on construction and load.
 - Unknown top-level snapshot fields fail closed.
 - File-backed ledgers reject symbolic links and use mode `0600`.
+- Ledger directories are mode `0700`; file replacement and directory metadata
+  are fsynced before publication, and symbolic-link ancestry fails closed.
 - A persistence failure fences the in-memory authority from later mutations.
 
 ## Code map
@@ -94,6 +98,11 @@ Results on the development MacBook Pro:
 - pinned semantic helper tests and script gates passed;
 - formatting, license, and whitespace checks passed;
 - implementation commit is signed.
+- current focused cutover/runtime gate: 63 tests in 9 suites passed;
+- current scoped package gate: 1,868 Swift Testing tests in 216 suites plus 94
+  XCTest tests passed under warnings-as-errors;
+- exact workload stop/replay and lost-response recovery are included in signed
+  commit `6e462443dd744bda0b605bf26e093833d7818e77`.
 
 ## Review checklist
 
@@ -104,4 +113,6 @@ Results on the development MacBook Pro:
 - [x] Interrupted effects retain sufficient reconciliation evidence.
 - [x] The sandbox manager cannot shut down with an active workload.
 - [x] Persistence is bounded, atomic, private, and symlink-safe.
+- [x] Exact workload stop cannot affect a replacement process generation and
+  cannot commit before a stopped or absent runtime observation.
 - [x] The change introduces no Docker-specific policy.

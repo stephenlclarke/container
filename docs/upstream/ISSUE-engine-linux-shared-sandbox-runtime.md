@@ -23,8 +23,8 @@ Without a shared runtime boundary:
 - Launch one Engine-owned Linux sandbox helper from a bounded, private,
   durable configuration.
 - Expose typed XPC operations for exact sandbox boot, boot observation,
-  shutdown, shutdown observation, workload start, and workload-start
-  observation.
+  shutdown, shutdown observation, workload start, workload-start observation,
+  exact workload stop, and workload-stop observation.
 - Expose a generic, exact-generation service dial that transfers only a
   connected vsock file descriptor to the authority.
 - Consult authoritative Containerization snapshots before every decision.
@@ -60,6 +60,8 @@ ready.
 - [x] Launch configuration is validated, atomically written, and mode `0600`.
 - [x] Exact sandbox boot/shutdown calls are idempotent and observable.
 - [x] Exact workload materialization/start is idempotent and observable.
+- [x] Exact workload stop is idempotent, generation-fenced, and observable
+  after response loss.
 - [x] Lost-response state is reconciled from typed Containerization snapshots.
 - [x] Conflicting and unattributed operations fail closed.
 - [x] Sealed bundle identity and canonical root path are validated.
@@ -99,3 +101,8 @@ The production journald follow-up is retained at signed commit
 pinned worker, uses exact workload-generation dials, withdraws readiness on
 terminal failure, rematerializes safely, and probes the live generation before
 catalog advertisement. Other protected service domains remain separate.
+
+The provider-generation reclamation follow-up is retained at signed commit
+`6e462443dd744bda0b605bf26e093833d7818e77`. It adds exact workload-stop XPC
+routes and host-authority reconciliation so an isolated logging-plugin
+generation is stopped before its durable registry entry is removed.

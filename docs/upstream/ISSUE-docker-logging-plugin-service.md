@@ -57,12 +57,6 @@ claims, or provider-generation-specific workload.
   lease, provider generation, and semantic request digest.
 - [x] Direct provider readers are routed through the authority and remain
   separate from live process attachment.
-- [x] macOS Go race tests and vet pass at 70.2% statement coverage.
-- [x] Pinned Linux/arm64 Go race tests pass at 74.1% statement coverage.
-- [x] Focused Swift plugin/provider/authority suites pass under
-  warnings-as-errors.
-- [x] The scoped Container gate passes 1,852 Swift Testing tests in 216 suites
-  plus 94 XCTest tests.
 - [x] Repository formatting, licence, Markdown, and whitespace gates pass.
 - [x] Distinct generations of one provider can coexist through discovery,
   staging, readiness probing, one-generation publication, exact draining
@@ -72,14 +66,25 @@ claims, or provider-generation-specific workload.
   cannot publish an in-memory transition.
 - [x] Restart and failed-readiness tests prove registry recovery performs no
   writer or reader lifecycle effect.
+- [x] A durable quiescing phase withdraws generation N from new catalogue and
+  session admission while exact-generation recovery remains available.
+- [x] Every stopped container configuration and protected option reference is
+  revalidated and durably resealed for N+1 before alias cutover.
+- [x] Direct-reader history migration uses a replay-stable provider receipt;
+  unsupported or mismatched migration cancels quiescence without mutation.
+- [x] Cutover proves writer, reader, detached-cleanup, pending-removal, and
+  durable-reference terminal state before activating N+1 and reclaiming N.
+- [x] The isolated service persists history receipts, rejects reclamation with
+  live effects, and stops the exact provider workload with lost-response
+  reconciliation before the registry forgets generation N.
+- [x] macOS Go race/vet passes at 70.7% statement coverage and the pinned
+  Linux/arm64 race gate passes at 74.3% statement coverage.
+- [x] The focused cutover/runtime gate passes 63 tests in 9 suites and the
+  scoped Container gate passes 1,868 Swift Testing tests in 216 suites plus 94
+  XCTest tests under warnings-as-errors.
 
 ## Remaining programme work
 
-- Quiesce new generation-N claims before cutover, revalidate or migrate every
-  durable N configuration/history reference, prove all N sessions/readers and
-  cleanup effects terminal, and then reclaim N. The registry now retains and
-  recovers N while N+1 is staged/active, but complete reference-aware drain and
-  migration orchestration is not yet implemented.
 - Exercise a distributable third-party OCI plugin bundle through the complete
   installed discovery, materialization, Container create/start/logs/stop/delete,
   and restart path.
@@ -104,6 +109,9 @@ handoff is held until all parity development waves are complete.
 - `70f976611bd5e39a9bfeb4965df7c073bbd789ad` — signed durable provider
   generation staging, activation, retained exact routing, rollback, restart
   recovery, discovery collision authority, and failure/security tests.
+- `6e462443dd744bda0b605bf26e093833d7818e77` — signed provider-generation
+  quiescence, durable configuration/history migration, terminal proof, atomic
+  cutover, exact workload stop, and final generation reclamation.
 - [container#47](https://github.com/stephenlclarke/container/issues/47) records
   the queued connection-lane cancellation defect and is closed with regression
   coverage.

@@ -62,6 +62,11 @@ reclaims that exact process generation and permits later rematerialization.
 The production journald service uses this path, including exact OCI
 materialization and readiness-probed catalog publication.
 
+Authority-requested protected workload reclamation uses an exact stop request
+and observation route. The helper generation-fences and coalesces the request;
+the host reconciles a lost response before durably recording the workload
+stopped and removing the provider generation.
+
 ## Code map
 
 - `Sources/Services/ContainerAPIService/Server/Containers/EngineLinuxSandboxAuthority.swift`
@@ -119,6 +124,10 @@ Results on the development MacBook Pro:
   journald supervision commit
   `84d160671f3ba6c265a02b49b2ff4309f6584d30` is signed; the current Engine Linux
   sandbox filter passed 14 tests and its Thread Sanitizer run reported no race.
+- exact protected-workload stop, response-loss reconciliation, and provider
+  generation reclamation commit
+  `6e462443dd744bda0b605bf26e093833d7818e77` is signed; the current focused
+  cutover/runtime filter passed 63 tests in 9 suites.
 
 ## Deliberate boundaries and review checklist
 
@@ -134,6 +143,8 @@ Results on the development MacBook Pro:
 - [x] Terminal monitored workloads withdraw readiness, are reclaimed under
   exact generation fencing, and can be rematerialized without trusting a stale
   running receipt.
+- [x] Authority-requested protected workload stop is generation-fenced and
+  replay-safe after response loss.
 - [ ] Add scoped exec/attach/wait/stats/copy/stop/remove helper routes.
 - [ ] Implement production effect controllers and guest network/IPAM broker.
 - [ ] Cut `ContainersService` lifecycle traffic over under feature gating,
@@ -143,3 +154,8 @@ The first specialized Engine adapter follow-up is signed at
 `2d7512c54cfe2fc01d506e08c0300d6f432fd437`: Docker log reads now use the
 existing Container authority and a lossless active-generation wire. Shared
 sandbox lifecycle cutover remains outstanding.
+
+Provider-generation cutover at signed commit
+`6e462443dd744bda0b605bf26e093833d7818e77` uses the exact protected-workload
+stop route. General `ContainersService` stop/remove routing remains part of the
+shared-sandbox lifecycle cutover.

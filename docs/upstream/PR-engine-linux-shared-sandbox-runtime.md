@@ -5,7 +5,7 @@
 - Add a production `container-runtime-linux shared-sandbox` helper backed by
   Containerization's multi-workload `LinuxPod`.
 - Add exact typed XPC requests, receipts, and observations for sandbox and
-  workload-start operations.
+  workload-start/workload-stop operations.
 - Add a generation-fenced XPC/FD route for authority-owned protected service
   connections over the shared VM's vsock device.
 - Materialize sealed workload bundles into the shared VM with independent
@@ -55,6 +55,13 @@ retained running receipt, exact durable authority state is reclaimed, and a
 later process generation can rematerialize the workload. The production
 journald service exercises this route with a pinned OCI workload, persistent
 journal storage, readiness probing, and reconnecting Swift/Go transport.
+
+Authority-requested reclamation uses a separate exact stop operation. The
+request binds sandbox generation, workload process generation, operation
+generation, idempotency key, and digest. The helper coalesces identical calls,
+rejects conflicts, retains a terminal receipt, and exposes stop observation so
+the macOS authority can recover a lost XPC response without stopping a newer
+workload generation.
 
 ## Code map
 
@@ -115,6 +122,9 @@ held locally until all parity development is complete.
 - `84d160671f3ba6c265a02b49b2ff4309f6584d30` — signed exact workload service
   routing, terminal monitoring/reclamation, and production journald workload
   supervision.
+- `6e462443dd744bda0b605bf26e093833d7818e77` — signed exact workload-stop
+  request/observation routes, response-loss reconciliation, and isolated
+  provider-generation reclamation.
 
 ## Validation
 
@@ -136,6 +146,7 @@ Current results on the development MacBook Pro:
 - current exact-routing/terminal-recovery runtime and authority filter: 14
   tests passed; the same runtime filter passed under Thread Sanitizer without
   a race report;
+- current provider-cutover/runtime filter: 63 tests in 9 suites passed;
 - focused durable-configuration test passed;
 - `make check` passed;
 - the full unit run compiled and exercised 1,789 tests in 206 suites with no
@@ -158,5 +169,7 @@ Current results on the development MacBook Pro:
   and workload generations and cannot overlap shutdown.
 - [x] Monitored terminal workloads withdraw stale receipts and can be reclaimed
   and rematerialized under an exact later process generation.
+- [x] Authority-requested stop targets only the exact active workload process
+  generation and is replay-safe after response loss.
 - [x] Full macOS formatting, license, and unit behavior is green.
 - [x] Implementation commit is signed.

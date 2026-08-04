@@ -18,6 +18,9 @@
   immutable generations of one provider without publishing two generations.
 - Recover the exact active/draining generation set from a protected durable
   registry after API-service restart without replaying provider effects.
+- Quiesce generation N before migration, durably migrate configuration,
+  protected references, and readable history, prove every N effect terminal,
+  atomically activate N+1, and reclaim the exact N workload.
 
 ## Type of change
 
@@ -41,11 +44,12 @@ service-port collision, and builds a lazy installation. Catalog readiness
 probes the exact service generation; failed or stale workloads are not
 advertised.
 
-The provider registry persists immutable descriptors and staged, active, and
-draining phases before changing its in-memory publication. The synchronous
-commit inside the registry actor prevents another transition from interleaving
-between fsync and publication. A healthy N+1 candidate becomes the sole
-name/catalog selection while N remains available only by exact generation for
+The provider registry persists immutable descriptors and staged, active,
+quiescing, and draining phases before changing its in-memory publication. The
+synchronous commit inside the registry actor prevents another transition from
+interleaving between fsync and publication. A healthy N+1 candidate becomes
+the sole name/catalog selection while N remains available only by exact
+generation for
 existing reconciliation and cleanup. A failed candidate is removed without
 changing N; an unhealthy or missing active generation rolls back through the
 newest retained healthy generation. Restart reconstructs the same phases from
@@ -80,6 +84,21 @@ Direct readers call the optional Docker `ReadLogs` endpoint, retain a durable
 sequence and last response, emit bounded protobuf frames, and return an explicit
 EOF. Terminal writer and reader state is removed only through the authority's
 generation-fenced reclaim request.
+
+Provider replacement adds one durable `quiescing` phase. It removes N from new
+catalogue and session admission while preserving exact N routing for recovery.
+The API authority reconciles terminal writer, reader, detached-cleanup, and
+pending-removal evidence for every durable container; verifies the frozen
+contract; obtains a replay-stable history migration receipt where direct
+history exists; atomically publishes the N+1 configuration and newly bound
+protected reference; then activates N+1. A crash before configuration
+publication cancels quiescence without mutation. A crash after any publication
+resumes forward and never re-enables dual admission.
+
+Final N reclamation first asks the isolated service to prove its internal
+writer and reader maps empty. The host then durably reserves an exact workload
+stop, invokes the generation-fenced runtime route, reconciles a lost response,
+and commits the stopped ledger record before uninstalling N from the registry.
 
 ## Security properties
 
@@ -142,16 +161,15 @@ docker run --rm --platform linux/arm64 \
 ```
 <!-- markdownlint-enable MD013 -->
 
-Current development MacBook Pro evidence after staged-generation activation:
+Current development MacBook Pro evidence after provider-generation cutover:
 
-- 35 focused Swift tests in registry, provider-set, discovery, and authority
-  suites passed; the preceding isolated-service suite remains covered by the
-  scoped package gate.
-- The scoped package gate passed 1,861 Swift Testing tests in 216 suites and 94
+- 63 focused Swift tests in 9 registry, provider, wire, runtime, ledger, and
+  authority suites passed.
+- The scoped package gate passed 1,868 Swift Testing tests in 216 suites and 94
   XCTest tests under warnings-as-errors.
 - The APIServer product build passed under warnings-as-errors.
-- macOS Go race and vet passed at 70.2% statement coverage.
-- Pinned Linux/arm64 Go race passed at 74.1% statement coverage, including real
+- macOS Go race and vet passed at 70.7% statement coverage.
+- Pinned Linux/arm64 Go race passed at 74.3% statement coverage, including real
   FIFO, readable plugin, write-only plugin, cancellation, private-key/state,
   listener, and connection-HUP tests.
 - `make check`, Markdown lint, and `git diff --check` passed.
@@ -159,6 +177,8 @@ Current development MacBook Pro evidence after staged-generation activation:
   `08677dc8b5a677533de80cf634fee1d14f4da069`.
 - Signed staged-generation implementation commit:
   `70f976611bd5e39a9bfeb4965df7c073bbd789ad`.
+- Signed provider-generation cutover implementation commit:
+  `6e462443dd744bda0b605bf26e093833d7818e77`.
 
 The local SwiftPM mirror intentionally replaces the remote Containerization
 package during development. SwiftPM therefore removes that remote pin from its
@@ -182,7 +202,7 @@ logging behavior failure.
 - [x] Stage multiple provider generations, publish one active generation,
   retain exact draining-generation routing, roll back failed/unhealthy
   candidates, and recover the durable phase set after restart.
-- [ ] Quiesce new N claims, migrate/revalidate every durable N configuration
+- [x] Quiesce new N claims, migrate/revalidate every durable N configuration
   and history reference, and prove all N sessions/cleanup effects terminal
   before alias cutover and final generation reclamation.
 - [ ] Certify a distributable third-party plugin through the complete stack.

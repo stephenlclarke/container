@@ -37,6 +37,10 @@ The missing authority leaves four generic runtime risks:
   confirmed effect.
 - Bound and validate the persisted snapshot, reject symbolic-link targets, and
   restrict the file to mode `0600`.
+- Persist an exact effectless stop before runtime mutation and reconcile a lost
+  stop response without stopping a replacement workload generation.
+- Protect the ledger directory with mode `0700`, reject symbolic-link ancestry,
+  and fsync both the atomically replaced file and containing directory.
 
 ## Apple-shaped boundary
 
@@ -64,6 +68,12 @@ parity programme is ready for upstream submission.
 - [x] Bounded, schema-versioned, private file persistence.
 - [x] Focused crash, replay, compensation, lifecycle, and filesystem tests.
 - [x] Full macOS unit gate passes under warnings-as-errors.
+- [x] Exact workload stop and stop-observation routes are generation-fenced,
+  idempotent, and response-loss safe.
+- [x] Interrupted effectless stop resumes from durable recovery state without
+  losing the active process tuple.
+- [x] File and directory durability, modes, and symbolic-link rejection have
+  focused regression coverage.
 
 ## Commit tracking
 
@@ -73,6 +83,9 @@ parity programme is ready for upstream submission.
 - API-service composition and ready-state recovery fix:
   `203c88b4d71d25a3ef6036035c54ca8b65f4923c`
   (`feat(runtime): compose shared sandbox authority`).
+- Exact workload reclamation and persistence hardening:
+  `6e462443dd744bda0b605bf26e093833d7818e77`
+  (`feat(logging): complete provider generation cutover`).
 
 ## Follow-on integration
 

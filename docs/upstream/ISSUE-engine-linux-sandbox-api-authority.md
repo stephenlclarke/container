@@ -59,6 +59,8 @@ Two restart and integrity defects also prevented a safe cutover:
 - [x] Monitored terminal workloads withdraw their retained receipt, are
   durably reclaimed, and can be rematerialized under a later exact process
   generation.
+- [x] Authority-requested protected workload stop is exact-generation fenced,
+  observable, idempotent, and replay-safe after a lost XPC response.
 
 ## Remaining production cutover
 
@@ -67,6 +69,8 @@ the existing `ContainersService` lifecycle through it. That cutover first
 requires production controllers for the effect domains and shared-sandbox
 routes for exec/attach/wait/stats/copy/stop/remove. Advanced network/IPAM must
 also provide guest endpoint plans rather than the legacy VM-interface model.
+The protected-provider stop route is complete; the remaining stop/remove work
+is the general `ContainersService` lifecycle cutover.
 
 Until those pieces are complete, the legacy per-container runtime path remains
 the production lifecycle path. The new authority is not presented as full
@@ -84,6 +88,10 @@ service dials, terminal readiness withdrawal/reclamation, OCI materialization,
 and live catalog probing. This closes the protected-service path without
 changing the remaining general `ContainersService` lifecycle-cutover scope.
 
+Signed commit `6e462443dd744bda0b605bf26e093833d7818e77` adds exact protected-workload
+stop intent, observation, response-loss reconciliation, and durable workload
+reclamation before a provider generation is forgotten.
+
 ## Apple-shaped boundary
 
 This is generic Container runtime composition. It contains no Docker or
@@ -97,3 +105,5 @@ the complete parity programme is finished.
   focused tests.
 - `84d160671f3ba6c265a02b49b2ff4309f6584d30` — signed exact service routing,
   terminal workload recovery, and production journald supervision follow-up.
+- `6e462443dd744bda0b605bf26e093833d7818e77` — signed exact workload-stop and
+  provider-generation reclamation follow-up.
