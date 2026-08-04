@@ -19,6 +19,11 @@ public enum EngineLinuxSandboxManagerError: Error, Equatable, Sendable {
     case recoveryRequired
 }
 
+public enum EngineLinuxSandboxRuntimeReconciliationV1: Equatable, Sendable {
+    case ready(EngineLinuxSandboxRecordV1)
+    case absent(EngineLinuxSandboxRecordV1)
+}
+
 public struct EngineLinuxSandboxBootRequestV1: Codable, Equatable, Sendable {
     public let sandboxID: String
     public let generation: UInt64
@@ -167,23 +172,15 @@ public actor EngineLinuxSandboxManagerV1 {
 
         let request = try bootRequest(from: record)
         if record.state == .ready {
-            do {
-                guard case .ready(let receipt) = try await runtime.observeBoot(request),
-                    receipt.sandboxID == request.sandboxID,
-                    receipt.generation == request.generation,
-                    receipt.effectID == request.effectID,
-                    receipt.requestDigest == request.requestDigest,
-                    receipt.runtimeFingerprint == record.runtimeFingerprint
-                else {
-                    try await markRecovery("ready sandbox runtime identity is missing or mismatched")
-                    throw EngineLinuxSandboxManagerError.recoveryRequired
-                }
-                return record
-            } catch let error as EngineLinuxSandboxManagerError {
-                throw error
-            } catch {
-                try await markRecovery("ready sandbox observation is inconclusive")
-                throw EngineLinuxSandboxManagerError.recoveryRequired
+            switch try await reconcileReadyRuntime() {
+            case .ready(let ready):
+                return ready
+            case .absent:
+                return try await ensureReady(
+                    idempotencyKey: idempotencyKey,
+                    requestDigest: requestDigest,
+                    effectID: effectID
+                )
             }
         }
         if isNew {
@@ -211,6 +208,47 @@ public actor EngineLinuxSandboxManagerV1 {
             return try await commitReady(receipt, request: request)
         case .unknown:
             try await markRecovery("sandbox boot reconciliation is inconclusive")
+            throw EngineLinuxSandboxManagerError.recoveryRequired
+        }
+    }
+
+    /// Reconciles a durable ready record against a newly acquired runtime.
+    /// Exact absence is recoverable because it proves that all sandbox-local
+    /// processes are gone; an unknown or mismatched identity remains fenced.
+    public func reconcileReadyRuntime() async throws
+        -> EngineLinuxSandboxRuntimeReconciliationV1
+    {
+        let record = await ledger.snapshot().sandbox
+        guard record.state == .ready else {
+            throw EngineLinuxSandboxManagerError.recoveryRequired
+        }
+        let request = try bootRequest(from: record)
+        let observation: EngineLinuxSandboxBootObservationV1
+        do {
+            observation = try await runtime.observeBoot(request)
+        } catch {
+            try await markRecovery("ready sandbox observation is inconclusive")
+            throw EngineLinuxSandboxManagerError.recoveryRequired
+        }
+        switch observation {
+        case .absent:
+            return .absent(try await ledger.commitVerifiedSandboxAbsent())
+        case .ready(let receipt):
+            guard
+                receipt.sandboxID == request.sandboxID,
+                receipt.generation == request.generation,
+                receipt.effectID == request.effectID,
+                receipt.requestDigest == request.requestDigest,
+                receipt.runtimeFingerprint == record.runtimeFingerprint
+            else {
+                try await markRecovery(
+                    "ready sandbox runtime identity is missing or mismatched"
+                )
+                throw EngineLinuxSandboxManagerError.recoveryRequired
+            }
+            return .ready(record)
+        case .unknown:
+            try await markRecovery("ready sandbox observation is inconclusive")
             throw EngineLinuxSandboxManagerError.recoveryRequired
         }
     }

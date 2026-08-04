@@ -102,7 +102,7 @@ extension RuntimeClient: EngineLinuxSandboxServiceRuntimeV1 {
         } catch {
             throw ContainerizationError(
                 .internalError,
-                message: "failed to dial protected service port \(requestValue.port) on Engine Linux sandbox \(id)",
+                message: "failed to dial protected service endpoint \(requestValue.port) on Engine Linux sandbox \(id)",
                 cause: error
             )
         }
@@ -143,6 +143,15 @@ extension RuntimeClient {
 }
 
 extension XPCMessage {
+    public func engineSandboxReply<Value: Encodable>(
+        _ value: Value
+    ) throws -> XPCMessage {
+        let payload = try JSONEncoder().encode(value)
+        let reply = reply()
+        reply.set(key: RuntimeKeys.engineSandboxPayload.rawValue, value: payload)
+        return reply
+    }
+
     public func setEngineSandboxPayload<Value: Encodable>(_ value: Value) throws {
         set(
             key: RuntimeKeys.engineSandboxPayload.rawValue,

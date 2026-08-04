@@ -31,6 +31,7 @@ public enum DockerPluginLifecycleServiceWireError: Error, Equatable,
     case invalidToken
     case invalidFence
     case capabilityMismatch
+    case pluginRejected
     case unknownSession
     case unavailable
     case internalFailure
@@ -69,6 +70,7 @@ package enum DockerPluginLifecycleServiceWireFailureV1: String, Codable,
     case invalidToken
     case invalidFence
     case capabilityMismatch
+    case pluginRejected
     case unknownSession
     case unavailable
     case internalFailure
@@ -965,10 +967,16 @@ public actor DockerPluginLifecycleServiceWireClientV1:
     public func startWriter(
         _ open: DockerPluginWriterOpenRequest
     ) async throws -> DockerPluginServiceStartedWriter {
-        let response = try await invoke(
-            .startWriter(open, expectedReadLogs: expectedReadLogs)
-        )
-        return try startedWriter(request: open.request, response: response)
+        do {
+            let response = try await invoke(
+                .startWriter(open, expectedReadLogs: expectedReadLogs)
+            )
+            return try startedWriter(request: open.request, response: response)
+        } catch DockerPluginLifecycleServiceWireError.pluginRejected {
+            throw DockerPluginProtocolError.endpointRejected(
+                endpoint: .startLogging
+            )
+        }
     }
 
     public func reconcileWriterOpen(
@@ -1180,7 +1188,7 @@ public actor DockerPluginLifecycleServiceWireClientV1:
         )
     }
 
-    private static func error(
+    fileprivate static func error(
         _ failure: DockerPluginLifecycleServiceWireFailureV1
     ) -> DockerPluginLifecycleServiceWireError {
         switch failure {
@@ -1196,6 +1204,8 @@ public actor DockerPluginLifecycleServiceWireClientV1:
             return .invalidFence
         case .capabilityMismatch:
             return .capabilityMismatch
+        case .pluginRejected:
+            return .pluginRejected
         case .unknownSession:
             return .unknownSession
         case .unavailable:
@@ -1212,6 +1222,8 @@ private actor DockerPluginLifecycleServiceWriterV1: ContainerLogDriverSession {
     private let transport: any DockerPluginLifecycleServiceWireTransportV1
     private var nextSequence: UInt64
     private var closed = false
+    private var operationActive = false
+    private var operationWaiters = [CheckedContinuation<Void, Never>]()
 
     init(
         sessionID: String,
@@ -1226,6 +1238,9 @@ private actor DockerPluginLifecycleServiceWriterV1: ContainerLogDriverSession {
     }
 
     func write(_ record: ContainerLogRecordV2) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
+        try Task.checkCancellation()
         guard !closed else {
             throw DockerPluginProtocolError.writerUnavailable
         }
@@ -1246,17 +1261,19 @@ private actor DockerPluginLifecycleServiceWriterV1: ContainerLogDriverSession {
                 Task { await self.fence() }
             }
         } catch is CancellationError {
-            await fence()
+            await fenceWhileOperationActive()
             throw CancellationError()
         }
         guard nextSequence < UInt64.max else {
-            await fence()
+            await fenceWhileOperationActive()
             throw DockerPluginProtocolError.writerUnavailable
         }
         nextSequence += 1
     }
 
     func flush(deadline: ContinuousClock.Instant) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
         guard !closed else {
             throw DockerPluginProtocolError.writerUnavailable
         }
@@ -1269,6 +1286,8 @@ private actor DockerPluginLifecycleServiceWriterV1: ContainerLogDriverSession {
     }
 
     func close(deadline: ContinuousClock.Instant) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
         guard !closed else {
             return
         }
@@ -1286,6 +1305,12 @@ private actor DockerPluginLifecycleServiceWriterV1: ContainerLogDriverSession {
     }
 
     private func fence() async {
+        await acquireOperation()
+        defer { releaseOperation() }
+        await fenceWhileOperationActive()
+    }
+
+    private func fenceWhileOperationActive() async {
         guard !closed else {
             return
         }
@@ -1313,10 +1338,28 @@ private actor DockerPluginLifecycleServiceWriterV1: ContainerLogDriverSession {
             case .unavailable:
                 throw DockerPluginProtocolError.writerUnavailable
             default:
-                throw DockerPluginLifecycleServiceWireError.internalFailure
+                throw DockerPluginLifecycleServiceWireClientV1.error(failure)
             }
         }
         return response
+    }
+
+    private func acquireOperation() async {
+        if !operationActive {
+            operationActive = true
+            return
+        }
+        await withCheckedContinuation { continuation in
+            operationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseOperation() {
+        if operationWaiters.isEmpty {
+            operationActive = false
+        } else {
+            operationWaiters.removeFirst().resume()
+        }
     }
 }
 

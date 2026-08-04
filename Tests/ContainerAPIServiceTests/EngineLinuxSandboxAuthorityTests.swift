@@ -167,6 +167,67 @@ struct EngineLinuxSandboxAuthorityTests {
     }
 
     @Test
+    func absentRuntimeAllowsDurableConfigurationUpgradeAndWorkloadRematerialization()
+        async throws
+    {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let persistence = InMemoryEngineWorkloadLedgerPersistenceV1()
+        let first = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: persistence
+        )
+        let initial = try await first.startWorkload(
+            planDigest: "sha256:old-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+        #expect(initial.state == .running)
+        await runtime.loseSandbox()
+
+        let upgradedConfiguration = EngineLinuxSandboxRuntimeConfigurationV1(
+            path: fixture.sandboxRoot,
+            sandboxID: "engine-sandbox",
+            initialFilesystem: .tmpfs(destination: "/", options: []),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/tmp/kernel"),
+                platform: .linuxArm
+            ),
+            cpus: 6,
+            memoryInBytes: 4 * 1_024 * 1_024 * 1_024
+        )
+        let recovered = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: persistence
+        )
+        let ready = try await recovered.ensureReady(
+            configuration: upgradedConfiguration
+        )
+        #expect(ready.state == .ready)
+        #expect(ready.generation == 2)
+        #expect(await launcher.launchCount == 3)
+        #expect(await launcher.stopCount == 1)
+        #expect((await recovered.snapshot()).workloads.isEmpty)
+
+        let rematerialized = try await recovered.startWorkload(
+            planDigest: "sha256:new-plan",
+            configuration: upgradedConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+        #expect(rematerialized.state == .running)
+        #expect(rematerialized.activeSandboxGeneration == 2)
+        #expect(await runtime.workloadStartCount == 2)
+    }
+
+    @Test
     func exactWorkloadReclamationStopsRuntimeBeforeLedgerCommit() async throws {
         let fixture = try EngineSandboxAuthorityFixture()
         defer { fixture.remove() }
@@ -388,6 +449,13 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
 
     func markWorkloadTerminal() {
         workloadTerminal = true
+    }
+
+    func loseSandbox() {
+        bootReceipt = nil
+        workloadReceipt = nil
+        workloadStopReceipt = nil
+        workloadTerminal = false
     }
 
     func dialService(

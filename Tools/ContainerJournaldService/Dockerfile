@@ -39,7 +39,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get install -y --no-install-recommends "systemd=${SYSTEMD_VERSION}" \
     && rm -rf /var/lib/apt/lists/* \
     && rm -f /etc/machine-id \
-    && : > /etc/machine-id
+    && ln -s /var/lib/container-journald-service/machine-id /etc/machine-id
 COPY --from=build /out/container-journald-service /usr/local/libexec/container-journald-service
 COPY entrypoint.sh /usr/local/libexec/container-journald-entrypoint
 RUN chmod 0755 \

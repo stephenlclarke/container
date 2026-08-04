@@ -82,6 +82,33 @@ func TestProtocolReplayReturnsOneWriterEffect(t *testing.T) {
 	}
 }
 
+func TestAcceptedWriterStartSurvivesConnectionCancellation(t *testing.T) {
+	plugin := newFakePlugin(true)
+	plugin.startHonorsContext = true
+	backend := newTestBackend(t, &memoryStateStore{}, plugin, newFakeFIFOFactory())
+	handler := newProtocolHandler(backend, testAuthenticationKey())
+	request := wireRequest{
+		SchemaVersion: wireSchemaVersion,
+		OperationID:   "123e4567-e89b-12d3-a456-426614174000",
+		Operation:     operationStartWriter,
+		WriterOpen:    pointer(testWriterOpen(true)),
+	}
+	connectionContext, cancelConnection := context.WithCancel(context.Background())
+	cancelConnection()
+
+	response := handler.handle(
+		context.Background(),
+		connectionContext,
+		authenticatedWireJSON(t, request),
+	)
+	if response.Failure != nil {
+		t.Fatalf("accepted start response = %#v", response)
+	}
+	if got := plugin.startCallCount(); got != 1 {
+		t.Fatalf("plugin start calls = %d, want accepted effect to finish", got)
+	}
+}
+
 func TestProtocolHandlerDrivesCompleteWriterAndReaderLifecycles(t *testing.T) {
 	plugin := newFakePlugin(true)
 	plugin.readFrames = [][]byte{{0, 0, 0, 1, 0x2a}}
@@ -231,6 +258,108 @@ func TestProtocolHandlerDrivesCompleteWriterAndReaderLifecycles(t *testing.T) {
 		Operation:         operationReclaimGeneration,
 		GenerationReclaim: &generationReclaim,
 	})
+}
+
+func TestProtocolHandlerReconcilesSessionsAbsentAfterSandboxAdvance(t *testing.T) {
+	store := &memoryStateStore{}
+	plugin := newFakePlugin(true)
+	plugin.readFrames = [][]byte{{0, 0, 0, 1, 0x2a}}
+	previousIdentity := testServiceIdentity()
+	previousIdentity.SandboxGeneration--
+	previous, err := loadDurableBackend(
+		previousIdentity,
+		store,
+		plugin,
+		newFakeFIFOFactory(),
+		fixedTokenGenerator{},
+	)
+	if err != nil {
+		t.Fatalf("load previous backend: %v", err)
+	}
+
+	writerOpen := namedWriterOpen("writer-prior-sandbox", true)
+	writerOpen.Request.CandidateSandboxGeneration = pointer(previousIdentity.SandboxGeneration)
+	writerReceipt, err := previous.openWriter(context.Background(), writerOpen)
+	if err != nil {
+		t.Fatalf("open previous writer: %v", err)
+	}
+	readerOpen := namedReaderOpen("reader-prior-sandbox")
+	readerReceipt, err := previous.openReader(context.Background(), readerOpen)
+	if err != nil {
+		t.Fatalf("open previous reader: %v", err)
+	}
+
+	current, err := loadDurableBackend(
+		testServiceIdentity(),
+		store,
+		plugin,
+		newFakeFIFOFactory(),
+		fixedTokenGenerator{},
+	)
+	if err != nil {
+		t.Fatalf("load advanced backend: %v", err)
+	}
+	if len(current.snapshot.Writers) != 0 || len(current.snapshot.Readers) != 0 {
+		t.Fatalf("advanced snapshot retained prior sessions: %#v", current.snapshot)
+	}
+
+	handler := newProtocolHandler(current, testAuthenticationKey())
+	operationSequence := uint64(0)
+	call := func(request wireRequest) wireResponse {
+		t.Helper()
+		operationSequence++
+		request.SchemaVersion = wireSchemaVersion
+		request.OperationID = fmt.Sprintf("00000000-0000-4000-8000-%012x", operationSequence)
+		response := handler.Handle(context.Background(), authenticatedWireJSON(t, request))
+		if response.Failure != nil {
+			t.Fatalf("%s response = %#v", request.Operation, response)
+		}
+		return response
+	}
+
+	writerOpenReconciliation := call(wireRequest{
+		Operation:   operationReconcileWriterOpen,
+		WriterStart: &writerOpen.Request,
+	})
+	if writerOpenReconciliation.OpenObservation == nil ||
+		*writerOpenReconciliation.OpenObservation != observationAbsent {
+		t.Fatalf("writer open reconciliation after sandbox advance = %#v", writerOpenReconciliation)
+	}
+	readerOpenReconciliation := call(wireRequest{
+		Operation:   operationReconcileReaderOpen,
+		ReaderStart: &readerOpen.Request,
+	})
+	if readerOpenReconciliation.OpenObservation == nil ||
+		*readerOpenReconciliation.OpenObservation != observationAbsent {
+		t.Fatalf("reader open reconciliation after sandbox advance = %#v", readerOpenReconciliation)
+	}
+
+	writerCall := testWriterCall(writerOpen.Request, writerReceipt.Token)
+	for _, operation := range []wireOperation{
+		operationReconcileWriter,
+		operationCloseWriter,
+		operationFenceWriter,
+	} {
+		assertWriterObservation(
+			t,
+			call(wireRequest{Operation: operation, WriterCall: &writerCall}),
+			"absent",
+			false,
+		)
+	}
+
+	readerCall := testReaderCall(readerOpen.Request, readerReceipt.Token)
+	for _, operation := range []wireOperation{
+		operationReconcileReader,
+		operationCloseReader,
+	} {
+		assertReaderObservation(
+			t,
+			call(wireRequest{Operation: operation, ReaderCall: &readerCall}),
+			"absent",
+			false,
+		)
+	}
 }
 
 func TestProtocolRejectsUnknownAndOversizedPayloadsWithoutEffects(t *testing.T) {
@@ -457,6 +586,7 @@ func TestFailureMappingPreservesPublicFailureClasses(t *testing.T) {
 		{errInvalidToken, failureInvalidToken},
 		{errInvalidFence, failureInvalidFence},
 		{errCapabilityMismatch, failureCapabilityMismatch},
+		{errPluginRequestRejected, failurePluginRejected},
 		{errUnknownSession, failureUnknownSession},
 		{errUnavailable, failureUnavailable},
 		{context.Canceled, failureUnavailable},

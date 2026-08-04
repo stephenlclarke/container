@@ -20,6 +20,7 @@ import ContainerRuntimeClient
 import CryptoKit
 import DockerSemanticHelper
 import Foundation
+import Logging
 import NIOPosix
 
 enum AuthorityRemoteLogDriverPlaneError: Error, Equatable, Sendable {
@@ -88,6 +89,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     private let protectedEffects: ProtectedLoggingEffectStore
     private let eventLoopOwner: AuthorityRemoteLogEventLoopOwner
     private let gcpLoggingServiceFactory: AuthorityGCPLoggingServiceFactory
+    private let log = Logger(label: "com.apple.container.logging.authority")
     private var runs = [String: Run]()
     private var readerRuns = [String: ReaderRun]()
     private var closingReaderIDs = Set<String>()
@@ -166,17 +168,12 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 unavailableProviderIDs.insert(descriptor.providerIdentity.id)
             }
         }
-        let pluginProviderIDs = Set(
-            await providers.registry.activeSelections(kind: .dockerPlugin)
-                .map { $0.descriptor.providerIdentity.id }
-        )
-        for providerID in pluginProviderIDs {
-            if try await !recoverHealthyPluginGeneration(
-                providerID: providerID
-            ) {
-                unavailableProviderIDs.insert(providerID)
-            }
-        }
+        // An installed Docker plugin remains a valid create-time driver while
+        // its lazy Linux service is booting. Session admission performs the
+        // authoritative generation-fenced readiness check and returns a
+        // start-time error if the service cannot be acquired. Catalog lookup
+        // must not mutate or hide an active generation because of transient
+        // sandbox availability.
         let currentCatalog = try await advertisedLogDriverCatalog()
         guard !unavailableProviderIDs.isEmpty else {
             return currentCatalog
@@ -658,42 +655,6 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         return writersTerminal && readersTerminal && cleanupsTerminal
     }
 
-    private func recoverHealthyPluginGeneration(
-        providerID: String
-    ) async throws -> Bool {
-        while let active = await providers.registry.activeGeneration(
-            providerID: providerID
-        ) {
-            guard
-                let selection = await providers.registry.selection(
-                    providerID: providerID,
-                    generation: active
-                ),
-                let provider = selection.provider
-                    as? any EngineLinuxSandboxLogDriverProvider
-            else {
-                return false
-            }
-            do {
-                return try await provider.activeSandboxGeneration() > 0
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                do {
-                    _ = try await providers.registry.rollbackActive(
-                        providerID: providerID,
-                        generation: active
-                    )
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    return false
-                }
-            }
-        }
-        return false
-    }
-
     /// Prepares one provider session and substitutes authority-owned pipes for
     /// runtime stdout/stderr. Core drivers return the caller's handles intact.
     package func prepareBootstrap(
@@ -1133,6 +1094,29 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             await task.value
         }
         try await run.delivery.finish()
+        let pump = await run.pump.metrics()
+        let delivery = await run.delivery.metrics()
+        let lastWriteFailure = await run.delivery.lastWriteFailureDescription()
+        guard
+            pump.failedStreams > 0 || delivery.writeFailures > 0
+                || delivery.droppedRecords > 0
+        else {
+            return
+        }
+        log.error(
+            "authority remote logging closed with delivery failures",
+            metadata: [
+                "stdoutBytes": "\(pump.stdoutBytes)",
+                "stderrBytes": "\(pump.stderrBytes)",
+                "stdoutRecords": "\(pump.stdoutRecords)",
+                "stderrRecords": "\(pump.stderrRecords)",
+                "finishedStreams": "\(pump.finishedStreams)",
+                "failedStreams": "\(pump.failedStreams)",
+                "writeFailures": "\(delivery.writeFailures)",
+                "lastWriteFailure": "\(lastWriteFailure ?? "none")",
+                "droppedRecords": "\(delivery.droppedRecords)",
+            ]
+        )
     }
 
     private func reconcilePriorRuns(
@@ -1180,6 +1164,17 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                     configuration: configuration
                 )
                 do {
+                    if try await retireAbsentWriterFromPriorSandbox(
+                        record.request,
+                        ledger: ledger,
+                        configuration: configuration,
+                        provider: selection.provider
+                    ) {
+                        _ = try await providers.configurations.unregister(
+                            record.request
+                        )
+                        continue
+                    }
                     _ = try await controller.prepareWriter(
                         record.request,
                         using: selection.provider
@@ -1313,6 +1308,42 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 )
             }
         }
+    }
+
+    /// A tokenless start from a retired sandbox generation cannot be replayed
+    /// into the current generation. Reconcile its exact idempotency scope and
+    /// make an observed absence terminal before allocating the next process
+    /// generation.
+    private func retireAbsentWriterFromPriorSandbox(
+        _ request: LogDriverStartRequestV1,
+        ledger: ContainerLogLifecycleLedgerV1,
+        configuration: ContainerConfiguration,
+        provider: any ContainerLogDriverProvider
+    ) async throws -> Bool {
+        guard let requestedGeneration = request.candidateSandboxGeneration else {
+            return false
+        }
+        let resolved = try Self.requireResolved(configuration.logging)
+        guard let activeGeneration = try await sandboxGeneration(
+            for: resolved,
+            provider: provider
+        ) else {
+            throw AuthorityRemoteLogDriverPlaneError.incompleteConfiguration
+        }
+        guard activeGeneration >= requestedGeneration else {
+            throw AuthorityRemoteLogDriverPlaneError.generationMismatch(
+                expected: requestedGeneration,
+                actual: activeGeneration
+            )
+        }
+        guard activeGeneration > requestedGeneration else {
+            return false
+        }
+        guard case .absent = try await provider.reconcileStart(request) else {
+            return false
+        }
+        _ = try await ledger.completeAbsentWriterStart(for: request)
+        return true
     }
 
     private func registerConfiguration(
@@ -1803,6 +1834,7 @@ package actor AuthorityRemoteLogDelivery {
     private var closing = false
     private(set) var droppedRecords: UInt64 = 0
     private(set) var writeFailures: UInt64 = 0
+    private var lastWriteFailure: String?
 
     init(
         session: any ContainerLogDriverSession,
@@ -1825,6 +1857,7 @@ package actor AuthorityRemoteLogDelivery {
                 try await session.write(record)
             } catch {
                 increment(&writeFailures)
+                lastWriteFailure = String(describing: error)
             }
             return
         }
@@ -1865,6 +1898,10 @@ package actor AuthorityRemoteLogDelivery {
         )
     }
 
+    func lastWriteFailureDescription() -> String? {
+        lastWriteFailure
+    }
+
     private func drain() async {
         while queueHead < queue.count {
             guard let record = queue[queueHead] else {
@@ -1879,6 +1916,7 @@ package actor AuthorityRemoteLogDelivery {
                 try await session.write(record)
             } catch {
                 increment(&writeFailures)
+                lastWriteFailure = String(describing: error)
             }
             compactQueueIfNeeded()
         }
@@ -1933,6 +1971,9 @@ private actor AuthorityRemoteLogPump {
     private var foreground: [ContainerLogStream: FileHandle]
     private var sequence: UInt64 = 0
     private var failedStreams = Set<ContainerLogStream>()
+    private var finishedStreams = Set<ContainerLogStream>()
+    private var receivedBytes: [ContainerLogStream: UInt64] = [:]
+    private var emittedRecords: [ContainerLogStream: UInt64] = [:]
 
     init(
         delivery: AuthorityRemoteLogDelivery,
@@ -1949,6 +1990,7 @@ private actor AuthorityRemoteLogPump {
     }
 
     func consume(_ data: Data, stream: ContainerLogStream) async {
+        increment(&receivedBytes[stream, default: 0], by: UInt64(data.count))
         if let handle = foreground[stream] {
             do {
                 try handle.write(contentsOf: data)
@@ -1964,6 +2006,7 @@ private actor AuthorityRemoteLogPump {
         case .stderr:
             stderrSplitter.append(data) { fragments.append($0) }
         }
+        increment(&emittedRecords[stream, default: 0], by: UInt64(fragments.count))
         await deliver(fragments)
     }
 
@@ -1975,7 +2018,9 @@ private actor AuthorityRemoteLogPump {
         case .stderr:
             stderrSplitter.finish { fragments.append($0) }
         }
+        increment(&emittedRecords[stream, default: 0], by: UInt64(fragments.count))
         await deliver(fragments)
+        finishedStreams.insert(stream)
         if let handle = foreground.removeValue(forKey: stream) {
             try? handle.close()
         }
@@ -1984,6 +2029,17 @@ private actor AuthorityRemoteLogPump {
     func fail(stream: ContainerLogStream) async {
         failedStreams.insert(stream)
         await finish(stream: stream)
+    }
+
+    func metrics() -> AuthorityRemoteLogPumpMetrics {
+        AuthorityRemoteLogPumpMetrics(
+            stdoutBytes: receivedBytes[.stdout, default: 0],
+            stderrBytes: receivedBytes[.stderr, default: 0],
+            stdoutRecords: emittedRecords[.stdout, default: 0],
+            stderrRecords: emittedRecords[.stderr, default: 0],
+            finishedStreams: finishedStreams.count,
+            failedStreams: failedStreams.count
+        )
     }
 
     private func deliver(
@@ -2006,6 +2062,20 @@ private actor AuthorityRemoteLogPump {
             await delivery.submit(record)
         }
     }
+
+    private func increment(_ value: inout UInt64, by amount: UInt64) {
+        let addition = value.addingReportingOverflow(amount)
+        value = addition.overflow ? UInt64.max : addition.partialValue
+    }
+}
+
+private struct AuthorityRemoteLogPumpMetrics: Sendable {
+    let stdoutBytes: UInt64
+    let stderrBytes: UInt64
+    let stdoutRecords: UInt64
+    let stderrRecords: UInt64
+    let finishedStreams: Int
+    let failedStreams: Int
 }
 
 extension Array {

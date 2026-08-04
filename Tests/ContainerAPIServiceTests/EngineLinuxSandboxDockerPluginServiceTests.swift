@@ -272,6 +272,10 @@ struct EngineLinuxSandboxDockerPluginServiceTests {
         #expect(await authority.startCount == 1)
         #expect(await authority.dialCount == 1)
         #expect(await authority.lastDialProcessGeneration == 3)
+        #expect(await authority.lastStdioCount == 3)
+        #expect(await authority.lastStdinWasNil)
+        #expect(await authority.lastStdoutWasPresent)
+        #expect(await authority.lastStderrWasPresent)
         #expect(await materializer.lastGeneration == 9)
     }
 
@@ -428,6 +432,10 @@ private struct DockerPluginConnectorFixture {
             isDirectory: true
         )
         workloadRoot = root.appendingPathComponent("workload")
+        try FileManager.default.createDirectory(
+            at: workloadRoot,
+            withIntermediateDirectories: true
+        )
         configuration = EngineLinuxSandboxRuntimeConfigurationV1(
             path: root,
             sandboxID: "engine-linux-sandbox",
@@ -490,6 +498,10 @@ private actor FakeDockerPluginAuthority:
     private(set) var dialCount = 0
     private(set) var lastDialProcessGeneration: UInt64?
     private(set) var stopCount = 0
+    private(set) var lastStdioCount = 0
+    private(set) var lastStdinWasNil = false
+    private(set) var lastStdoutWasPresent = false
+    private(set) var lastStderrWasPresent = false
     private var workloadRecord: EngineWorkloadRecordV1?
 
     init(
@@ -554,7 +566,10 @@ private actor FakeDockerPluginAuthority:
         _ = configuration
         _ = workloadRoot
         _ = dynamicEnvironment
-        _ = stdio
+        lastStdioCount = stdio.count
+        lastStdinWasNil = stdio.indices.contains(0) && stdio[0] == nil
+        lastStdoutWasPresent = stdio.indices.contains(1) && stdio[1] != nil
+        lastStderrWasPresent = stdio.indices.contains(2) && stdio[2] != nil
         _ = controllers
         let record = try EngineWorkloadRecordV1(
             containerID: assets.workloadID,

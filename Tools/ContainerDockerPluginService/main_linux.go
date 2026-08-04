@@ -25,7 +25,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/mdlayher/vsock"
 )
@@ -34,7 +36,7 @@ const defaultServicePort = uint(19531)
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "container-docker-plugin-service: unavailable")
+		fmt.Fprintf(os.Stderr, "container-docker-plugin-service: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -42,16 +44,17 @@ func main() {
 func run() error {
 	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	port := flags.Uint("port", defaultServicePort, "AF_VSOCK service port")
+	port := flags.Uint("port", defaultServicePort, "service endpoint identity and AF_VSOCK fallback port")
 	sandboxGeneration := flags.Uint64("sandbox-generation", 0, "active EngineLinuxSandbox generation")
 	providerID := flags.String("provider-id", "", "installed provider identity")
 	providerGeneration := flags.Uint64("provider-generation", 0, "installed provider generation")
 	contractDigest := flags.String("contract-digest", "", "installed provider contract digest")
 	pluginSocket := flags.String("plugin-socket", "", "protected Docker plugin Unix socket")
+	expectedReadLogs := flags.String("expected-read-logs", "", "exact installed plugin ReadLogs capability")
 	authenticationKeyFile := flags.String("authentication-key-file", "", "private 32-byte request authentication key")
 	statePath := flags.String("state", "/var/lib/container-docker-plugin-service/state.json", "private durable state path")
 	fifoRoot := flags.String("fifo-root", "/run/docker/logging", "private plugin FIFO directory")
-	unixSocket := flags.String("listen-unix", "", "test-only Unix listener instead of AF_VSOCK")
+	unixSocket := flags.String("listen-unix", "", "private workload Unix listener relayed to the host")
 	maximumConnections := flags.Int("max-connections", defaultMaximumConnections, "bounded concurrent connections")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
@@ -62,7 +65,9 @@ func run() error {
 		SandboxGeneration: *sandboxGeneration,
 		ContractDigest:    *contractDigest,
 	}
-	if flags.NArg() != 0 || identity.validate() != nil || *port == 0 ||
+	readLogs, readLogsErr := strconv.ParseBool(*expectedReadLogs)
+	if (*expectedReadLogs != "true" && *expectedReadLogs != "false") || readLogsErr != nil ||
+		flags.NArg() != 0 || identity.validate() != nil || *port == 0 ||
 		*port > uint(^uint32(0)) || *maximumConnections <= 0 {
 		return errors.New("invalid service arguments")
 	}
@@ -76,6 +81,11 @@ func run() error {
 	}
 	plugin, err := newUnixHTTPLoggingPlugin(*pluginSocket)
 	if err != nil {
+		return err
+	}
+	capabilityContext, cancelCapabilityCheck := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelCapabilityCheck()
+	if err := validatePluginCapabilities(capabilityContext, plugin, readLogs); err != nil {
 		return err
 	}
 	fifos, err := newLinuxFIFOFactory(*fifoRoot)

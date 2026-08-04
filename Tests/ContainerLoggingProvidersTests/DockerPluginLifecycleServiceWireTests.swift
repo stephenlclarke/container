@@ -152,6 +152,54 @@ struct DockerPluginLifecycleServiceWireTests {
         #expect(entries[0].line == Data([0x00, 0xff]))
     }
 
+    @Test func writerSerializesSuspendingWritesAndAdvancesSequence() async throws {
+        let transport = DockerPluginWireSerializingTransport()
+        let client = DockerPluginLifecycleServiceWireClientV1(
+            expectedReadLogs: true,
+            transport: transport
+        )
+        let writer = try await client.startWriter(
+            DockerPluginWriterOpenRequest(
+                request: dockerPluginWireWriterRequest(),
+                info: dockerPluginWireInfo()
+            )
+        ).started.session
+
+        let first = Task {
+            try await writer.write(
+                dockerPluginWireRecord(
+                    payload: Data("first".utf8),
+                    sequence: 1
+                )
+            )
+        }
+        await transport.waitUntilFirstWriteIsBlocked()
+        let second = Task {
+            try await writer.write(
+                dockerPluginWireRecord(
+                    payload: Data("second".utf8),
+                    sequence: 2
+                )
+            )
+        }
+
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await transport.writeRequestCount == 1)
+        await transport.releaseFirstWrite()
+        try await first.value
+        try await second.value
+
+        let requests = await transport.writeRequests
+        #expect(requests.map(\.sequence) == [1, 2])
+        let payloads = try requests.map { request in
+            var decoder = DockerPluginFrameDecoder()
+            let entries = try decoder.append(try #require(request.frame))
+            try decoder.finish()
+            return try #require(entries.first).line
+        }
+        #expect(payloads == [Data("first".utf8), Data("second".utf8)])
+    }
+
     @Test func responseLossReconnectsWithByteIdenticalOperation() async throws {
         let first = try dockerPluginWireSocketPair()
         let second = try dockerPluginWireSocketPair()
@@ -315,6 +363,27 @@ struct DockerPluginLifecycleServiceWireTests {
             try await client.activeSandboxGeneration()
         }
     }
+
+    @Test func writerStartProjectsDefinitivePluginRejection() async throws {
+        let client = DockerPluginLifecycleServiceWireClientV1(
+            expectedReadLogs: true,
+            transport: DockerPluginWireFailureTransport(
+                failure: .pluginRejected
+            )
+        )
+        await #expect(
+            throws: DockerPluginProtocolError.endpointRejected(
+                endpoint: .startLogging
+            )
+        ) {
+            try await client.startWriter(
+                DockerPluginWriterOpenRequest(
+                    request: dockerPluginWireWriterRequest(),
+                    info: dockerPluginWireInfo()
+                )
+            )
+        }
+    }
 }
 
 private actor DockerPluginWireRecordingTransport:
@@ -412,6 +481,72 @@ private actor DockerPluginWireRecordingTransport:
     }
 }
 
+private actor DockerPluginWireSerializingTransport:
+    DockerPluginLifecycleServiceWireTransportV1
+{
+    private(set) var writeRequests = [
+        DockerPluginLifecycleServiceWireRequestV1
+    ]()
+    private var firstWriteBlocked = true
+    private var firstWriteArrived = false
+    private var arrivalWaiters = [CheckedContinuation<Void, Never>]()
+    private var releaseWaiters = [CheckedContinuation<Void, Never>]()
+
+    var writeRequestCount: Int {
+        writeRequests.count
+    }
+
+    func call(
+        _ request: DockerPluginLifecycleServiceWireRequestV1
+    ) async throws -> DockerPluginLifecycleServiceWireResponseV1 {
+        switch request.operation {
+        case .startWriter:
+            return DockerPluginLifecycleServiceWireResponseV1(
+                operationID: request.operationID,
+                capabilities: DockerPluginCapabilitiesWireV1(
+                    DockerPluginCapabilities(readLogs: true)
+                ),
+                token: Data(repeating: 0x41, count: 32),
+                sequence: 1
+            )
+        case .writeWriter:
+            writeRequests.append(request)
+            if firstWriteBlocked {
+                firstWriteBlocked = false
+                firstWriteArrived = true
+                for waiter in arrivalWaiters {
+                    waiter.resume()
+                }
+                arrivalWaiters.removeAll()
+                await withCheckedContinuation { continuation in
+                    releaseWaiters.append(continuation)
+                }
+            }
+            return DockerPluginLifecycleServiceWireResponseV1(
+                operationID: request.operationID
+            )
+        default:
+            throw DockerPluginLifecycleServiceWireError.invalidEnvelope
+        }
+    }
+
+    func waitUntilFirstWriteIsBlocked() async {
+        guard !firstWriteArrived else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            arrivalWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirstWrite() {
+        for waiter in releaseWaiters {
+            waiter.resume()
+        }
+        releaseWaiters.removeAll()
+    }
+}
+
 private struct DockerPluginWireFixedTransport:
     DockerPluginLifecycleServiceWireTransportV1
 {
@@ -421,6 +556,21 @@ private struct DockerPluginWireFixedTransport:
         _ request: DockerPluginLifecycleServiceWireRequestV1
     ) async throws -> DockerPluginLifecycleServiceWireResponseV1 {
         response
+    }
+}
+
+private struct DockerPluginWireFailureTransport:
+    DockerPluginLifecycleServiceWireTransportV1
+{
+    let failure: DockerPluginLifecycleServiceWireFailureV1
+
+    func call(
+        _ request: DockerPluginLifecycleServiceWireRequestV1
+    ) async throws -> DockerPluginLifecycleServiceWireResponseV1 {
+        DockerPluginLifecycleServiceWireResponseV1(
+            operationID: request.operationID,
+            failure: failure
+        )
     }
 }
 
@@ -580,7 +730,10 @@ private func dockerPluginWireInfo() throws -> DockerPluginInfo {
     )
 }
 
-private func dockerPluginWireRecord(payload: Data) throws
+private func dockerPluginWireRecord(
+    payload: Data,
+    sequence: UInt64 = 1
+) throws
     -> ContainerLogRecordV2
 {
     try ContainerLogRecordV2(
@@ -594,7 +747,7 @@ private func dockerPluginWireRecord(payload: Data) throws
         ),
         payload: payload,
         partial: nil,
-        sequence: 1,
+        sequence: sequence,
         processGeneration: 4
     )
 }

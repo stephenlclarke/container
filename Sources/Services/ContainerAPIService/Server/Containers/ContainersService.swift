@@ -1760,7 +1760,8 @@ public actor ContainersService {
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             if !state.snapshot.configuration.logging.isLegacy {
-                let reader = try Self.nativeLogReader(
+                let reader = try await nativeLogReader(
+                    containerID: id,
                     bundle: bundle,
                     configuration: state.snapshot.configuration,
                     options: options,
@@ -1821,7 +1822,9 @@ public actor ContainersService {
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             if !state.snapshot.configuration.logging.isLegacy {
-                if isLiveForLogFollow(id: id) {
+                if !Self.requiresAuthorityLogReader(
+                    state.snapshot.configuration
+                ), isLiveForLogFollow(id: id) {
                     do {
                         let request = try Self.nativeLogReadRequest(
                             options: options,
@@ -1837,7 +1840,8 @@ public actor ContainersService {
                     }
                 }
                 return Self.logHandle(
-                    for: try Self.nativeLogReader(
+                    for: try await nativeLogReader(
+                        containerID: id,
                         bundle: bundle,
                         configuration: state.snapshot.configuration,
                         options: options,
@@ -1883,7 +1887,8 @@ public actor ContainersService {
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             if !state.snapshot.configuration.logging.isLegacy {
-                let reader = try Self.nativeLogReader(
+                let reader = try await nativeLogReader(
+                    containerID: id,
                     bundle: bundle,
                     configuration: state.snapshot.configuration,
                     options: options,
@@ -1925,7 +1930,8 @@ public actor ContainersService {
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             if !state.snapshot.configuration.logging.isLegacy {
-                let reader = try Self.nativeLogReader(
+                let reader = try await nativeLogReader(
+                    containerID: id,
                     bundle: bundle,
                     configuration: state.snapshot.configuration,
                     options: .default,
@@ -1982,7 +1988,9 @@ public actor ContainersService {
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let bundle = ContainerResource.Bundle(path: path)
             if !state.snapshot.configuration.logging.isLegacy {
-                if isLiveForLogFollow(id: id) {
+                if !Self.requiresAuthorityLogReader(
+                    state.snapshot.configuration
+                ), isLiveForLogFollow(id: id) {
                     do {
                         let request = try Self.nativeLogReadRequest(
                             options: options,
@@ -1998,7 +2006,8 @@ public actor ContainersService {
                     }
                 }
                 return Self.logRecordHandle(
-                    for: try Self.nativeLogReader(
+                    for: try await nativeLogReader(
+                        containerID: id,
                         bundle: bundle,
                         configuration: state.snapshot.configuration,
                         options: options,
@@ -2042,20 +2051,60 @@ public actor ContainersService {
         return replayHandle
     }
 
-    private static func nativeLogReader(
+    private static func requiresAuthorityLogReader(
+        _ configuration: ContainerConfiguration
+    ) -> Bool {
+        guard let resolved = configuration.logging.resolved else {
+            return false
+        }
+        return resolved.readPolicy.source == .direct
+            && resolved.providerIdentity.kind != .core
+    }
+
+    private func nativeLogReader(
+        containerID: String,
         bundle: ContainerResource.Bundle,
         configuration: ContainerConfiguration,
         options: ContainerLogOptions,
         includeRotated: Bool,
         follow: Bool = false
-    ) throws -> any ContainerLogReader {
-        try ContainerLogNativeReaderFactory.makeReader(
+    ) async throws -> any ContainerLogReader {
+        let request = try Self.nativeLogReadRequest(
+            options: options,
+            follow: follow
+        )
+        if Self.requiresAuthorityLogReader(configuration) {
+            guard let remoteLogDriverPlane else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "direct logging provider is unavailable"
+                )
+            }
+            var protectedOptions = [String: String]()
+            if let reference = configuration.logging.resolved?
+                .protectedOptionReference
+            {
+                let binding = try LoggingProtectedOptionsBinding(
+                    containerID: containerID,
+                    configuration: configuration.logging
+                )
+                protectedOptions = try await loggingProtectedOptionsStore.load(
+                    reference,
+                    boundTo: binding
+                )
+            }
+            return try await remoteLogDriverPlane.openReader(
+                containerID: containerID,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: protectedOptions,
+                read: request
+            )
+        }
+        return try ContainerLogNativeReaderFactory.makeReader(
             bundle: bundle,
             configuration: configuration,
-            request: Self.nativeLogReadRequest(
-                options: options,
-                follow: follow
-            ),
+            request: request,
             source: .stoppedContainer,
             includeRotated: includeRotated
         )

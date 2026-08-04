@@ -226,18 +226,32 @@ func loadDurableBackend(
 	changed := false
 	if backend.snapshot.Provider.ContractDigest == "" &&
 		backend.snapshot.Provider.ID == identity.ID &&
-		backend.snapshot.Provider.Generation == identity.Generation &&
-		backend.snapshot.Provider.SandboxGeneration == identity.SandboxGeneration {
+		backend.snapshot.Provider.Generation == identity.Generation {
 		backend.snapshot.Provider.ContractDigest = identity.ContractDigest
 		changed = true
 	}
-	if backend.snapshot.SchemaVersion != durableSchemaVersion ||
-		backend.snapshot.Provider != identity || backend.snapshot.Writers == nil ||
-		backend.snapshot.Readers == nil {
-		return nil, errCorruptState
-	}
 	if backend.snapshot.HistoryMigrations == nil {
 		backend.snapshot.HistoryMigrations = make(map[string]historyMigrationReceipt)
+		changed = true
+	}
+	persistedIdentity := backend.snapshot.Provider
+	if err := validateSnapshotForIdentity(backend.snapshot, persistedIdentity); err != nil {
+		return nil, err
+	}
+	if persistedIdentity.ID != identity.ID ||
+		persistedIdentity.Generation != identity.Generation ||
+		persistedIdentity.ContractDigest != identity.ContractDigest ||
+		persistedIdentity.SandboxGeneration > identity.SandboxGeneration {
+		return nil, errCorruptState
+	}
+	if persistedIdentity.SandboxGeneration < identity.SandboxGeneration {
+		// A new Engine sandbox generation is committed only after the host has
+		// proved the previous VM absent. Guest FIFO, reader, and socket effects
+		// therefore cannot survive it. Keep provider-level migration receipts,
+		// but discard session state fenced to the absent sandbox.
+		backend.snapshot.Provider = identity
+		backend.snapshot.Writers = make(map[string]writerState)
+		backend.snapshot.Readers = make(map[string]readerState)
 		changed = true
 	}
 	if err := backend.validateSnapshot(backend.snapshot); err != nil {
@@ -457,6 +471,22 @@ func (backend *durableBackend) openWriter(ctx context.Context, open writerOpen) 
 		return writerReceipt{}, err
 	}
 	if err := backend.plugin.StartLogging(ctx, handle.Path(), open.Info); err != nil {
+		if errors.Is(err, errPluginRequestRejected) {
+			if cleanupErr := backend.discardRejectedWriter(
+				open.Request.SessionID,
+				handle,
+			); cleanupErr != nil {
+				return writerReceipt{}, cleanupErr
+			}
+		} else if transitionErr := backend.updateWriter(
+			open.Request.SessionID,
+			func(writer *writerState) error {
+				writer.Phase = writerUncertain
+				return nil
+			},
+		); transitionErr != nil {
+			return writerReceipt{}, transitionErr
+		}
 		return writerReceipt{}, err
 	}
 	if err := backend.updateWriter(open.Request.SessionID, func(writer *writerState) error {
@@ -474,7 +504,7 @@ func (backend *durableBackend) openWriter(ctx context.Context, open writerOpen) 
 }
 
 func (backend *durableBackend) reconcileWriterOpen(request writerStart) (writerOpenObservation, error) {
-	if err := request.validate(backend.identity); err != nil {
+	if err := request.validateForReconciliation(backend.identity); err != nil {
 		return writerOpenObservation{}, err
 	}
 	backend.mu.Lock()
@@ -608,8 +638,21 @@ func (backend *durableBackend) finishWriter(ctx context.Context, sessionID strin
 	if err != nil {
 		return err
 	}
-	if writer.Phase == writerClosed || writer.Phase == writerFenced {
+	if writer.Phase == writerClosed {
 		return nil
+	}
+	if writer.Phase == writerFenced {
+		if fenced {
+			return nil
+		}
+		// Local FIFO authority was already irrevocably revoked and the
+		// plugin stop was attempted when the fence receipt was committed.
+		// A later authenticated detached cleanup therefore finalizes the
+		// durable writer without recreating or repeating the provider effect.
+		return backend.updateWriter(sessionID, func(state *writerState) error {
+			state.Phase = writerClosed
+			return nil
+		})
 	}
 	handle, err := backend.writerHandle(sessionID, writer.Open.Request.ProviderGeneration)
 	if err != nil {
@@ -650,6 +693,15 @@ func (backend *durableBackend) finishWriter(ctx context.Context, sessionID strin
 }
 
 func (backend *durableBackend) writerObservation(call writerCall) (string, string, error) {
+	if err := backend.validateWriterCallEnvelope(call); err != nil {
+		return "", "", err
+	}
+	backend.mu.Lock()
+	_, found := backend.snapshot.Writers[call.SessionID]
+	backend.mu.Unlock()
+	if !found {
+		return "absent", "", nil
+	}
 	writer, err := backend.validateWriterCall(call)
 	if err != nil {
 		return "", "", err
@@ -844,6 +896,15 @@ func (backend *durableBackend) closeReader(sessionID string, token []byte) error
 }
 
 func (backend *durableBackend) readerObservation(call readerCall) (string, string, error) {
+	if err := backend.validateReaderCallEnvelope(call); err != nil {
+		return "", "", err
+	}
+	backend.mu.Lock()
+	_, found := backend.snapshot.Readers[call.ReaderSessionID]
+	backend.mu.Unlock()
+	if !found {
+		return "absent", "", nil
+	}
 	reader, _, err := backend.validateReaderCall(call)
 	if err != nil {
 		return "", "", err
@@ -948,6 +1009,29 @@ func (backend *durableBackend) discardUneffectedWriter(sessionID string) error {
 	return backend.commitLocked(candidate)
 }
 
+// A Docker plugin Err response is a definitive StartLogging rejection. The
+// plugin did not acquire the FIFO effect, so the service can remove its local
+// candidate and let the controller safely replay the same idempotency scope.
+func (backend *durableBackend) discardRejectedWriter(sessionID string, handle fifoHandle) error {
+	if err := handle.CloseAndRemove(); err != nil {
+		return err
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	writer, found := backend.snapshot.Writers[sessionID]
+	if !found || writer.Phase != writerStarting {
+		return errInvalidFence
+	}
+	candidate := cloneSnapshot(backend.snapshot)
+	delete(candidate.Writers, sessionID)
+	if err := backend.commitLocked(candidate); err != nil {
+		return err
+	}
+	delete(backend.writerHandles, sessionID)
+	delete(backend.writerProgress, sessionID)
+	return nil
+}
+
 func (backend *durableBackend) discardUneffectedReader(sessionID string) error {
 	backend.mu.Lock()
 	defer backend.mu.Unlock()
@@ -1012,8 +1096,7 @@ func (backend *durableBackend) writerHandle(sessionID string, generation uint64)
 }
 
 func (backend *durableBackend) validateWriterCall(call writerCall) (writerState, error) {
-	if call.SchemaVersion != serviceSchemaVersion || call.ProviderID != backend.identity.ID ||
-		call.ProviderGeneration != backend.identity.Generation || !validIdentifier(call.SessionID) {
+	if err := backend.validateWriterCallEnvelope(call); err != nil {
 		return writerState{}, errInvalidFence
 	}
 	writer, err := backend.writerForToken(call.SessionID, call.Token)
@@ -1037,9 +1120,33 @@ func (backend *durableBackend) validateWriterCall(call writerCall) (writerState,
 	return writer, nil
 }
 
-func (backend *durableBackend) validateReaderCall(call readerCall) (readerState, pluginReadStream, error) {
+func (backend *durableBackend) validateWriterCallEnvelope(call writerCall) error {
 	if call.SchemaVersion != serviceSchemaVersion || call.ProviderID != backend.identity.ID ||
-		call.ProviderGeneration != backend.identity.Generation || !validIdentifier(call.ReaderSessionID) {
+		call.ProviderGeneration != backend.identity.Generation || !validIdentifier(call.SessionID) ||
+		!validIdentifier(call.ContainerID) || call.LeaseGeneration == 0 ||
+		call.Fence.ProcessGeneration == 0 || call.Fence.ActiveSandboxGeneration == nil ||
+		*call.Fence.ActiveSandboxGeneration == 0 ||
+		*call.Fence.ActiveSandboxGeneration > backend.identity.SandboxGeneration ||
+		len(call.Token) == 0 || len(call.Token) > maximumTokenBytes {
+		return errInvalidFence
+	}
+	switch call.Fence.Kind {
+	case "candidate":
+		if call.Fence.OperationGeneration == nil || *call.Fence.OperationGeneration == 0 {
+			return errInvalidFence
+		}
+	case "active":
+		if call.Fence.OperationGeneration != nil {
+			return errInvalidFence
+		}
+	default:
+		return errInvalidFence
+	}
+	return nil
+}
+
+func (backend *durableBackend) validateReaderCall(call readerCall) (readerState, pluginReadStream, error) {
+	if err := backend.validateReaderCallEnvelope(call); err != nil {
 		return readerState{}, nil, errInvalidFence
 	}
 	reader, stream, err := backend.readerForToken(call.ReaderSessionID, call.Token)
@@ -1052,6 +1159,19 @@ func (backend *durableBackend) validateReaderCall(call readerCall) (readerState,
 		return readerState{}, nil, errInvalidFence
 	}
 	return reader, stream, nil
+}
+
+func (backend *durableBackend) validateReaderCallEnvelope(call readerCall) error {
+	if call.SchemaVersion != serviceSchemaVersion || call.ProviderID != backend.identity.ID ||
+		call.ProviderGeneration != backend.identity.Generation || !validIdentifier(call.ReaderSessionID) ||
+		!validIdentifier(call.ContainerID) || call.LeaseGeneration == 0 ||
+		len(call.Token) == 0 || len(call.Token) > maximumTokenBytes {
+		return errInvalidFence
+	}
+	if err := validateJSONObject(call.Source, maximumSemanticBytes); err != nil {
+		return errInvalidFence
+	}
+	return nil
 }
 
 func (backend *durableBackend) commit(snapshot durableSnapshot) error {
@@ -1082,13 +1202,17 @@ func (backend *durableBackend) commitLocked(snapshot durableSnapshot) error {
 }
 
 func (backend *durableBackend) validateSnapshot(snapshot durableSnapshot) error {
-	if snapshot.SchemaVersion != durableSchemaVersion || snapshot.Provider != backend.identity ||
+	return validateSnapshotForIdentity(snapshot, backend.identity)
+}
+
+func validateSnapshotForIdentity(snapshot durableSnapshot, identity serviceIdentity) error {
+	if snapshot.SchemaVersion != durableSchemaVersion || snapshot.Provider != identity ||
 		len(snapshot.Writers) > maximumWriters || len(snapshot.Readers) > maximumReaders ||
 		snapshot.HistoryMigrations == nil || len(snapshot.HistoryMigrations) > maximumHistoryMigrations {
 		return errCorruptState
 	}
 	for sessionID, writer := range snapshot.Writers {
-		if writer.Open.Request.SessionID != sessionID || writer.Open.validate(backend.identity) != nil ||
+		if writer.Open.Request.SessionID != sessionID || writer.Open.validate(identity) != nil ||
 			len(writer.Token) == 0 || len(writer.Token) > maximumTokenBytes ||
 			writer.FenceReceiptDigest == "" {
 			return errCorruptState
@@ -1103,7 +1227,7 @@ func (backend *durableBackend) validateSnapshot(snapshot durableSnapshot) error 
 		}
 	}
 	for sessionID, reader := range snapshot.Readers {
-		if reader.Open.Request.ReaderSessionID != sessionID || reader.Open.validate(backend.identity) != nil ||
+		if reader.Open.Request.ReaderSessionID != sessionID || reader.Open.validate(identity) != nil ||
 			len(reader.Token) == 0 || len(reader.Token) > maximumTokenBytes || reader.NextSequence == 0 ||
 			reader.TerminalOutcomeDigest == "" || (reader.LastSequence == nil) != (len(reader.LastFrame) == 0 && !reader.LastEndOfStream) {
 			return errCorruptState
@@ -1116,7 +1240,7 @@ func (backend *durableBackend) validateSnapshot(snapshot durableSnapshot) error 
 	}
 	for key, receipt := range snapshot.HistoryMigrations {
 		if receipt.SchemaVersion != serviceSchemaVersion ||
-			receipt.Request.validate(backend.identity) != nil ||
+			receipt.Request.validate(identity) != nil ||
 			key != historyMigrationKey(receipt.Request) ||
 			receipt.ProviderOutcomeDigest != historyMigrationOutcomeDigest(receipt.Request) {
 			return errCorruptState
@@ -1252,7 +1376,7 @@ func (store *fileStateStore) Save(data []byte) error {
 	if err := rejectSymlinkComponents(parent); err != nil {
 		return err
 	}
-	if err := os.Chmod(parent, 0o700); err != nil {
+	if err := ensurePrivateDirectoryMode(parent); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(store.path); err == nil {
@@ -1320,6 +1444,26 @@ func rejectSymlinkComponents(path string) error {
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 			return errCorruptState
 		}
+	}
+	return nil
+}
+
+func ensurePrivateDirectoryMode(path string) error {
+	return ensurePrivateDirectoryModeWith(path, os.Chmod)
+}
+
+func ensurePrivateDirectoryModeWith(
+	path string,
+	chmod func(string, os.FileMode) error,
+) error {
+	_ = chmod(path, 0o700)
+	// macOS virtiofs can return EPERM for chmod even though the host has
+	// already enforced and exported the requested mode. The inspection below
+	// is authoritative whether chmod succeeded or not.
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o700 {
+		return errCorruptState
 	}
 	return nil
 }

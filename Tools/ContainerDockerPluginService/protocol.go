@@ -66,6 +66,7 @@ const (
 	failureInvalidToken        wireFailure = "invalidToken"
 	failureInvalidFence        wireFailure = "invalidFence"
 	failureCapabilityMismatch  wireFailure = "capabilityMismatch"
+	failurePluginRejected      wireFailure = "pluginRejected"
 	failureUnknownSession      wireFailure = "unknownSession"
 	failureUnavailable         wireFailure = "unavailable"
 	failureInternal            wireFailure = "internalFailure"
@@ -163,7 +164,7 @@ func (request wireRequest) validate(identity serviceIdentity) error {
 		if payloads != 1 || request.WriterStart == nil {
 			return errors.New("invalid writer reconciliation payload")
 		}
-		return request.WriterStart.validate(identity)
+		return request.WriterStart.validateForReconciliation(identity)
 	case operationWriteWriter:
 		return requireSessionToken(true, true)
 	case operationFlushWriter, operationCancelReader:

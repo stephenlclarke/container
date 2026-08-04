@@ -42,11 +42,11 @@ func main() {
 func run() error {
 	flags := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	port := flags.Uint("port", defaultServicePort, "AF_VSOCK service port")
+	port := flags.Uint("port", defaultServicePort, "service endpoint identity and AF_VSOCK fallback port")
 	generation := flags.Uint64("sandbox-generation", 0, "active EngineLinuxSandbox generation")
 	statePath := flags.String("state", "/var/lib/container-journald-service/state.json", "private durable state path")
 	journalDirectory := flags.String("journal-directory", "", "read a system journal from this directory")
-	unixSocket := flags.String("listen-unix", "", "test-only Unix listener instead of AF_VSOCK")
+	unixSocket := flags.String("listen-unix", "", "private workload Unix listener relayed to the host")
 	maximumConnections := flags.Int("max-connections", defaultMaximumConnections, "bounded concurrent connections")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
@@ -104,9 +104,8 @@ func openServiceListener(port uint32, unixSocket string) (net.Listener, func(), 
 	if err != nil {
 		return nil, func() {}, err
 	}
-	// A virtiofs bind used only by the cross-kernel integration test may reject
-	// chmod even though the entrypoint's 0077 umask created a private socket.
-	// The production listener is AF_VSOCK and never takes this branch.
+	// Some mounted filesystems can reject chmod even though the entrypoint's
+	// 0077 umask created a private socket. Accept that only after inspection.
 	if err := os.Chmod(path, 0o600); err != nil &&
 		!errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.EOPNOTSUPP) {
 		_ = listener.Close()

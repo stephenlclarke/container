@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -111,6 +112,32 @@ func TestFileStateStoreRoundTripIsProtectedAndSymlinkSafe(t *testing.T) {
 	}
 }
 
+func TestEnsurePrivateDirectoryModeAcceptsProtectedVirtiofsDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePrivateDirectoryModeWith(
+		root,
+		func(string, os.FileMode) error { return fs.ErrPermission },
+	); err != nil {
+		t.Fatalf("already-private directory rejected after chmod EPERM: %v", err)
+	}
+}
+
+func TestEnsurePrivateDirectoryModeRejectsUnsafeVirtiofsDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePrivateDirectoryModeWith(
+		root,
+		func(string, os.FileMode) error { return fs.ErrPermission },
+	); err == nil {
+		t.Fatal("unsafe directory accepted after chmod EPERM")
+	}
+}
+
 func TestHistoryMigrationReceiptIsDurableAndReplayStable(t *testing.T) {
 	store := &memoryStateStore{}
 	plugin := newFakePlugin(true)
@@ -160,6 +187,54 @@ func TestHistoryMigrationRequiresReadableExactProviderContract(t *testing.T) {
 	wrongContract.ContractDigest = "sha256:wrong-contract"
 	if _, err := writeOnly.migrateHistory(context.Background(), wrongContract); !errors.Is(err, errInvalidFence) {
 		t.Fatalf("wrong-contract migration error = %v, want invalid fence", err)
+	}
+}
+
+func TestLoadDurableBackendAdvancesAcrossVerifiedSandboxAbsence(t *testing.T) {
+	store := &memoryStateStore{}
+	plugin := newFakePlugin(true)
+	backend := newTestBackend(t, store, plugin, newFakeFIFOFactory())
+	if _, err := backend.migrateHistory(context.Background(), testHistoryMigrationRequest()); err != nil {
+		t.Fatalf("persist history migration: %v", err)
+	}
+	if _, err := backend.openWriter(context.Background(), testWriterOpen(true)); err != nil {
+		t.Fatalf("persist writer: %v", err)
+	}
+
+	nextIdentity := testServiceIdentity()
+	nextIdentity.SandboxGeneration++
+	recovered, err := loadDurableBackend(
+		nextIdentity,
+		store,
+		plugin,
+		newFakeFIFOFactory(),
+		fixedTokenGenerator{},
+	)
+	if err != nil {
+		t.Fatalf("advance sandbox generation: %v", err)
+	}
+	if recovered.snapshot.Provider != nextIdentity {
+		t.Fatalf("provider identity = %#v, want %#v", recovered.snapshot.Provider, nextIdentity)
+	}
+	if len(recovered.snapshot.Writers) != 0 || len(recovered.snapshot.Readers) != 0 {
+		t.Fatalf(
+			"recovered guest sessions = %d writers, %d readers; want none",
+			len(recovered.snapshot.Writers),
+			len(recovered.snapshot.Readers),
+		)
+	}
+	if len(recovered.snapshot.HistoryMigrations) != 1 {
+		t.Fatalf("provider migration receipts = %d, want 1", len(recovered.snapshot.HistoryMigrations))
+	}
+
+	if _, err := loadDurableBackend(
+		testServiceIdentity(),
+		store,
+		plugin,
+		newFakeFIFOFactory(),
+		fixedTokenGenerator{},
+	); !errors.Is(err, errCorruptState) {
+		t.Fatalf("sandbox generation rollback error = %v, want corrupt state", err)
 	}
 }
 
@@ -240,6 +315,40 @@ func TestUncertainWriterStartCannotRepeatPluginEffect(t *testing.T) {
 	}
 	if got := plugin.startCallCount(); got != 1 {
 		t.Fatalf("conflict created %d effect calls, want 1", got)
+	}
+}
+
+func TestRejectedWriterStartReleasesCandidateForSafeReplay(t *testing.T) {
+	store := &memoryStateStore{}
+	plugin := newFakePlugin(false)
+	plugin.startErrors = []error{errPluginRequestRejected}
+	fifos := newFakeFIFOFactory()
+	backend := newTestBackend(t, store, plugin, fifos)
+	open := testWriterOpen(false)
+
+	if _, err := backend.openWriter(context.Background(), open); !errors.Is(err, errPluginRequestRejected) {
+		t.Fatalf("rejected open error = %v, want plugin rejection", err)
+	}
+	observation, err := backend.reconcileWriterOpen(open.Request)
+	if err != nil || observation.Observation != observationAbsent {
+		t.Fatalf("rejected open observation = %#v, %v, want absent", observation, err)
+	}
+	if len(backend.snapshot.Writers) != 0 || len(backend.writerHandles) != 0 {
+		t.Fatalf(
+			"rejected writer residue = %d states, %d handles",
+			len(backend.snapshot.Writers),
+			len(backend.writerHandles),
+		)
+	}
+
+	if _, err := backend.openWriter(context.Background(), open); err != nil {
+		t.Fatalf("safe replay after rejection: %v", err)
+	}
+	if got := plugin.startCallCount(); got != 2 {
+		t.Fatalf("plugin start calls = %d, want rejected call and safe replay", got)
+	}
+	if got := fifos.openCallCount(); got != 2 {
+		t.Fatalf("FIFO opens = %d, want rejected call and safe replay", got)
 	}
 }
 
@@ -328,6 +437,46 @@ func TestWriterFenceRevokesBeforeRemoteStopAndRejectsStaleToken(t *testing.T) {
 	}
 	if err := backend.writeWriter(context.Background(), open.Request.SessionID, receipt.Token, 1, []byte{0, 0, 0, 1, 1}); !errors.Is(err, errInvalidFence) {
 		t.Fatalf("post-fence write error = %v", err)
+	}
+}
+
+func TestFencedWriterCanFinalizeAsClosed(t *testing.T) {
+	backend := newTestBackend(
+		t,
+		&memoryStateStore{},
+		newFakePlugin(false),
+		newFakeFIFOFactory(),
+	)
+	open := testWriterOpen(false)
+	receipt, err := backend.openWriter(context.Background(), open)
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	if err := backend.finishWriter(
+		context.Background(),
+		open.Request.SessionID,
+		receipt.Token,
+		true,
+	); err != nil {
+		t.Fatalf("fence writer: %v", err)
+	}
+	if err := backend.finishWriter(
+		context.Background(),
+		open.Request.SessionID,
+		receipt.Token,
+		false,
+	); err != nil {
+		t.Fatalf("finalize fenced writer: %v", err)
+	}
+
+	observation, digest, err := backend.writerObservation(
+		testWriterCall(open.Request, receipt.Token),
+	)
+	if err != nil {
+		t.Fatalf("observe finalized writer: %v", err)
+	}
+	if observation != "closed" || digest != "" {
+		t.Fatalf("final observation = %q, %q, want closed", observation, digest)
 	}
 }
 
@@ -554,18 +703,19 @@ func (fixedTokenGenerator) Generate(count int) ([]byte, error) {
 }
 
 type fakePlugin struct {
-	mu                sync.Mutex
-	readLogs          bool
-	startErrors       []error
-	startCalls        int
-	startPaths        map[string]struct{}
-	stopCalls         int
-	readFrames        [][]byte
-	readErrors        []error
-	nextCalls         int
-	readCalls         int
-	events            *eventRecorder
-	capabilitiesCalls int
+	mu                 sync.Mutex
+	readLogs           bool
+	startErrors        []error
+	startCalls         int
+	startPaths         map[string]struct{}
+	stopCalls          int
+	readFrames         [][]byte
+	readErrors         []error
+	nextCalls          int
+	readCalls          int
+	events             *eventRecorder
+	capabilitiesCalls  int
+	startHonorsContext bool
 }
 
 func newFakePlugin(readLogs bool) *fakePlugin {
@@ -585,11 +735,14 @@ func (plugin *fakePlugin) capabilitiesCallCount() int {
 	return plugin.capabilitiesCalls
 }
 
-func (plugin *fakePlugin) StartLogging(_ context.Context, path string, _ json.RawMessage) error {
+func (plugin *fakePlugin) StartLogging(ctx context.Context, path string, _ json.RawMessage) error {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()
 	plugin.startCalls++
 	plugin.startPaths[path] = struct{}{}
+	if plugin.startHonorsContext && ctx.Err() != nil {
+		return ctx.Err()
+	}
 	if len(plugin.startErrors) == 0 {
 		return nil
 	}

@@ -1325,6 +1325,46 @@ public actor EngineWorkloadLedgerV1 {
         return next
     }
 
+    /// Commits a runtime observation that proves the complete sandbox is
+    /// absent. Sandbox-local workload records can only be discarded when no
+    /// external effects or mutations remain to reconcile.
+    public func commitVerifiedSandboxAbsent() async throws -> EngineLinuxSandboxRecordV1 {
+        let current = currentSnapshot.sandbox
+        guard current.state == .ready else {
+            throw invalidTransition("ready sandbox", current.state)
+        }
+        guard
+            currentSnapshot.workloads.allSatisfy({
+                $0.activeEffects.isEmpty && $0.operation == nil
+            })
+        else {
+            throw EngineWorkloadLedgerError.recoveryRequired
+        }
+        guard let requestDigest = current.requestDigest else {
+            throw EngineWorkloadLedgerError.corruptSnapshot(
+                "ready sandbox has no request digest"
+            )
+        }
+        let evidenceID = "verified-absent-\(current.generation)"
+        let absent = try EngineLinuxSandboxRecordV1(
+            sandboxID: current.sandboxID,
+            generation: current.generation,
+            revision: current.revision + 1,
+            state: .absent,
+            operationKind: .stop,
+            idempotencyKey: evidenceID,
+            requestDigest: requestDigest,
+            effectID: evidenceID
+        )
+        let snapshot = try EngineWorkloadLedgerSnapshotV1(
+            owningControllerID: owningControllerID,
+            sandbox: absent,
+            workloads: []
+        )
+        try await persist(snapshot)
+        return absent
+    }
+
     public func beginSandboxStop(
         idempotencyKey: String,
         requestDigest: String,

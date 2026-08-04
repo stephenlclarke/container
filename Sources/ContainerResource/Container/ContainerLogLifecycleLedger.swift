@@ -1269,6 +1269,30 @@ public actor ContainerLogLifecycleLedgerV1 {
         }
     }
 
+    /// Makes a tokenless start attempt terminal after the provider proves the
+    /// exact idempotency scope absent. No effect-removal entry is required
+    /// because the authority never received or sealed provider effect material.
+    public func completeAbsentWriterStart(
+        for request: LogDriverStartRequestV1
+    ) async throws -> LoggingWriterOperationRecordV1 {
+        try await replaceWriterOperation(for: request) { record in
+            switch record.result {
+            case .reserved, .startRecoveryRequired:
+                return try LoggingWriterOperationRecordV1(
+                    request: request,
+                    result: .candidateClosed
+                )
+            case .candidateClosed:
+                return record
+            default:
+                throw Self.invalidTransition(
+                    expected: "reserved, startRecoveryRequired, or candidateClosed",
+                    actual: record.result.kindName
+                )
+            }
+        }
+    }
+
     public func recordWriterPreparation(
         _ preparation: LoggingSessionPreparationV1,
         for request: LogDriverStartRequestV1

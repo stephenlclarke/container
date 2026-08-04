@@ -88,7 +88,7 @@ func ensurePrivateDirectory(path string) error {
 	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("FIFO root is not a protected directory")
 	}
-	return os.Chmod(path, 0o700)
+	return ensurePrivateDirectoryMode(path)
 }
 
 type linuxFIFO struct {

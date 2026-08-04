@@ -368,7 +368,7 @@ struct EngineWorkloadLedgerTests {
         #expect(await runtime.shutdownCallCount() == 1)
     }
 
-    @Test func managerFencesReadyLedgerWhenRuntimeIdentityDisappears() async throws {
+    @Test func managerRebootsAfterRuntimeProvesSandboxAbsence() async throws {
         let ledger = try await readyLedger()
         let runtime = TestSandboxRuntime(failFirstBootResponse: false)
         await runtime.seedBootReceipt(
@@ -387,16 +387,22 @@ struct EngineWorkloadLedgerTests {
             requestDigest: "sha256:boot",
             effectID: "effect-boot-1"
         )
+        _ = try await ledger.registerWorkload(
+            containerID: "container-1",
+            planDigest: "sha256:plan"
+        )
+        _ = try await commitStart(on: ledger)
         await runtime.loseSandbox()
 
-        await #expect(throws: EngineLinuxSandboxManagerError.recoveryRequired) {
-            _ = try await manager.ensureReady(
-                idempotencyKey: "boot-1",
-                requestDigest: "sha256:boot",
-                effectID: "effect-boot-1"
-            )
-        }
-        #expect(await ledger.snapshot().sandbox.state == .recoveryRequired)
+        let recovered = try await manager.ensureReady(
+            idempotencyKey: "boot-1",
+            requestDigest: "sha256:boot",
+            effectID: "effect-boot-1"
+        )
+        #expect(recovered.state == .ready)
+        #expect(recovered.generation == 2)
+        #expect(await ledger.snapshot().workloads.isEmpty)
+        #expect(await runtime.bootCallCount() == 1)
     }
 
     private func readyLedger(

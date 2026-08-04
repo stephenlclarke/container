@@ -130,7 +130,7 @@ func (store *fileStateStore) Save(data []byte) error {
 	if err := rejectSymlinkComponents(parent); err != nil {
 		return err
 	}
-	if err := os.Chmod(parent, 0o700); err != nil {
+	if err := ensurePrivateDirectoryMode(parent); err != nil {
 		return err
 	}
 	if info, err := os.Lstat(store.path); err == nil {
@@ -152,7 +152,7 @@ func (store *fileStateStore) Save(data []byte) error {
 			_ = os.Remove(temporaryPath)
 		}
 	}()
-	if err := temporary.Chmod(0o600); err != nil {
+	if err := ensurePrivateOpenFileMode(temporary, 0o600); err != nil {
 		_ = temporary.Close()
 		return err
 	}
@@ -177,6 +177,40 @@ func (store *fileStateStore) Save(data []byte) error {
 	}
 	defer directory.Close()
 	return directory.Sync()
+}
+
+func ensurePrivateDirectoryMode(path string) error {
+	return ensurePrivateDirectoryModeWith(path, os.Chmod)
+}
+
+func ensurePrivateDirectoryModeWith(
+	path string,
+	chmod func(string, os.FileMode) error,
+) error {
+	_ = chmod(path, 0o700)
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 ||
+		info.Mode().Perm() != 0o700 {
+		return errCorruptState
+	}
+	return nil
+}
+
+func ensurePrivateOpenFileMode(file *os.File, mode os.FileMode) error {
+	return ensurePrivateOpenFileModeWith(file, mode, file.Chmod)
+}
+
+func ensurePrivateOpenFileModeWith(
+	file *os.File,
+	mode os.FileMode,
+	chmod func(os.FileMode) error,
+) error {
+	_ = chmod(mode)
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != mode {
+		return errCorruptState
+	}
+	return nil
 }
 
 func rejectSymlinkComponents(path string) error {

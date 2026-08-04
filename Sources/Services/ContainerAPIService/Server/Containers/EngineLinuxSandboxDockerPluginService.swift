@@ -437,6 +437,7 @@ package actor InstalledDockerPluginWorkloadMaterializerV1:
                 "--provider-generation", "\(manifest.providerGeneration)",
                 "--contract-digest", descriptor.optionContractDigest,
                 "--plugin-socket", manifest.pluginSocket,
+                "--expected-read-logs", manifest.readLogs ? "true" : "false",
                 "--port", "\(manifest.servicePort)",
                 "--authentication-key-file",
                 "/var/lib/container-docker-plugin-service/authentication.key",
@@ -780,8 +781,11 @@ package actor EngineLinuxSandboxDockerPluginConnectorV1 {
                 throw CancellationError()
             } catch {
                 guard clock.now < deadline else {
-                    throw EngineLinuxSandboxDockerPluginServiceError
-                        .readinessTimedOut
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "Docker logging plugin service readiness timed out",
+                        cause: error
+                    )
                 }
                 try await Task.sleep(for: Self.retryDelay)
             }
@@ -801,13 +805,21 @@ package actor EngineLinuxSandboxDockerPluginConnectorV1 {
             sandboxGeneration: ready.generation
         )
         let assets = materializer.assets
+        let diagnosticStdio = try EngineLinuxSandboxServiceDiagnosticsV1.stdio(
+            workloadRoot: materialized.workloadRoot
+        )
+        defer {
+            for handle in diagnosticStdio.compactMap({ $0 }) {
+                try? handle.close()
+            }
+        }
         let running = try await authority.startWorkload(
             planDigest: materialized.planDigest,
             configuration: configuration,
             workloadRoot: materialized.workloadRoot,
             dynamicEnvironment: [:],
             networkEndpoints: [],
-            stdio: [],
+            stdio: diagnosticStdio,
             controllers: [],
             monitorTerminal: true
         )

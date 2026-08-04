@@ -230,6 +230,35 @@ struct ContainerLogNativeReaderTests {
     }
 
     @Test
+    func legacyReaderAcceptsDarwinSystemDirectoryAlias() async throws {
+        let fixture = try NativeReaderFixture(
+            rootURL: URL(fileURLWithPath: "/tmp", isDirectory: true)
+        )
+        defer { fixture.remove() }
+        var configuration = baseConfiguration()
+        configuration.logging = ContainerLogConfiguration()
+        let writer = try ContainerLogFileWriter(
+            rawLogURL: fixture.bundle.containerLog,
+            recordLogURL: fixture.bundle.containerLogRecords
+        )
+        let stdout = writer.writer(for: .stdout)
+        let stderr = writer.writer(for: .stderr)
+        try stderr.write(Data("aliased-legacy\n".utf8))
+        try stdout.close()
+        try stderr.close()
+
+        let reader = try ContainerLogNativeReaderFactory.makeReader(
+            bundle: fixture.bundle,
+            configuration: configuration,
+            request: ContainerLogReadRequest(),
+            source: .stoppedContainer
+        )
+        let records = try await drain(reader)
+        #expect(records.map(\.stream) == [.stderr])
+        #expect(records.map(\.data) == [Data("aliased-legacy\n".utf8)])
+    }
+
+    @Test
     func bufferedReaderRejectsConcurrentCallAndTaskCancellationEndsIt() async throws {
         let gate = NativeReaderAsyncGate()
         let reader: any ContainerLogReader = ContainerLogBufferedReader(
@@ -349,19 +378,24 @@ struct ContainerLogNativeReaderTests {
 private struct NativeReaderFixture {
     let bundle: ContainerResource.Bundle
 
-    init() throws {
-        let temporaryRootPath = FileManager.default.temporaryDirectory.path
-        let canonicalPointer = temporaryRootPath.withCString { Darwin.realpath($0, nil) }
-        guard let canonicalPointer else {
-            throw NativeReaderFixtureError.canonicalTemporaryDirectory(errno)
+    init(rootURL: URL? = nil) throws {
+        let selectedRoot: URL
+        if let rootURL {
+            selectedRoot = rootURL
+        } else {
+            let temporaryRootPath = FileManager.default.temporaryDirectory.path
+            let canonicalPointer = temporaryRootPath.withCString { Darwin.realpath($0, nil) }
+            guard let canonicalPointer else {
+                throw NativeReaderFixtureError.canonicalTemporaryDirectory(errno)
+            }
+            selectedRoot = URL(
+                fileURLWithPath: String(cString: canonicalPointer),
+                isDirectory: true
+            )
+            free(canonicalPointer)
         }
-        let canonicalTemporaryRoot = URL(
-            fileURLWithPath: String(cString: canonicalPointer),
-            isDirectory: true
-        )
-        free(canonicalPointer)
         bundle = ContainerResource.Bundle(
-            path: canonicalTemporaryRoot.appendingPathComponent(
+            path: selectedRoot.appendingPathComponent(
                 "container-log-native-reader-\(UUID().uuidString)",
                 isDirectory: true
             )

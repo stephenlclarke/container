@@ -197,7 +197,7 @@ struct BuiltinRemoteLogDriverProviderSetTests {
         }
     }
 
-    @Test func failedPluginCandidateLeavesHealthyGenerationActive() async throws {
+    @Test func firstPluginGenerationIsLazyAndFailedUpgradeIsRolledBack() async throws {
         let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
         do {
             let firstService = ProviderGenerationLifecycleFixture(
@@ -235,10 +235,46 @@ struct BuiltinRemoteLogDriverProviderSetTests {
                     generation: 2
                 ) == nil
             )
-            #expect(await firstService.readinessProbeCount == 1)
+            #expect(await firstService.readinessProbeCount == 0)
             #expect(await secondService.readinessProbeCount == 1)
             #expect(await firstService.effectCallCount == 0)
             #expect(await secondService.effectCallCount == 0)
+            try await group.shutdownGracefully()
+        } catch {
+            try? await group.shutdownGracefully()
+            throw error
+        }
+    }
+
+    @Test func firstPluginGenerationDoesNotRequireSandboxBootstrap() async throws {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        do {
+            let service = ProviderGenerationLifecycleFixture(
+                readiness: .unavailable
+            )
+            let providers = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                dockerPluginInstallations: [
+                    Self.pluginInstallation(
+                        generation: 1,
+                        service: service
+                    )
+                ],
+                providerGeneration: 7
+            )
+
+            #expect(
+                await providers.registry.activeGeneration(
+                    providerID: Self.pluginProviderIdentity.id
+                ) == 1
+            )
+            let catalog = try await providers.registry.logDriverCatalog()
+            #expect(catalog.descriptor(named: "durable-plugin") != nil)
+            #expect(await service.readinessProbeCount == 0)
+            #expect(await service.effectCallCount == 0)
             try await group.shutdownGracefully()
         } catch {
             try? await group.shutdownGracefully()
@@ -337,7 +373,7 @@ struct BuiltinRemoteLogDriverProviderSetTests {
             )
             #expect(candidate.sourceGeneration == 1)
             #expect(candidate.targetGeneration == 2)
-            #expect(await reconstructedFirst.readinessProbeCount == 1)
+            #expect(await reconstructedFirst.readinessProbeCount == 0)
             #expect(await reconstructedSecond.readinessProbeCount == 1)
             #expect(await reconstructedFirst.effectCallCount == 0)
             #expect(await reconstructedSecond.effectCallCount == 0)
@@ -379,7 +415,7 @@ struct BuiltinRemoteLogDriverProviderSetTests {
                     providerID: Self.pluginProviderIdentity.id
                 ) == 2
             )
-            #expect(await activeService.readinessProbeCount == 1)
+            #expect(await activeService.readinessProbeCount == 0)
             let reclaimedGeneration = await recoveredActive.registry.selection(
                 providerID: Self.pluginProviderIdentity.id,
                 generation: 1

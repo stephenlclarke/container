@@ -183,13 +183,35 @@ public actor EngineLinuxSandboxAuthorityV1 {
             let persisted = try EngineLinuxSandboxRuntimeConfigurationV1.read(from: root)
             let persistedDigest = try Self.digest(persisted)
             if persistedDigest != requestedDigest {
-                guard snapshot.sandbox.state == .absent else {
-                    throw ContainerizationError(
-                        .invalidState,
-                        message: "persisted Engine Linux sandbox configuration does not match durable runtime state"
+                if snapshot.sandbox.state == .ready {
+                    let launched = try await launcher.launch(
+                        configuration: persisted
                     )
+                    let persistedManager = EngineLinuxSandboxManagerV1(
+                        ledger: ledger,
+                        runtime: launched
+                    )
+                    switch try await persistedManager.reconcileReadyRuntime() {
+                    case .ready:
+                        runtime = launched
+                        manager = persistedManager
+                        activeConfigurationDigest = persistedDigest
+                        throw ContainerizationError(
+                            .invalidState,
+                            message: "active Engine Linux sandbox configuration cannot change"
+                        )
+                    case .absent:
+                        try await launcher.stop(configuration: persisted)
+                    }
+                } else {
+                    guard snapshot.sandbox.state == .absent else {
+                        throw ContainerizationError(
+                            .invalidState,
+                            message: "persisted Engine Linux sandbox configuration does not match durable runtime state"
+                        )
+                    }
+                    replaceStoppedHelper = true
                 }
-                replaceStoppedHelper = true
             }
         }
 

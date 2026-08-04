@@ -780,14 +780,29 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
             let candidates = generations[providerID, default: []].sorted {
                 $0.0 < $1.0
             }
+            let activeGenerationAtOpen = await registry.activeGeneration(
+                providerID: providerID
+            )
             for (_, provider) in candidates {
                 _ = try await registry.stage(provider)
             }
 
-            try await recoverHealthyActiveGeneration(
-                providerID: providerID,
-                registry: registry
-            )
+            if activeGenerationAtOpen == nil,
+                let initialGeneration = candidates.first?.0
+            {
+                // The first operator-approved generation is deliberately
+                // lazy. On a fresh application root APIServer construction
+                // precedes `system start` installing the default kernel, so a
+                // readiness probe here would try to materialize the provider
+                // sandbox before that prerequisite can exist. Runtime effect
+                // admission still proves the live sandbox generation before
+                // the first effect; later generations remain staged and must
+                // pass the normal upgrade readiness gate.
+                _ = try await registry.activate(
+                    providerID: providerID,
+                    generation: initialGeneration
+                )
+            }
             var highestHealthyGeneration: UInt64?
             for (generation, provider) in candidates {
                 guard
@@ -843,55 +858,4 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         }
     }
 
-    private static func recoverHealthyActiveGeneration(
-        providerID: String,
-        registry: LogDriverProviderRegistry
-    ) async throws {
-        while let active = await registry.activeGeneration(
-            providerID: providerID
-        ) {
-            guard
-                let selection = await registry.selection(
-                    providerID: providerID,
-                    generation: active
-                ),
-                let provider = selection.provider
-                    as? any EngineLinuxSandboxLogDriverProvider
-            else {
-                do {
-                    _ = try await registry.rollbackActive(
-                        providerID: providerID,
-                        generation: active
-                    )
-                    continue
-                } catch LogDriverProviderRegistryError
-                    .rollbackGenerationUnavailable
-                {
-                    return
-                }
-            }
-            do {
-                let sandboxGeneration =
-                    try await provider
-                    .activeSandboxGeneration()
-                guard sandboxGeneration > 0 else {
-                    throw DockerPluginProtocolError.invalidSessionFence
-                }
-                return
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                do {
-                    _ = try await registry.rollbackActive(
-                        providerID: providerID,
-                        generation: active
-                    )
-                } catch LogDriverProviderRegistryError
-                    .rollbackGenerationUnavailable
-                {
-                    return
-                }
-            }
-        }
-    }
 }

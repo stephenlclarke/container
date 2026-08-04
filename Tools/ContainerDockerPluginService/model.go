@@ -60,12 +60,24 @@ type writerStart struct {
 }
 
 func (request writerStart) validate(provider serviceIdentity) error {
+	if err := request.validateForReconciliation(provider); err != nil ||
+		*request.CandidateSandboxGeneration != provider.SandboxGeneration {
+		return errInvalidFence
+	}
+	return nil
+}
+
+// Reconciliation may describe a writer fenced by an earlier sandbox
+// generation. It must never accept generation zero or a future generation,
+// while a new writer still requires the exact active generation above.
+func (request writerStart) validateForReconciliation(provider serviceIdentity) error {
 	if request.SchemaVersion != serviceSchemaVersion ||
 		request.OperationGeneration == 0 || request.LeaseGeneration == 0 ||
 		request.CandidateProcessGeneration == 0 ||
 		request.ProviderGeneration != provider.Generation ||
 		request.CandidateSandboxGeneration == nil ||
-		*request.CandidateSandboxGeneration != provider.SandboxGeneration ||
+		*request.CandidateSandboxGeneration == 0 ||
+		*request.CandidateSandboxGeneration > provider.SandboxGeneration ||
 		request.ProviderID != provider.ID ||
 		!validIdentifier(request.IdempotencyKey) ||
 		!validIdentifier(request.SessionID) ||

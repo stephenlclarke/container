@@ -34,6 +34,8 @@ const (
 	maximumReadFrameBytes      = 16 * 1024 * 1024
 )
 
+var errPluginRequestRejected = errors.New("plugin rejected request")
+
 type pluginCapabilities struct {
 	ReadLogs bool `json:"ReadLogs"`
 }
@@ -63,6 +65,20 @@ type fifoFactory interface {
 
 type unixHTTPLoggingPlugin struct {
 	client *http.Client
+
+	capabilitiesMu sync.Mutex
+	capabilities   *pluginCapabilities
+}
+
+func validatePluginCapabilities(ctx context.Context, plugin loggingPlugin, expectedReadLogs bool) error {
+	capabilities, err := plugin.Capabilities(ctx)
+	if err != nil {
+		return fmt.Errorf("plugin capabilities unavailable: %w", err)
+	}
+	if capabilities.ReadLogs != expectedReadLogs {
+		return errCapabilityMismatch
+	}
+	return nil
 }
 
 func newUnixHTTPLoggingPlugin(socketPath string) (*unixHTTPLoggingPlugin, error) {
@@ -85,6 +101,11 @@ func newUnixHTTPLoggingPlugin(socketPath string) (*unixHTTPLoggingPlugin, error)
 }
 
 func (plugin *unixHTTPLoggingPlugin) Capabilities(ctx context.Context) (pluginCapabilities, error) {
+	plugin.capabilitiesMu.Lock()
+	defer plugin.capabilitiesMu.Unlock()
+	if plugin.capabilities != nil {
+		return *plugin.capabilities, nil
+	}
 	response, err := plugin.call(ctx, "LogDriver.Capabilities", nil)
 	if err != nil {
 		return pluginCapabilities{}, err
@@ -99,6 +120,7 @@ func (plugin *unixHTTPLoggingPlugin) Capabilities(ctx context.Context) (pluginCa
 	if envelope.Error != "" {
 		return pluginCapabilities{}, errors.New("plugin rejected capabilities")
 	}
+	plugin.capabilities = &envelope.Capability
 	return envelope.Capability, nil
 }
 
@@ -181,7 +203,7 @@ func (plugin *unixHTTPLoggingPlugin) call(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, errors.New("plugin rejected request")
+		return nil, errPluginRequestRejected
 	}
 	contents, err := io.ReadAll(io.LimitReader(response.Body, maximumPluginResponseBytes+1))
 	if err != nil {
@@ -201,7 +223,7 @@ func decodePluginError(data []byte) error {
 		return err
 	}
 	if envelope.Error != "" {
-		return errors.New("plugin rejected request")
+		return errPluginRequestRejected
 	}
 	return nil
 }

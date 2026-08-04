@@ -163,6 +163,16 @@ package actor InstalledJournaldWorkloadMaterializerV1:
 {
     package static let workloadID = "container-journald-service"
     package static let servicePort: UInt32 = 19_530
+    package static let protectedRuntimeMounts: [Filesystem] = [
+        .tmpfs(
+            destination: "/run",
+            options: ["nosuid", "nodev", "noexec", "mode=0755"]
+        ),
+        .tmpfs(
+            destination: "/tmp",
+            options: ["nosuid", "nodev", "mode=1777"]
+        ),
+    ]
 
     private let appRoot: URL
     private let kernelService: KernelService
@@ -300,18 +310,19 @@ package actor InstalledJournaldWorkloadMaterializerV1:
             process: process
         )
         configuration.platform = platform
-        configuration.mounts = [
-            .virtiofs(
-                source: serviceStateRoot.path,
-                destination: "/var/lib/container-journald-service",
-                options: []
-            ),
-            .virtiofs(
-                source: journalStateRoot.path,
-                destination: "/var/log/journal",
-                options: []
-            ),
-        ]
+        configuration.mounts =
+            [
+                .virtiofs(
+                    source: serviceStateRoot.path,
+                    destination: "/var/lib/container-journald-service",
+                    options: []
+                ),
+                .virtiofs(
+                    source: journalStateRoot.path,
+                    destination: "/var/log/journal",
+                    options: []
+                ),
+            ] + Self.protectedRuntimeMounts
         configuration.readOnly = true
         configuration.logging = ContainerLogConfiguration(storage: .none)
         configuration.stopSignal = "SIGTERM"
@@ -503,8 +514,11 @@ package actor EngineLinuxSandboxJournaldConnectorV1 {
                 throw CancellationError()
             } catch {
                 guard clock.now < deadline else {
-                    throw EngineLinuxSandboxJournaldServiceError
-                        .readinessTimedOut
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "journald logging service readiness timed out",
+                        cause: error
+                    )
                 }
                 try await Task.sleep(for: Self.retryDelay)
             }
@@ -522,13 +536,21 @@ package actor EngineLinuxSandboxJournaldConnectorV1 {
         let materialized = try await materializer.workload(
             sandboxGeneration: ready.generation
         )
+        let diagnosticStdio = try EngineLinuxSandboxServiceDiagnosticsV1.stdio(
+            workloadRoot: materialized.workloadRoot
+        )
+        defer {
+            for handle in diagnosticStdio.compactMap({ $0 }) {
+                try? handle.close()
+            }
+        }
         let running = try await authority.startWorkload(
             planDigest: materialized.planDigest,
             configuration: configuration,
             workloadRoot: materialized.workloadRoot,
             dynamicEnvironment: [:],
             networkEndpoints: [],
-            stdio: [],
+            stdio: diagnosticStdio,
             controllers: [],
             monitorTerminal: true
         )

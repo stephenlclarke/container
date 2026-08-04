@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -261,6 +262,44 @@ func TestFileStateStoreIsPrivateAndRejectsSymlinks(t *testing.T) {
 	}
 	if _, err := store.Load(); !errors.Is(err, errCorruptState) {
 		t.Fatalf("symlink load error = %v", err)
+	}
+}
+
+func TestPrivateModesAcceptVirtiofsEPERMOnlyForExactModes(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	privateDirectory := filepath.Join(root, "private")
+	if err := os.Mkdir(privateDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	permissionDeniedDirectory := func(string, os.FileMode) error {
+		return syscall.EPERM
+	}
+	if err := ensurePrivateDirectoryModeWith(privateDirectory, permissionDeniedDirectory); err != nil {
+		t.Fatalf("already-private directory rejected after chmod EPERM: %v", err)
+	}
+	if err := os.Chmod(privateDirectory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePrivateDirectoryModeWith(privateDirectory, permissionDeniedDirectory); !errors.Is(err, errCorruptState) {
+		t.Fatalf("unsafe directory error = %v", err)
+	}
+
+	privateFile, err := os.CreateTemp(root, "private-file-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer privateFile.Close()
+	permissionDeniedFile := func(os.FileMode) error { return syscall.EPERM }
+	if err := ensurePrivateOpenFileModeWith(privateFile, 0o600, permissionDeniedFile); err != nil {
+		t.Fatalf("already-private file rejected after chmod EPERM: %v", err)
+	}
+	if err := privateFile.Chmod(0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensurePrivateOpenFileModeWith(privateFile, 0o600, permissionDeniedFile); !errors.Is(err, errCorruptState) {
+		t.Fatalf("unsafe file error = %v", err)
 	}
 }
 

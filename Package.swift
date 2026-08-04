@@ -534,6 +534,7 @@ let package = Package(
                 "ContainerResource",
                 "ContainerRuntimeClient",
                 "ContainerRuntimeLinuxServer",
+                "ContainerXPC",
                 "DNSServer",
             ]
         ),

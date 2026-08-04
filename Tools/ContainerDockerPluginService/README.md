@@ -13,7 +13,7 @@ An installed Container logging plugin supplies these protected resource files:
 - `container-docker-logging-plugin.oci.tar`
 
 The manifest pins the provider identity/generation, driver names, `ReadLogs`
-capability, private Unix socket, AF_VSOCK port, source digest, OCI archive
+capability, stable service endpoint identity, source digest, OCI archive
 digest, and exact Linux/arm64 image-manifest digest. Container rejects unknown
 manifest fields, writable or symbolic-link assets, digest mismatches, name or
 port collisions, and stale service generations before advertising the driver.
@@ -32,6 +32,7 @@ the workload. The service binary accepts:
 --contract-digest DIGEST
 --plugin-socket /absolute/private/plugin.sock
 --port VSOCK_PORT
+--listen-unix /run/container-engine/service-VSOCK_PORT.sock
 --authentication-key-file /var/lib/container-docker-plugin-service/authentication.key
 ```
 
@@ -45,10 +46,18 @@ root, and ordinary temporary files.
 
 ## Behavior
 
+The installed workload listens on the private Unix path and uses the shared
+sandbox's out-of-workload relay to reach the protected per-user Engine socket.
+The numeric port remains the stable endpoint identity and the standalone
+service retains AF_VSOCK as a fallback when `--listen-unix` is omitted.
+
 The service:
 
 - authenticates every bounded, versioned request before durable state, plugin,
   FIFO, or listener initialization;
+- caches only a successful exact `Capabilities` response for the process
+  lifetime so every writer and reader uses one stable plugin contract without
+  repeated control-plane calls;
 - durably claims writer and reader identity before FIFO, HTTP, or stream
   effects;
 - uses real deterministic Linux FIFOs and Docker's four-byte big-endian
@@ -60,12 +69,29 @@ The service:
   installed contract and a plugin advertising `ReadLogs`;
 - proves writer and reader claims are empty before acknowledging exact
   provider-generation reclamation;
+- releases a newly claimed writer after a definitive plugin rejection so an
+  idempotent replay can retry safely, while retaining non-definitive starts as
+  uncertain ownership;
 - makes uncertain plugin effects visible instead of issuing a potentially
   duplicate `StartLogging` or `ReadLogs` call after a service crash;
 - bounds connections, replay memory, state, requests, responses, frames,
   writers, and readers.
 
 Independent Container sessions use a bounded persistent connection pool.
+Writer calls are suspension-safe: one session admits only one `write`, `flush`,
+`close`, or `fence` operation at a time, and advances its sequence only after
+the service accepts the frame. Concurrent stdout and stderr pumps therefore
+cannot reuse one sequence for different Docker frames.
+
+Once the service authenticates and accepts a mutating request, that operation
+runs under the service lifetime rather than the transient connection lifetime.
+A peer HUP can discard the reply, but cannot cancel an in-progress
+`StartLogging`, write, close, fence, migration, or reclamation effect; the
+operation ledger serves the replay. The blocking `nextReader` operation remains
+connection-cancellable so a disconnected reader does not remain parked. A
+connection already known to be closed is rejected before any buffered request
+is admitted.
+
 Blocked FIFO writes wait in the kernel rather than spin and observe peer
 disconnect/cancellation. A cancelled caller waiting for a busy connection lane
 is removed immediately. Provider service crashes fail only their exact

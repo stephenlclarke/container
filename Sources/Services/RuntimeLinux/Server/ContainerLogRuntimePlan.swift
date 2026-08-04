@@ -184,6 +184,7 @@ package enum ContainerLogRuntimePlan: Sendable {
                 resolved.providerGenerationAtResolution > 0,
                 !resolved.contractDigest.isEmpty,
                 resolved.readPolicy.source == .unavailable
+                    || resolved.readPolicy.source == .direct
                     || resolved.readPolicy.source == .dualCache
             else {
                 throw ContainerLogRuntimePlanError.invalidContract

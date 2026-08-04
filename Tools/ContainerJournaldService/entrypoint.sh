@@ -19,7 +19,31 @@ umask 077
 state_root=/var/lib/container-journald-service
 machine_id_path="${state_root}/machine-id"
 mkdir -p "${state_root}" /run/systemd/journal /var/log/journal
-chmod 0700 "${state_root}"
+
+ensure_private_directory() {
+    directory=$1
+    if chmod 0700 "${directory}" 2>/dev/null; then
+        return 0
+    fi
+    test ! -L "${directory}" \
+        && test -d "${directory}" \
+        && test "$(stat -c '%a' "${directory}")" = 700
+}
+
+ensure_private_file() {
+    file=$1
+    if chmod 0600 "${file}" 2>/dev/null; then
+        return 0
+    fi
+    test ! -L "${file}" \
+        && test -f "${file}" \
+        && test "$(stat -c '%a' "${file}")" = 600
+}
+
+# macOS virtiofs can preserve host-enforced modes while rejecting redundant
+# guest chmod calls with EPERM. Accept that behavior only after exact-mode and
+# file-type inspection.
+ensure_private_directory "${state_root}"
 
 if test -L "${machine_id_path}"; then
     echo "container-journald-entrypoint: refusing symbolic-link machine ID" >&2
@@ -29,11 +53,14 @@ if ! test -f "${machine_id_path}" \
     || ! grep -Eq '^[0-9a-f]{32}$' "${machine_id_path}"; then
     temporary_id="${machine_id_path}.tmp.$$"
     tr -d '-' </proc/sys/kernel/random/uuid >"${temporary_id}"
-    chmod 0600 "${temporary_id}"
+    ensure_private_file "${temporary_id}"
     mv "${temporary_id}" "${machine_id_path}"
 fi
-chmod 0600 "${machine_id_path}"
-install -m 0444 "${machine_id_path}" /etc/machine-id
+ensure_private_file "${machine_id_path}"
+if test "$(readlink /etc/machine-id)" != "${machine_id_path}"; then
+    echo "container-journald-entrypoint: invalid immutable machine ID link" >&2
+    exit 1
+fi
 
 /lib/systemd/systemd-journald &
 journal_pid=$!

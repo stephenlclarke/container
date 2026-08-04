@@ -22,6 +22,11 @@ import Logging
 
 /// Track when long running work exits, and notify the caller via a callback.
 public actor ExitMonitor {
+    private struct RunningTask {
+        let token: UUID
+        let task: Task<Void, Never>
+    }
+
     /// A callback that receives the client identifier and exit code.
     public typealias ExitCallback = @Sendable (String, ExitStatus) async throws -> Void
 
@@ -37,7 +42,7 @@ public actor ExitMonitor {
     }
 
     private var exitCallbacks: [String: ExitCallback] = [:]
-    private var runningTasks: [String: Task<Void, Never>] = [:]
+    private var runningTasks: [String: RunningTask] = [:]
     private let log: Logger?
 
     /// Remove tracked work from the monitor.
@@ -45,8 +50,8 @@ public actor ExitMonitor {
     /// - Parameters:
     ///   - id: The client identifier for the tracked work.
     public func stopTracking(id: String) async {
-        if let task = self.runningTasks[id] {
-            task.cancel()
+        if let running = self.runningTasks[id] {
+            running.task.cancel()
         }
         exitCallbacks.removeValue(forKey: id)
         runningTasks.removeValue(forKey: id)
@@ -78,14 +83,32 @@ public actor ExitMonitor {
         guard self.runningTasks[id] == nil else {
             throw ContainerizationError(.invalidState, message: "already have a running task tracking process \(id)")
         }
-        self.runningTasks[id] = Task {
+        let token = UUID()
+        let task = Task {
+            let exitStatus: ExitStatus
             do {
-                let exitStatus = try await waitingOn()
-                try await onExit(id, exitStatus)
+                exitStatus = try await waitingOn()
             } catch {
                 self.log?.error("WaitHandler for \(id) threw error \(String(describing: error))")
-                try? await onExit(id, ExitStatus(exitCode: -1))
+                exitStatus = ExitStatus(exitCode: -1)
+            }
+            self.finishTracking(id: id, token: token)
+            do {
+                try await onExit(id, exitStatus)
+            } catch {
+                self.log?.error(
+                    "ExitCallback for \(id) threw error \(String(describing: error))"
+                )
             }
         }
+        self.runningTasks[id] = RunningTask(token: token, task: task)
+    }
+
+    private func finishTracking(id: String, token: UUID) {
+        guard runningTasks[id]?.token == token else {
+            return
+        }
+        exitCallbacks.removeValue(forKey: id)
+        runningTasks.removeValue(forKey: id)
     }
 }

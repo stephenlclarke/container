@@ -134,6 +134,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             sandboxConfiguration.cpus = configuration.cpus
             sandboxConfiguration.memoryInBytes = configuration.memoryInBytes
             sandboxConfiguration.virtualization = configuration.nestedVirtualization
+            sandboxConfiguration.bootLog = .file(
+                path: configuration.path.appendingPathComponent("boot.log")
+            )
         }
         try self.init(
             sandbox: sandbox,
@@ -722,15 +725,18 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         else {
             throw unattributedState("protected service dial does not match the active sandbox generation")
         }
+        let terminalGeneration = terminalWorkloadGenerations[request.workloadID]
+        let workload = snapshot.workloads.first(where: {
+            $0.id == request.workloadID
+        })
+        let start = workloadRequests[request.workloadID]
+        let receipt = workloadReceipts[request.workloadID]
         guard
-            terminalWorkloadGenerations[request.workloadID]
-                != request.workloadProcessGeneration,
-            let workload = snapshot.workloads.first(where: {
-                $0.id == request.workloadID
-            }),
+            terminalGeneration != request.workloadProcessGeneration,
+            let workload,
             workload.state == .running,
-            let start = workloadRequests[request.workloadID],
-            let receipt = workloadReceipts[request.workloadID],
+            let start,
+            let receipt,
             start.context.containerID == request.workloadID,
             start.context.sandboxGeneration == request.sandboxGeneration,
             start.context.candidateProcessGeneration
@@ -742,8 +748,44 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             receipt.sandboxGeneration == request.sandboxGeneration,
             receipt.requestDigest == start.context.requestDigest
         else {
+            log.error(
+                "protected service workload generation fence rejected dial",
+                metadata: [
+                    "workloadID": "\(request.workloadID)",
+                    "requestedProcessGeneration": "\(request.workloadProcessGeneration)",
+                    "terminalProcessGeneration": "\(String(describing: terminalGeneration))",
+                    "observedWorkloadState": "\(String(describing: workload?.state))",
+                    "hasStartRequest": "\(start != nil)",
+                    "hasStartReceipt": "\(receipt != nil)",
+                ]
+            )
             throw unattributedState(
                 "protected service workload is not ready for the requested generation"
+            )
+        }
+        let runtimeConfiguration =
+            try RuntimeConfiguration
+            .readRuntimeConfiguration(from: start.workloadRoot)
+        let observedConfigurationDigest =
+            try EngineLinuxSandboxWorkloadIntegrityV1
+            .configurationDigest(runtimeConfiguration)
+        guard
+            observedConfigurationDigest
+                == start.workloadConfigurationDigest,
+            runtimeConfiguration.path.resolvingSymlinksInPath()
+                .standardizedFileURL.path
+                == start.workloadRoot.resolvingSymlinksInPath()
+                .standardizedFileURL.path,
+            let arguments = runtimeConfiguration.containerConfiguration?
+                .initProcess.arguments,
+            EngineLinuxSandboxServiceEndpointV1
+                .declaresExclusiveVsockPort(
+                    arguments: arguments,
+                    port: request.port
+                )
+        else {
+            throw unattributedState(
+                "protected service workload has no matching sealed AF_VSOCK endpoint"
             )
         }
         serviceDialsInFlight += 1
@@ -769,33 +811,29 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     @Sendable
     public func bootMessage(_ message: XPCMessage) async throws -> XPCMessage {
         let request = try message.engineSandboxPayload(EngineLinuxSandboxBootRequestV1.self)
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(try await boot(request))
-        return reply
+        let receipt = try await boot(request)
+        return try message.engineSandboxReply(receipt)
     }
 
     @Sendable
     public func observeBootMessage(_ message: XPCMessage) async throws -> XPCMessage {
         let request = try message.engineSandboxPayload(EngineLinuxSandboxBootRequestV1.self)
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(try await observeBoot(request))
-        return reply
+        let observation = try await observeBoot(request)
+        return try message.engineSandboxReply(observation)
     }
 
     @Sendable
     public func shutdownMessage(_ message: XPCMessage) async throws -> XPCMessage {
         let request = try message.engineSandboxPayload(EngineLinuxSandboxShutdownRequestV1.self)
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(try await shutdown(request))
-        return reply
+        let receipt = try await shutdown(request)
+        return try message.engineSandboxReply(receipt)
     }
 
     @Sendable
     public func observeShutdownMessage(_ message: XPCMessage) async throws -> XPCMessage {
         let request = try message.engineSandboxPayload(EngineLinuxSandboxShutdownRequestV1.self)
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(try await observeShutdown(request))
-        return reply
+        let observation = try await observeShutdown(request)
+        return try message.engineSandboxReply(observation)
     }
 
     @Sendable
@@ -803,11 +841,11 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let request = try message.engineSandboxPayload(
             EngineLinuxSandboxWorkloadStartRequestV1.self
         )
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(
-            try await startWorkload(request, stdio: message.engineSandboxStdio())
+        let receipt = try await startWorkload(
+            request,
+            stdio: message.engineSandboxStdio()
         )
-        return reply
+        return try message.engineSandboxReply(receipt)
     }
 
     @Sendable
@@ -815,9 +853,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let request = try message.engineSandboxPayload(
             EngineLinuxSandboxWorkloadStartRequestV1.self
         )
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(try await observeWorkloadStart(request))
-        return reply
+        let observation = try await observeWorkloadStart(request)
+        return try message.engineSandboxReply(observation)
     }
 
     @Sendable
@@ -827,9 +864,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let request = try message.engineSandboxPayload(
             EngineLinuxSandboxWorkloadStopRequestV1.self
         )
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(try await stopWorkload(request))
-        return reply
+        let receipt = try await stopWorkload(request)
+        return try message.engineSandboxReply(receipt)
     }
 
     @Sendable
@@ -839,9 +875,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let request = try message.engineSandboxPayload(
             EngineLinuxSandboxWorkloadStopRequestV1.self
         )
-        let reply = message.reply()
-        try reply.setEngineSandboxPayload(try await observeWorkloadStop(request))
-        return reply
+        let observation = try await observeWorkloadStop(request)
+        return try message.engineSandboxReply(observation)
     }
 
     @Sendable
@@ -849,10 +884,11 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let request = try message.engineSandboxPayload(
             EngineLinuxSandboxServiceDialRequestV1.self
         )
+        let handle = try await dialService(request)
         let reply = message.reply()
         reply.set(
             key: RuntimeKeys.fd.rawValue,
-            value: try await dialService(request)
+            value: handle
         )
         return reply
     }
@@ -999,12 +1035,16 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let sandbox = self.sandbox
         workloadTerminalMonitors[id] = Task { [weak self] in
             do {
-                _ = try await sandbox.waitContainer(
+                let status = try await sandbox.waitContainer(
                     id,
                     timeoutInSeconds: nil
                 )
                 try Task.checkCancellation()
-                await self?.recordTerminalWorkload(id: id, receipt: receipt)
+                await self?.recordTerminalWorkload(
+                    id: id,
+                    receipt: receipt,
+                    status: status
+                )
             } catch is CancellationError {
                 return
             } catch {
@@ -1019,12 +1059,21 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
 
     private func recordTerminalWorkload(
         id: String,
-        receipt: WorkloadProcessReceiptV1
+        receipt: WorkloadProcessReceiptV1,
+        status: ExitStatus
     ) async {
         guard workloadReceipts[id] == receipt else {
             return
         }
         terminalWorkloadGenerations[id] = receipt.processGeneration
+        log.error(
+            "protected service workload exited",
+            metadata: [
+                "containerID": "\(id)",
+                "processGeneration": "\(receipt.processGeneration)",
+                "status": "\(status)",
+            ]
+        )
         workloadCaptures.removeValue(forKey: id)?.close()
         do {
             try await sandbox.stopContainer(id)

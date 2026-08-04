@@ -16,6 +16,7 @@
 
 import ContainerResource
 import ContainerRuntimeClient
+import ContainerXPC
 import Containerization
 import ContainerizationError
 import Foundation
@@ -149,6 +150,56 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func failedWorkloadMessageDoesNotConsumeTheSuccessReply() async throws {
+        let sandbox = FakeEngineLinuxSandbox(failAdd: true)
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let message = XPCMessage(route: "engine-sandbox-start-workload")
+        try message.setEngineSandboxPayload(
+            workloadRequest(root: fixture.root)
+        )
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.startWorkloadMessage(message)
+        }
+        #expect(await sandbox.addCount == 1)
+        #expect(await sandbox.startCount == 0)
+    }
+
+    @Test
+    func workloadMessagePreservesIndependentStdoutAndStderr() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let stdout = Pipe()
+        let stderr = Pipe()
+        let message = XPCMessage(route: "engine-sandbox-start-workload")
+        try message.setEngineSandboxPayload(
+            workloadRequest(root: fixture.root)
+        )
+        try message.setEngineSandboxStdio([
+            nil,
+            stdout.fileHandleForWriting,
+            stderr.fileHandleForWriting,
+        ])
+
+        let decodedStdio = message.engineSandboxStdio()
+        #expect(decodedStdio[1] != nil)
+        #expect(decodedStdio[2] != nil)
+        _ = try await service.startWorkload(
+            workloadRequest(root: fixture.root),
+            stdio: decodedStdio
+        )
+
+        #expect(await sandbox.configuredStdout)
+        #expect(await sandbox.configuredStderr)
+    }
+
+    @Test
     func protectedServiceDialRequiresExactRunningGeneration() async throws {
         let sandbox = FakeEngineLinuxSandbox()
         let service = try makeService(sandbox: sandbox)
@@ -175,7 +226,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         )
         let handle = try await service.dialService(request)
         try handle.close()
-        #expect(await sandbox.dialedPorts == [12_345])
+        #expect(await sandbox.dialedVsockPorts == [12_345])
 
         await #expect(throws: ContainerizationError.self) {
             _ = try await service.dialService(
@@ -188,7 +239,33 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 )
             )
         }
-        #expect(await sandbox.dialedPorts == [12_345])
+        #expect(await sandbox.dialedVsockPorts.count == 1)
+    }
+
+    @Test
+    func protectedServiceDialRejectsUnsealedVsockEndpoint() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture(declareServicePort: false)
+        defer { fixture.remove() }
+        _ = try await service.startWorkload(
+            workloadRequest(root: fixture.root),
+            stdio: []
+        )
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.dialService(
+                EngineLinuxSandboxServiceDialRequestV1(
+                    sandboxID: "engine-sandbox",
+                    sandboxGeneration: 1,
+                    workloadID: "workload-1",
+                    workloadProcessGeneration: 3,
+                    port: 12_345
+                )
+            )
+        }
+        #expect(await sandbox.dialedVsockPorts.isEmpty)
     }
 
     @Test
@@ -399,16 +476,21 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var stopContainerCount = 0
     private(set) var removeCount = 0
     private(set) var configuredArguments: [String] = []
-    private(set) var dialedPorts: [UInt32] = []
+    private(set) var configuredStdout = false
+    private(set) var configuredStderr = false
+    private(set) var dialedVsockPorts: [UInt32] = []
     private var workloads: [String: LinuxSandboxWorkloadSnapshot] = [:]
     private let terminalOnWait: Bool
+    private let failAdd: Bool
 
     init(
         state: LinuxSandboxRuntimeState = .absent,
-        terminalOnWait: Bool = false
+        terminalOnWait: Bool = false,
+        failAdd: Bool = false
     ) {
         self.state = state
         self.terminalOnWait = terminalOnWait
+        self.failAdd = failAdd
     }
 
     func snapshot() -> LinuxSandboxSnapshot {
@@ -439,6 +521,11 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
         try configuration(&config)
         addCount += 1
         configuredArguments = config.process.arguments
+        configuredStdout = config.process.stdout != nil
+        configuredStderr = config.process.stderr != nil
+        if failAdd {
+            throw ContainerizationError(.internalError, message: "mount")
+        }
         workloads[id] = LinuxSandboxWorkloadSnapshot(
             id: id,
             state: .created,
@@ -491,7 +578,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     }
 
     func dialVsock(port: UInt32) -> FileHandle {
-        dialedPorts.append(port)
+        dialedVsockPorts.append(port)
         return Pipe().fileHandleForReading
     }
 }
@@ -499,7 +586,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
 private struct WorkloadBundleFixture {
     let root: URL
 
-    init() throws {
+    init(declareServicePort: Bool = true) throws {
         root = FileManager.default.temporaryDirectory
             .appendingPathComponent("engine-workload-\(UUID())")
         let image = ImageDescription(
@@ -512,7 +599,9 @@ private struct WorkloadBundleFixture {
         )
         let process = ProcessConfiguration(
             executable: "/bin/sh",
-            arguments: ["-c", "echo ready"],
+            arguments: declareServicePort
+                ? ["--port", "12345"]
+                : ["-c", "echo ready"],
             environment: [],
             workingDirectory: "/",
             terminal: false,

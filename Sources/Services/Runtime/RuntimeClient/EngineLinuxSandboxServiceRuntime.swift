@@ -16,6 +16,31 @@
 
 import Foundation
 
+/// Sealed AF_VSOCK endpoint declaration for one protected service slot.
+///
+/// The runtime admits a dial only when the recorded workload configuration
+/// declares exactly one matching `--port` and no Unix-listener override. This
+/// keeps the service endpoint inside the Engine-owned VM and avoids the guest
+/// UDS path and mount-namespace limits of published socket relays.
+public enum EngineLinuxSandboxServiceEndpointV1 {
+    public static func declaresExclusiveVsockPort(
+        arguments: [String],
+        port: UInt32
+    ) -> Bool {
+        guard !arguments.contains("--listen-unix") else {
+            return false
+        }
+        var declaredPorts = [String]()
+        for index in arguments.indices where arguments[index] == "--port" {
+            guard arguments.indices.contains(index + 1) else {
+                return false
+            }
+            declaredPorts.append(arguments[index + 1])
+        }
+        return declaredPorts == [String(port)]
+    }
+}
+
 /// Exact identity required to dial a protected service workload in the Engine
 /// Linux sandbox. A stale authority cannot reuse a connection after sandbox or
 /// workload replacement because every request names both active generations.

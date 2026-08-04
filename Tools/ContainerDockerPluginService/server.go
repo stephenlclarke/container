@@ -64,6 +64,14 @@ func newProtocolHandler(backend *durableBackend, authenticationKey []byte) *prot
 }
 
 func (handler *protocolHandler) Handle(ctx context.Context, payload []byte) wireResponse {
+	return handler.handle(ctx, ctx, payload)
+}
+
+func (handler *protocolHandler) handle(
+	serviceContext context.Context,
+	connectionContext context.Context,
+	payload []byte,
+) wireResponse {
 	request, err := decodeWireRequest(payload, handler.backend.identity, handler.authenticationKey)
 	if err != nil {
 		return failed(operationIDFromInvalidPayload(payload), failureInvalidRequest)
@@ -82,7 +90,7 @@ func (handler *protocolHandler) Handle(ctx context.Context, payload []byte) wire
 		ready := existing.ready
 		handler.mu.Unlock()
 		select {
-		case <-ctx.Done():
+		case <-connectionContext.Done():
 			return failed(request.OperationID, failureUnavailable)
 		case <-ready:
 			handler.mu.Lock()
@@ -95,7 +103,11 @@ func (handler *protocolHandler) Handle(ctx context.Context, payload []byte) wire
 	handler.operations[request.OperationID] = operation
 	handler.mu.Unlock()
 
-	response := handler.execute(ctx, request)
+	operationContext := serviceContext
+	if request.Operation == operationNextReader {
+		operationContext = connectionContext
+	}
+	response := handler.execute(operationContext, request)
 	encoded, encodeErr := json.Marshal(response)
 	if encodeErr != nil {
 		response = failed(request.OperationID, failureInternal)
@@ -162,19 +174,19 @@ func (handler *protocolHandler) execute(ctx context.Context, request wireRequest
 	case operationReconcileWriter:
 		response.WriterObservation, response.FenceReceiptDigest, err = writerObservation(handler.backend, *request.WriterCall)
 	case operationFenceWriter:
-		_, _, err = handler.backend.writerObservation(*request.WriterCall)
-		if err == nil {
+		response.WriterObservation, response.FenceReceiptDigest, err = writerObservation(handler.backend, *request.WriterCall)
+		if err == nil && *response.WriterObservation != "absent" {
 			err = handler.backend.finishWriter(ctx, request.WriterCall.SessionID, request.WriterCall.Token, true)
 		}
-		if err == nil {
+		if err == nil && *response.WriterObservation != "absent" {
 			response.WriterObservation, response.FenceReceiptDigest, err = writerObservation(handler.backend, *request.WriterCall)
 		}
 	case operationCloseWriter:
-		_, _, err = handler.backend.writerObservation(*request.WriterCall)
-		if err == nil {
+		response.WriterObservation, response.FenceReceiptDigest, err = writerObservation(handler.backend, *request.WriterCall)
+		if err == nil && *response.WriterObservation != "absent" {
 			err = handler.backend.finishWriter(ctx, request.WriterCall.SessionID, request.WriterCall.Token, false)
 		}
-		if err == nil {
+		if err == nil && *response.WriterObservation != "absent" {
 			response.WriterObservation, response.FenceReceiptDigest, err = writerObservation(handler.backend, *request.WriterCall)
 		}
 	case operationOpenReader:
@@ -208,11 +220,11 @@ func (handler *protocolHandler) execute(ctx context.Context, request wireRequest
 	case operationReconcileReader:
 		response.ReaderObservation, response.TerminalDigest, err = readerObservation(handler.backend, *request.ReaderCall)
 	case operationCloseReader:
-		_, _, err = handler.backend.readerObservation(*request.ReaderCall)
-		if err == nil {
+		response.ReaderObservation, response.TerminalDigest, err = readerObservation(handler.backend, *request.ReaderCall)
+		if err == nil && *response.ReaderObservation != "absent" {
 			err = handler.backend.closeReader(request.ReaderCall.ReaderSessionID, request.ReaderCall.Token)
 		}
-		if err == nil {
+		if err == nil && *response.ReaderObservation != "absent" {
 			response.ReaderObservation, response.TerminalDigest, err = readerObservation(handler.backend, *request.ReaderCall)
 		}
 	case operationReclaimTerminalEffect:
@@ -262,6 +274,8 @@ func failureForError(err error) wireFailure {
 		return failureInvalidFence
 	case errors.Is(err, errCapabilityMismatch):
 		return failureCapabilityMismatch
+	case errors.Is(err, errPluginRequestRejected):
+		return failurePluginRejected
 	case errors.Is(err, errUnknownSession):
 		return failureUnknownSession
 	case errors.Is(err, errUnavailable), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
@@ -338,11 +352,17 @@ func serveConnection(ctx context.Context, connection net.Conn, handler *protocol
 	defer cancel()
 	monitorConnectionClosure(connectionContext, cancel, connection)
 	for {
+		if connectionContext.Err() != nil {
+			return
+		}
 		payload, err := readFrame(connection)
 		if err != nil {
 			return
 		}
-		response := handler.Handle(connectionContext, payload)
+		if connectionContext.Err() != nil {
+			return
+		}
+		response := handler.handle(ctx, connectionContext, payload)
 		if err := connection.SetWriteDeadline(time.Now().Add(connectionWriteTimeout)); err != nil {
 			return
 		}

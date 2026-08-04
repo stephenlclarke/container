@@ -27,6 +27,26 @@ import Testing
 
 struct EngineLinuxSandboxJournaldServiceTests {
     @Test
+    func readOnlyWorkloadHasProtectedWritableRuntimeMounts() {
+        let mounts = InstalledJournaldWorkloadMaterializerV1
+            .protectedRuntimeMounts
+
+        #expect(mounts.count == 2)
+        #expect(mounts[0].isTmpfs)
+        #expect(mounts[0].destination == "/run")
+        #expect(
+            Set(mounts[0].options)
+                == ["nosuid", "nodev", "noexec", "mode=0755"]
+        )
+        #expect(mounts[1].isTmpfs)
+        #expect(mounts[1].destination == "/tmp")
+        #expect(
+            Set(mounts[1].options)
+                == ["nosuid", "nodev", "mode=1777"]
+        )
+    }
+
+    @Test
     func installedManifestBindsTheExactProtectedArchive() throws {
         let fixture = try InstalledJournaldAssetFixture()
         defer { fixture.remove() }
@@ -110,6 +130,10 @@ struct EngineLinuxSandboxJournaldServiceTests {
         #expect(await authority.startCount == 1)
         #expect(await authority.dialCount == 1)
         #expect(await authority.lastDialProcessGeneration == 3)
+        #expect(await authority.lastStdioCount == 3)
+        #expect(await authority.lastStdinWasNil)
+        #expect(await authority.lastStdoutWasPresent)
+        #expect(await authority.lastStderrWasPresent)
         #expect(await materializer.lastGeneration == 7)
     }
 
@@ -201,6 +225,10 @@ private struct JournaldConnectorFixture {
             isDirectory: true
         )
         workloadRoot = root.appendingPathComponent("workload")
+        try FileManager.default.createDirectory(
+            at: workloadRoot,
+            withIntermediateDirectories: true
+        )
         configuration = EngineLinuxSandboxRuntimeConfigurationV1(
             path: root,
             sandboxID: "engine-linux-sandbox",
@@ -255,6 +283,10 @@ private actor FakeJournaldAuthority: EngineLinuxSandboxJournaldAuthorityV1 {
     private(set) var startCount = 0
     private(set) var dialCount = 0
     private(set) var lastDialProcessGeneration: UInt64?
+    private(set) var lastStdioCount = 0
+    private(set) var lastStdinWasNil = false
+    private(set) var lastStdoutWasPresent = false
+    private(set) var lastStderrWasPresent = false
 
     init(sandboxGeneration: UInt64) {
         self.sandboxGeneration = sandboxGeneration
@@ -294,7 +326,10 @@ private actor FakeJournaldAuthority: EngineLinuxSandboxJournaldAuthorityV1 {
         _ = workloadRoot
         _ = dynamicEnvironment
         _ = networkEndpoints
-        _ = stdio
+        lastStdioCount = stdio.count
+        lastStdinWasNil = stdio.indices.contains(0) && stdio[0] == nil
+        lastStdoutWasPresent = stdio.indices.contains(1) && stdio[1] != nil
+        lastStderrWasPresent = stdio.indices.contains(2) && stdio[2] != nil
         _ = controllers
         return try EngineWorkloadRecordV1(
             containerID: "container-journald-service",

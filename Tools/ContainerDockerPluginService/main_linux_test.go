@@ -73,6 +73,7 @@ func TestRunValidatesAuthenticationBeforeCreatingServiceState(t *testing.T) {
 		"--provider-generation=7",
 		"--contract-digest=sha256:test-contract",
 		"--plugin-socket=/run/docker/plugins/test.sock",
+		"--expected-read-logs=true",
 		"--authentication-key-file=" + filepath.Join(root, "missing.key"),
 		"--state=" + statePath,
 		"--fifo-root=" + fifoRoot,

@@ -1255,7 +1255,8 @@ private final class DockerJSONFileSecureDirectory: @unchecked Sendable {
         guard url.isFileURL, url.path.hasPrefix("/") else {
             throw DockerJSONFileLogError.unsafeStorage
         }
-        let components = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        let canonicalPath = DarwinSystemDirectoryAlias.canonicalPath(for: url.path)
+        let components = canonicalPath.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
         guard
             !components.isEmpty,
             components.allSatisfy({

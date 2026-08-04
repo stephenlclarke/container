@@ -203,6 +203,19 @@ struct ContainerLogRuntimePlanTests {
     }
 
     @Test
+    func authorityForwardedAcceptsProviderNativeReadPolicy() throws {
+        let plan = try ContainerLogRuntimePlan(
+            configuration: try remoteLoggingV2Configuration(
+                readPolicy: LogReadPolicy(source: .direct)
+            )
+        )
+        guard case .authorityForwarded(nil, _) = plan else {
+            Issue.record("expected the provider-native authority-forwarded plan")
+            return
+        }
+    }
+
+    @Test
     func noneActivationCreatesNoFilesOrProcessGeneration() throws {
         let fixture = try RuntimePlanFixture()
         defer { fixture.remove() }
@@ -285,6 +298,41 @@ struct ContainerLogRuntimePlanTests {
             directoryURL: fixture.bundle.containerLoggingV2
         )
         #expect(try generationStore.next() == 3)
+    }
+
+    @Test
+    func darwinSystemDirectoryAliasesPreserveNativeStoreLifecycle() throws {
+        for driver in ["json-file", "local"] {
+            let fixture = try RuntimePlanFixture(
+                rootURL: URL(fileURLWithPath: "/tmp", isDirectory: true)
+            )
+            defer { fixture.remove() }
+            let plan = try ContainerLogRuntimePlan(
+                configuration: try loggingV2Configuration(driver: driver)
+            )
+
+            let capture = try plan.activate(bundle: fixture.bundle, terminal: false)
+            try #require(capture.stderr).write(Data("aliased-\(driver)\n".utf8))
+            capture.close()
+
+            if driver == "json-file" {
+                let result = try DockerJSONFileLogReader(
+                    directoryURL: fixture.bundle.containerJSONFileLogDirectory,
+                    activeFileName: ContainerResource.Bundle.jsonFileLogName,
+                    maximumFileCount: 1
+                ).read(DockerJSONFileLogReadRequest())
+                #expect(result.records.map(\.stream) == [.stderr])
+                #expect(result.records.map(\.log) == [Data("aliased-json-file\n".utf8)])
+            } else {
+                let result = try NativeLocalLogReader(
+                    directoryURL: fixture.bundle.containerNativeLocalLogDirectory,
+                    activeFileName: ContainerResource.Bundle.nativeLocalLogName,
+                    maximumFileCount: 1
+                ).read(NativeLocalLogReadRequest())
+                #expect(result.records.map(\.stream) == [.stderr])
+                #expect(result.records.map(\.payload) == [Data("aliased-local".utf8)])
+            }
+        }
     }
 
     @Test
@@ -551,18 +599,23 @@ struct ContainerLogRuntimePlanTests {
 private struct RuntimePlanFixture {
     let bundle: ContainerResource.Bundle
 
-    init() throws {
-        let temporaryRootPath = FileManager.default.temporaryDirectory.path
-        let canonicalPointer = temporaryRootPath.withCString { Darwin.realpath($0, nil) }
-        guard let canonicalPointer else {
-            throw RuntimePlanFixtureError.canonicalTemporaryDirectory(errno)
+    init(rootURL: URL? = nil) throws {
+        let selectedRoot: URL
+        if let rootURL {
+            selectedRoot = rootURL
+        } else {
+            let temporaryRootPath = FileManager.default.temporaryDirectory.path
+            let canonicalPointer = temporaryRootPath.withCString { Darwin.realpath($0, nil) }
+            guard let canonicalPointer else {
+                throw RuntimePlanFixtureError.canonicalTemporaryDirectory(errno)
+            }
+            selectedRoot = URL(
+                fileURLWithPath: String(cString: canonicalPointer),
+                isDirectory: true
+            )
+            free(canonicalPointer)
         }
-        let canonicalTemporaryRoot = URL(
-            fileURLWithPath: String(cString: canonicalPointer),
-            isDirectory: true
-        )
-        free(canonicalPointer)
-        let path = canonicalTemporaryRoot.appendingPathComponent(
+        let path = selectedRoot.appendingPathComponent(
             "container-log-runtime-plan-\(UUID().uuidString)",
             isDirectory: true
         )
