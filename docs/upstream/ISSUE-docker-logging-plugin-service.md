@@ -64,12 +64,22 @@ claims, or provider-generation-specific workload.
 - [x] The scoped Container gate passes 1,852 Swift Testing tests in 216 suites
   plus 94 XCTest tests.
 - [x] Repository formatting, licence, Markdown, and whitespace gates pass.
+- [x] Distinct generations of one provider can coexist through discovery,
+  staging, readiness probing, one-generation publication, exact draining
+  selection, rollback, and restart recovery.
+- [x] Registry state is a closed, bounded, mode-0600 atomic file containing
+  immutable descriptors and staged/active/draining phases; persistence failure
+  cannot publish an in-memory transition.
+- [x] Restart and failed-readiness tests prove registry recovery performs no
+  writer or reader lifecycle effect.
 
 ## Remaining programme work
 
-- Retain generation N while generation N+1 is staged, activated, drained,
-  migrated, rolled back, or recovered after restart. The current discovery and
-  registry path accepts one provider generation at a time.
+- Quiesce new generation-N claims before cutover, revalidate or migrate every
+  durable N configuration/history reference, prove all N sessions/readers and
+  cleanup effects terminal, and then reclaim N. The registry now retains and
+  recovers N while N+1 is staged/active, but complete reference-aware drain and
+  migration orchestration is not yet implemented.
 - Exercise a distributable third-party OCI plugin bundle through the complete
   installed discovery, materialization, Container create/start/logs/stop/delete,
   and restart path.
@@ -91,8 +101,14 @@ handoff is held until all parity development waves are complete.
 - `08677dc8b5a677533de80cf634fee1d14f4da069` — signed isolated plugin
   lifecycle service, authenticated transport, materializer, authority routing,
   direct reader, conformance tests, and service documentation.
+- `70f976611bd5e39a9bfeb4965df7c073bbd789ad` — signed durable provider
+  generation staging, activation, retained exact routing, rollback, restart
+  recovery, discovery collision authority, and failure/security tests.
 - [container#47](https://github.com/stephenlclarke/container/issues/47) records
   the queued connection-lane cancellation defect and is closed with regression
   coverage.
 - [container#48](https://github.com/stephenlclarke/container/issues/48) records
   the missing writable runtime paths and is closed with materializer coverage.
+- [container#49](https://github.com/stephenlclarke/container/issues/49) records
+  the rejected/discarded plugin-generation defect and is closed with durable
+  registry and discovery coverage.

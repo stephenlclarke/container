@@ -14,6 +14,10 @@
   generation-fenced Container logging authority.
 - Preserve the existing in-process adapter as a conformance seam while making
   the durable service-owned facade the only production installation path.
+- Discover, stage, readiness-probe, activate, retain, and roll back multiple
+  immutable generations of one provider without publishing two generations.
+- Recover the exact active/draining generation set from a protected durable
+  registry after API-service restart without replaying provider effects.
 
 ## Type of change
 
@@ -31,9 +35,22 @@
 
 An installed logging plugin contributes a protected manifest and OCI archive.
 APIServer discovery sorts logging plugins, verifies each closed manifest and
-asset digest, rejects every registered-name/provider/port collision, and builds
-a lazy installation. Catalog readiness probes the exact service generation;
-failed or stale workloads are not advertised.
+asset digest, permits distinct generations of one provider, rejects every
+cross-provider registered-name, reserved-provider, exact-generation, and
+service-port collision, and builds a lazy installation. Catalog readiness
+probes the exact service generation; failed or stale workloads are not
+advertised.
+
+The provider registry persists immutable descriptors and staged, active, and
+draining phases before changing its in-memory publication. The synchronous
+commit inside the registry actor prevents another transition from interleaving
+between fsync and publication. A healthy N+1 candidate becomes the sole
+name/catalog selection while N remains available only by exact generation for
+existing reconciliation and cleanup. A failed candidate is removed without
+changing N; an unhealthy or missing active generation rolls back through the
+newest retained healthy generation. Restart reconstructs the same phases from
+a closed, bounded, mode-0600 state file and never calls `StartLogging` or
+`ReadLogs` merely to recover registry state.
 
 The materializer imports only the exact Linux/arm64 image-manifest digest. It
 writes a mode-0600 runtime configuration for a read-only root filesystem with a
@@ -90,7 +107,12 @@ generation-fenced reclaim request.
 - `EngineLinuxSandboxDockerPluginService.swift` verifies installed assets,
   materializes the workload, connects AF_VSOCK, and supervises readiness.
 - `AuthorityRemoteLogDriverPlane.swift` binds exact Docker metadata/options and
-  routes provider writers and readers through the lifecycle controller.
+  routes provider writers and readers through the lifecycle controller, probes
+  the selected plugin generation, and recovers a retained healthy fallback.
+- `LogDriverProviderRegistry.swift` owns durable staged/active/draining
+  transitions, exact-generation routing, activation, and rollback.
+- `DockerPluginInstallationCollisionRegistry.swift` permits same-provider
+  generations while preserving discovery collision fences.
 - `Tools/ContainerDockerPluginService` contains the Linux service, durable
   backend, Unix HTTP plugin client, FIFO implementation, and conformance tests.
 
@@ -120,10 +142,12 @@ docker run --rm --platform linux/arm64 \
 ```
 <!-- markdownlint-enable MD013 -->
 
-Current development MacBook Pro evidence:
+Current development MacBook Pro evidence after staged-generation activation:
 
-- 54 focused Swift tests in eight plugin/provider/authority suites passed.
-- The scoped package gate passed 1,852 Swift Testing tests in 216 suites and 94
+- 35 focused Swift tests in registry, provider-set, discovery, and authority
+  suites passed; the preceding isolated-service suite remains covered by the
+  scoped package gate.
+- The scoped package gate passed 1,861 Swift Testing tests in 216 suites and 94
   XCTest tests under warnings-as-errors.
 - The APIServer product build passed under warnings-as-errors.
 - macOS Go race and vet passed at 70.2% statement coverage.
@@ -133,6 +157,8 @@ Current development MacBook Pro evidence:
 - `make check`, Markdown lint, and `git diff --check` passed.
 - Signed implementation commit:
   `08677dc8b5a677533de80cf634fee1d14f4da069`.
+- Signed staged-generation implementation commit:
+  `70f976611bd5e39a9bfeb4965df7c073bbd789ad`.
 
 The local SwiftPM mirror intentionally replaces the remote Containerization
 package during development. SwiftPM therefore removes that remote pin from its
@@ -153,8 +179,12 @@ logging behavior failure.
 - [x] Direct reads and live attachment remain separate authority paths.
 - [x] Plugin bodies, protected options, keys, and records stay out of failures.
 - [x] Workloads are digest-pinned, read-only, bounded, and privately mounted.
-- [ ] Stage and drain multiple provider generations before claiming upgrade
-  parity.
+- [x] Stage multiple provider generations, publish one active generation,
+  retain exact draining-generation routing, roll back failed/unhealthy
+  candidates, and recover the durable phase set after restart.
+- [ ] Quiesce new N claims, migrate/revalidate every durable N configuration
+  and history reference, and prove all N sessions/cleanup effects terminal
+  before alias cutover and final generation reclamation.
 - [ ] Certify a distributable third-party plugin through the complete stack.
 - [ ] Complete paired Docker behavior/performance and release evidence.
 
@@ -171,3 +201,5 @@ be published coherently.
   closed with queued-cancellation regression coverage.
 - [container#48](https://github.com/stephenlclarke/container/issues/48) is
   closed with private runtime-mount regression coverage.
+- [container#49](https://github.com/stephenlclarke/container/issues/49) is
+  closed with durable multi-generation activation and rollback coverage.
