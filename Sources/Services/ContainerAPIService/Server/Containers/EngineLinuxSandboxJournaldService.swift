@@ -504,28 +504,7 @@ package actor EngineLinuxSandboxJournaldConnectorV1 {
     }
 
     package func connect() async throws -> FileHandle {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: Self.readinessTimeout)
-        while true {
-            try Task.checkCancellation()
-            do {
-                return try await connectOnce()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                guard clock.now < deadline else {
-                    throw ContainerizationError(
-                        .internalError,
-                        message: "journald logging service readiness timed out",
-                        cause: error
-                    )
-                }
-                try await Task.sleep(for: Self.retryDelay)
-            }
-        }
-    }
-
-    private func connectOnce() async throws -> FileHandle {
+        try Task.checkCancellation()
         let configuration = try await materializer.sandboxConfiguration()
         let ready = try await authority.ensureReady(
             configuration: configuration
@@ -563,21 +542,39 @@ package actor EngineLinuxSandboxJournaldConnectorV1 {
         else {
             throw EngineLinuxSandboxJournaldServiceError.invalidWorkloadReceipt
         }
-        let handle = try await authority.dialService(
-            configuration: configuration,
-            workloadID: running.containerID,
-            workloadProcessGeneration: processGeneration,
-            port: InstalledJournaldWorkloadMaterializerV1.servicePort
-        )
-        do {
-            try await Self.verifyGeneration(
-                on: handle,
-                expected: ready.generation
-            )
-            return handle
-        } catch {
-            try? handle.close()
-            throw error
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: Self.readinessTimeout)
+        while true {
+            try Task.checkCancellation()
+            do {
+                let handle = try await authority.dialService(
+                    configuration: configuration,
+                    workloadID: running.containerID,
+                    workloadProcessGeneration: processGeneration,
+                    port: InstalledJournaldWorkloadMaterializerV1.servicePort
+                )
+                do {
+                    try await Self.verifyGeneration(
+                        on: handle,
+                        expected: ready.generation
+                    )
+                    return handle
+                } catch {
+                    try? handle.close()
+                    throw error
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard clock.now < deadline else {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "journald logging service readiness timed out",
+                        cause: error
+                    )
+                }
+                try await Task.sleep(for: Self.retryDelay)
+            }
         }
     }
 

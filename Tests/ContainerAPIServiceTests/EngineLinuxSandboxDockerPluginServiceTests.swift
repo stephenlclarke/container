@@ -18,6 +18,7 @@ import ContainerLoggingProviders
 import ContainerResource
 import ContainerRuntimeClient
 import Containerization
+import ContainerizationError
 import CryptoKit
 import Darwin
 import Foundation
@@ -279,6 +280,37 @@ struct EngineLinuxSandboxDockerPluginServiceTests {
         #expect(await materializer.lastGeneration == 9)
     }
 
+    @Test func connectorDoesNotRetryTerminalWorkloadStart() async throws {
+        let assetFixture = try InstalledDockerPluginAssetFixture()
+        defer { assetFixture.remove() }
+        let assets = try InstalledDockerPluginWorkloadManifestV1.verify(
+            resourceRoot: assetFixture.root
+        )
+        let connectorFixture = try DockerPluginConnectorFixture()
+        defer { connectorFixture.remove() }
+        let authority = FakeDockerPluginAuthority(
+            sandboxGeneration: 9,
+            assets: assets,
+            failStart: true
+        )
+        let materializer = FakeDockerPluginMaterializer(
+            assets: assets,
+            configuration: connectorFixture.configuration,
+            workloadRoot: connectorFixture.workloadRoot
+        )
+        let connector = EngineLinuxSandboxDockerPluginConnectorV1(
+            authority: authority,
+            materializer: materializer
+        )
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await connector.connect()
+        }
+        #expect(await authority.ensureReadyCount == 1)
+        #expect(await authority.startCount == 1)
+        #expect(await authority.dialCount == 0)
+    }
+
     @Test func generationProbeRejectsStalePluginService() async throws {
         let (client, server) = try dockerPluginServicePair(generation: 8)
         defer { try? client.close() }
@@ -493,6 +525,7 @@ private actor FakeDockerPluginAuthority:
 {
     private let sandboxGeneration: UInt64
     private let assets: VerifiedDockerPluginWorkloadAssetsV1
+    private let failStart: Bool
     private(set) var ensureReadyCount = 0
     private(set) var startCount = 0
     private(set) var dialCount = 0
@@ -506,10 +539,12 @@ private actor FakeDockerPluginAuthority:
 
     init(
         sandboxGeneration: UInt64,
-        assets: VerifiedDockerPluginWorkloadAssetsV1
+        assets: VerifiedDockerPluginWorkloadAssetsV1,
+        failStart: Bool = false
     ) {
         self.sandboxGeneration = sandboxGeneration
         self.assets = assets
+        self.failStart = failStart
     }
 
     func snapshot() -> EngineWorkloadLedgerSnapshotV1 {
@@ -560,6 +595,12 @@ private actor FakeDockerPluginAuthority:
         monitorTerminal: Bool
     ) throws -> EngineWorkloadRecordV1 {
         startCount += 1
+        if failStart {
+            throw ContainerizationError(
+                .internalError,
+                message: "terminal workload start failure"
+            )
+        }
         #expect(planDigest == assets.planDigest)
         #expect(monitorTerminal)
         #expect(networkEndpoints.isEmpty)

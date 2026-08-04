@@ -18,6 +18,7 @@ import ContainerLoggingProviders
 import ContainerResource
 import ContainerRuntimeClient
 import Containerization
+import ContainerizationError
 import CryptoKit
 import Darwin
 import Foundation
@@ -135,6 +136,31 @@ struct EngineLinuxSandboxJournaldServiceTests {
         #expect(await authority.lastStdoutWasPresent)
         #expect(await authority.lastStderrWasPresent)
         #expect(await materializer.lastGeneration == 7)
+    }
+
+    @Test
+    func connectorDoesNotRetryTerminalWorkloadStart() async throws {
+        let fixture = try JournaldConnectorFixture()
+        defer { fixture.remove() }
+        let authority = FakeJournaldAuthority(
+            sandboxGeneration: 7,
+            failStart: true
+        )
+        let materializer = FakeJournaldMaterializer(
+            configuration: fixture.configuration,
+            workloadRoot: fixture.workloadRoot
+        )
+        let connector = EngineLinuxSandboxJournaldConnectorV1(
+            authority: authority,
+            materializer: materializer
+        )
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await connector.connect()
+        }
+        #expect(await authority.ensureReadyCount == 1)
+        #expect(await authority.startCount == 1)
+        #expect(await authority.dialCount == 0)
     }
 
     @Test
@@ -279,6 +305,7 @@ private actor FakeJournaldMaterializer:
 
 private actor FakeJournaldAuthority: EngineLinuxSandboxJournaldAuthorityV1 {
     private let sandboxGeneration: UInt64
+    private let failStart: Bool
     private(set) var ensureReadyCount = 0
     private(set) var startCount = 0
     private(set) var dialCount = 0
@@ -288,8 +315,9 @@ private actor FakeJournaldAuthority: EngineLinuxSandboxJournaldAuthorityV1 {
     private(set) var lastStdoutWasPresent = false
     private(set) var lastStderrWasPresent = false
 
-    init(sandboxGeneration: UInt64) {
+    init(sandboxGeneration: UInt64, failStart: Bool = false) {
         self.sandboxGeneration = sandboxGeneration
+        self.failStart = failStart
     }
 
     func ensureReady(
@@ -321,6 +349,12 @@ private actor FakeJournaldAuthority: EngineLinuxSandboxJournaldAuthorityV1 {
         monitorTerminal: Bool
     ) throws -> EngineWorkloadRecordV1 {
         startCount += 1
+        if failStart {
+            throw ContainerizationError(
+                .internalError,
+                message: "terminal workload start failure"
+            )
+        }
         #expect(monitorTerminal)
         _ = configuration
         _ = workloadRoot
