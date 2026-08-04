@@ -101,12 +101,12 @@ or nanosecond timestamp presentation.
   currently reports the runtime process exit where it is needed to keep an
   input-only session alive; the Docker hijack protocol itself does not expose
   that code to the HTTP client.
-- Route direct isolated-provider `ReadLogs` sessions through the authority;
-  current non-native providers require the production provider-reader plane or
-  dual cache.
-- Complete the isolated Docker logging-plugin service plane, devcontainer
-  logging handoff, migration/security/performance evidence, and the remaining
-  Docker Compose/Testcontainers/devcontainer external-client certification.
+- Direct isolated-provider `ReadLogs` sessions now route through the authority
+  in signed local commit `08677dc8b5a677533de80cf634fee1d14f4da069`.
+  Complete installed third-party plugin certification, staged provider
+  generation upgrades, devcontainer logging handoff,
+  migration/security/performance evidence, and the remaining Docker
+  Compose/Testcontainers/devcontainer external-client certification.
 - Complete the typed guest socket grant, remaining Docker REST handlers, and
   authority handoff before claiming `use_api_socket` closure. Public gateway
   installation and Docker CLI info negotiation are now live-proven locally.

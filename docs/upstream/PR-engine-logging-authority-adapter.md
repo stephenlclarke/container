@@ -204,6 +204,9 @@ Current development MacBook Pro evidence:
   container/image counts, complete inspect state/config/host configuration,
   resolved logging options, public json-file path, logs, attach frames, and
   attach/detach events in one passing test.
+- signed local commit `08677dc8b5a677533de80cf634fee1d14f4da069`
+  adds the isolated Docker logging-plugin service and routes its direct
+  `ReadLogs` sessions through this same authority.
 
 ## Review checklist
 
