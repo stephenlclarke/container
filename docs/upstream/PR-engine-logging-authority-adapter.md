@@ -20,6 +20,14 @@
   `ContainerAttach`, `ContainerAttachWebsocket`, `ContainerResize`,
   `ContainerLogs`, `ContainerInspect`, and `SystemInfo` generated Engine
   operations.
+- Package and sign the common `container-engine` executable, supervise it with
+  the Container system lifecycle, expose launch/socket/health status, and stop
+  it before deregistering the enhanced authority.
+- Keep Docker `/info` catalogue discovery side-effect free so it cannot
+  materialise journald merely to report supported drivers, while retaining the
+  concrete readiness gate at create/start.
+- Compile the enhanced provider's Engine API revision from the same exact
+  package version used by SwiftPM.
 
 ## Type of change
 
@@ -29,7 +37,7 @@
 - [x] Docker logging REST/streaming projection
 - [x] Protected-option authentication
 - [x] Unit and provider-session integration tests
-- [ ] Public Engine listener installation
+- [x] Public Engine listener installation
 - [x] Complete `/info` and inspect route composition
 - [x] Attach/hijack route advertisement
 - [x] WebSocket attach and terminal-resize route advertisement
@@ -38,7 +46,8 @@
 ## Authority contract
 
 `ContainerDockerLoggingBackend` delegates to the same `ContainersService`
-actor used by native clients. System info requeries the injected catalog;
+actor used by native clients. System info reads the injected advertised
+catalog without activating lazy providers;
 inspect reads the immutable resolved driver and safe options, authenticates any
 protected object with its container-bound binding, and exposes `LogPath` only
 for the canonical public json-file store. No independent catalog, file reader,
@@ -78,8 +87,11 @@ retain Docker-compatible status and message semantics.
 
 `container-apiserver` loads or creates one provider-owned state-root UUID,
 builds an enhanced `container-authority` declaration from Container and
-Containerization revisions plus exact Engine API release 0.3.4, and starts a
-private singleton provider socket. Cancellation shuts the provider down.
+Containerization revisions plus exact Engine API release 0.3.5, and starts a
+private singleton provider socket. Cancellation shuts the provider down. The
+separately packaged common gateway selects that private authority, owns the
+public Unix socket, and is registered as a user LaunchAgent by `container
+system start`.
 
 The fingerprint advertises `engine.route.ContainerAttach`,
 `engine.route.ContainerAttachWebsocket`, `engine.route.ContainerResize`,
@@ -115,6 +127,13 @@ evidence.
   `RuntimeService.swift` encode the exact retained generation.
 - `Sources/APIServer/APIServer+Start.swift` composes the stable enhanced
   provider session.
+- `Sources/ContainerCommands/System/ContainerEngineServiceConfiguration.swift`
+  owns the safe public socket/state paths and atomic LaunchAgent definition.
+- `Sources/ContainerCommands/System/SystemStart.swift`, `SystemStatus.swift`,
+  and `SystemStop.swift` install, probe, report, and deregister the gateway in
+  the same lifecycle as the Container authority.
+- `Sources/ContainerEngineServiceCommand/main.swift` is the thin common
+  executable entry point supplied by `container-engine-api`.
 - Focused tests cover canonical static reads, protected inspect options,
   lossless active wire, stream cancellation, runtime I/O, detach keys,
   over-capacity no-drop behavior, provider hijack forwarding, and lifecycle
@@ -122,8 +141,8 @@ evidence.
 
 ## Dependency handoff
 
-Container pins `container-engine-api` exactly at 0.3.4, signed revision
-`73cef37b3693e3fc1acd650782ee7b449ab65b92`. Validation uses the local signed
+Container pins `container-engine-api` exactly at 0.3.5, signed revision
+`78cb4cb5781d6dbe9f0d34a1b925ee8dcaacdc98`. Validation uses the local signed
 Containerization shared-sandbox worktree because the coordinated
 Containerization upstream wave has not been published. The build embeds the
 published Containerization source and revision while compiling that matched
@@ -157,7 +176,15 @@ Current development MacBook Pro evidence:
 - focused attach/hijack/provider integration: 5 tests in 2 suites passed;
 - focused Engine logs, hijack, WebSocket, and resize integration: 38 tests
   passed;
-- complete clean-built Container validation: 1,832 tests in 213 suites passed;
+- complete matched Container validation: 1,835 Swift Testing tests in 213
+  suites plus 94 XCTest tests passed with zero failures;
+- isolated signed-package lifecycle: `system start`, JSON `system status`,
+  `/_ping`, unversioned Docker CLI `info`, `/v1.53/info`, `system stop`, and
+  public-socket cleanup passed;
+- live `/_ping` completed in 0.000940 seconds and `/info` in 0.004817 seconds;
+- live `/info` reported `json-file` as the default and exactly `awslogs`,
+  `fluentd`, `gcplogs`, `gelf`, `journald`, `json-file`, `local`, `splunk`, and
+  `syslog` as available drivers without materialising journald;
 - Homebrew checksum, init-image installation, and Developer ID archive gates
   passed;
 - formatting, licence, and whitespace gates passed;
@@ -169,8 +196,10 @@ Current development MacBook Pro evidence:
   `9e23d41fc18dde5ae926e0cbdd1f35d8c86fc512`;
 - signed WebSocket attach and terminal-resize implementation commit:
   `6a668b2b5d42246efcad3316374f6d0e0d2eaf14`;
-- Engine API 0.3.4 dependency resolves to signed commit
-  `73cef37b3693e3fc1acd650782ee7b449ab65b92`;
+- signed public-gateway lifecycle and discovery fix commit:
+  `ac1803ec555960ce49fcec1d6a5b718d781629e0`;
+- Engine API 0.3.5 dependency resolves to signed commit
+  `78cb4cb5781d6dbe9f0d34a1b925ee8dcaacdc98`;
 - the enhanced provider-session integration returns the authority identity,
   container/image counts, complete inspect state/config/host configuration,
   resolved logging options, public json-file path, logs, attach frames, and
@@ -190,4 +219,14 @@ Current development MacBook Pro evidence:
 - [x] WebSocket attach reuses the canonical session and resize maps to the
   exact init process with Docker-compatible failures.
 - [x] Compose whole `/info` and inspect responses before advertising them.
-- [ ] Complete public gateway installation and external-client certification.
+- [x] Install and supervise the public gateway.
+- [ ] Complete the remaining external-client route/certification matrix and
+  typed guest grant before enabling `use_api_socket`.
+
+## Owned issue tracking
+
+- [container#45](https://github.com/stephenlclarke/container/issues/45)
+  records the `/info` journald-activation stall and its side-effect-free
+  advertised-catalog regression test.
+- [container#46](https://github.com/stephenlclarke/container/issues/46)
+  records the stale Engine API revision and its exact resolved-version test.

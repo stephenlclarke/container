@@ -18,10 +18,11 @@ or nanosecond timestamp presentation.
 ## Required behavior
 
 - Pin the runtime-neutral `container-engine-api` package at exact release
-  `0.3.4`.
+  `0.3.5`.
 - Project `/info` logging fields, inspect `LogConfig`/`LogPath`/TTY, and
   container logs from the existing `ContainersService` authority.
-- Requery the authority-owned driver catalog for every info request.
+- Project the authority-owned advertised driver catalog for every info request
+  without activating a lazy provider or materialising its sandbox.
 - Authenticate protected logging options against the durable container-bound
   reference before exposing the authorized Docker inspect projection.
 - Read stopped containers from the canonical driver-neutral reader and active
@@ -41,7 +42,7 @@ or nanosecond timestamp presentation.
 
 ## Acceptance evidence
 
-- [x] Exact `container-engine-api` 0.3.4 dependency and resolved pin.
+- [x] Exact `container-engine-api` 0.3.5 dependency and resolved pin.
 - [x] Authority-backed default driver and registered-driver projection.
 - [x] Authority-backed resolved inspect options, public json-file path, and TTY.
 - [x] Protected option values are authenticated at the authorized Engine
@@ -77,11 +78,22 @@ or nanosecond timestamp presentation.
   `engine.route.ContainerInspect` only in complete-response mode.
 - [x] The common gateway owns Docker `GET /_ping` and `HEAD /_ping`
   negotiation independently of provider capability and is released in
-  `container-engine-api` 0.3.4.
+  `container-engine-api` 0.3.5.
+- [x] `container system start` installs and supervises the signed common
+  gateway at `/tmp/container-engine-<uid>/docker.sock`; status reports its
+  launch and health state, and stop deregisters it before the authority.
+- [x] Docker `/info` catalogue discovery is side-effect free and does not
+  activate the journald sandbox. Concrete create/start validation still checks
+  provider readiness and fails closed.
+- [x] The enhanced provider declaration reports the exact Engine API release
+  compiled from the same authoritative package constant.
 - [x] Focused controller/backend, protected-option, active-wire, runtime-stream,
   and provider-session tests pass on the development MacBook Pro.
-- [x] The complete 1,832-test Container suite passes from a clean resolved
-  dependency state on the development MacBook Pro.
+- [x] The complete matched suite passes on the development MacBook Pro: 1,835
+  Swift Testing tests in 213 suites plus 94 XCTest tests, with zero failures.
+- [x] An isolated signed package passes `system start`, JSON `system status`,
+  Docker CLI unversioned and `/v1.53/info`, `/_ping`, and exact shutdown/socket
+  cleanup on the development MacBook Pro.
 
 ## Remaining Engine logging work
 
@@ -92,13 +104,16 @@ or nanosecond timestamp presentation.
 - Route direct isolated-provider `ReadLogs` sessions through the authority;
   current non-native providers require the production provider-reader plane or
   dual cache.
-- Complete journald, the isolated Docker logging-plugin service plane,
-  devcontainer logging handoff, shutdown/migration/security/performance
-  evidence, and external Docker CLI/Compose/Testcontainers/devcontainer
-  certification.
-- Install and supervise the common public `container-engine` executable under
-  the API-socket work package. This change owns only the enhanced private
-  provider side and does not claim `use_api_socket` closure.
+- Complete the isolated Docker logging-plugin service plane, devcontainer
+  logging handoff, migration/security/performance evidence, and the remaining
+  Docker Compose/Testcontainers/devcontainer external-client certification.
+- Complete the typed guest socket grant, remaining Docker REST handlers, and
+  authority handoff before claiming `use_api_socket` closure. Public gateway
+  installation and Docker CLI info negotiation are now live-proven locally.
+- Publish or land the matched Containerization sandbox/workload APIs. The
+  canonical public `77f06d4` pin cannot compile this existing branch; the
+  signed local `864455b` dependency passes the complete matched suite and must
+  remain local until the coordinated Apple-bound wave is ready.
 
 ## Apple-shaped boundary
 
@@ -120,3 +135,7 @@ only after the complete parity programme is finished.
 - `6a668b2b5d42246efcad3316374f6d0e0d2eaf14` — signed WebSocket attach and
   terminal-resize implementation, Docker-compatible resize errors, exact
   Engine API 0.3.4 pin, route advertisement, and provider-session tests.
+- `ac1803ec555960ce49fcec1d6a5b718d781629e0` — signed Engine API 0.3.5
+  service packaging and lifecycle, side-effect-free info discovery, exact
+  provider provenance, focused regressions, matched full suite, and isolated
+  Docker CLI validation.
