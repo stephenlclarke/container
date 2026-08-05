@@ -29,7 +29,8 @@ Options:
 Environment:
     CONTAINER_INIT_IMAGE_NAME
                                Image reference to build and install for the
-                               init image (default: vminit:latest)
+                               init image (default: immutable custom source/ref
+                               when available, otherwise vminit:latest)
     CONTAINERIZATION_INIT_SOURCE_PATH
                                Build the init image from this containerization
                                checkout instead of the SwiftPM resolved path
@@ -79,7 +80,22 @@ done
 CONTAINER_INIT_CLI="${CONTAINER_INIT_CLI:-bin/container}"
 CONTAINER_INIT_MAKE="${CONTAINER_INIT_MAKE:-make}"
 CONTAINER_INIT_SWIFT="${CONTAINER_INIT_SWIFT:-/usr/bin/swift}"
-IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-vminit:latest}"
+default_image_name() {
+	local source="${CONTAINERIZATION_SOURCE:-apple/containerization}"
+	local ref="${CONTAINERIZATION_REF:-}"
+	local normalized_source
+	normalized_source="$(printf '%s' "${source}" | tr '[:upper:]' '[:lower:]')"
+	if [[ "${normalized_source}" != "apple/containerization" &&
+		"${source}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ &&
+		"${ref}" =~ ^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$ ]]; then
+		local normalized_ref
+		normalized_ref="$(printf '%s' "${ref}" | tr '[:upper:]' '[:lower:]')"
+		printf 'ghcr.io/%s/vminit:%s' "${normalized_source}" "${normalized_ref}"
+		return
+	fi
+	printf 'vminit:latest'
+}
+IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-$(default_image_name)}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
 BOOTSTRAP_RUNTIME_STARTED=false

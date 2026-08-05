@@ -298,10 +298,7 @@ final public class DNSConfig: Codable, Sendable {
 
 final public class VminitConfig: Codable, Sendable {
     public static var defaultImage: String {
-        let tag = String(cString: get_swift_containerization_version())
-        return tag == "latest"
-            ? "vminit:latest"
-            : "ghcr.io/apple/containerization/vminit:\(tag)"
+        ReleaseVersion.vminitImage()
     }
 
     public let image: String

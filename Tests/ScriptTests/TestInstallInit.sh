@@ -200,3 +200,21 @@ fi
 grep -Fq \
     "XDG_CONFIG_HOME=\"${INTEGRATION_SCRATCH_ROOT}/xdg-config\" \"true\" init-block" \
     <<<"${INTEGRATION_DRY_RUN}"
+
+IMMUTABLE_LOG_PATH="${TEST_ROOT}/immutable.log"
+IMMUTABLE_RUNNING_PATH="${TEST_ROOT}/immutable-running"
+IMMUTABLE_REF="0123456789abcdef0123456789abcdef01234567"
+
+INSTALL_INIT_TEST_LOG="${IMMUTABLE_LOG_PATH}" \
+INSTALL_INIT_TEST_RUNNING="${IMMUTABLE_RUNNING_PATH}" \
+CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
+CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
+CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
+CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
+CONTAINERIZATION_SOURCE="StephenLClarke/Containerization" \
+CONTAINERIZATION_REF="${IMMUTABLE_REF}" \
+    scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+
+grep -Fq \
+    "init VMINIT_IMAGE=ghcr.io/stephenlclarke/containerization/vminit:${IMMUTABLE_REF}" \
+    "${IMMUTABLE_LOG_PATH}"

@@ -22,6 +22,7 @@ public struct ReleaseVersion {
         var versionDetails: [String: String] = ["build": buildType()]
         versionDetails["commit"] = gitCommit().map { String($0.prefix(7)) } ?? "unspecified"
         versionDetails["containerization"] = "\(containerizationSource())@\(containerizationRef())"
+        versionDetails["vminit"] = vminitImage()
         versionDetails["distribution"] = distribution()
         versionDetails["source"] = containerSource()
         versionDetails["builder-shim"] = builderShimImage()
@@ -35,6 +36,7 @@ public struct ReleaseVersion {
             "\(indent)distribution: \(distribution())",
             "\(indent)source: \(containerSource())",
             "\(indent)containerization: \(containerizationSource())@\(containerizationRef())",
+            "\(indent)vminit: \(vminitImage())",
             "\(indent)container-builder-shim: \(builderShimImage())",
         ]
     }
@@ -81,6 +83,59 @@ public struct ReleaseVersion {
     public static func containerEngineAPIVersion() -> String {
         get_container_engine_api_version().map { String(cString: $0) }
             ?? "unknown"
+    }
+
+    public static func vminitImage() -> String {
+        vminitImage(
+            containerizationSource: containerizationSource(),
+            containerizationRef: containerizationRef(),
+            upstreamVersion: String(cString: get_swift_containerization_version())
+        )
+    }
+
+    package static func vminitImage(
+        containerizationSource: String,
+        containerizationRef: String,
+        upstreamVersion: String
+    ) -> String {
+        let normalizedSource = containerizationSource.lowercased()
+        guard normalizedSource != "apple/containerization" else {
+            return upstreamVersion == "latest"
+                ? "vminit:latest"
+                : "ghcr.io/apple/containerization/vminit:\(upstreamVersion)"
+        }
+        let sourceParts = containerizationSource.split(
+            separator: "/",
+            omittingEmptySubsequences: false
+        )
+        let safeSource =
+            sourceParts.count == 2
+            && sourceParts.allSatisfy { part in
+                !part.isEmpty && part.utf8.allSatisfy(Self.isImagePathByte)
+            }
+        let safeRevision =
+            (containerizationRef.utf8.count == 40
+                || containerizationRef.utf8.count == 64)
+            && containerizationRef.utf8.allSatisfy(Self.isHexByte)
+        guard safeSource, safeRevision else {
+            return "vminit:latest"
+        }
+        return "ghcr.io/\(normalizedSource)/vminit:\(containerizationRef.lowercased())"
+    }
+
+    private static func isImagePathByte(_ byte: UInt8) -> Bool {
+        (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z"))
+            || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z"))
+            || (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+            || byte == UInt8(ascii: ".")
+            || byte == UInt8(ascii: "_")
+            || byte == UInt8(ascii: "-")
+    }
+
+    private static func isHexByte(_ byte: UInt8) -> Bool {
+        (byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9"))
+            || (byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "f"))
+            || (byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "F"))
     }
 
     public static func builderShimRepository() -> String {

@@ -64,6 +64,7 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.contains("build") }))
             #expect(lines.contains(where: { $0.contains("commit") }))
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
+            #expect(lines.contains(where: { $0.hasPrefix("  vminit: ") }))
             #expect(!lines[0].contains("COMPONENT"))
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))

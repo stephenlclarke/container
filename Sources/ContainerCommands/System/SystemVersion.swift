@@ -43,6 +43,7 @@ extension Application {
                 distribution: ReleaseVersion.distribution(),
                 source: ReleaseVersion.containerSource(),
                 containerization: "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())",
+                vminitImage: ReleaseVersion.vminitImage(),
                 builderShimRepository: ReleaseVersion.builderShimRepository(),
                 builderShimVersion: ReleaseVersion.builderShimVersion(),
                 builderShimDigest: ReleaseVersion.builderShimDigest(),
@@ -88,6 +89,7 @@ extension Application {
         let distribution: String?
         let source: String?
         let containerization: String?
+        let vminitImage: String?
         let builderShimRepository: String?
         let builderShimVersion: String?
         let builderShimDigest: String?
@@ -115,6 +117,7 @@ extension Application {
                 ("distribution", distribution),
                 ("source", source),
                 ("containerization", containerization),
+                ("vminit", vminitImage),
                 ("builder-shim", builderShimImage),
                 ("runtime-capability-schema", runtimeCapabilitySchemaVersion.map(String.init)),
                 ("runtime-capabilities", runtimeCapabilities?.map(\.rawValue).joined(separator: ", ")),
@@ -158,6 +161,7 @@ extension Application {
             distribution: String? = nil,
             source: String? = nil,
             containerization: String? = nil,
+            vminitImage: String? = nil,
             builderShimRepository: String? = nil,
             builderShimVersion: String? = nil,
             builderShimDigest: String? = nil,
@@ -170,6 +174,7 @@ extension Application {
             self.distribution = distribution
             self.source = source
             self.containerization = containerization
+            self.vminitImage = vminitImage
             self.builderShimRepository = builderShimRepository
             self.builderShimVersion = builderShimVersion
             self.builderShimDigest = builderShimDigest

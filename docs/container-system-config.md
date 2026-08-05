@@ -121,7 +121,7 @@ Default subnets used when creating networks without explicit `--subnet` / `--sub
 
 | Key     | Type     | Default                                                | Description                                                                                              |
 |---------|----------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
-| `image` | `String` | `ghcr.io/apple/containerization/vminit:<tag>`     | Reference for the `vminitd` image used to boot container VMs. The tag segment is taken from the project's bundled `containerization` version.  |
+| `image` | `String` | Source-dependent immutable reference | Reference for the `vminitd` image used to boot container VMs. Apple builds select the bundled Containerization version; custom builds with an exact Containerization revision select `ghcr.io/<source>/vminit:<revision>`. |
 
 ## `[plugin.<id>]`
 

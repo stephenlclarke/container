@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerTestSupport
+import ContainerVersion
 import ContainerizationExtras
 import Foundation
 import SystemPackage
@@ -93,7 +94,7 @@ struct ConfigurationLoaderTests {
             #expect(config.dns.domain == nil)
             #expect(config.build.image == BuildConfig.defaultImage)
             #expect(config.build.image == "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:b48fbf42a51bf3432bd50d64732b4d6931944f3bb30f911a9a513cf8bab9b02e")
-            #expect(!config.vminit.image.isEmpty)
+            #expect(config.vminit.image == ReleaseVersion.vminitImage())
             #expect(!config.kernel.binaryPath.isEmpty)
             #expect(!config.kernel.url.absoluteString.isEmpty)
             #expect(config.kernel.digest == KernelConfig.defaultDigest)

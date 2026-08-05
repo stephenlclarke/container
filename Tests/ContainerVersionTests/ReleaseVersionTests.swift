@@ -41,23 +41,58 @@ struct ReleaseVersionTests {
     @Test
     func singleLineIncludesForkProvenance() throws {
         let line = ReleaseVersion.singleLine(appName: "container CLI")
-        let containerization = try Self.expectedContainerizationProvenance()
+        let containerization = Self.expectedContainerizationProvenance()
 
         #expect(line.contains("distribution: custom"))
         #expect(line.contains("source: stephenlclarke/container"))
         #expect(line.contains("containerization: \(containerization)"))
+        #expect(line.contains("vminit: \(ReleaseVersion.vminitImage())"))
         #expect(line.contains("builder-shim: \(ReleaseVersion.builderShimImage())"))
     }
 
     @Test
     func provenanceLinesIncludeSourceAndContainerization() throws {
         let lines = ReleaseVersion.provenanceLines(indent: "")
-        let containerization = try Self.expectedContainerizationProvenance()
+        let containerization = Self.expectedContainerizationProvenance()
 
         #expect(lines.contains("distribution: custom"))
         #expect(lines.contains("source: stephenlclarke/container"))
         #expect(lines.contains("containerization: \(containerization)"))
+        #expect(lines.contains("vminit: \(ReleaseVersion.vminitImage())"))
         #expect(lines.contains("container-builder-shim: \(ReleaseVersion.builderShimImage())"))
+    }
+
+    @Test
+    func customVminitImageUsesExactContainerizationRevision() {
+        let revision = String(repeating: "a", count: 40)
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "Example/Containerization",
+                containerizationRef: revision.uppercased(),
+                upstreamVersion: "0.40.1"
+            ) == "ghcr.io/example/containerization/vminit:\(revision)"
+        )
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "apple/containerization",
+                containerizationRef: revision,
+                upstreamVersion: "0.40.1"
+            ) == "ghcr.io/apple/containerization/vminit:0.40.1"
+        )
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "example/containerization",
+                containerizationRef: "main",
+                upstreamVersion: "0.40.1"
+            ) == "vminit:latest"
+        )
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "unsafe source",
+                containerizationRef: revision,
+                upstreamVersion: "0.40.1"
+            ) == "vminit:latest"
+        )
     }
 
     @Test
@@ -66,15 +101,8 @@ struct ReleaseVersionTests {
         #expect(ReleaseVersion.containerEngineAPIVersion() == expected)
     }
 
-    private static func expectedContainerizationProvenance() throws -> String {
-        let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
-        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let pins = try #require(object["pins"] as? [[String: Any]])
-        let pin = try #require(pins.first { ($0["identity"] as? String) == "containerization" })
-        let location = try #require(pin["location"] as? String)
-        let state = try #require(pin["state"] as? [String: Any])
-        let revision = try #require(state["revision"] as? String)
-        return "\(githubRepositoryPath(from: location))@\(revision)"
+    private static func expectedContainerizationProvenance() -> String {
+        "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())"
     }
 
     private static func expectedEngineAPIVersion() throws -> String {
@@ -92,17 +120,4 @@ struct ReleaseVersionTests {
         return try #require(state["version"] as? String)
     }
 
-    private static func githubRepositoryPath(from location: String) -> String {
-        var repository = location
-        for prefix in ["https://github.com/", "git@github.com:"] {
-            if repository.hasPrefix(prefix) {
-                repository.removeFirst(prefix.count)
-                break
-            }
-        }
-        if repository.hasSuffix(".git") {
-            repository.removeLast(4)
-        }
-        return repository
-    }
 }

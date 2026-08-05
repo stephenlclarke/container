@@ -163,7 +163,9 @@ extension Application {
             try await startContainerEngineGateway()
 
             if await !initImageExists(containerSystemConfig: containerSystemConfig) {
-                try? await installInitialFilesystem(initImage: containerSystemConfig.vminit.image)
+                try await installInitialFilesystem(
+                    initImage: containerSystemConfig.vminit.image
+                )
             }
 
             guard await !kernelExists() else {
@@ -280,11 +282,7 @@ extension Application {
             var pullCommand = try ImagePull.parse()
             pullCommand.reference = initImage
             log.info("Installing base container filesystem...")
-            do {
-                try await pullCommand.run()
-            } catch {
-                log.error("failed to install base container filesystem", metadata: ["error": "\(error)"])
-            }
+            try await pullCommand.run()
         }
 
         private func installDefaultKernel(kernelURL: URL, kernelBinaryPath: String, kernelDigest: String) async throws {
