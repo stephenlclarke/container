@@ -603,6 +603,53 @@ struct AuthorityRemoteLogDriverPlaneTests {
     }
 
     @Test
+    func recreatedContainerIDUsesANewProtectedEffectIdentity() async throws {
+        try await withTemporaryRoot { root in
+            let client = AuthorityRecordingAWSLogsClient()
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityRecordingAWSLogsClientFactory(
+                    client: client
+                )
+            )
+            let id = "recreated-remote-logging-container"
+            let bundle = ContainerResource.Bundle(
+                path: root.appendingPathComponent(id, isDirectory: true)
+            )
+
+            for incarnation in [1.0, 2.0] {
+                try FileManager.default.createDirectory(
+                    at: bundle.path,
+                    withIntermediateDirectories: true
+                )
+                var configuration = try awsLogsConfiguration(id: id)
+                configuration.creationDate = Date(
+                    timeIntervalSinceReferenceDate: incarnation
+                )
+                let runtimeStdio = try await plane.prepareBootstrap(
+                    containerID: id,
+                    bundle: bundle,
+                    configuration: configuration,
+                    authenticatedProtectedOptions: [:],
+                    stdio: [nil, nil, nil]
+                )
+                try #require(runtimeStdio[1]).write(
+                    contentsOf: Data("incarnation-\(Int(incarnation))\n".utf8)
+                )
+                try await plane.bootstrapSucceeded(containerID: id)
+                try await plane.activate(containerID: id)
+                try await plane.close(containerID: id)
+                try FileManager.default.removeItem(at: bundle.path)
+            }
+
+            #expect(
+                await client.publishedEvents.map(\.message)
+                    == ["incarnation-1", "incarnation-2"]
+            )
+        }
+    }
+
+    @Test
     func gcpLogsProductionPlanePublishesProviderBytes() async throws {
         try await withTemporaryRoot { root in
             let service = AuthorityRecordingGCPLoggingService()

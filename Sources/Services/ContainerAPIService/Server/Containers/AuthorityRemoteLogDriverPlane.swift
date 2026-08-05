@@ -874,12 +874,10 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         )
         let processGeneration = try sequenceStore.next()
         let sequenceReservation = try sequenceStore.reserveSequenceBlock()
-        let identityDigest = Self.sha256Hex(
-            Data(
-                "\(containerID)\u{0}\(resolved.leaseGeneration)\u{0}\(processGeneration)"
-                    .utf8
-            )
-        )
+        let writerIdentity =
+            "\(containerID)\u{0}\(Self.incarnationIdentity(configuration))"
+            + "\u{0}\(resolved.leaseGeneration)\u{0}\(processGeneration)"
+        let identityDigest = Self.sha256Hex(Data(writerIdentity.utf8))
         let request = try LogDriverStartRequestV1(
             operationGeneration: processGeneration,
             idempotencyKey: "writer-\(identityDigest)",
@@ -1162,12 +1160,11 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             source: source,
             read: read
         )
-        let identityDigest = Self.sha256Hex(
-            Data(
-                "\(containerID)\u{0}\(resolved.leaseGeneration)\u{0}\(operationGeneration)\u{0}\(semanticDigest)"
-                    .utf8
-            )
-        )
+        let readerIdentity =
+            "\(containerID)\u{0}\(Self.incarnationIdentity(configuration))"
+            + "\u{0}\(resolved.leaseGeneration)\u{0}\(operationGeneration)"
+            + "\u{0}\(semanticDigest)"
+        let identityDigest = Self.sha256Hex(Data(readerIdentity.utf8))
         let request = try LogDriverReaderOpenRequestV1(
             operationGeneration: operationGeneration,
             idempotencyKey: "reader-\(identityDigest)",
@@ -1868,6 +1865,18 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     ) -> String {
         let digest = sha256Hex(Data(containerID.utf8))
         return "container-\(digest)-lease-\(leaseGeneration)"
+    }
+
+    /// Distinguishes a recreated container from a prior incarnation that used
+    /// the same Docker-compatible ID. The persisted creation date is stable
+    /// across ordinary restarts, while a new create receives a new value.
+    private static func incarnationIdentity(
+        _ configuration: ContainerConfiguration
+    ) -> String {
+        String(
+            format: "%016llx",
+            configuration.creationDate.timeIntervalSinceReferenceDate.bitPattern
+        )
     }
 
     private static func requireResolved(
