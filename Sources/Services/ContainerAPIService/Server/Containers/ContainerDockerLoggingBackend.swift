@@ -24,6 +24,75 @@ import ContainerizationError
 import ContainerizationOS
 import Foundation
 
+actor ContainerDockerImageResourceCache {
+    typealias ImageProvider = @Sendable () async throws -> [ClientImage]
+    typealias VisibilityProvider = @Sendable (ClientImage) throws -> Bool
+    typealias ResourceProvider = @Sendable (ClientImage) async throws -> ImageResource
+
+    private struct InventoryEntry: Equatable {
+        let reference: String
+        let digest: String
+    }
+
+    private let imageProvider: ImageProvider
+    private let isVisible: VisibilityProvider
+    private let resourceProvider: ResourceProvider
+    private var inventory = [InventoryEntry]()
+    private var resources = [ImageResource]()
+
+    init(containerSystemConfig: ContainerSystemConfig) {
+        imageProvider = { try await ClientImage.list() }
+        isVisible = {
+            try !Utility.isInfraImage(
+                name: $0.description.reference,
+                containerSystemConfig: containerSystemConfig
+            )
+        }
+        resourceProvider = {
+            try await $0.toImageResource(
+                containerSystemConfig: containerSystemConfig,
+                for: .current
+            )
+        }
+    }
+
+    init(
+        imageProvider: @escaping ImageProvider,
+        isVisible: @escaping VisibilityProvider,
+        resourceProvider: @escaping ResourceProvider
+    ) {
+        self.imageProvider = imageProvider
+        self.isVisible = isVisible
+        self.resourceProvider = resourceProvider
+    }
+
+    func currentResources() async throws -> [ImageResource] {
+        let images = try await imageProvider().filter(isVisible)
+        let currentInventory = images.map {
+            InventoryEntry(
+                reference: $0.description.reference,
+                digest: $0.description.descriptor.digest
+            )
+        }.sorted {
+            if $0.reference != $1.reference {
+                return $0.reference.utf8.lexicographicallyPrecedes($1.reference.utf8)
+            }
+            return $0.digest.utf8.lexicographicallyPrecedes($1.digest.utf8)
+        }
+        if currentInventory == inventory {
+            return resources
+        }
+
+        var refreshed = [ImageResource]()
+        for image in images {
+            refreshed.append(try await resourceProvider(image))
+        }
+        inventory = currentInventory
+        resources = refreshed
+        return refreshed
+    }
+}
+
 struct ContainerEngineLoggingInspection: Sendable {
     let driver: String
     let options: [String: String]
@@ -71,23 +140,11 @@ public struct ContainerDockerLoggingBackend:
         imageCountProvider: (@Sendable () async throws -> Int)? = nil,
         imageResourceProvider: (@Sendable () async throws -> [ImageResource])? = nil
     ) {
+        let imageResourceCache = ContainerDockerImageResourceCache(
+            containerSystemConfig: containerSystemConfig
+        )
         let authoritativeImageResources = imageResourceProvider ?? {
-            var resources = [ImageResource]()
-            for image in try await ClientImage.list() {
-                guard try !Utility.isInfraImage(
-                    name: image.description.reference,
-                    containerSystemConfig: containerSystemConfig
-                ) else {
-                    continue
-                }
-                resources.append(
-                    try await image.toImageResource(
-                        containerSystemConfig: containerSystemConfig,
-                        for: .current
-                    )
-                )
-            }
-            return resources
+            try await imageResourceCache.currentResources()
         }
         self.containers = containers
         self.engineIdentity = engineIdentity

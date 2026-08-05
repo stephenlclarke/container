@@ -33,6 +33,38 @@ import Testing
 @testable import ContainerLoggingStorage
 @testable import ContainerPlugin
 
+private actor DockerImageResourceCacheFixture {
+    private var storedImages: [ClientImage]
+    private var resourceBuilds = 0
+
+    init(images: [ClientImage]) {
+        storedImages = images
+    }
+
+    func images() -> [ClientImage] {
+        storedImages
+    }
+
+    func replaceImages(_ images: [ClientImage]) {
+        storedImages = images
+    }
+
+    func resource(for image: ClientImage) -> ImageResource {
+        resourceBuilds += 1
+        return ImageResource(
+            configuration: ImageResource.ImageConfiguration(
+                description: image.description,
+                creationDate: Date(timeIntervalSince1970: 0)
+            ),
+            variants: []
+        )
+    }
+
+    func buildCount() -> Int {
+        resourceBuilds
+    }
+}
+
 struct ContainerLogsTests {
     @Test func configuredUnreadableDriverUsesUnsupportedPublicError() {
         let error = ContainersService.logReadError(
@@ -1248,6 +1280,52 @@ struct ContainerLogsTests {
                 )
             )
         }
+    }
+
+    @Test func dockerImageResourceCacheTracksNativeInventoryIdentity() async throws {
+        func image(reference: String, digestSeed: String) -> ClientImage {
+            ClientImage(
+                description: ImageDescription(
+                    reference: reference,
+                    descriptor: Descriptor(
+                        mediaType: MediaTypes.index,
+                        digest: "sha256:" + String(repeating: digestSeed, count: 64),
+                        size: 100
+                    )
+                )
+            )
+        }
+
+        let first = image(
+            reference: "docker.io/library/alpine:3.20",
+            digestSeed: "a"
+        )
+        let second = image(
+            reference: "docker.io/library/busybox:latest",
+            digestSeed: "b"
+        )
+        let third = image(
+            reference: "docker.io/library/debian:bookworm",
+            digestSeed: "c"
+        )
+        let fixture = DockerImageResourceCacheFixture(images: [second, first])
+        let cache = ContainerDockerImageResourceCache(
+            imageProvider: { await fixture.images() },
+            isVisible: { _ in true },
+            resourceProvider: { await fixture.resource(for: $0) }
+        )
+
+        #expect(try await cache.currentResources().count == 2)
+        #expect(try await cache.currentResources().count == 2)
+        #expect(await fixture.buildCount() == 2)
+
+        await fixture.replaceImages([first, second])
+        #expect(try await cache.currentResources().count == 2)
+        #expect(await fixture.buildCount() == 2)
+
+        await fixture.replaceImages([first, second, third])
+        #expect(try await cache.currentResources().count == 3)
+        #expect(await fixture.buildCount() == 5)
     }
 
     @Test func engineLoggingInspectionHidesJSONFilePathBeforeFirstStart() async throws {
