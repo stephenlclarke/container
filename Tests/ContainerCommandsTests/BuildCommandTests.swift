@@ -23,6 +23,14 @@ import Testing
 
 struct BuildCommandTests {
     @Test
+    func stoppedBuilderFailsBeforeRestarting() {
+        #expect(Application.BuildCommand.builderExitedBeforeDial(status: .stopped))
+        #expect(!Application.BuildCommand.builderExitedBeforeDial(status: .running))
+        #expect(!Application.BuildCommand.builderExitedBeforeDial(status: .paused))
+        #expect(!Application.BuildCommand.builderExitedBeforeDial(status: nil))
+    }
+
+    @Test
     func builderShimUsesRuntimeDNSProxy() {
         let arguments = Application.BuilderStart.shimArguments(
             useRosetta: true,
