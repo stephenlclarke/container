@@ -114,6 +114,93 @@ struct LoggingHandoffPayloadTests {
     }
 
     @Test
+    func `framed payload keeps decoded history file backed`() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "logging-handoff-file-decode-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destinationPrivateKey =
+            ProviderHandoffCrypto.generateX25519PrivateKey()
+        let tokenID = "token-logging-file-1"
+        let manifestID = "manifest-logging-file-1"
+        let prepared = try LoggingHandoffPayloadCodec.prepareSealedFile(
+            containers: [try exportContainer()],
+            transportFileURL: root.appendingPathComponent("transport"),
+            tokenID: tokenID,
+            manifestID: manifestID,
+            sourceStateRootUUID: sourceRoot,
+            sourceAuthorityLineageUUID: sourceLineage,
+            sourceLineageKeyVersion: 7,
+            sourceLineageHMACSHA256Key: lineageKey,
+            destinationProviderFingerprint: "sha256:destination-provider",
+            destinationStateRootUUID: destinationRoot,
+            destinationKeyID: "destination-payload-key-1",
+            destinationPublicKey: try ProviderHandoffCrypto.x25519PublicKey(
+                for: destinationPrivateKey
+            )
+        )
+        let recordDirectory = root.appendingPathComponent(
+            "records",
+            isDirectory: true
+        )
+        let historyDirectory = root.appendingPathComponent(
+            "history",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: recordDirectory,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createDirectory(
+            at: historyDirectory,
+            withIntermediateDirectories: false
+        )
+        let lineage = ProviderHandoffLineageKeyV1(
+            sourceStateRootUUID: sourceRoot,
+            authorityLineageUUID: sourceLineage,
+            keyVersion: 7,
+            rawHMACSHA256Key: lineageKey
+        )
+        let source = try ProviderHandoffPayloadCodec.openSealedFileSource(
+            prepared,
+            canonicalFileURL: root.appendingPathComponent("canonical"),
+            recordDirectoryURL: recordDirectory,
+            expectedPartKind: .logging,
+            tokenID: tokenID,
+            manifestID: manifestID,
+            sourceOrder: [sourceRoot],
+            lineageKeys: [lineage],
+            destinationProviderFingerprint: "sha256:destination-provider",
+            destinationStateRootUUID: destinationRoot,
+            destinationPrivateKey: destinationPrivateKey
+        )
+        let decoded = try LoggingHandoffPayloadCodec.decodeVerified(
+            source,
+            lineageKeys: [lineage],
+            historyDirectoryURL: historyDirectory,
+            privateFileOwner: LoggingHandoffPrivateFileOwner(rootURL: root)
+        )
+        let container = try #require(decoded.containers.first)
+        let entryID = try #require(container.historyEntryIDs.first)
+        let history = try #require(decoded.historyStores[entryID])
+        let file = try #require(decoded.historyFiles[entryID])
+        #expect(history.bytes == nil)
+        #expect(file.byteLength == history.byteLength)
+        #expect(file.contentDigestSHA256 == history.contentDigestSHA256)
+        #expect(
+            try decoded.withHistoryBytes(entryID: entryID) { bytes in
+                bytes == Data("preserved docker log\n".utf8)
+            }
+        )
+    }
+
+    @Test
     func `provider neutral portable history decodes as native logging handoff`() throws {
         let package = try ProviderHandoffPortableLoggingPayloadCodec.package(
             containers: [

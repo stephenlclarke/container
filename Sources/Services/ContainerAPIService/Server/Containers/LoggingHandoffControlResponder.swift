@@ -382,8 +382,28 @@ struct LoggingHandoffControlResponder:
                 at: stagingRoot,
                 withIntermediateDirectories: false
             )
-            defer { try? FileManager.default.removeItem(at: stagingRoot) }
-            package = try providerIdentity.openFile(
+            let privateFileOwner = LoggingHandoffPrivateFileOwner(
+                rootURL: stagingRoot
+            )
+            let recordDirectory = stagingRoot.appendingPathComponent(
+                "records",
+                isDirectory: true
+            )
+            let historyDirectory = stagingRoot.appendingPathComponent(
+                "history",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: recordDirectory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.createDirectory(
+                at: historyDirectory,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let source = try providerIdentity.openFileSource(
                 ProviderHandoffPreparedPayloadFileV2(
                     descriptor: metadata.part.payload,
                     transportFileURL: try objectStore.verifiedObjectFileURL(
@@ -391,11 +411,18 @@ struct LoggingHandoffControlResponder:
                     )
                 ),
                 canonicalFileURL: stagingRoot.appendingPathComponent("canonical"),
+                recordDirectoryURL: recordDirectory,
                 expectedPartKind: .logging,
                 tokenID: request.manifest.tokenID,
                 manifestID: request.manifest.manifestID,
                 sourceOrder: metadata.part.sourceStateRootUUIDs,
                 lineageKeys: lineageKeys
+            )
+            return try LoggingHandoffPayloadCodec.decodeVerified(
+                source,
+                lineageKeys: lineageKeys,
+                historyDirectoryURL: historyDirectory,
+                privateFileOwner: privateFileOwner
             )
         case .authenticatedPlaintext:
             throw LoggingHandoffControlResponderError.invalidPayload

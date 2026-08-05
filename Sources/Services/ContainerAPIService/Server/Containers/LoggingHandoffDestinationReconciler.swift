@@ -412,17 +412,18 @@ actor LoggingHandoffDestinationReconciler: LoggingHandoffDestinationReconciling 
                 }
                 switch history.disposition {
                 case .importVerified:
-                    guard
-                        let bytes = history.bytes,
-                        let digest = history.contentDigestSHA256,
-                        ProviderHandoffDigest.sha256(bytes) == digest
-                    else {
+                    guard let digest = history.contentDigestSHA256 else {
                         throw
                             LoggingHandoffDestinationReconcilerError
                             .historyMismatch(staged.entryID)
                     }
-                    try Self.validateLocalHistory(history, bytes: bytes)
-                    try publishHistoryObject(bytes, digest: digest)
+                    let bytes = try payload.withHistoryBytes(
+                        entryID: staged.entryID
+                    ) { bytes in
+                        try Self.validateLocalHistory(history, bytes: bytes)
+                        try publishHistoryObject(bytes, digest: digest)
+                        return bytes
+                    }
                     objectDigests.insert(digest)
                     localByContainer[container.containerID, default: []]
                         .append(
@@ -436,7 +437,7 @@ actor LoggingHandoffDestinationReconciler: LoggingHandoffDestinationReconciling 
                                 maximumInternalSequence:
                                     history.maximumInternalSequence,
                                 contentDigestSHA256: digest,
-                                bytes: try loadHistoryObject(digest)
+                                bytes: bytes
                             ))
                 case .providerExportVerified:
                     guard history.kind == .providerOwned else {

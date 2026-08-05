@@ -137,6 +137,50 @@ struct LoggingHandoffHistoryStoreV1: Codable, Equatable, Sendable {
         self.providerExportReceipt = providerExportReceipt
         self.bytes = bytes
     }
+
+    init(
+        fileBackedStoreID storeID: String,
+        kind: LoggingHandoffHistoryKindV1,
+        disposition: LoggingHandoffHistoryDispositionV1,
+        formatVersion: UInt32,
+        rotationIndex: UInt64,
+        compressed: Bool,
+        terminalHistoryEpoch: UInt64,
+        maximumInternalSequence: UInt64,
+        sourceDeviceID: UInt64?,
+        sourceInode: UInt64?,
+        byteLength: UInt64,
+        contentDigestSHA256: String
+    ) throws {
+        guard
+            !storeID.isEmpty,
+            storeID.precomposedStringWithCanonicalMapping == storeID,
+            disposition == .importVerified || disposition == .retainOffline,
+            formatVersion > 0,
+            rotationIndex > 0 || !compressed,
+            (sourceDeviceID == nil) == (sourceInode == nil),
+            byteLength <= UInt64(Self.maximumStoredBytesPerSegment)
+        else {
+            throw LoggingHandoffPayloadError.invalidHistory(storeID)
+        }
+        _ = try ProviderHandoffDigest.parseSHA256(contentDigestSHA256)
+        schemaVersion = 1
+        self.storeID = storeID
+        self.kind = kind
+        self.disposition = disposition
+        self.formatVersion = formatVersion
+        self.rotationIndex = rotationIndex
+        self.compressed = compressed
+        self.terminalHistoryEpoch = terminalHistoryEpoch
+        self.maximumInternalSequence = maximumInternalSequence
+        self.sourceDeviceID = sourceDeviceID
+        self.sourceInode = sourceInode
+        self.byteLength = byteLength
+        self.contentDigestSHA256 = contentDigestSHA256
+        providerExportDigestSHA256 = nil
+        providerExportReceipt = nil
+        bytes = nil
+    }
 }
 
 struct LoggingTerminalAuditV1: Codable, Equatable, Sendable {
@@ -270,10 +314,80 @@ struct LoggingHandoffProtectedValueFrameV1: Equatable, Sendable {
     let value: Data
 }
 
-struct LoggingHandoffDecodedPayloadV1: Equatable, Sendable {
+struct LoggingHandoffHistoryFileV2: Equatable, Sendable {
+    let url: URL
+    let byteLength: UInt64
+    let contentDigestSHA256: String
+}
+
+final class LoggingHandoffPrivateFileOwner: @unchecked Sendable {
+    let rootURL: URL
+
+    init(rootURL: URL) {
+        self.rootURL = rootURL.standardizedFileURL
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: rootURL)
+    }
+}
+
+struct LoggingHandoffDecodedPayloadV1: Sendable {
     let containers: [LoggingHandoffContainerRecordV1]
     let protectedValues: [LoggingHandoffProtectedValueFrameV1]
     let historyStores: [String: LoggingHandoffHistoryStoreV1]
+    let historyFiles: [String: LoggingHandoffHistoryFileV2]
+    let privateFileOwner: LoggingHandoffPrivateFileOwner?
+
+    init(
+        containers: [LoggingHandoffContainerRecordV1],
+        protectedValues: [LoggingHandoffProtectedValueFrameV1],
+        historyStores: [String: LoggingHandoffHistoryStoreV1],
+        historyFiles: [String: LoggingHandoffHistoryFileV2] = [:],
+        privateFileOwner: LoggingHandoffPrivateFileOwner? = nil
+    ) {
+        self.containers = containers
+        self.protectedValues = protectedValues
+        self.historyStores = historyStores
+        self.historyFiles = historyFiles
+        self.privateFileOwner = privateFileOwner
+    }
+
+    func withHistoryBytes<Result>(
+        entryID: String,
+        _ operation: (Data) throws -> Result
+    ) throws -> Result {
+        guard let history = historyStores[entryID] else {
+            throw LoggingHandoffPayloadError.invalidEntry(entryID)
+        }
+        if let bytes = history.bytes {
+            return try operation(bytes)
+        }
+        guard
+            let file = historyFiles[entryID],
+            file.byteLength == history.byteLength,
+            file.contentDigestSHA256 == history.contentDigestSHA256
+        else {
+            throw LoggingHandoffPayloadError.invalidHistory(history.storeID)
+        }
+        let bytes = try Data(contentsOf: file.url, options: .mappedIfSafe)
+        guard
+            UInt64(bytes.count) == file.byteLength,
+            ProviderHandoffDigest.sha256(bytes) == file.contentDigestSHA256
+        else {
+            throw LoggingHandoffPayloadError.invalidHistory(history.storeID)
+        }
+        return try operation(bytes)
+    }
+}
+
+extension LoggingHandoffDecodedPayloadV1: Equatable {
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.containers == rhs.containers
+            && lhs.protectedValues == rhs.protectedValues
+            && lhs.historyStores == rhs.historyStores
+            && lhs.historyFiles == rhs.historyFiles
+    }
 }
 
 struct LoggingHandoffExportContainerV1: Equatable, Sendable {
@@ -618,12 +732,98 @@ enum LoggingHandoffPayloadCodec {
         _ package: ProviderHandoffPayloadPackageV1,
         lineageKeys: [ProviderHandoffLineageKeyV1]
     ) throws -> LoggingHandoffDecodedPayloadV1 {
+        try decodeVerified(
+            partKind: package.partKind,
+            entries: package.entries.map {
+                DecodingEntry(
+                    entryID: $0.entryID,
+                    sourceStateRootUUID: $0.sourceStateRootUUID,
+                    recordKind: $0.recordKind,
+                    schemaVersion: $0.schemaVersion,
+                    canonicalRecordBytes: $0.canonicalRecordBytes
+                )
+            },
+            historyFiles: [:],
+            privateFileOwner: nil,
+            lineageKeys: lineageKeys
+        )
+    }
+
+    static func decodeVerified(
+        _ package: ProviderHandoffPayloadPackageSourceV2,
+        lineageKeys: [ProviderHandoffLineageKeyV1],
+        historyDirectoryURL: URL,
+        privateFileOwner: LoggingHandoffPrivateFileOwner
+    ) throws -> LoggingHandoffDecodedPayloadV1 {
+        var entries: [DecodingEntry] = []
+        var historyFiles: [String: LoggingHandoffHistoryFileV2] = [:]
+        entries.reserveCapacity(package.entries.count)
+        for entry in package.entries {
+            let recordBytes: Data
+            if entry.recordKind == "logging-history-store-v1",
+                case .file(let url, let byteLength) = entry.canonicalRecord
+            {
+                let metadata = try LoggingHandoffHistoryFileDecoder.extract(
+                    canonicalRecordURL: url,
+                    historyDirectoryURL: historyDirectoryURL
+                )
+                recordBytes = metadata.metadataRecordBytes
+                guard metadata.canonicalRecordByteLength == byteLength else {
+                    throw LoggingHandoffPayloadError.invalidEntry(entry.entryID)
+                }
+                if let file = metadata.historyFile {
+                    guard
+                        historyFiles[entry.entryID] == nil
+                    else {
+                        throw LoggingHandoffPayloadError.invalidEntry(
+                            entry.entryID
+                        )
+                    }
+                    historyFiles[entry.entryID] = file
+                }
+            } else {
+                recordBytes = try mappedRecordData(entry.canonicalRecord)
+            }
+            entries.append(
+                DecodingEntry(
+                    entryID: entry.entryID,
+                    sourceStateRootUUID: entry.sourceStateRootUUID,
+                    recordKind: entry.recordKind,
+                    schemaVersion: entry.schemaVersion,
+                    canonicalRecordBytes: recordBytes
+                )
+            )
+        }
+        return try decodeVerified(
+            partKind: package.partKind,
+            entries: entries,
+            historyFiles: historyFiles,
+            privateFileOwner: privateFileOwner,
+            lineageKeys: lineageKeys
+        )
+    }
+
+    private struct DecodingEntry {
+        let entryID: String
+        let sourceStateRootUUID: String?
+        let recordKind: String
+        let schemaVersion: UInt32
+        let canonicalRecordBytes: Data
+    }
+
+    private static func decodeVerified(
+        partKind: ProviderHandoffPartKindV1,
+        entries: [DecodingEntry],
+        historyFiles: [String: LoggingHandoffHistoryFileV2],
+        privateFileOwner: LoggingHandoffPrivateFileOwner?,
+        lineageKeys: [ProviderHandoffLineageKeyV1]
+    ) throws -> LoggingHandoffDecodedPayloadV1 {
         let keysBySource = Dictionary(
             grouping: lineageKeys,
             by: \.sourceStateRootUUID
         )
         guard
-            package.partKind == .logging,
+            partKind == .logging,
             !lineageKeys.isEmpty,
             keysBySource.count == lineageKeys.count,
             lineageKeys.allSatisfy({
@@ -641,7 +841,7 @@ enum LoggingHandoffPayloadCodec {
         var histories: [String: LoggingHandoffHistoryStoreV1] = [:]
         var containerSources: [String: String] = [:]
         var historySources: [String: String] = [:]
-        for entry in package.entries {
+        for entry in entries {
             guard
                 let sourceStateRootUUID = entry.sourceStateRootUUID,
                 let lineageKey = exactKeysBySource[sourceStateRootUUID],
@@ -686,7 +886,10 @@ enum LoggingHandoffPayloadCodec {
                 )
                 protectedValues.append(frame)
             case "logging-history-store-v1":
-                let history = try decodeHistory(entry.canonicalRecordBytes)
+                let history = try decodeHistory(
+                    entry.canonicalRecordBytes,
+                    historyFile: historyFiles[entry.entryID]
+                )
                 guard histories[entry.entryID] == nil else {
                     throw LoggingHandoffPayloadError.invalidEntry(entry.entryID)
                 }
@@ -803,8 +1006,25 @@ enum LoggingHandoffPayloadCodec {
         return LoggingHandoffDecodedPayloadV1(
             containers: containers,
             protectedValues: protectedValues,
-            historyStores: histories
+            historyStores: histories,
+            historyFiles: historyFiles,
+            privateFileOwner: privateFileOwner
         )
+    }
+
+    private static func mappedRecordData(
+        _ source: ProviderHandoffPayloadRecordSourceV2
+    ) throws -> Data {
+        switch source {
+        case .data(let data):
+            return data
+        case .file(let url, let byteLength):
+            let data = try Data(contentsOf: url, options: .mappedIfSafe)
+            guard UInt64(data.count) == byteLength else {
+                throw LoggingHandoffPayloadError.invalidPackage
+            }
+            return data
+        }
     }
 
     private static func containerEntries(
@@ -1121,7 +1341,10 @@ enum LoggingHandoffPayloadCodec {
         )
     }
 
-    private static func decodeHistory(_ data: Data) throws -> LoggingHandoffHistoryStoreV1 {
+    private static func decodeHistory(
+        _ data: Data,
+        historyFile: LoggingHandoffHistoryFileV2? = nil
+    ) throws -> LoggingHandoffHistoryStoreV1 {
         let map = try exactMap(
             ProviderHandoffCanonicalCBOR.decode(data),
             keys: [
@@ -1145,24 +1368,60 @@ enum LoggingHandoffPayloadCodec {
         guard let formatVersion = UInt32(exactly: try unsigned(map["formatVersion"])) else {
             throw LoggingHandoffPayloadError.invalidPackage
         }
-        let value = try LoggingHandoffHistoryStoreV1(
-            storeID: text(map["storeID"]),
-            kind: kind,
-            disposition: disposition,
-            formatVersion: formatVersion,
-            rotationIndex: unsigned(map["rotationIndex"]),
-            compressed: bool(map["compressed"]),
-            terminalHistoryEpoch: unsigned(map["terminalHistoryEpoch"]),
-            maximumInternalSequence: unsigned(map["maximumInternalSequence"]),
-            sourceDeviceID: optionalUnsigned(map["sourceDeviceID"]),
-            sourceInode: optionalUnsigned(map["sourceInode"]),
-            bytes: encodedBytes,
-            providerExportReceipt: decodeHistoryHandoffExportReceipt(
-                map["providerExportReceipt"]
-            )
-        )
         let encodedByteLength = try unsigned(map["byteLength"])
         let encodedContentDigest = try optionalDigestText(map["contentDigestSHA256"])
+        let value: LoggingHandoffHistoryStoreV1
+        if let historyFile {
+            guard
+                encodedBytes == nil,
+                encodedByteLength == historyFile.byteLength,
+                encodedContentDigest == historyFile.contentDigestSHA256,
+                try optionalDigestText(map["providerExportDigestSHA256"])
+                    == nil,
+                try decodeHistoryHandoffExportReceipt(
+                    map["providerExportReceipt"]
+                ) == nil
+            else {
+                throw LoggingHandoffPayloadError.invalidHistory(
+                    try text(map["storeID"])
+                )
+            }
+            value = try LoggingHandoffHistoryStoreV1(
+                fileBackedStoreID: text(map["storeID"]),
+                kind: kind,
+                disposition: disposition,
+                formatVersion: formatVersion,
+                rotationIndex: unsigned(map["rotationIndex"]),
+                compressed: bool(map["compressed"]),
+                terminalHistoryEpoch: unsigned(map["terminalHistoryEpoch"]),
+                maximumInternalSequence: unsigned(
+                    map["maximumInternalSequence"]
+                ),
+                sourceDeviceID: optionalUnsigned(map["sourceDeviceID"]),
+                sourceInode: optionalUnsigned(map["sourceInode"]),
+                byteLength: historyFile.byteLength,
+                contentDigestSHA256: historyFile.contentDigestSHA256
+            )
+        } else {
+            value = try LoggingHandoffHistoryStoreV1(
+                storeID: text(map["storeID"]),
+                kind: kind,
+                disposition: disposition,
+                formatVersion: formatVersion,
+                rotationIndex: unsigned(map["rotationIndex"]),
+                compressed: bool(map["compressed"]),
+                terminalHistoryEpoch: unsigned(map["terminalHistoryEpoch"]),
+                maximumInternalSequence: unsigned(
+                    map["maximumInternalSequence"]
+                ),
+                sourceDeviceID: optionalUnsigned(map["sourceDeviceID"]),
+                sourceInode: optionalUnsigned(map["sourceInode"]),
+                bytes: encodedBytes,
+                providerExportReceipt: decodeHistoryHandoffExportReceipt(
+                    map["providerExportReceipt"]
+                )
+            )
+        }
         guard
             value.byteLength == encodedByteLength,
             value.contentDigestSHA256 == encodedContentDigest,

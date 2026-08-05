@@ -569,7 +569,6 @@ actor LoggingHandoffStagingController {
             case .importVerified:
                 guard
                     history.kind != .providerOwned,
-                    let bytes = history.bytes,
                     Self.historyKind(
                         history.kind,
                         matches: destination
@@ -585,10 +584,15 @@ actor LoggingHandoffStagingController {
                         .incompatibleHistory(entryID)
                 }
                 do {
-                    if let range = try Self.validateImportedHistory(
-                        history,
-                        bytes: bytes
-                    ) {
+                    let range = try payload.withHistoryBytes(
+                        entryID: entryID
+                    ) { bytes in
+                        try Self.validateImportedHistory(
+                            history,
+                            bytes: bytes
+                        )
+                    }
+                    if let range {
                         nativeSequenceRanges.append(
                             (
                                 history.rotationIndex,
