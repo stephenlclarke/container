@@ -65,6 +65,52 @@ private actor DockerImageResourceCacheFixture {
     }
 }
 
+private actor DockerImageMutationFixture {
+    private var pullRequest: DockerImagePullRequest?
+    private var tagName: String?
+    private var tagRequest: DockerImageTagRequest?
+    private var deleteName: String?
+    private var deleteRequest: DockerImageDeleteRequest?
+
+    func pull(_ request: DockerImagePullRequest) -> DockerImagePullResult {
+        pullRequest = request
+        return DockerImagePullResult(
+            displayReference: "alpine:3.20",
+            digest: "sha256:fixture",
+            upToDate: false
+        )
+    }
+
+    func tag(_ name: String, _ request: DockerImageTagRequest) throws {
+        tagName = name
+        tagRequest = request
+        if name == "missing:latest" {
+            throw ContainerizationError(.notFound, message: "fixture")
+        }
+    }
+
+    func delete(
+        _ name: String,
+        _ request: DockerImageDeleteRequest
+    ) -> [DockerImageDeleteResult] {
+        deleteName = name
+        deleteRequest = request
+        return [DockerImageDeleteResult(untagged: name)]
+    }
+
+    func capturedPullRequest() -> DockerImagePullRequest? {
+        pullRequest
+    }
+
+    func capturedTag() -> (String?, DockerImageTagRequest?) {
+        (tagName, tagRequest)
+    }
+
+    func capturedDelete() -> (String?, DockerImageDeleteRequest?) {
+        (deleteName, deleteRequest)
+    }
+}
+
 struct ContainerLogsTests {
     @Test func configuredUnreadableDriverUsesUnsupportedPublicError() {
         let error = ContainersService.logReadError(
@@ -1326,6 +1372,103 @@ struct ContainerLogsTests {
         await fixture.replaceImages([first, second, third])
         #expect(try await cache.currentResources().count == 3)
         #expect(await fixture.buildCount() == 5)
+    }
+
+    @Test func dockerImageMutationUsesInjectedNativeAuthorityAndMapsErrors() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-image-mutation-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let fixture = DockerImageMutationFixture()
+        let backend = ContainerDockerLoggingBackend(
+            containers: try service(
+                appRoot: tempURL,
+                logLabel: "container-engine-image-mutation-test"
+            ),
+            imagePullProvider: { await fixture.pull($0) },
+            imageTagProvider: { try await fixture.tag($0, $1) },
+            imageDeleteProvider: { await fixture.delete($0, $1) }
+        )
+        let pullRequest = DockerImagePullRequest(
+            fromImage: "docker.io/library/alpine",
+            tag: "3.20",
+            platform: "linux/arm64/v8",
+            registryAuth: "e30="
+        )
+        #expect(
+            try await backend.pullImage(request: pullRequest)
+                == DockerImagePullResult(
+                    displayReference: "alpine:3.20",
+                    digest: "sha256:fixture",
+                    upToDate: false
+                )
+        )
+        #expect(await fixture.capturedPullRequest() == pullRequest)
+
+        let tagRequest = DockerImageTagRequest(
+            repository: "fixture.local/alpine",
+            tag: "copy"
+        )
+        try await backend.tagImage(name: "alpine:3.20", request: tagRequest)
+        let capturedTag = await fixture.capturedTag()
+        #expect(capturedTag.0 == "alpine:3.20")
+        #expect(capturedTag.1 == tagRequest)
+
+        let deleteRequest = DockerImageDeleteRequest(force: true, prune: false)
+        #expect(
+            try await backend.deleteImage(
+                name: "fixture.local/alpine:copy",
+                request: deleteRequest
+            ) == [
+                DockerImageDeleteResult(
+                    untagged: "fixture.local/alpine:copy"
+                ),
+            ]
+        )
+        let capturedDelete = await fixture.capturedDelete()
+        #expect(capturedDelete.0 == "fixture.local/alpine:copy")
+        #expect(capturedDelete.1 == deleteRequest)
+
+        await #expect(
+            throws: DockerLoggingBackendError.imageNotFound("missing:latest")
+        ) {
+            try await backend.tagImage(
+                name: "missing:latest",
+                request: tagRequest
+            )
+        }
+    }
+
+    @Test func dockerImageMutationRejectsCredentialsAndRecognizesDigests() throws {
+        try ContainerDockerLoggingBackend.validatePublicRegistryAuth(nil)
+        try ContainerDockerLoggingBackend.validatePublicRegistryAuth("e30=")
+        let credentials = Data(
+            #"{"username":"fixture","password":"secret"}"#.utf8
+        ).base64EncodedString()
+        #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                "registry authentication is not implemented by the selected provider"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validatePublicRegistryAuth(credentials)
+        }
+        #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                "invalid X-Registry-Auth header"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validatePublicRegistryAuth("not-base64")
+        }
+        #expect(
+            ContainerDockerLoggingBackend.isDigestSelector(
+                "sha256:0123456789abcdef"
+            )
+        )
+        #expect(
+            ContainerDockerLoggingBackend.isDigestSelector("0123456789ab")
+        )
+        #expect(!ContainerDockerLoggingBackend.isDigestSelector("alpine:3.20"))
     }
 
     @Test func engineLoggingInspectionHidesJSONFilePathBeforeFirstStart() async throws {

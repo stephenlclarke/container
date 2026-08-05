@@ -252,6 +252,18 @@ extension APIServer {
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageCreate",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageTag",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageDelete",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerCreate",
                     status: .native
                 ),

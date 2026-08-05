@@ -131,6 +131,12 @@ public struct ContainerDockerLoggingBackend:
     let serverVersion: String
     let imageCountProvider: @Sendable () async throws -> Int
     let imageResourceProvider: @Sendable () async throws -> [ImageResource]
+    let imagePullProvider:
+        @Sendable (DockerImagePullRequest) async throws -> DockerImagePullResult
+    let imageTagProvider:
+        @Sendable (String, DockerImageTagRequest) async throws -> Void
+    let imageDeleteProvider:
+        @Sendable (String, DockerImageDeleteRequest) async throws -> [DockerImageDeleteResult]
 
     public init(
         containers: ContainersService,
@@ -138,7 +144,16 @@ public struct ContainerDockerLoggingBackend:
         serverVersion: String = "unknown",
         containerSystemConfig: ContainerSystemConfig = .init(),
         imageCountProvider: (@Sendable () async throws -> Int)? = nil,
-        imageResourceProvider: (@Sendable () async throws -> [ImageResource])? = nil
+        imageResourceProvider: (@Sendable () async throws -> [ImageResource])? = nil,
+        imagePullProvider: (
+            @Sendable (DockerImagePullRequest) async throws -> DockerImagePullResult
+        )? = nil,
+        imageTagProvider: (
+            @Sendable (String, DockerImageTagRequest) async throws -> Void
+        )? = nil,
+        imageDeleteProvider: (
+            @Sendable (String, DockerImageDeleteRequest) async throws -> [DockerImageDeleteResult]
+        )? = nil
     ) {
         let imageResourceCache = ContainerDockerImageResourceCache(
             containerSystemConfig: containerSystemConfig
@@ -150,6 +165,26 @@ public struct ContainerDockerLoggingBackend:
         self.engineIdentity = engineIdentity
         self.serverVersion = serverVersion
         self.imageResourceProvider = authoritativeImageResources
+        self.imagePullProvider = imagePullProvider ?? {
+            try await Self.pullImage(
+                request: $0,
+                containerSystemConfig: containerSystemConfig
+            )
+        }
+        self.imageTagProvider = imageTagProvider ?? {
+            try await Self.tagImage(
+                name: $0,
+                request: $1,
+                containerSystemConfig: containerSystemConfig
+            )
+        }
+        self.imageDeleteProvider = imageDeleteProvider ?? {
+            try await Self.deleteImage(
+                name: $0,
+                request: $1,
+                containerSystemConfig: containerSystemConfig
+            )
+        }
         self.imageCountProvider = imageCountProvider ?? {
             var count = 0
             for image in try await ClientImage.list() {
