@@ -4611,7 +4611,9 @@ extension ContainersService {
             }
             driver = resolved.driver
             options = resolvedOptions
-            if resolved.driver == "json-file" {
+            if resolved.driver == "json-file",
+                state.snapshot.startedDate != nil
+            {
                 let path = try Self.containerPath(
                     root: containerRoot,
                     id: containerID

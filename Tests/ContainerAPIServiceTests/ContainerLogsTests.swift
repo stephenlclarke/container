@@ -487,6 +487,13 @@ struct ContainerLogsTests {
             )
         )
         try store.close()
+        try bundle.setDurably(
+            lifecycleState: ContainerLifecycleStateV1(
+                startedDate: Date(
+                    timeIntervalSince1970: 1_767_323_045
+                )
+            )
+        )
 
         let containers = try service(
             appRoot: tempURL,
@@ -629,7 +636,7 @@ struct ContainerLogsTests {
             let inspectState = try #require(
                 inspectObject["State"] as? [String: Any]
             )
-            #expect(inspectState["Status"] as? String == "created")
+            #expect(inspectState["Status"] as? String == "exited")
             #expect(inspectState["Running"] as? Bool == false)
             #expect(inspectState["ExitCode"] as? Int == 0)
             let inspectConfig = try #require(
@@ -832,6 +839,44 @@ struct ContainerLogsTests {
             await provider.shutdown()
             throw error
         }
+    }
+
+    @Test func engineLoggingInspectionHidesJSONFilePathBeforeFirstStart() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-created-log-inspect-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let id = "engine-created-log-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(
+            path: containerRoot.appendingPathComponent(id)
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.path,
+            withIntermediateDirectories: true
+        )
+        for directory in [tempURL, containerRoot, bundle.path] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: directory.path
+            )
+        }
+        var configuration = testConfiguration(id: id)
+        configuration.logging = try version2JSONFileConfiguration()
+        try bundle.set(configuration: configuration)
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-created-log-inspect-test"
+        )
+        let inspection = try await containers.engineLoggingInspection(
+            containerID: id
+        )
+
+        #expect(inspection.driver == "json-file")
+        #expect(inspection.publicLogPath == nil)
     }
 
     @Test func engineAttachDoesNotStreamUnreadableFiniteHistory() {
