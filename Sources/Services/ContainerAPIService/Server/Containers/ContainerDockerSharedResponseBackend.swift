@@ -168,7 +168,10 @@ extension ContainerDockerLoggingBackend:
                 "Networks": listNetworks(snapshot),
             ],
             "Mounts": configuration.mounts.map(mountPointObject),
-            "Health": snapshot.health?.rawValue ?? "",
+            "Health": [
+                "Status": (snapshot.health ?? .none).rawValue,
+                "FailingStreak": 0,
+            ],
             "ImageManifestDescriptor": NSNull(),
         ]
         if includeSize {

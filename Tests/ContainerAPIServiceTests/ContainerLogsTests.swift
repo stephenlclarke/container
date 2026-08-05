@@ -1018,6 +1018,11 @@ struct ContainerLogsTests {
             objects().first { $0["Id"] as? String == "paused-five" }
         )
         #expect((pausedObject["Status"] as? String)?.hasSuffix("(Paused)") == true)
+        let pausedHealth = try #require(
+            pausedObject["Health"] as? [String: Any]
+        )
+        #expect(pausedHealth["Status"] as? String == "healthy")
+        #expect(pausedHealth["FailingStreak"] as? Int == 0)
         let deadObject = try #require(
             objects().first { $0["Id"] as? String == "dead-three" }
         )
