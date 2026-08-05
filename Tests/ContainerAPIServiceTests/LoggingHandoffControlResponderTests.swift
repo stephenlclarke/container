@@ -27,6 +27,8 @@ import Testing
 
 @testable import ContainerAPIService
 
+// Each case exercises the gateway-exclusive Keychain-backed handoff lifecycle.
+@Suite(.serialized)
 struct LoggingHandoffControlResponderTests {
     @Test
     func `gateway coordinator aborts and compensates staged logging with exact replay`() async throws {
