@@ -392,6 +392,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return fds
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -432,6 +434,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return fd
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -474,6 +478,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return try JSONDecoder().decode([ContainerLogRecord].self, from: data)
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -514,6 +520,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return fd
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,

@@ -1846,10 +1846,7 @@ public actor ContainersService {
             ]
             return handles
         } catch {
-            throw ContainerizationError(
-                .internalError,
-                message: "failed to open container logs: \(error)"
-            )
+            throw Self.logReadError(error, operation: "open container logs")
         }
     }
 
@@ -1917,10 +1914,7 @@ public actor ContainersService {
             }
             return try Self.followLogFile(for: bundle.containerLog, options: options)
         } catch {
-            throw ContainerizationError(
-                .internalError,
-                message: "failed to follow container logs: \(error)"
-            )
+            throw Self.logReadError(error, operation: "follow container logs")
         }
     }
 
@@ -1964,10 +1958,7 @@ public actor ContainersService {
             let data = try Self.logData(from: Self.logReplayURLs(for: bundle.containerLogRecords, includeRotated: replay.includeRotated))
             return try Self.filteredLogRecords(data, options: options)
         } catch {
-            throw ContainerizationError(
-                .internalError,
-                message: "failed to open container log records: \(error)"
-            )
+            throw Self.logReadError(error, operation: "open container log records")
         }
     }
 
@@ -2013,10 +2004,7 @@ public actor ContainersService {
             )
             return try Self.concatenatedFileHandle(for: urls)
         } catch {
-            throw ContainerizationError(
-                .internalError,
-                message: "failed to open container log record file: \(error)"
-            )
+            throw Self.logReadError(error, operation: "open container log record file")
         }
     }
 
@@ -2081,11 +2069,31 @@ public actor ContainersService {
                 isLive: { await self.isLiveForLogFollow(id: id) }
             )
         } catch {
-            throw ContainerizationError(
-                .internalError,
-                message: "failed to follow container log records: \(error)"
+            throw Self.logReadError(error, operation: "follow container log records")
+        }
+    }
+
+    /// Preserves the stable public category for a configured driver whose
+    /// history cannot be read, while retaining contextual failures for every
+    /// other log operation.
+    static func logReadError(_ error: any Error, operation: String) -> ContainerizationError {
+        if let readerError = error as? ContainerLogReaderError,
+            readerError == .configuredDriverDoesNotSupportReading
+        {
+            return ContainerizationError(
+                .unsupported,
+                message: "configured logging driver does not support reading"
             )
         }
+        if let containerError = error as? ContainerizationError,
+            containerError.code == .unsupported
+        {
+            return containerError
+        }
+        return ContainerizationError(
+            .internalError,
+            message: "failed to \(operation): \(error)"
+        )
     }
 
     static func logHandle(

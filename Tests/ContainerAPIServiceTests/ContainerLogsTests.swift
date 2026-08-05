@@ -22,6 +22,7 @@ import ContainerEngineWire
 import ContainerPersistence
 import ContainerResource
 import ContainerXPC
+import ContainerizationError
 import ContainerizationOCI
 import Darwin
 import Foundation
@@ -33,6 +34,28 @@ import Testing
 @testable import ContainerPlugin
 
 struct ContainerLogsTests {
+    @Test func configuredUnreadableDriverUsesUnsupportedPublicError() {
+        let error = ContainersService.logReadError(
+            ContainerLogReaderError.configuredDriverDoesNotSupportReading,
+            operation: "open container logs"
+        )
+
+        #expect(error.code == .unsupported)
+        #expect(error.message == "configured logging driver does not support reading")
+    }
+
+    @Test func otherLogReadFailuresRetainOperationContext() {
+        struct FixtureError: Error {}
+
+        let error = ContainersService.logReadError(
+            FixtureError(),
+            operation: "follow container logs"
+        )
+
+        #expect(error.code == .internalError)
+        #expect(error.message == "failed to follow container logs: FixtureError()")
+    }
+
     @Test func decodesAndFiltersTimestampedLogRecords() throws {
         let first = ContainerLogRecord(
             timestamp: date("2026-01-02T00:00:00Z"),
