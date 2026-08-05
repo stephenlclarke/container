@@ -24,6 +24,24 @@ import Testing
 @testable import ContainerCommands
 
 struct SystemStartTests {
+    @Test func initialFilesystemPullDoesNotParseSystemStartArguments() throws {
+        let reference =
+            "ghcr.io/stephenlclarke/containerization/vminit:"
+            + String(repeating: "a", count: 40)
+
+        let command = try Application.SystemStart.initialFilesystemPullCommand(
+            initImage: reference
+        )
+
+        #expect(command.reference == reference)
+        #expect(command.registry.scheme == "auto")
+        #expect(command.progressFlags.progress == .auto)
+        #expect(command.imageFetchFlags.maxConcurrentDownloads == 3)
+        #expect(command.arch == nil)
+        #expect(command.os == nil)
+        #expect(command.platform == nil)
+    }
+
     @Test func engineConfigurationUsesPrivateShortPublicSocket() {
         let configuration = ContainerEngineServiceConfiguration(
             appRoot: FilePath("/tmp/container-state"),

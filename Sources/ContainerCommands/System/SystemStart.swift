@@ -278,9 +278,16 @@ extension Application {
             }
         }
 
+        static func initialFilesystemPullCommand(
+            initImage: String
+        ) throws -> ImagePull {
+            try ImagePull(reference: initImage)
+        }
+
         private func installInitialFilesystem(initImage: String) async throws {
-            var pullCommand = try ImagePull.parse()
-            pullCommand.reference = initImage
+            let pullCommand = try Self.initialFilesystemPullCommand(
+                initImage: initImage
+            )
             log.info("Installing base container filesystem...")
             try await pullCommand.run()
         }
