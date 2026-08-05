@@ -907,6 +907,45 @@ struct ContainerLogsTests {
         #expect(wrapped.width == 1)
     }
 
+    @Test func engineAttachRejectsPausedAndRestartingBeforeReplay() throws {
+        #expect(
+            throws: DockerLoggingBackendError.conflict(
+                "container paused-container is paused, unpause the container before attach"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validateAttachState(
+                containerID: "paused-container",
+                status: .paused,
+                restarting: false
+            )
+        }
+
+        #expect(
+            throws: DockerLoggingBackendError.conflict(
+                "container restarting-container is restarting, wait until the container is running"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validateAttachState(
+                containerID: "restarting-container",
+                status: .stopped,
+                restarting: true
+            )
+        }
+
+        for status in [
+            RuntimeStatus.unknown,
+            .stopped,
+            .running,
+            .stopping,
+        ] {
+            try ContainerDockerLoggingBackend.validateAttachState(
+                containerID: "allowed-container",
+                status: status,
+                restarting: false
+            )
+        }
+    }
+
     @Test func engineActiveWireReaderPreservesExactRecordAndTerminalMode() async throws {
         let source = try ContainerLogReadRecordV1(
             stream: .stdout,

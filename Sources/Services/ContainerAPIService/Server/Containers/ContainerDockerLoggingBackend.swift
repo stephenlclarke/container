@@ -33,6 +33,7 @@ struct ContainerEngineLoggingInspection: Sendable {
 struct ContainerEngineAttachmentInspection: Sendable {
     let snapshot: ContainerSnapshot
     let terminal: Bool
+    let restarting: Bool
 }
 
 struct ContainerEngineInspectBase: Sendable {
@@ -206,6 +207,11 @@ public struct ContainerDockerLoggingBackend:
             let inspection = try await containers.engineAttachmentInspection(
                 containerID: containerID
             )
+            try Self.validateAttachState(
+                containerID: containerID,
+                status: inspection.snapshot.status,
+                restarting: inspection.restarting
+            )
             let outputRequested = request.stdout || request.stderr
             let detachKeys =
                 request.stdin
@@ -323,6 +329,26 @@ public struct ContainerDockerLoggingBackend:
             width: UInt16(truncatingIfNeeded: width),
             height: UInt16(truncatingIfNeeded: height)
         )
+    }
+
+    static func validateAttachState(
+        containerID: String,
+        status: RuntimeStatus,
+        restarting: Bool
+    ) throws {
+        // Moby rejects restarting and paused containers before opening a log
+        // reader or runtime pipe. It permits stopped and stopping containers
+        // so their retained output can still be replayed.
+        if restarting {
+            throw DockerLoggingBackendError.conflict(
+                "container \(containerID) is restarting, wait until the container is running"
+            )
+        }
+        guard status != .paused else {
+            throw DockerLoggingBackendError.conflict(
+                "container \(containerID) is paused, unpause the container before attach"
+            )
+        }
     }
 
     private func attachRuntime(

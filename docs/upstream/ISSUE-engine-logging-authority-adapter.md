@@ -66,6 +66,13 @@ or nanosecond timestamp presentation.
   re-attach session.
 - [x] Attach session setup, EOF, input close, cancellation, reader failure, and
   failed runtime attachment close every local handle and reader exactly once.
+- [x] Attach rejects paused containers and containers waiting in restart-policy
+  backoff before opening either replay or live output, with Docker's exact
+  conflict text; stopped and stopping containers remain attachable for retained
+  replay.
+- [x] An attach-client write failure cannot close the persistent logging sink,
+  and an idempotent shutdown receipt from an older sandbox generation cannot
+  stop or mutate a live workload in a newer generation.
 - [x] Canonical `attach` and `detach` events use the existing service event
   broadcaster and immutable authority snapshot.
 - [x] WebSocket attach uses the same authority-owned canonical session as
@@ -105,7 +112,7 @@ or nanosecond timestamp presentation.
 
 ## Remaining Engine logging work
 
-- Certify real-runtime TTY resize and detach/re-attach behavior. Attach wait
+- Certify the remaining external-client attach and shutdown matrix. Attach wait
   currently reports the runtime process exit where it is needed to keep an
   input-only session alive; the Docker hijack protocol itself does not expose
   that code to the HTTP client.
@@ -120,8 +127,9 @@ or nanosecond timestamp presentation.
   installation and Docker CLI info negotiation are now live-proven locally.
 - Publish or land the matched Containerization sandbox/workload APIs. The
   canonical public `77f06d4` pin cannot compile this existing branch; the
-  signed local `864455b` dependency passes the complete matched suite and must
-  remain local until the coordinated Apple-bound wave is ready.
+  signed local `38d9c69` dependency passes the focused attach-state slice and
+  includes the earlier `864455b` full-suite head. It must remain local until
+  the coordinated Apple-bound wave is ready.
 
 ## Apple-shaped boundary
 
@@ -147,6 +155,11 @@ only after the complete parity programme is finished.
   service packaging and lifecycle, side-effect-free info discovery, exact
   provider provenance, focused regressions, matched full suite, and isolated
   Docker CLI validation.
-- This slice — keep finite unreadable-driver attach requests finite
-  while retaining live exact-process output and matching Docker's TTY stream
-  selection and resize domain.
+- `3f4d09988c421d8c86e0782a439957904c73aa76` — signed finite
+  unreadable-driver attach behavior without accidental live attachment.
+- `19fee25d89084eb703d235d380cb1ec77e011470` — signed Docker TTY stream
+  selection, full resize domain and canonical resize event, plus split detach
+  and independent re-attach behavior.
+- Current attach-state slice — reject paused and restart-backoff attaches
+  before replay/runtime side effects while preserving terminal replay and
+  generation-fenced shutdown behavior.

@@ -77,6 +77,14 @@ and file handles exactly once across success, failure, disconnect, and runtime
 attachment failure, and publishes ordered `attach`/`detach` records through
 the canonical service event broadcaster.
 
+Before opening the canonical reader or exact-process pipes, the backend rejects
+paused containers and containers waiting in restart-policy backoff with Moby's
+exact conflicts. Stopped and stopping containers remain eligible for retained
+replay. Closing one attach session closes only that session's duplicated pipe
+ends: the runtime's persistent logging destination remains active. Sandbox
+shutdown is independently generation-fenced, so replaying an older shutdown
+receipt cannot stop a newer live logging generation.
+
 The gateway WebSocket transport consumes that same
 `ContainerDockerAttachSession`; it does not create a second reader or runtime
 attachment. `ContainerDockerLoggingBackend` also implements the narrow
@@ -185,10 +193,17 @@ Current development MacBook Pro evidence:
 - focused finite-history, TTY selection, resize-domain/event, and split
   detach/re-attach slice: 5 tests in 2 suites passed under warnings-as-errors
   against local Containerization `38d9c695` and Engine API `5e52a0f4`;
+- focused attach-state/shutdown slice: 3 tests in 3 suites passed under
+  warnings-as-errors, covering paused and restart-backoff conflict selection,
+  persistent logging after client disconnect, and stale-generation shutdown
+  fencing;
 - pinned Moby 29.2.1 source `6bc6209b` confirms 32-bit resize parsing and exact
   requested stream selection; a same-MBP Docker 29.5.2 black-box check returned
   TTY bytes for stdout/both but none for stderr-only, accepted `UInt32.max`,
   and rejected `UInt32.max + 1`;
+- same-MBP Docker 29.5.2 black-box attaches returned 200 plus retained output
+  for a stopped container and exact 409 conflicts for paused and restart-policy
+  backoff containers;
 - complete matched Container validation: 1,835 Swift Testing tests in 213
   suites plus 94 XCTest tests passed with zero failures;
 - isolated signed-package lifecycle: `system start`, JSON `system status`,
@@ -234,6 +249,9 @@ Current development MacBook Pro evidence:
   lifecycle-event semantics use one authority path.
 - [x] WebSocket attach reuses the canonical session and resize maps to the
   exact init process with Docker-compatible range, event, and failure behavior.
+- [x] Paused and restart-backoff attach failures happen before replay/live side
+  effects; disconnect and stale shutdown cannot terminate persistent/newer
+  logging generations.
 - [x] Compose whole `/info` and inspect responses before advertising them.
 - [x] Install and supervise the public gateway.
 - [ ] Complete the remaining external-client route/certification matrix and

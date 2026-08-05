@@ -4466,7 +4466,9 @@ extension ContainersService {
         let snapshot = try _getContainerState(id: containerID).snapshot
         return ContainerEngineAttachmentInspection(
             snapshot: snapshot,
-            terminal: snapshot.configuration.initProcess.terminal
+            terminal: snapshot.configuration.initProcess.terminal,
+            restarting: snapshot.status != .running
+                && restartTasks[containerID] != nil
         )
     }
 
