@@ -17,8 +17,13 @@ operations directly. The focused transaction proves:
 - immutable object streaming between distinct source and destination stores;
 - destination stage and exact imported receipt binding;
 - prepared-root recording, signed commit, and reconciliation entry;
-- logging promotion and signed-Complete activation; and
-- local coordinator replay plus provider-effect idempotency.
+- logging promotion and signed-Complete activation;
+- imported `json-file` history rematerialization through the production bundle
+  publisher, public read-back, cursor adoption, and a greater-sequence writer;
+- coordinator-driven staged abort, logging compensation, and protected-object
+  cleanup; and
+- exact replay through a newly constructed coordinator over the same durable
+  gateway store plus provider-effect idempotency.
 
 The non-logging controller slots use deterministic empty test responders. The
 logging slot uses `LoggingHandoffSourceControlResponder`,
@@ -43,6 +48,7 @@ Run only the focused slice while the matched Engine API is editable:
 
 ```console
 swift test --filter 'gateway coordinator transfers'
+swift test --filter 'gateway coordinator aborts'
 swift test --skip-build --filter LoggingHandoffControlResponderTests
 swift-format lint --strict \
   Tests/ContainerAPIServiceTests/LoggingHandoffControlResponderTests.swift
@@ -52,21 +58,25 @@ git diff --check
 Current MacBook Pro evidence:
 
 - gateway cutover: 1/1 passed;
-- complete responder slice: 6/6 passed in parallel;
+- gateway abort/restart replay: 1/1 passed;
+- complete responder slice: 7/7 passed in parallel;
 - the gateway streamed objects from a distinct source store, recorded two
   destination-key proofs, obtained one source signature, staged and promoted
   logging once, and replayed activation without duplicating the promoted or
-  activated effect; and
+  activated effect;
+- Complete rematerialized the imported Docker JSON record on the public bundle
+  path, the production reader returned it, the adopted cursor reserved epoch 8
+  from sequence 42, and a production writer appended a later readable record;
+- a staged remote-provider transaction reached signed Aborted, compensated
+  logging twice with equal terminal results across coordinator reconstruction,
+  and left zero protected staging objects; and
 - SwiftPM editable state was removed after validation.
 
 ## Remaining closure
 
-This closes the coordinator-driven success transaction, not the whole work
-package. Before claiming logging handoff parity, retain explicit evidence for:
+This closes the coordinator-driven success, public-history/new-writer, and
+staged-abort/restart-replay transactions, not the whole work package. Before
+claiming logging handoff parity, retain explicit evidence for:
 
-- rematerialized public history reads followed by a greater-sequence writer
-  after the imported epoch;
-- coordinator-driven abort and compensation after staged transfer, including
-  crash replay;
-- source histories above the current 64 MiB capture bound; and
+- source histories above the current 64 MiB capture bound;
 - synchronized release, security, failure, and performance gates.

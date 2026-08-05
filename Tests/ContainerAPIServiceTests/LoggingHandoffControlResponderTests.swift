@@ -17,6 +17,7 @@
 import ContainerEngineProviderSession
 import ContainerEngineRuntimeSPI
 import ContainerEngineService
+import ContainerLoggingStorage
 import ContainerPersistence
 import ContainerResource
 import Darwin
@@ -28,9 +29,29 @@ import Testing
 
 struct LoggingHandoffControlResponderTests {
     @Test
-    func `gateway coordinator transfers, promotes, and activates logging exactly once`() async throws {
+    func `gateway coordinator aborts and compensates staged logging with exact replay`() async throws {
         let fixture = try LoggingPartStageFixture(
             preloadDestinationObject: false
+        )
+        defer { fixture.cleanup() }
+
+        let evidence = try await fixture.gatewayAbort()
+
+        #expect(
+            evidence.terminal.gatewayState.transactions[0].token.phase
+                == .aborted
+        )
+        #expect(evidence.terminal == evidence.replayedTerminal)
+        #expect(evidence.counts.compensate == 2)
+        #expect(evidence.loggingStagingState == .compensated)
+        #expect(try fixture.protectedObjectCount() == 0)
+    }
+
+    @Test
+    func `gateway coordinator transfers, promotes, and activates logging exactly once`() async throws {
+        let fixture = try LoggingPartStageFixture(
+            preloadDestinationObject: false,
+            gatewayHistory: true
         )
         defer { fixture.cleanup() }
 
@@ -49,6 +70,19 @@ struct LoggingHandoffControlResponderTests {
         #expect(evidence.counts.stage == 1)
         #expect(evidence.counts.promote == 1)
         #expect(evidence.counts.activate == 2)
+        #expect(
+            evidence.publicHistory.importedPayloads
+                == [Data("before-cutover\n".utf8)]
+        )
+        #expect(
+            evidence.publicHistory.payloadsAfterWriter
+                == [
+                    Data("before-cutover\n".utf8),
+                    Data("after-cutover\n".utf8),
+                ]
+        )
+        #expect(evidence.publicHistory.writerReservation.historyEpoch == 8)
+        #expect(evidence.publicHistory.writerReservation.lowerBound == 42)
         #expect(await fixture.promotedEffectCount() == 1)
         #expect(await fixture.activatedEffectCount() == 1)
     }
@@ -312,6 +346,29 @@ private struct LoggingGatewayCutoverEvidence: Sendable {
     let replayedTerminal: ProviderHandoffGatewayTerminalResultV1
     let destinationObject: ProviderHandoffBundleObjectRecordV1
     let counts: LoggingGatewayTransport.Counts
+    let publicHistory: LoggingGatewayPublicHistoryEvidence
+}
+
+private struct LoggingGatewayAbortEvidence: Sendable {
+    let terminal: ProviderHandoffGatewayTerminalResultV1
+    let replayedTerminal: ProviderHandoffGatewayTerminalResultV1
+    let counts: LoggingGatewayTransport.Counts
+    let loggingStagingState: ProviderHandoffPartStagingStateV1
+}
+
+private struct LoggingGatewayStagedContext: Sendable {
+    let coordinator: ProviderHandoffGatewayCoordinator
+    let destinationEndpoint: ProviderHandoffGatewayProviderEndpointV1
+    let transport: LoggingGatewayTransport
+    let token: ProviderHandoffTokenV1
+    let contribution: ProviderHandoffSourceContributionV1
+    let staged: ProviderHandoffGatewayStageResultV1
+}
+
+private struct LoggingGatewayPublicHistoryEvidence: Sendable {
+    let importedPayloads: [Data]
+    let payloadsAfterWriter: [Data]
+    let writerReservation: ContainerLogSequenceReservationV1
 }
 
 private struct LoggingGatewayCommit: Sendable {
@@ -324,6 +381,7 @@ private actor LoggingGatewayTransport:
 {
     struct Counts: Equatable, Sendable {
         var activate = 0
+        var compensate = 0
         var destinationPossession = 0
         var objectRead = 0
         var promote = 0
@@ -389,6 +447,14 @@ private actor LoggingGatewayTransport:
                 return try Self.activate(request, value: value)
             }
             operationCounts.activate += 1
+        case .partCompensate:
+            let value =
+                try ProviderHandoffPartControlCodec
+                .decodeCompensateRequest(body)
+            if value.stage.partKind != .logging {
+                return try Self.compensate(request, value: value)
+            }
+            operationCounts.compensate += 1
         case .partExport:
             operationCounts.sourceExport += 1
         case .partPromote:
@@ -410,7 +476,7 @@ private actor LoggingGatewayTransport:
         case .sourceSignManifest:
             operationCounts.sourceSign += 1
         case .destinationKeySnapshot, .objectAppend, .objectDeclare,
-            .objectVerify, .partCompensate, .rootApply, .rootPrepare,
+            .objectVerify, .rootApply, .rootPrepare,
             .rootRelease, .rootSnapshot:
             break
         }
@@ -537,6 +603,27 @@ private actor LoggingGatewayTransport:
         )
     }
 
+    private static func compensate(
+        _ request: ContainerEngineProviderHandoffControlRequestV1,
+        value: ProviderHandoffPartCompensateRequestV1
+    ) throws -> ContainerEngineProviderHandoffControlResultV1 {
+        try result(
+            requestID: request.requestID,
+            body: ProviderHandoffPartControlCodec.encodeOperationReceipt(
+                ProviderHandoffPartOperationReceiptV1(
+                    operation: .compensate,
+                    partKind: value.stage.partKind,
+                    tokenID: value.stage.manifest.tokenID,
+                    manifestID: value.stage.manifest.manifestID,
+                    evidenceDigestSHA256:
+                        value.terminalOutcome.outcomeDigestSHA256
+                )
+            ),
+            mediaType:
+                ProviderHandoffPartControlCodec.operationReceiptMediaType
+        )
+    }
+
     private static func result(
         requestID: String,
         body: Data,
@@ -602,7 +689,10 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
     private let validatedManifest: ProviderHandoffValidatedManifestV1
     private let validatedTrustRegistry: ProviderHandoffValidatedTrustRegistryV1
 
-    init(preloadDestinationObject: Bool = true) throws {
+    init(
+        preloadDestinationObject: Bool = true,
+        gatewayHistory: Bool = false
+    ) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "logging-handoff-control-\(UUID().uuidString.lowercased())",
             isDirectory: true
@@ -698,8 +788,20 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             destinationIdentity: destinationIdentity,
             possessionStore: proofStore
         )
-        let driver = try Self.remoteDescriptor()
-        exportContainer = try Self.exportContainer(driver: driver)
+        let driver: LogDriverDescriptor
+        if gatewayHistory {
+            driver = BuiltinLogDriverDescriptors.jsonFile
+        } else {
+            driver = try Self.remoteDescriptor()
+        }
+        let catalogDescriptors =
+            gatewayHistory
+            ? BuiltinLogDriverDescriptors.current.descriptors
+            : BuiltinLogDriverDescriptors.current.descriptors + [driver]
+        exportContainer = try Self.exportContainer(
+            driver: driver,
+            includeHistory: gatewayHistory
+        )
         let sourceLineageKey = Data(repeating: 0x41, count: 32)
         let destinationPayloadKey = try destinationIdentity.trustKey(
             for: .destinationPayloadEncryption
@@ -953,7 +1055,12 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                 )
             )
         )
-        promoter = LoggingPartControlPromoter()
+        promoter = try LoggingPartControlPromoter(
+            root: root.appendingPathComponent(
+                "public-containers",
+                isDirectory: true
+            )
+        )
         let destination = try LoggingHandoffDestinationReconciler(
             rootURL: root.appendingPathComponent(
                 "promotions",
@@ -972,8 +1079,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             stagingContext: {
                 (
                     catalog: try LogDriverCatalog(
-                        descriptors: BuiltinLogDriverDescriptors.current
-                            .descriptors + [driver]
+                        descriptors: catalogDescriptors
                     ),
                     occupiedContainerIDs: []
                 )
@@ -1148,7 +1254,9 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
         )
     }
 
-    func gatewayCutover() async throws -> LoggingGatewayCutoverEvidence {
+    private func prepareGatewayStage() async throws
+        -> LoggingGatewayStagedContext
+    {
         let sourceEndpoint = ProviderHandoffGatewayProviderEndpointV1(
             socketPath: "source",
             fingerprint: sourceFingerprint
@@ -1345,6 +1453,24 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             throw ProviderHandoffGatewayCoordinatorError
                 .activeTransactionMismatch
         }
+        return LoggingGatewayStagedContext(
+            coordinator: coordinator,
+            destinationEndpoint: destinationEndpoint,
+            transport: transport,
+            token: token,
+            contribution: contribution,
+            staged: staged
+        )
+    }
+
+    func gatewayCutover() async throws -> LoggingGatewayCutoverEvidence {
+        let prepared = try await prepareGatewayStage()
+        let coordinator = prepared.coordinator
+        let destinationEndpoint = prepared.destinationEndpoint
+        let transport = prepared.transport
+        let token = prepared.token
+        let contribution = prepared.contribution
+        let staged = prepared.staged
         let commit = try gatewayCommit(state: staged.gatewayState)
         for prepare in commit.prepares {
             _ = try await coordinator.recordPreparedRoot(prepare)
@@ -1381,13 +1507,75 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             outcome,
             destination: destinationEndpoint
         )
+        let publicHistory = try await promoter.provePublicHistoryAndWriter(
+            containerID: exportContainer.containerID
+        )
         return LoggingGatewayCutoverEvidence(
             terminal: terminal,
             replayedTerminal: replayedTerminal,
             destinationObject: try destinationObjectStore.load(
                 bundleObjectID: contribution.part.payload.bundleObjectID
             ),
-            counts: await transport.counts()
+            counts: await transport.counts(),
+            publicHistory: publicHistory
+        )
+    }
+
+    func gatewayAbort() async throws -> LoggingGatewayAbortEvidence {
+        let prepared = try await prepareGatewayStage()
+        let outcome = try abortOutcome(state: prepared.staged.gatewayState)
+        let terminal = try await prepared.coordinator.abortAndCompensate(
+            outcome,
+            destination: prepared.destinationEndpoint
+        )
+        let restartedCoordinator = restartedGatewayCoordinator(
+            transport: prepared.transport
+        )
+        let replayedTerminal =
+            try await restartedCoordinator.abortAndCompensate(
+                outcome,
+                destination: prepared.destinationEndpoint
+            )
+        return LoggingGatewayAbortEvidence(
+            terminal: terminal,
+            replayedTerminal: replayedTerminal,
+            counts: await prepared.transport.counts(),
+            loggingStagingState: try commonStore.load(
+                tokenID: Self.tokenID,
+                manifestID: Self.manifestID,
+                partKind: .logging
+            ).state
+        )
+    }
+
+    private func restartedGatewayCoordinator(
+        transport: LoggingGatewayTransport
+    ) -> ProviderHandoffGatewayCoordinator {
+        ProviderHandoffGatewayCoordinator(
+            store: ProviderHandoffGatewayStore(
+                root: root.appendingPathComponent(
+                    "gateway",
+                    isDirectory: true
+                )
+            ),
+            bootstrap: gatewayIdentity.bootstrap,
+            manifestAuthority: ProviderHandoffGatewayManifestAuthorityV1(
+                gatewayIdentity: gatewayIdentity,
+                trustRegistryStore: trustRegistryStore,
+                possessionProofStore: ProviderHandoffPossessionProofStore(
+                    root: root.appendingPathComponent(
+                        "gateway-proofs",
+                        isDirectory: true
+                    )
+                ),
+                transactionSecretStore:
+                    ProviderHandoffGatewayTransactionSecretStore(
+                        service: keychainService,
+                        accountPrefix: "gateway-secret"
+                    ),
+                nowUnixSeconds: { Self.useTime }
+            ),
+            transport: transport
         )
     }
 
@@ -1547,6 +1735,48 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             phase: .complete,
             roots: roots,
             outcomeDigestSHA256: Self.digest("pending-complete"),
+            coordinatorSignature: Self.placeholderSignature(
+                purpose: .coordinatorTerminalOutcomeSigning,
+                role: .gatewayCoordinator,
+                provider: nil,
+                root: nil
+            )
+        )
+        outcome.outcomeDigestSHA256 =
+            try ProviderHandoffProjections.terminalOutcomeDigest(outcome)
+        outcome.coordinatorSignature = try gatewayIdentity.sign(
+            projectionDigestSHA256: outcome.outcomeDigestSHA256,
+            purpose: .coordinatorTerminalOutcomeSigning,
+            trustRegistryRevision: Self.trustRevision
+        )
+        return try ProviderHandoffRecordValidator.validateTerminalOutcome(
+            outcome,
+            trustRegistry: validatedTrustRegistry,
+            atUnixSeconds: Self.useTime
+        )
+    }
+
+    private func abortOutcome(
+        state: ProviderHandoffGatewayStateV1
+    ) throws -> ProviderHandoffValidatedTerminalOutcomeV1 {
+        let transaction = try #require(state.transactions.first)
+        let boundManifest = try #require(transaction.manifest)
+        let roots = transaction.token.preCommitRootExpectations.map {
+            ProviderHandoffTerminalRootV1(
+                role: $0.role,
+                stateRootUUID: $0.stateRootUUID,
+                terminalHeader: $0.abortHeader,
+                terminalHeaderDigestSHA256: $0.abortHeaderDigestSHA256,
+                terminalRevisionVector: $0.abortRevisionVector
+            )
+        }
+        var outcome = ProviderHandoffTerminalOutcomeV1(
+            tokenID: transaction.token.tokenID,
+            manifestID: boundManifest.manifestID,
+            manifestDigest: boundManifest.manifestDigest,
+            phase: .aborted,
+            roots: roots,
+            outcomeDigestSHA256: Self.digest("pending-gateway-abort"),
             coordinatorSignature: Self.placeholderSignature(
                 purpose: .coordinatorTerminalOutcomeSigning,
                 role: .gatewayCoordinator,
@@ -2083,8 +2313,48 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
     }
 
     private static func exportContainer(
-        driver: LogDriverDescriptor
+        driver: LogDriverDescriptor,
+        includeHistory: Bool
     ) throws -> LoggingHandoffExportContainerV1 {
+        if includeHistory {
+            let history = try LoggingHandoffHistoryStoreV1(
+                storeID: "json-file:0",
+                kind: .dockerJSONFile,
+                disposition: .importVerified,
+                formatVersion: 1,
+                rotationIndex: 0,
+                terminalHistoryEpoch: 7,
+                maximumInternalSequence: 41,
+                sourceDeviceID: nil,
+                sourceInode: nil,
+                bytes: try jsonHistoryBytes()
+            )
+            let resolved = try ResolvedContainerLogConfiguration(
+                leaseGeneration: 41,
+                driver: driver.driver,
+                safeOptions: [:],
+                protectedOptionNames: [],
+                protectedOptionReference: nil,
+                delivery: LogDeliveryConfiguration(),
+                readPolicy: LogReadPolicy(source: .direct),
+                providerIdentity: driver.providerIdentity,
+                providerGenerationAtResolution: driver.providerGeneration,
+                contractDigest: driver.optionContractDigest
+            )
+            return try LoggingHandoffExportContainerV1(
+                containerID: "container-1",
+                configuration: ContainerLogConfiguration(
+                    requested: ContainerLogRequest(driver: driver.driver),
+                    resolved: resolved
+                ),
+                protectedOptions: [:],
+                historyStores: [history],
+                lifecycleSnapshot:
+                    ContainerLogLifecycleLedgerSnapshotV1(
+                        owningControllerID: "logging-controller"
+                    )
+            )
+        }
         let resolved = try ResolvedContainerLogConfiguration(
             leaseGeneration: 41,
             driver: driver.driver,
@@ -2125,6 +2395,46 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                 owningControllerID: "logging-controller"
             )
         )
+    }
+
+    private static func jsonHistoryBytes() throws -> Data {
+        let root = FileManager.default.temporaryDirectory
+            .resolvingSymlinksInPath()
+            .appendingPathComponent(
+                "logging-handoff-json-source-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try DockerJSONFileLogStore(
+            directoryURL: root.appendingPathComponent(
+                "json-file",
+                isDirectory: true
+            ),
+            activeFileName: ContainerResource.Bundle.jsonFileLogName
+        )
+        try store.write(
+            ContainerLogRecordV2(
+                stream: .stdout,
+                observation: ContainerLogObservation(
+                    wallClock: try ContainerLogTimestamp(
+                        secondsSinceUnixEpoch: Int64(Self.useTime - 1),
+                        nanoseconds: 0
+                    ),
+                    monotonicInstant: ContinuousClock().now
+                ),
+                payload: Data("before-cutover".utf8),
+                partial: nil,
+                sequence: 41,
+                processGeneration: 9
+            )
+        )
+        try store.close()
+        return try Data(contentsOf: store.logURL)
     }
 
     private static func remoteDescriptor() throws -> LogDriverDescriptor {
@@ -2261,18 +2571,60 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
 }
 
 private actor LoggingPartControlPromoter: LoggingHandoffContainerPromoting {
+    private let root: URL
     private var promoted = Set<String>()
     private var activated = Set<String>()
+    private var containers: [String: LoggingHandoffStagedContainerV1] = [:]
+
+    init(root: URL) throws {
+        self.root = root
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+    }
 
     func promoteContainerLogging(
         container: LoggingHandoffStagedContainerV1,
-        history _: [LoggingHandoffPromotedHistorySegmentV1],
+        history: [LoggingHandoffPromotedHistorySegmentV1],
         authorization: LoggingHandoffPromotionAuthorizationV1
     ) async throws {
-        promoted.insert(
-            "\(authorization.tokenID):\(authorization.manifestID):"
-                + container.containerID
+        let bundleURL = root.appendingPathComponent(
+            container.containerID,
+            isDirectory: true
         )
+        if !FileManager.default.fileExists(atPath: bundleURL.path) {
+            try FileManager.default.createDirectory(
+                at: bundleURL,
+                withIntermediateDirectories: false,
+                attributes: [
+                    .posixPermissions: NSNumber(value: Int16(0o700))
+                ]
+            )
+        }
+        let bundle = ContainerResource.Bundle(path: bundleURL)
+        if !history.isEmpty {
+            try LoggingHandoffBundleHistoryPublisher.publish(
+                bundle: bundle,
+                segments: history,
+                transactionID:
+                    "\(authorization.tokenID):\(authorization.manifestID):\(container.containerID)"
+            )
+            if let terminalEpoch = history.map(\.terminalHistoryEpoch).max(),
+                let maximumSequence = history.map(\.maximumInternalSequence)
+                    .max()
+            {
+                try ContainerLogProcessGenerationStore(
+                    directoryURL: bundle.containerLoggingV2
+                ).adoptHistoryCursor(
+                    terminalHistoryEpoch: terminalEpoch,
+                    maximumInternalSequence: maximumSequence
+                )
+            }
+        }
+        containers[container.containerID] = container
+        promoted.insert(key(authorization, containerID: container.containerID))
     }
 
     func activateContainerLogging(
@@ -2280,13 +2632,86 @@ private actor LoggingPartControlPromoter: LoggingHandoffContainerPromoting {
         promotionReceipt _: LoggingHandoffControllerPromotionReceiptV1,
         authorization: LoggingHandoffActivationAuthorizationV1
     ) async throws {
-        activated.insert(
-            "\(authorization.tokenID):\(authorization.manifestID):"
-                + container.containerID
+        activated.insert(key(authorization, containerID: container.containerID))
+    }
+
+    func provePublicHistoryAndWriter(
+        containerID: String
+    ) throws -> LoggingGatewayPublicHistoryEvidence {
+        guard
+            activated.contains(where: { $0.hasSuffix(":\(containerID)") }),
+            let container = containers[containerID],
+            container.configuration.resolved?.driver == "json-file"
+        else {
+            throw ProviderHandoffGatewayCoordinatorError
+                .activeTransactionMismatch
+        }
+        let bundle = ContainerResource.Bundle(
+            path: root.appendingPathComponent(containerID, isDirectory: true)
+        )
+        let imported = try readPayloads(bundle: bundle)
+        let cursor = try ContainerLogProcessGenerationStore(
+            directoryURL: bundle.containerLoggingV2
+        )
+        let reservation = try cursor.reserveSequenceBlock(requestedCount: 1)
+        let writer = try DockerJSONFileLogStore(
+            directoryURL: bundle.containerJSONFileLogDirectory,
+            activeFileName: ContainerResource.Bundle.jsonFileLogName
+        )
+        try writer.write(
+            ContainerLogRecordV2(
+                stream: .stdout,
+                observation: ContainerLogObservation(
+                    wallClock: try ContainerLogTimestamp(
+                        secondsSinceUnixEpoch: 1_800_000_001,
+                        nanoseconds: 0
+                    ),
+                    monotonicInstant: ContinuousClock().now
+                ),
+                payload: Data("after-cutover".utf8),
+                partial: nil,
+                sequence: reservation.lowerBound,
+                processGeneration: 10
+            )
+        )
+        try writer.close()
+        return LoggingGatewayPublicHistoryEvidence(
+            importedPayloads: imported,
+            payloadsAfterWriter: try readPayloads(bundle: bundle),
+            writerReservation: reservation
         )
     }
 
     func promotedEffectCount() -> Int { promoted.count }
 
     func activatedEffectCount() -> Int { activated.count }
+
+    private func key(
+        _ authorization: LoggingHandoffPromotionAuthorizationV1,
+        containerID: String
+    ) -> String {
+        "\(authorization.tokenID):\(authorization.manifestID):\(containerID)"
+    }
+
+    private func key(
+        _ authorization: LoggingHandoffActivationAuthorizationV1,
+        containerID: String
+    ) -> String {
+        "\(authorization.tokenID):\(authorization.manifestID):\(containerID)"
+    }
+
+    private func readPayloads(
+        bundle: ContainerResource.Bundle
+    ) throws -> [Data] {
+        let result = try DockerJSONFileLogReader(
+            directoryURL: bundle.containerJSONFileLogDirectory,
+            activeFileName: ContainerResource.Bundle.jsonFileLogName,
+            maximumFileCount: 5
+        ).read(DockerJSONFileLogReadRequest())
+        guard result.issues.isEmpty else {
+            throw ProviderHandoffGatewayCoordinatorError
+                .activeTransactionMismatch
+        }
+        return result.records.map(\.log)
+    }
 }
