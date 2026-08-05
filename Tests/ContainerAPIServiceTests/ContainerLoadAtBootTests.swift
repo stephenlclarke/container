@@ -25,6 +25,68 @@ import Testing
 
 struct ContainerLoadAtBootTests {
     @Test
+    func dockerLifecycleStateSurvivesAuthorityRestart() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "previously-run"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        let started = Date(timeIntervalSince1970: 1_234)
+        let exited = Date(timeIntervalSince1970: 1_250)
+        try bundle.setDurably(
+            lifecycleState: ContainerLifecycleStateV1(
+                startedDate: started,
+                exitCode: 17,
+                exitedDate: exited
+            )
+        )
+
+        let state = try #require(
+            ContainersService.loadAtBoot(
+                root: fixture.containers,
+                loader: fixture.loader,
+                log: fixture.log
+            )[id]
+        )
+        #expect(state.snapshot.status == .stopped)
+        #expect(state.snapshot.startedDate == started)
+        #expect(state.snapshot.exitCode == 17)
+        #expect(state.snapshot.exitedDate == exited)
+    }
+
+    @Test
+    func corruptLifecycleStateLeavesBundleOnDisk() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "corrupt-lifecycle"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        try Data("{".utf8).write(
+            to: bundle.filePath(for: ContainerResource.Bundle.lifecycleStateFilename)
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        #expect(states[id] == nil)
+        #expect(FileManager.default.fileExists(atPath: bundlePath.path))
+    }
+
+    @Test
     func malformedConfigurationFilesRemainOnDisk() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -95,20 +157,59 @@ private struct Fixture {
     let loader: PluginLoader
     let log = Logger(label: "ContainerLoadAtBootTests")
 
-    init() throws {
+    init(includeRuntime: Bool = false) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         containers = root.appendingPathComponent("containers")
         try FileManager.default.createDirectory(at: containers, withIntermediateDirectories: true)
+        let pluginRoot = root.appendingPathComponent("plugins")
+        if includeRuntime {
+            try FileManager.default.createDirectory(
+                at: pluginRoot.appendingPathComponent("container-runtime-linux"),
+                withIntermediateDirectories: true
+            )
+        }
         loader = try PluginLoader(
             appRoot: root,
             installRoot: root,
             logRoot: nil,
-            pluginDirectories: [],
-            pluginFactories: []
+            pluginDirectories: includeRuntime ? [pluginRoot] : [],
+            pluginFactories: includeRuntime
+                ? [LifecycleRuntimePluginFactory()]
+                : []
         )
     }
 
     func remove() {
         try? FileManager.default.removeItem(at: root)
+    }
+}
+
+private struct LifecycleRuntimePluginFactory: PluginFactory {
+    func create(installURL: URL) throws -> Plugin? {
+        guard installURL.lastPathComponent == "container-runtime-linux" else {
+            return nil
+        }
+        let services = PluginConfig.ServicesConfig(
+            loadAtBoot: false,
+            runAtLoad: false,
+            services: [
+                PluginConfig.Service(type: .runtime, description: nil)
+            ],
+            defaultArguments: []
+        )
+        return Plugin(
+            binaryURL: installURL.appendingPathComponent(
+                "container-runtime-linux"
+            ),
+            config: PluginConfig(
+                abstract: "runtime",
+                author: nil,
+                servicesConfig: services
+            )
+        )
+    }
+
+    func create(parentURL: URL, name: String) throws -> Plugin? {
+        try create(installURL: parentURL.appendingPathComponent(name))
     }
 }

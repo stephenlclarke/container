@@ -34,6 +34,7 @@ enum AuthorityRemoteLogDriverPlaneError: Error, Equatable, Sendable {
     case providerGenerationNotTerminal(containerID: String, generation: UInt64)
     case providerHistoryMigrationReceiptMismatch(containerID: String)
     case providerHistoryHandoffReceiptMismatch(containerID: String)
+    case protectedEffectReferenceConflict(String)
 }
 
 package struct AuthorityRemoteLogDriverUpgradeCandidate: Equatable, Sendable {
@@ -155,6 +156,130 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             eventLoopOwner: eventLoopOwner,
             gcpLoggingServiceFactory: gcpLoggingServiceFactory
         )
+    }
+
+    /// Reclaims protected-effect tombstones only after proving they are no
+    /// longer reachable from any durable container lifecycle ledger.
+    package func reconcileProtectedEffects(containerRoot: URL) async throws {
+        let references = try await Self.durableProtectedEffectReferences(
+            containerRoot: containerRoot
+        )
+        try await protectedEffects.reconcile(
+            retainingEffectReferences: references
+        )
+    }
+
+    package static func durableProtectedEffectReferences(
+        containerRoot: URL
+    ) async throws -> [ProtectedLoggingEffectReferenceV1] {
+        let manager = FileManager.default
+        var rootIsDirectory: ObjCBool = false
+        guard
+            manager.fileExists(
+                atPath: containerRoot.path,
+                isDirectory: &rootIsDirectory
+            )
+        else {
+            return []
+        }
+        let rootValues = try containerRoot.resourceValues(forKeys: [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+        ])
+        guard
+            rootIsDirectory.boolValue,
+            rootValues.isDirectory == true,
+            rootValues.isSymbolicLink != true
+        else {
+            throw CocoaError(.fileReadInvalidFileName)
+        }
+        let containers = try manager.contentsOfDirectory(
+            at: containerRoot,
+            includingPropertiesForKeys: [
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+            ]
+        )
+        var referencesByObjectID =
+            [String: ProtectedLoggingEffectReferenceV1]()
+        for container in containers {
+            let values = try container.resourceValues(forKeys: [
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+            ])
+            if values.isSymbolicLink == true {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            guard values.isDirectory == true else {
+                continue
+            }
+            let loggingRoot = container.appendingPathComponent(
+                "logging-v2",
+                isDirectory: true
+            )
+            guard manager.fileExists(atPath: loggingRoot.path) else {
+                continue
+            }
+            let loggingValues = try loggingRoot.resourceValues(forKeys: [
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+            ])
+            guard
+                loggingValues.isDirectory == true,
+                loggingValues.isSymbolicLink != true
+            else {
+                throw CocoaError(.fileReadInvalidFileName)
+            }
+            let entries = try manager.contentsOfDirectory(
+                at: loggingRoot,
+                includingPropertiesForKeys: [
+                    .isRegularFileKey,
+                    .isSymbolicLinkKey,
+                ]
+            )
+            for entry in entries
+            where entry.lastPathComponent.hasPrefix("provider-lifecycle-")
+                && entry.lastPathComponent.hasSuffix("-v1.json")
+            {
+                let entryValues = try entry.resourceValues(forKeys: [
+                    .isRegularFileKey,
+                    .isSymbolicLinkKey,
+                ])
+                guard
+                    entryValues.isRegularFile == true,
+                    entryValues.isSymbolicLink != true
+                else {
+                    throw CocoaError(.fileReadInvalidFileName)
+                }
+                let persistence = try
+                    FileContainerLogLifecycleLedgerPersistenceV1(
+                        fileURL: entry
+                    )
+                guard let data = try await persistence.load() else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                let snapshot = try JSONDecoder().decode(
+                    ContainerLogLifecycleLedgerSnapshotV1.self,
+                    from: data
+                )
+                for reference in snapshot.protectedEffectReferences {
+                    if let existing = referencesByObjectID[
+                        reference.protectedStoreObjectID
+                    ], existing != reference {
+                        throw AuthorityRemoteLogDriverPlaneError
+                            .protectedEffectReferenceConflict(
+                                reference.protectedStoreObjectID
+                            )
+                    }
+                    referencesByObjectID[
+                        reference.protectedStoreObjectID
+                    ] = reference
+                }
+            }
+        }
+        return referencesByObjectID.values.sorted {
+            $0.protectedStoreObjectID < $1.protectedStoreObjectID
+        }
     }
 
     public func logDriverCatalog() async throws -> LogDriverCatalog {

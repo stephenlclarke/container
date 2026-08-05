@@ -141,6 +141,11 @@ extension Bundle {
         )
     }
 
+    /// Atomically publishes and fsyncs a named bundle resource.
+    public func writeDurably(filename: String, value: Encodable) throws {
+        try Self.writeDurably(path.appendingPathComponent(filename), value: value)
+    }
+
     /// Return the full filepath for a named resource in the Bundle.
     public func filePath(for name: String) -> URL {
         path.appendingPathComponent(name)

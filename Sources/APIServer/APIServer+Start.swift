@@ -238,6 +238,22 @@ extension APIServer {
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerCreate",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerStart",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerStop",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerDelete",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
                     identifier: "engine.route.SystemInfo",
                     status: .native
                 ),
@@ -325,7 +341,10 @@ extension APIServer {
                     stateRoot: stateRoot,
                     objectStore: objectStore,
                     possessionProofStore: possessionProofStore,
-                    trustRegistryStore: ProviderHandoffTrustRegistryStore(),
+                    trustRegistryStore: ProviderHandoffTrustRegistryStore(
+                        account:
+                            "trust-registry-v1.\(stateRootUUID.uuidString.lowercased())"
+                    ),
                     providerIdentity: providerIdentity
                 )
             let socketPath =
@@ -515,6 +534,12 @@ extension APIServer {
                     journaldService: journaldService,
                     dockerPluginInstallations: dockerPluginInstallations
                 )
+            try await remoteLogDriverPlane.reconcileProtectedEffects(
+                containerRoot: appRootURL.appendingPathComponent(
+                    "containers",
+                    isDirectory: true
+                )
+            )
             let service = try ContainersService(
                 appRoot: appRootURL,
                 pluginLoader: pluginLoader,

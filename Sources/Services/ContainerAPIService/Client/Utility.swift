@@ -120,7 +120,7 @@ public struct Utility {
         imageFetch: Flags.ImageFetch,
         loggingRequest: ContainerLogRequest? = nil,
         containerSystemConfig: ContainerSystemConfig,
-        progressUpdate: @escaping ProgressUpdateHandler,
+        progressUpdate: ProgressUpdateHandler?,
         log: Logger
     ) async throws -> (ContainerConfiguration, Kernel, String?) {
         let requestedPlatform = try DefaultPlatform.resolveWithDefaults(
@@ -131,32 +131,38 @@ public struct Utility {
         )
         let scheme = try RequestScheme(registry.scheme)
 
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Fetching image"),
             .setItemsName("blobs"),
         ])
         let taskManager = ProgressTaskCoordinator()
         let fetchTask = await taskManager.startTask()
+        let fetchProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: fetchTask, from: $0)
+        }
         let img = try await ClientImage.fetch(
             reference: image,
             platform: requestedPlatform,
             scheme: scheme,
             containerSystemConfig: containerSystemConfig,
-            progressUpdate: ProgressTaskCoordinator.handler(for: fetchTask, from: progressUpdate),
+            progressUpdate: fetchProgressUpdate,
             maxConcurrentDownloads: imageFetch.maxConcurrentDownloads
         )
 
         // Unpack a fetched image before use
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Unpacking image"),
             .setItemsName("entries"),
         ])
         let unpackTask = await taskManager.startTask()
+        let unpackProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: unpackTask, from: $0)
+        }
         try await img.getCreateSnapshot(
             platform: requestedPlatform,
-            progressUpdate: ProgressTaskCoordinator.handler(for: unpackTask, from: progressUpdate))
+            progressUpdate: unpackProgressUpdate)
 
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Fetching kernel"),
             .setItemsName("binary"),
         ])
@@ -164,26 +170,32 @@ public struct Utility {
         let kernel = try await self.getKernel(management: management)
 
         // Pull and unpack the initial filesystem
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Fetching init image"),
             .setItemsName("blobs"),
         ])
         let fetchInitTask = await taskManager.startTask()
         let initImageRef = management.initImage ?? containerSystemConfig.vminit.image
+        let fetchInitProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: fetchInitTask, from: $0)
+        }
         let initImage = try await ClientImage.fetch(
             reference: initImageRef, platform: .current, scheme: scheme,
             containerSystemConfig: containerSystemConfig,
-            progressUpdate: ProgressTaskCoordinator.handler(for: fetchInitTask, from: progressUpdate),
+            progressUpdate: fetchInitProgressUpdate,
             maxConcurrentDownloads: imageFetch.maxConcurrentDownloads)
 
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Unpacking init image"),
             .setItemsName("entries"),
         ])
         let unpackInitTask = await taskManager.startTask()
+        let unpackInitProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: unpackInitTask, from: $0)
+        }
         _ = try await initImage.getCreateSnapshot(
             platform: .current,
-            progressUpdate: ProgressTaskCoordinator.handler(for: unpackInitTask, from: progressUpdate))
+            progressUpdate: unpackInitProgressUpdate)
 
         let imageConfig = try await img.config(for: requestedPlatform).config
         let description = img.description
@@ -250,14 +262,17 @@ public struct Utility {
                     reference: parsed.reference,
                     containerSystemConfig: containerSystemConfig
                 )
-                await progressUpdate([
+                await progressUpdate?([
                     .setDescription("Unpacking image mount"),
                     .setItemsName("entries"),
                 ])
                 let mountTask = await taskManager.startTask()
+                let mountProgressUpdate = progressUpdate.map {
+                    ProgressTaskCoordinator.handler(for: mountTask, from: $0)
+                }
                 let snapshot = try await mountedImage.getCreateSnapshot(
                     platform: requestedPlatform,
-                    progressUpdate: ProgressTaskCoordinator.handler(for: mountTask, from: progressUpdate)
+                    progressUpdate: mountProgressUpdate
                 )
                 resolvedMounts.append(try imageMountFilesystem(parsed: parsed, snapshot: snapshot))
             }

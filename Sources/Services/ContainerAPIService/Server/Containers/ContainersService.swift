@@ -14,8 +14,10 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ArgumentParser
 import CVersion
 import ContainerAPIClient
+import ContainerEngineLogging
 import ContainerEngineProviderSession
 import ContainerEngineRuntimeSPI
 import ContainerLoggingStorage
@@ -594,12 +596,16 @@ public actor ContainersService {
                         message: "failed to find runtime plugin \(config.runtimeHandler)"
                     )
                 }
+                let lifecycle = try ContainerResource.Bundle(path: dir)
+                    .lifecycleState
                 let state = ContainerState(
                     snapshot: .init(
                         configuration: config,
                         status: .stopped,
                         networks: [],
-                        startedDate: nil
+                        startedDate: lifecycle?.startedDate,
+                        exitCode: lifecycle?.exitCode,
+                        exitedDate: lifecycle?.exitedDate
                     ),
                 )
                 results[config.id] = state
@@ -1417,6 +1423,15 @@ public actor ContainersService {
                 state.snapshot.exitCode = nil
                 state.snapshot.exitedDate = nil
                 state.snapshot.health = state.snapshot.configuration.healthCheck == nil ? nil : .starting
+                let path = try Self.containerPath(
+                    root: self.containerRoot,
+                    id: id
+                )
+                try ContainerResource.Bundle(path: path).setDurably(
+                    lifecycleState: ContainerLifecycleStateV1(
+                        startedDate: startedDate
+                    )
+                )
                 state.restart.markStarted()
                 await self.setContainerState(id, state, context: context)
                 await self.scheduleRestartStabilityReset(
@@ -3001,6 +3016,16 @@ public actor ContainersService {
         }
         state.client = nil
 
+        if let startedDate = state.snapshot.startedDate {
+            try bundle.setDurably(
+                lifecycleState: ContainerLifecycleStateV1(
+                    startedDate: startedDate,
+                    exitCode: state.snapshot.exitCode,
+                    exitedDate: state.snapshot.exitedDate
+                )
+            )
+        }
+
         let options = try getContainerCreationOptions(id: id)
         let terminalEvents = Self.terminalLifecycleEvents(snapshot: state.snapshot)
         if options.autoRemove {
@@ -3166,6 +3191,17 @@ public actor ContainersService {
         }
 
         self.containers.removeValue(forKey: id)
+
+        do {
+            try await remoteLogDriverPlane?.reconcileProtectedEffects(
+                containerRoot: containerRoot
+            )
+        } catch {
+            log.warning(
+                "protected logging effects remain queued for orphan reconciliation",
+                metadata: ["id": "\(id)"]
+            )
+        }
 
         guard let protectedCleanup else {
             return
@@ -3799,6 +3835,181 @@ extension ContainersService: LoggingHandoffContainerPromoting {
 }
 
 extension ContainersService {
+    package func createDockerContainer(
+        request: DockerContainerCreateRequest,
+        requestedName: String?
+    ) async throws -> String {
+        guard !request.image.isEmpty else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "Image must not be empty"
+            )
+        }
+        let id = Utility.createContainerID(name: requestedName)
+        guard ManagedContainer.nameValid(id) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid container name \(id)"
+            )
+        }
+
+        var process = try Flags.Process.parse([])
+        process.cwd = request.workingDirectory.flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        process.env = request.environment ?? []
+        process.interactive = request.openStandardInput ?? false
+        process.privileged = request.hostConfiguration?.privileged ?? false
+        process.tty = request.terminal ?? false
+        process.user = request.user.flatMap { $0.isEmpty ? nil : $0 }
+
+        var management = try Flags.Management.parse([])
+        management.name = id
+        management.hostname = request.hostname.flatMap {
+            $0.isEmpty ? nil : $0
+        }
+        management.labels = (request.labels ?? [:]).map {
+            "\($0.key)=\($0.value)"
+        }.sorted()
+        management.capAdd =
+            request.hostConfiguration?.capabilitiesToAdd ?? []
+        management.capDrop =
+            request.hostConfiguration?.capabilitiesToDrop ?? []
+        management.remove = request.hostConfiguration?.autoRemove ?? false
+        management.readOnly =
+            request.hostConfiguration?.readOnlyRootFilesystem ?? false
+        management.useInit = request.hostConfiguration?.initProcess ?? false
+        management.volumes = request.hostConfiguration?.binds ?? []
+        if let mode = request.hostConfiguration?.networkMode,
+            !mode.isEmpty,
+            !["bridge", "default"].contains(mode)
+        {
+            management.networks = [mode]
+        }
+        management.publishPorts = try Self.dockerPublishedPorts(
+            request.hostConfiguration?.portBindings ?? [:]
+        )
+        management.restart = Self.dockerRestartPolicy(
+            request.hostConfiguration?.restartPolicy
+        )
+        if let healthcheck = request.healthcheck {
+            switch healthcheck.test ?? [] {
+            case let test where test.first == "NONE":
+                management.noHealthCheck = true
+            case let test where test.first == "CMD-SHELL":
+                management.healthCommand = test.dropFirst().joined(
+                    separator: " "
+                )
+            case let test where test.first == "CMD":
+                management.healthCommand = test.dropFirst().map {
+                    $0.replacingOccurrences(of: "'", with: "'\\''")
+                }.map { "'\($0)'" }.joined(separator: " ")
+            default:
+                break
+            }
+            management.healthInterval = healthcheck.intervalNanoseconds.map {
+                "\($0)ns"
+            }
+            management.healthTimeout = healthcheck.timeoutNanoseconds.map {
+                "\($0)ns"
+            }
+            management.healthStartPeriod =
+                healthcheck.startPeriodNanoseconds.map { "\($0)ns" }
+            management.healthRetries = healthcheck.retries
+        }
+
+        var arguments = request.command ?? []
+        if let entrypoint = request.entrypoint {
+            let values = entrypoint.values
+            if values.isEmpty {
+                management.clearEntrypoint = true
+            } else {
+                management.entrypoint = values[0]
+                arguments = Array(values.dropFirst()) + arguments
+            }
+        }
+
+        var resources = try Flags.Resource.parse([])
+        if let memory = request.hostConfiguration?.memoryBytes, memory > 0 {
+            resources.memory = "\(memory)"
+        }
+        if let nanoCPUs = request.hostConfiguration?.nanoCPUs, nanoCPUs > 0 {
+            resources.cpus = Double(nanoCPUs) / 1_000_000_000
+        }
+        let logging = request.hostConfiguration?.logConfiguration
+        let loggingRequest = ContainerLogRequest(
+            driver: logging?.type.flatMap { $0.isEmpty ? nil : $0 },
+            options: logging?.options ?? [:]
+        )
+        let prepared = try await Utility.containerConfigFromFlags(
+            id: id,
+            image: request.image,
+            arguments: arguments,
+            process: process,
+            management: management,
+            resource: resources,
+            registry: try Flags.Registry.parse([]),
+            imageFetch: try Flags.ImageFetch.parse([]),
+            loggingRequest: loggingRequest,
+            containerSystemConfig: containerSystemConfig,
+            progressUpdate: nil,
+            log: log
+        )
+        let options = try Parser.createOptions(
+            autoRemove: management.remove,
+            restart: management.restart,
+            restartDelay: nil,
+            restartWindow: nil
+        )
+        try await create(
+            configuration: prepared.0,
+            loggingRequest: loggingRequest,
+            kernel: prepared.1,
+            options: options,
+            initImage: prepared.2
+        )
+        return id
+    }
+
+    private static func dockerRestartPolicy(
+        _ request: DockerContainerRestartPolicyRequest?
+    ) -> String? {
+        guard let name = request?.name, !name.isEmpty, name != "no" else {
+            return nil
+        }
+        if name == "on-failure", let maximum = request?.maximumRetryCount,
+            maximum > 0
+        {
+            return "on-failure:\(maximum)"
+        }
+        return name
+    }
+
+    private static func dockerPublishedPorts(
+        _ bindings: [String: [DockerContainerPortBindingRequest]]
+    ) throws -> [String] {
+        var result = [String]()
+        for key in bindings.keys.sorted() {
+            let parts = key.split(separator: "/", maxSplits: 1)
+            guard let containerPort = UInt16(parts[0]) else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "invalid container port \(key)"
+                )
+            }
+            let transport = parts.count == 2 ? String(parts[1]) : "tcp"
+            for binding in bindings[key] ?? [] {
+                let host = binding.hostIP ?? ""
+                let port = binding.hostPort ?? ""
+                let prefix = host.isEmpty ? port : "\(host):\(port)"
+                result.append(
+                    "\(prefix):\(containerPort)/\(transport)"
+                )
+            }
+        }
+        return result
+    }
+
     package func makeLoggingHandoffControlResponder(
         stateRoot: URL,
         objectStore: ProviderHandoffBundleObjectStore,
@@ -3824,7 +4035,7 @@ extension ContainersService {
             ),
             providerHistoryPreflight: remoteLogDriverPlane,
             destinationStateRootUUID:
-            providerIdentity.context.stateRootUUID
+                providerIdentity.context.stateRootUUID
         )
         let destination = try LoggingHandoffDestinationReconciler(
             rootURL: stateRoot.appendingPathComponent(
@@ -3886,7 +4097,7 @@ extension ContainersService {
                 throw ContainerizationError(
                     .invalidState,
                     message:
-                    "logging handoff source requires stopped resolved containers"
+                        "logging handoff source requires stopped resolved containers"
                 )
             }
             let protectedOptions = try await loadProtectedLoggingOptions(
@@ -3904,7 +4115,7 @@ extension ContainersService {
             if resolved.providerIdentity.kind == .core {
                 lifecycleSnapshot = try ContainerLogLifecycleLedgerSnapshotV1(
                     owningControllerID:
-                    "logging-handoff-local-\(containerID)"
+                        "logging-handoff-local-\(containerID)"
                 )
                 histories = try Self.loggingHandoffLocalHistories(
                     resolved: resolved,
@@ -3915,10 +4126,11 @@ extension ContainersService {
                     throw ContainerizationError(
                         .invalidState,
                         message:
-                        "logging handoff source provider is unavailable"
+                            "logging handoff source provider is unavailable"
                     )
                 }
-                let terminal = try await remoteLogDriverPlane
+                let terminal =
+                    try await remoteLogDriverPlane
                     .proveHandoffTerminal(
                         containerID: containerID,
                         bundle: bundle,
@@ -3934,16 +4146,17 @@ extension ContainersService {
                     )
                 case .direct:
                     if let digest = terminal.proof.terminalHistoryDigest {
-                        let receipt = try await remoteLogDriverPlane
+                        let receipt =
+                            try await remoteLogDriverPlane
                             .exportProviderHistoryForHandoff(
                                 containerID: containerID,
                                 configuration: configuration.logging,
                                 tokenID: request.tokenID,
                                 manifestID: request.manifestID,
                                 sourceStateRootUUID:
-                                request.sourceStateRootUUID,
+                                    request.sourceStateRootUUID,
                                 destinationStateRootUUID:
-                                request.destinationStateRootUUID,
+                                    request.destinationStateRootUUID,
                                 terminalHistoryDigestSHA256: digest
                             )
                         histories = try [
@@ -3954,13 +4167,13 @@ extension ContainersService {
                                 formatVersion: 1,
                                 rotationIndex: 0,
                                 terminalHistoryEpoch:
-                                resolved.leaseGeneration,
+                                    resolved.leaseGeneration,
                                 maximumInternalSequence: 0,
                                 sourceDeviceID: nil,
                                 sourceInode: nil,
                                 bytes: nil,
                                 providerExportReceipt: receipt
-                            ),
+                            )
                         ]
                     } else {
                         histories = try [
@@ -3968,8 +4181,8 @@ extension ContainersService {
                                 storeID: "provider-owned",
                                 kind: .providerOwned,
                                 terminalHistoryEpoch:
-                                resolved.leaseGeneration
-                            ),
+                                    resolved.leaseGeneration
+                            )
                         ]
                     }
                 case .unavailable:
@@ -3978,7 +4191,7 @@ extension ContainersService {
                     throw ContainerizationError(
                         .invalidState,
                         message:
-                        "logging handoff source cannot export legacy history"
+                            "logging handoff source cannot export legacy history"
                     )
                 }
             }
@@ -4004,7 +4217,7 @@ extension ContainersService {
         let activeFileName: String
         let snapshots: [ContainerLogHandoffSegmentSnapshot]
         if resolved.providerIdentity.kind == .core,
-           resolved.driver == "json-file"
+            resolved.driver == "json-file"
         {
             kind = .dockerJSONFile
             directory = bundle.containerJSONFileLogDirectory
@@ -4015,7 +4228,7 @@ extension ContainersService {
                         storeID: "docker-json-file-0",
                         kind: kind,
                         terminalHistoryEpoch: 0
-                    ),
+                    )
                 ]
             }
             snapshots = try DockerJSONFileHandoffSegmentExporter.snapshot(
@@ -4023,7 +4236,7 @@ extension ContainersService {
                 activeFileName: activeFileName
             )
         } else if resolved.providerIdentity.kind == .core,
-                  resolved.driver == "local"
+            resolved.driver == "local"
         {
             kind = .nativeLocal
             directory = bundle.containerNativeLocalLogDirectory
@@ -4034,7 +4247,7 @@ extension ContainersService {
                         storeID: "native-local-0",
                         kind: kind,
                         terminalHistoryEpoch: 0
-                    ),
+                    )
                 ]
             }
             snapshots = try NativeLocalLogHandoffSegmentExporter.snapshot(
@@ -4051,7 +4264,7 @@ extension ContainersService {
                         storeID: "dual-cache-0",
                         kind: kind,
                         terminalHistoryEpoch: 0
-                    ),
+                    )
                 ]
             }
             snapshots = try NativeLocalLogHandoffSegmentExporter.snapshot(
@@ -4071,14 +4284,15 @@ extension ContainersService {
                     storeID: "\(kind.rawValue)-0",
                     kind: kind,
                     terminalHistoryEpoch: terminalEpoch
-                ),
+                )
             ]
         }
         return try snapshots.map { snapshot in
             let maximumSequence: UInt64
             switch kind {
             case .nativeLocal, .dualCache:
-                maximumSequence = try NativeLocalLogHandoffSegmentValidator
+                maximumSequence =
+                    try NativeLocalLogHandoffSegmentValidator
                     .inspect(
                         snapshot.bytes,
                         compressed: snapshot.compressed

@@ -128,7 +128,7 @@ def certify(arguments: argparse.Namespace) -> dict[str, object]:
 
     created = False
     try:
-        native(
+        docker(
             arguments,
             "create",
             "--platform",
@@ -149,39 +149,39 @@ def certify(arguments: argparse.Namespace) -> dict[str, object]:
         native_cycle(arguments, EXPECTED_CYCLE)
         native_cycle(arguments, EXPECTED_CYCLE * 2)
 
-        stopped = inspect(arguments)
+        docker(arguments, "start", arguments.name)
+        wait_for_state(arguments, "running")
+        public_stop = docker(arguments, "stop", "--time", "3", arguments.name)
+        stopped = wait_for_state(arguments, "exited")
         projected_state = state(stopped)
-        public_start = docker(arguments, "start", arguments.name, check=False)
-        public_control = public_start.returncode == 0
-        public_control_detail = ""
-        if public_control:
-            wait_for_state(arguments, "running")
-            public_stop = docker(arguments, "stop", "--time", "3", arguments.name)
-            public_control_detail = public_stop.stdout.strip()
-        else:
-            public_control_detail = (
-                public_start.stderr.strip() or public_start.stdout.strip()
-            )
-
-        if arguments.require_public_control and not public_control:
-            raise RuntimeError(f"Docker public control is unavailable: {public_control_detail}")
         if arguments.require_state_projection and projected_state != "exited":
             raise RuntimeError(
                 "Docker stopped-state projection is "
                 f"{projected_state!r}, expected 'exited'"
             )
 
+        expected_history = EXPECTED_CYCLE * 3
+        actual_history = history(arguments)
+        if actual_history != expected_history:
+            raise RuntimeError(
+                f"plugin history mismatch: expected {expected_history!r}, "
+                f"got {actual_history!r}"
+            )
+
+        public_delete = docker(arguments, "rm", "--force", arguments.name)
+        created = False
+
         return {
             "catalogueAliases": sorted(ALIASES),
             "driver": DRIVER,
-            "history": history(arguments),
+            "history": actual_history,
             "nativeLifecycleCycles": 2,
-            "publicControl": {
-                "available": public_control,
-                "detail": public_control_detail,
-            },
+            "publicCreate": True,
+            "publicDelete": public_delete.stdout.strip(),
             "publicInspect": True,
             "publicLogs": True,
+            "publicLifecycleCycles": 1,
+            "publicStop": public_stop.stdout.strip(),
             "schemaVersion": 1,
             "stoppedStateProjection": projected_state,
         }
@@ -197,7 +197,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--docker-host", required=True)
     parser.add_argument("--image", default=DEFAULT_IMAGE)
     parser.add_argument("--name", default="logging-plugin-certification")
-    parser.add_argument("--require-public-control", action="store_true")
+    parser.add_argument("--require-public-control", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--require-state-projection", action="store_true")
     return parser.parse_args()
 

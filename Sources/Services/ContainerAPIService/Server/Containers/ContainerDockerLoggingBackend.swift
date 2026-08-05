@@ -50,6 +50,7 @@ enum ContainerEngineLogReadSource: Sendable {
 /// Docker Engine logging backend. It never opens a second catalog, store, or
 /// provider session and therefore cannot diverge from native clients.
 public struct ContainerDockerLoggingBackend:
+    DockerContainerLifecycleBackend,
     DockerLoggingBackend,
     DockerTerminalResizeBackend,
     Sendable
@@ -82,6 +83,72 @@ public struct ContainerDockerLoggingBackend:
             )
         } catch {
             throw Self.map(error, containerID: nil)
+        }
+    }
+
+    public func createContainer(
+        request: DockerContainerCreateRequest,
+        requestedName: String?
+    ) async throws -> DockerContainerCreateResult {
+        do {
+            let containerID = try await containers.createDockerContainer(
+                request: request,
+                requestedName: requestedName
+            )
+            return DockerContainerCreateResult(containerID: containerID)
+        } catch {
+            throw Self.map(error, containerID: requestedName)
+        }
+    }
+
+    public func startContainer(containerID: String) async throws {
+        do {
+            try await containers.bootstrap(
+                id: containerID,
+                stdio: [nil, nil, nil],
+                dynamicEnv: [:]
+            )
+            try await containers.startProcess(
+                id: containerID,
+                processID: containerID
+            )
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func stopContainer(
+        containerID: String,
+        timeoutSeconds: Int64?
+    ) async throws {
+        let timeout = timeoutSeconds.flatMap { Int32(exactly: $0) }
+        if timeoutSeconds != nil, timeout == nil {
+            throw DockerLoggingBackendError.invalidParameter(
+                "stop timeout exceeds the runtime range"
+            )
+        }
+        do {
+            try await containers.stop(
+                id: containerID,
+                options: ContainerStopOptions(
+                    timeoutInSeconds: timeout,
+                    signal: nil
+                )
+            )
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func deleteContainer(
+        containerID: String,
+        force: Bool,
+        removeVolumes _: Bool
+    ) async throws {
+        do {
+            try await containers.delete(id: containerID, force: force)
+        } catch {
+            throw Self.map(error, containerID: containerID)
         }
     }
 
@@ -338,10 +405,12 @@ public struct ContainerDockerLoggingBackend:
             switch error.code {
             case .notFound:
                 return .containerNotFound(containerID ?? "")
+            case .exists:
+                return .conflict(error.message)
             case .invalidArgument:
-                return .invalidParameter("invalid logging request")
+                return .invalidParameter(error.message)
             case .invalidState:
-                return .conflict("container logging state does not permit this operation")
+                return .conflict(error.message)
             default:
                 return .server("container logging operation failed")
             }

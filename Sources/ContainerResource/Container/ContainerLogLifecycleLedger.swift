@@ -739,6 +739,27 @@ public struct ContainerLogLifecycleLedgerSnapshotV1: Codable, Equatable, Sendabl
     public let readerOperations: [LoggingReaderOperationRecordV1]
     public let pendingEffectRemovals: [LoggingEffectRemovalPendingV1]
 
+    /// Every protected object still reachable from this durable snapshot.
+    public var protectedEffectReferences: [ProtectedLoggingEffectReferenceV1] {
+        var references = writerOperations.compactMap {
+            $0.result.preparation?.effectTokenReference
+                ?? $0.result.activation?.effectTokenReference
+        }
+        references.append(
+            contentsOf: detachedCleanups.compactMap(\.effectTokenReference)
+        )
+        references.append(
+            contentsOf: readerOperations.compactMap {
+                $0.result.preparation?.effectTokenReference
+                    ?? $0.result.session?.effectTokenReference
+            }
+        )
+        references.append(
+            contentsOf: pendingEffectRemovals.map(\.effectTokenReference)
+        )
+        return references
+    }
+
     private enum CodingKeys: String, CodingKey, CaseIterable {
         case schemaVersion
         case owningControllerID

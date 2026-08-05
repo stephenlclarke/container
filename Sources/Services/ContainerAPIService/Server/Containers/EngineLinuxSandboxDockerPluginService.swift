@@ -21,10 +21,13 @@ import ContainerPlugin
 import ContainerResource
 import ContainerRuntimeClient
 import Containerization
+import ContainerizationArchive
+import ContainerizationEXT4
 import ContainerizationError
 import CryptoKit
 import Darwin
 import Foundation
+import SystemPackage
 
 public enum EngineLinuxSandboxDockerPluginServiceError: Error, Equatable,
     Sendable
@@ -408,10 +411,10 @@ package actor InstalledDockerPluginWorkloadMaterializerV1:
 
         let image = try await exactImage()
         let platform = SystemPlatform.linuxArm.ociPlatform()
-        var rootFilesystem = try await image.getCreateSnapshot(
+        let snapshot = try await image.getCreateSnapshot(
             platform: platform
         )
-        rootFilesystem.options = ["ro"]
+        let rootFilesystem = try materializeRootFilesystem(from: snapshot)
         try Self.ensureProtectedDirectory(stateRoot)
         try Self.ensureProtectedDirectory(workloadRoot)
 
@@ -539,6 +542,115 @@ package actor InstalledDockerPluginWorkloadMaterializerV1:
         }
         cachedImage = image
         return image
+    }
+
+    /// VZ cannot hot-plug a block device after the shared sandbox has booted,
+    /// and the currently shipped vminit guest does not translate a `loop`
+    /// mount option into a loop device. Export the already-verified final ext4
+    /// snapshot once and expose that protected directory as a read-only
+    /// virtiofs root instead. The plan marker makes restart reuse fail closed.
+    private func materializeRootFilesystem(from snapshot: Filesystem) throws
+        -> Filesystem
+    {
+        guard snapshot.isBlock else {
+            throw
+                EngineLinuxSandboxDockerPluginServiceError
+                .invalidInstalledAsset(
+                    "Docker logging-plugin workload snapshot is not a block filesystem"
+                )
+        }
+        let root = stateRoot.appendingPathComponent(
+            "rootfs-v1",
+            isDirectory: true
+        )
+        let marker = root.appendingPathComponent(".plan-digest")
+        if FileManager.default.fileExists(atPath: root.path) {
+            try Self.validateMaterializedRoot(
+                root,
+                marker: marker,
+                planDigest: assets.planDigest
+            )
+            return .virtiofs(
+                source: root.path,
+                destination: "/",
+                options: ["ro"]
+            )
+        }
+
+        let staging = stateRoot.appendingPathComponent(
+            ".rootfs-v1-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let archive = stateRoot.appendingPathComponent(
+            ".rootfs-v1-\(UUID().uuidString).tar"
+        )
+        defer {
+            try? FileManager.default.removeItem(at: staging)
+            try? FileManager.default.removeItem(at: archive)
+        }
+        try Self.ensureProtectedDirectory(staging)
+        try EXT4.EXT4Reader(
+            blockDevice: FilePath(snapshot.source)
+        ).export(archive: FilePath(archive.path))
+        let rejected = try ArchiveReader(file: archive).extractContents(
+            to: staging,
+            preserveOwnership: false
+        )
+        guard rejected.isEmpty else {
+            throw
+                EngineLinuxSandboxDockerPluginServiceError
+                .invalidInstalledAsset(
+                    "Docker logging-plugin workload root contains unsafe paths"
+                )
+        }
+        let stagingMarker = staging.appendingPathComponent(".plan-digest")
+        try Data((assets.planDigest + "\n").utf8).write(
+            to: stagingMarker,
+            options: [.atomic]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stagingMarker.path
+        )
+        try FileManager.default.moveItem(at: staging, to: root)
+        try Self.validateMaterializedRoot(
+            root,
+            marker: marker,
+            planDigest: assets.planDigest
+        )
+        return .virtiofs(
+            source: root.path,
+            destination: "/",
+            options: ["ro"]
+        )
+    }
+
+    private static func validateMaterializedRoot(
+        _ root: URL,
+        marker: URL,
+        planDigest: String
+    ) throws {
+        try ensureProtectedDirectory(root)
+        let markerValues = try marker.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        let permissions =
+            try FileManager.default.attributesOfItem(
+                atPath: marker.path
+            )[.posixPermissions] as? NSNumber
+        guard
+            markerValues.isRegularFile == true,
+            markerValues.isSymbolicLink != true,
+            permissions?.uint16Value == 0o600,
+            try String(contentsOf: marker, encoding: .utf8)
+                == planDigest + "\n"
+        else {
+            throw
+                EngineLinuxSandboxDockerPluginServiceError
+                .invalidInstalledAsset(
+                    "Docker logging-plugin workload root is not bound to its verified plan"
+                )
+        }
     }
 
     private static func exactImage(

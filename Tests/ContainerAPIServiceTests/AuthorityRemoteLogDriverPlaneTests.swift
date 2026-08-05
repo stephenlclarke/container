@@ -650,6 +650,105 @@ struct AuthorityRemoteLogDriverPlaneTests {
     }
 
     @Test
+    func protectedEffectReconciliationRetainsLiveAndFailsClosedOnCorruption()
+        async throws
+    {
+        try await withTemporaryRoot { root in
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityRecordingAWSLogsClientFactory(
+                    client: AuthorityRecordingAWSLogsClient()
+                )
+            )
+            let absentContainerRoot = root.appendingPathComponent(
+                "absent-containers",
+                isDirectory: true
+            )
+            let absentReferences = try await AuthorityRemoteLogDriverPlane
+                .durableProtectedEffectReferences(
+                    containerRoot: absentContainerRoot
+                )
+            #expect(absentReferences.isEmpty)
+            try await plane.reconcileProtectedEffects(
+                containerRoot: absentContainerRoot
+            )
+            let containerRoot = root.appendingPathComponent(
+                "containers",
+                isDirectory: true
+            )
+            let bundle = ContainerResource.Bundle(
+                path: containerRoot.appendingPathComponent("retained-effect")
+            )
+            try FileManager.default.createDirectory(
+                at: bundle.path,
+                withIntermediateDirectories: true
+            )
+            let configuration = try awsLogsConfiguration(
+                id: "retained-effect"
+            )
+            _ = try await plane.prepareBootstrap(
+                containerID: configuration.id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                stdio: [nil, nil, nil]
+            )
+            try await plane.bootstrapSucceeded(containerID: configuration.id)
+            try await plane.activate(containerID: configuration.id)
+
+            let liveReferences = try await AuthorityRemoteLogDriverPlane
+                .durableProtectedEffectReferences(containerRoot: containerRoot)
+            #expect(liveReferences.count == 1)
+
+            let protectedRoot = root.appendingPathComponent(
+                "logging-protected-effects",
+                isDirectory: true
+            )
+            func tombstones() throws -> [URL] {
+                try FileManager.default.contentsOfDirectory(
+                    at: protectedRoot,
+                    includingPropertiesForKeys: nil
+                ).filter { $0.lastPathComponent.hasSuffix(".removed") }
+            }
+
+            try await plane.close(containerID: configuration.id)
+            let retainedTombstones = try tombstones()
+            #expect(retainedTombstones.count == 1)
+
+            let corruptRoot = containerRoot.appendingPathComponent(
+                "corrupt",
+                isDirectory: true
+            ).appendingPathComponent("logging-v2", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: corruptRoot,
+                withIntermediateDirectories: true
+            )
+            try Data("{".utf8).write(
+                to: corruptRoot.appendingPathComponent(
+                    "provider-lifecycle-1-v1.json"
+                )
+            )
+            try FileManager.default.removeItem(at: bundle.path)
+
+            await #expect(throws: (any Error).self) {
+                try await plane.reconcileProtectedEffects(
+                    containerRoot: containerRoot
+                )
+            }
+            let corruptionTombstones = try tombstones()
+            #expect(corruptionTombstones.count == 1)
+
+            try FileManager.default.removeItem(
+                at: corruptRoot.deletingLastPathComponent()
+            )
+            try await plane.reconcileProtectedEffects(
+                containerRoot: containerRoot
+            )
+            #expect(try tombstones().isEmpty)
+        }
+    }
+
+    @Test
     func gcpLogsProductionPlanePublishesProviderBytes() async throws {
         try await withTemporaryRoot { root in
             let service = AuthorityRecordingGCPLoggingService()
