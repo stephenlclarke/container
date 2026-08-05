@@ -16,6 +16,7 @@
 
 import ContainerEngineProviderSession
 import ContainerEngineRuntimeSPI
+import ContainerEngineService
 import ContainerPersistence
 import ContainerResource
 import Darwin
@@ -26,6 +27,32 @@ import Testing
 @testable import ContainerAPIService
 
 struct LoggingHandoffControlResponderTests {
+    @Test
+    func `gateway coordinator transfers, promotes, and activates logging exactly once`() async throws {
+        let fixture = try LoggingPartStageFixture(
+            preloadDestinationObject: false
+        )
+        defer { fixture.cleanup() }
+
+        let evidence = try await fixture.gatewayCutover()
+
+        #expect(
+            evidence.terminal.gatewayState.transactions[0].token.phase
+                == .complete
+        )
+        #expect(evidence.terminal == evidence.replayedTerminal)
+        #expect(evidence.destinationObject.state == .verified)
+        #expect(evidence.counts.destinationPossession == 2)
+        #expect(evidence.counts.sourceExport == 2)
+        #expect(evidence.counts.sourceSign == 1)
+        #expect(evidence.counts.objectRead > 0)
+        #expect(evidence.counts.stage == 1)
+        #expect(evidence.counts.promote == 1)
+        #expect(evidence.counts.activate == 2)
+        #expect(await fixture.promotedEffectCount() == 1)
+        #expect(await fixture.activatedEffectCount() == 1)
+    }
+
     @Test
     func `source exports once, replays exactly, and signs only its durable contribution`() async throws {
         let fixture = try LoggingPartStageFixture()
@@ -43,7 +70,8 @@ struct LoggingHandoffControlResponderTests {
                 == ProviderHandoffSourceControlCodec.contributionMediaType
         )
         #expect(first.body.range(of: Data("secret-value".utf8)) == nil)
-        let contribution = try ProviderHandoffSourceControlCodec
+        let contribution =
+            try ProviderHandoffSourceControlCodec
             .decodeContribution(first.body)
         #expect(contribution.part.kind == .logging)
         #expect(contribution.sourceObjectRecord.state == .verified)
@@ -65,7 +93,8 @@ struct LoggingHandoffControlResponderTests {
             context: fixture.sourceControlContext
         )
         #expect(signed.response.disposition == .completed)
-        let receipt = try ProviderHandoffSourceControlCodec
+        let receipt =
+            try ProviderHandoffSourceControlCodec
             .decodeSignReceipt(signed.body)
         #expect(
             receipt.contributionDigestSHA256
@@ -278,6 +307,253 @@ private struct LoggingPartTerminalState {
     let gatewayState: ProviderHandoffGatewayStateV1
 }
 
+private struct LoggingGatewayCutoverEvidence: Sendable {
+    let terminal: ProviderHandoffGatewayTerminalResultV1
+    let replayedTerminal: ProviderHandoffGatewayTerminalResultV1
+    let destinationObject: ProviderHandoffBundleObjectRecordV1
+    let counts: LoggingGatewayTransport.Counts
+}
+
+private struct LoggingGatewayCommit: Sendable {
+    let validated: ProviderHandoffValidatedCommitRecordV1
+    let prepares: [ProviderHandoffRootPrepareRecordV1]
+}
+
+private actor LoggingGatewayTransport:
+    ProviderHandoffGatewayControlTransport
+{
+    struct Counts: Equatable, Sendable {
+        var activate = 0
+        var destinationPossession = 0
+        var objectRead = 0
+        var promote = 0
+        var sourceExport = 0
+        var sourceSign = 0
+        var stage = 0
+    }
+
+    private let codeIdentity: ProviderHandoffCodeIdentityV1
+    private let destination: ProviderHandoffGatewayProviderEndpointV1
+    private let destinationService: ContainerEngineProviderHandoffControlService
+    private let source: ProviderHandoffGatewayProviderEndpointV1
+    private let sourceService: ContainerEngineProviderHandoffControlService
+    private var operationCounts = Counts()
+
+    init(
+        source: ProviderHandoffGatewayProviderEndpointV1,
+        destination: ProviderHandoffGatewayProviderEndpointV1,
+        sourceStore: ProviderHandoffBundleObjectStore,
+        destinationStore: ProviderHandoffBundleObjectStore,
+        sourceResponder: LoggingHandoffSourceControlResponder,
+        destinationResponder: LoggingHandoffControlResponder,
+        destinationIdentity: ProviderHandoffProviderIdentityV1,
+        destinationPossessionStore: ProviderHandoffPossessionProofStore,
+        codeIdentity: ProviderHandoffCodeIdentityV1
+    ) {
+        self.source = source
+        self.destination = destination
+        self.codeIdentity = codeIdentity
+        sourceService = ContainerEngineProviderHandoffControlService(
+            objectStore: sourceStore,
+            downstream: sourceResponder
+        )
+        destinationService = ContainerEngineProviderHandoffControlService(
+            objectStore: destinationStore,
+            downstream: ContainerEngineProviderIdentityControlResponder(
+                identity: destinationIdentity,
+                possessionProofStore: destinationPossessionStore,
+                downstream: destinationResponder
+            )
+        )
+    }
+
+    func counts() -> Counts {
+        operationCounts
+    }
+
+    func perform(
+        _ request: ContainerEngineProviderHandoffControlRequestV1,
+        body: Data,
+        endpoint: ProviderHandoffGatewayProviderEndpointV1
+    ) async throws -> ContainerEngineProviderHandoffControlResultV1 {
+        switch request.operation {
+        case .destinationKeyPossession:
+            operationCounts.destinationPossession += 1
+        case .objectRead:
+            operationCounts.objectRead += 1
+        case .partActivate:
+            let value =
+                try ProviderHandoffPartControlCodec
+                .decodeActivateRequest(body)
+            if value.stage.partKind != .logging {
+                return try Self.activate(request, value: value)
+            }
+            operationCounts.activate += 1
+        case .partExport:
+            operationCounts.sourceExport += 1
+        case .partPromote:
+            let value =
+                try ProviderHandoffPartControlCodec
+                .decodePromoteRequest(body)
+            if value.stage.partKind != .logging {
+                return try Self.promote(request, value: value)
+            }
+            operationCounts.promote += 1
+        case .partStage:
+            let value =
+                try ProviderHandoffPartControlCodec
+                .decodeStageRequest(body)
+            if value.partKind != .logging {
+                return try Self.stage(request, value: value)
+            }
+            operationCounts.stage += 1
+        case .sourceSignManifest:
+            operationCounts.sourceSign += 1
+        case .destinationKeySnapshot, .objectAppend, .objectDeclare,
+            .objectVerify, .partCompensate, .rootApply, .rootPrepare,
+            .rootRelease, .rootSnapshot:
+            break
+        }
+        let context = ContainerEngineProviderHandoffControlContextV1(
+            providerFingerprint: endpoint.fingerprint,
+            authenticatedGatewayCodeIdentity: codeIdentity
+        )
+        if endpoint == source {
+            return await sourceService.respond(
+                to: request,
+                body: body,
+                context: context
+            )
+        }
+        guard endpoint == destination else {
+            throw ProviderHandoffGatewayCoordinatorError
+                .activeTransactionMismatch
+        }
+        return await destinationService.respond(
+            to: request,
+            body: body,
+            context: context
+        )
+    }
+
+    private static func stage(
+        _ request: ContainerEngineProviderHandoffControlRequestV1,
+        value: ProviderHandoffPartStageRequestV1
+    ) throws -> ContainerEngineProviderHandoffControlResultV1 {
+        let part = try #require(
+            value.manifest.parts.first { $0.kind == value.partKind }
+        )
+        var record = try ProviderHandoffPartStagingStateMachine.declared(
+            tokenID: value.manifest.tokenID,
+            manifestID: value.manifest.manifestID,
+            manifestDigest: value.manifest.manifestDigest,
+            partKind: value.partKind,
+            bundleObjectID: part.payload.bundleObjectID,
+            payloadDescriptorDigestSHA256:
+                ProviderHandoffProjections.payloadDescriptorDigest(
+                    part.payload
+                )
+        )
+        try ProviderHandoffPartStagingStateMachine.beginRetrieval(
+            &record,
+            expectedRevision: record.stagingRevision
+        )
+        try ProviderHandoffPartStagingStateMachine.recordReceivedRanges(
+            [
+                ProviderHandoffByteRangeV1(
+                    lowerBound: 0,
+                    upperBoundExclusive: part.payload.transportByteLength
+                )
+            ],
+            transportByteLength: part.payload.transportByteLength,
+            in: &record,
+            expectedRevision: record.stagingRevision
+        )
+        try ProviderHandoffPartStagingStateMachine.recordTransportVerified(
+            transportDigestSHA256: part.payload.transportDigestSHA256,
+            transportByteLength: part.payload.transportByteLength,
+            in: &record,
+            expectedRevision: record.stagingRevision
+        )
+        try ProviderHandoffPartStagingStateMachine.recordContentVerified(
+            canonicalContentDigest: part.payload.canonicalContentDigest.digest,
+            sourceDigestVerifications: [],
+            protection: .authenticatedPlaintext,
+            in: &record,
+            expectedRevision: record.stagingRevision
+        )
+        try ProviderHandoffPartStagingStateMachine.recordImported(
+            receiptDigestSHA256: ProviderHandoffDigest.sha256(
+                Data("empty:\(value.partKind.rawValue)".utf8)
+            ),
+            in: &record,
+            expectedRevision: record.stagingRevision
+        )
+        return try result(
+            requestID: request.requestID,
+            body: ProviderHandoffPartControlCodec.encodeStageReceipt(
+                ProviderHandoffPartStageReceiptV1(commonRecord: record)
+            ),
+            mediaType: ProviderHandoffPartControlCodec.stageReceiptMediaType
+        )
+    }
+
+    private static func promote(
+        _ request: ContainerEngineProviderHandoffControlRequestV1,
+        value: ProviderHandoffPartPromoteRequestV1
+    ) throws -> ContainerEngineProviderHandoffControlResultV1 {
+        try result(
+            requestID: request.requestID,
+            body: ProviderHandoffPartControlCodec.encodePromotionReceipt(
+                ProviderHandoffPartOpaqueControllerReceiptV1(
+                    partKind: value.stage.partKind,
+                    mediaType: "application/x.container-empty-handoff",
+                    body: Data(value.stage.partKind.rawValue.utf8)
+                )
+            ),
+            mediaType:
+                ProviderHandoffPartControlCodec.promotionReceiptMediaType
+        )
+    }
+
+    private static func activate(
+        _ request: ContainerEngineProviderHandoffControlRequestV1,
+        value: ProviderHandoffPartActivateRequestV1
+    ) throws -> ContainerEngineProviderHandoffControlResultV1 {
+        try result(
+            requestID: request.requestID,
+            body: ProviderHandoffPartControlCodec.encodeOperationReceipt(
+                ProviderHandoffPartOperationReceiptV1(
+                    operation: .activate,
+                    partKind: value.stage.partKind,
+                    tokenID: value.stage.manifest.tokenID,
+                    manifestID: value.stage.manifest.manifestID,
+                    evidenceDigestSHA256:
+                        value.terminalOutcome.outcomeDigestSHA256
+                )
+            ),
+            mediaType:
+                ProviderHandoffPartControlCodec.operationReceiptMediaType
+        )
+    }
+
+    private static func result(
+        requestID: String,
+        body: Data,
+        mediaType: String
+    ) throws -> ContainerEngineProviderHandoffControlResultV1 {
+        try ContainerEngineProviderHandoffControlResultV1(
+            response: ContainerEngineProviderHandoffControlResponseV1(
+                requestID: requestID,
+                disposition: .completed,
+                bodyMediaType: mediaType,
+                body: body
+            ),
+            body: body
+        )
+    }
+}
+
 private final class LoggingPartStageFixture: @unchecked Sendable {
     private static let sourceRoot =
         "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -304,21 +580,29 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
     let sourceControlContext: ContainerEngineProviderHandoffControlContextV1
     let stageRequest: ProviderHandoffPartStageRequestV1
 
+    private let codeIdentity: ProviderHandoffCodeIdentityV1
     private let commonStore: ProviderHandoffPartStagingStore
+    private let destinationIdentity: ProviderHandoffProviderIdentityV1
     private let destinationFingerprint: ContainerEngineProviderFingerprint
     private let destinationExpectation: ProviderHandoffHeaderExpectationV1
+    private let destinationObjectStore: ProviderHandoffBundleObjectStore
+    private let exportContainer: LoggingHandoffExportContainerV1
     private let gatewayIdentity: ProviderHandoffGatewayIdentityV1
     private let manifest: ProviderHandoffManifestV1
+    private let possessionStore: ProviderHandoffPossessionProofStore
     private let promoter: LoggingPartControlPromoter
     private let protectedRoot: URL
+    private let sourceIdentity: ProviderHandoffProviderIdentityV1
     private let sourceExpectation: ProviderHandoffHeaderExpectationV1
     private let sourceExportRequest: ProviderHandoffPartExportRequestV1
     private let sourceFingerprint: ContainerEngineProviderFingerprint
+    private let sourceObjectStore: ProviderHandoffBundleObjectStore
     private let sourceSigningKey: ProviderHandoffTrustKeyV1
+    private let trustRegistryStore: ProviderHandoffTrustRegistryStore
     private let validatedManifest: ProviderHandoffValidatedManifestV1
     private let validatedTrustRegistry: ProviderHandoffValidatedTrustRegistryV1
 
-    init() throws {
+    init(preloadDestinationObject: Bool = true) throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(
             "logging-handoff-control-\(UUID().uuidString.lowercased())",
             isDirectory: true
@@ -331,7 +615,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             withIntermediateDirectories: false
         )
 
-        let codeIdentity = try ProviderHandoffCodeIdentity.current()
+        codeIdentity = try ProviderHandoffCodeIdentity.current()
         let declaration = try ContainerEngineProviderDeclaration(
             profile: .enhanced,
             kind: .containerAuthority,
@@ -353,13 +637,13 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             declaration: declaration,
             stateRootUUID: try #require(UUID(uuidString: Self.destinationRoot))
         )
-        let sourceIdentity = try Self.providerIdentity(
+        sourceIdentity = try Self.providerIdentity(
             fingerprint: sourceFingerprint,
             codeIdentity: codeIdentity,
             service: keychainService,
             account: "source"
         )
-        let destinationIdentity = try Self.providerIdentity(
+        destinationIdentity = try Self.providerIdentity(
             fingerprint: destinationFingerprint,
             codeIdentity: codeIdentity,
             service: keychainService,
@@ -388,24 +672,34 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             issuedAtUnixSeconds: Self.useTime
         )
         validatedTrustRegistry = registry
-        let trustStore = ProviderHandoffTrustRegistryStore(
+        trustRegistryStore = ProviderHandoffTrustRegistryStore(
             service: keychainService,
             account: "trust"
         )
-        _ = try trustStore.install(
+        _ = try trustRegistryStore.install(
             registry.registry,
             bootstrap: gatewayIdentity.bootstrap
         )
 
-        let possessionStore = ProviderHandoffPossessionProofStore(
+        let proofStore = ProviderHandoffPossessionProofStore(
             root: root.appendingPathComponent("proofs", isDirectory: true)
         )
+        let destinationProofStore =
+            preloadDestinationObject
+            ? proofStore
+            : ProviderHandoffPossessionProofStore(
+                root: root.appendingPathComponent(
+                    "live-proofs",
+                    isDirectory: true
+                )
+            )
+        possessionStore = destinationProofStore
         let possessionDigests = try Self.possessionDigests(
             destinationIdentity: destinationIdentity,
-            possessionStore: possessionStore
+            possessionStore: proofStore
         )
         let driver = try Self.remoteDescriptor()
-        let exportContainer = try Self.exportContainer(driver: driver)
+        exportContainer = try Self.exportContainer(driver: driver)
         let sourceLineageKey = Data(repeating: 0x41, count: 32)
         let destinationPayloadKey = try destinationIdentity.trustKey(
             for: .destinationPayloadEncryption
@@ -504,7 +798,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             destinationPayloadEncryptionKey: destinationPayloadKey,
             destinationLineageKeyEncryptionKey: destinationLineageKey,
             destinationKeyPossessionProofs: try possessionDigests.map {
-                try possessionStore.load($0)
+                try proofStore.load($0)
             }.sorted {
                 $0.destinationKeyPurpose.rawValue.utf8
                     .lexicographicallyPrecedes(
@@ -617,7 +911,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             possessionProofs: try possessionDigests.map {
                 try ProviderHandoffPossessionProofCodec
                     .validateDestinationReceipt(
-                        possessionStore.load($0),
+                        proofStore.load($0),
                         trustRegistry: registry,
                         atUnixSeconds: Self.useTime
                     )
@@ -626,25 +920,22 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             atUnixSeconds: Self.useTime
         )
 
-        let objectStore = ProviderHandoffBundleObjectStore(
-            root: root.appendingPathComponent("objects", isDirectory: true)
+        sourceObjectStore = ProviderHandoffBundleObjectStore(
+            root: root.appendingPathComponent(
+                "source-objects",
+                isDirectory: true
+            )
         )
-        var object = try objectStore.declare(
-            bundleObjectID: preparedLogging.descriptor.bundleObjectID,
-            transportByteLength: preparedLogging.descriptor.transportByteLength,
-            transportDigestSHA256:
-                preparedLogging.descriptor.transportDigestSHA256
+        destinationObjectStore = ProviderHandoffBundleObjectStore(
+            root: root.appendingPathComponent(
+                "destination-objects",
+                isDirectory: true
+            )
         )
-        object = try objectStore.append(
-            bundleObjectID: object.bundleObjectID,
-            offset: 0,
-            bytes: preparedLogging.transportBytes,
-            expectedObjectRevision: object.objectRevision
-        )
-        _ = try objectStore.verify(
-            bundleObjectID: object.bundleObjectID,
-            expectedObjectRevision: object.objectRevision
-        )
+        try Self.publish(preparedLogging, to: sourceObjectStore)
+        if preloadDestinationObject {
+            try Self.publish(preparedLogging, to: destinationObjectStore)
+        }
 
         commonStore = ProviderHandoffPartStagingStore(
             root: root.appendingPathComponent("common", isDirectory: true)
@@ -671,9 +962,9 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             containerPromoter: promoter
         )
         let destinationResponder = LoggingHandoffControlResponder(
-            objectStore: objectStore,
-            possessionProofStore: possessionStore,
-            trustRegistryStore: trustStore,
+            objectStore: destinationObjectStore,
+            possessionProofStore: destinationProofStore,
+            trustRegistryStore: trustRegistryStore,
             commonStore: commonStore,
             providerIdentity: destinationIdentity,
             stagingController: stagingController,
@@ -690,8 +981,9 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             nowUnixSeconds: { Self.useTime }
         )
         responder = destinationResponder
+        let exportedContainer = exportContainer
         sourceResponder = LoggingHandoffSourceControlResponder(
-            objectStore: objectStore,
+            objectStore: sourceObjectStore,
             contributionStore: ProviderHandoffSourceContributionStore(
                 root: root.appendingPathComponent(
                     "source-contributions",
@@ -702,18 +994,22 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                 service: keychainService,
                 accountPrefix: "source-lineage"
             ),
-            trustRegistryStore: trustStore,
+            trustRegistryStore: trustRegistryStore,
             providerIdentity: sourceIdentity,
             exportContainers: { request in
-                guard request.selectedResourceIDs == [exportContainer.containerID]
+                guard
+                    request.selectedResourceIDs
+                        == [exportedContainer.containerID]
                 else {
                     throw LoggingHandoffSourceControlResponderError
                         .invalidRequest
                 }
-                return [exportContainer]
+                return [exportedContainer]
             },
             nowUnixSeconds: { Self.useTime },
-            downstream: destinationResponder
+            downstream: ContainerEngineProviderHandoffControlService(
+                objectStore: sourceObjectStore
+            )
         )
         self.manifest = manifest
         stageRequest = ProviderHandoffPartStageRequestV1(
@@ -852,6 +1148,249 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
         )
     }
 
+    func gatewayCutover() async throws -> LoggingGatewayCutoverEvidence {
+        let sourceEndpoint = ProviderHandoffGatewayProviderEndpointV1(
+            socketPath: "source",
+            fingerprint: sourceFingerprint
+        )
+        let destinationEndpoint = ProviderHandoffGatewayProviderEndpointV1(
+            socketPath: "destination",
+            fingerprint: destinationFingerprint
+        )
+        let transport = LoggingGatewayTransport(
+            source: sourceEndpoint,
+            destination: destinationEndpoint,
+            sourceStore: sourceObjectStore,
+            destinationStore: destinationObjectStore,
+            sourceResponder: sourceResponder,
+            destinationResponder: responder,
+            destinationIdentity: destinationIdentity,
+            destinationPossessionStore: possessionStore,
+            codeIdentity: codeIdentity
+        )
+        let gatewayStore = ProviderHandoffGatewayStore(
+            root: root.appendingPathComponent("gateway", isDirectory: true)
+        )
+        let selection = try selectionTransition()
+        let socket = try socketTransition()
+        _ = try gatewayStore.loadOrCreate(
+            initial: try ProviderHandoffGatewayStateMachine.initialState(
+                providerSelection: selection.expectedRecord,
+                socketDiscovery: socket.expectedRecord
+            )
+        )
+        let coordinator = ProviderHandoffGatewayCoordinator(
+            store: gatewayStore,
+            bootstrap: gatewayIdentity.bootstrap,
+            manifestAuthority: ProviderHandoffGatewayManifestAuthorityV1(
+                gatewayIdentity: gatewayIdentity,
+                trustRegistryStore: trustRegistryStore,
+                possessionProofStore: ProviderHandoffPossessionProofStore(
+                    root: root.appendingPathComponent(
+                        "gateway-proofs",
+                        isDirectory: true
+                    )
+                ),
+                transactionSecretStore:
+                    ProviderHandoffGatewayTransactionSecretStore(
+                        service: keychainService,
+                        accountPrefix: "gateway-secret"
+                    ),
+                nowUnixSeconds: { Self.useTime }
+            ),
+            transport: transport
+        )
+        let token = ProviderHandoffTokenV1(
+            tokenID: Self.tokenID,
+            tokenRevision: 1,
+            orderedSourceStateRootUUIDs: [Self.sourceRoot],
+            destinationProviderFingerprint: destinationFingerprint.digest,
+            destinationStateRootUUID: Self.destinationRoot,
+            trustRegistryRevision: Self.trustRevision,
+            resultingAuthorityLineageUUID: Self.resultingLineage,
+            resultingLineageDigestKeyVersion: 2,
+            phase: .draining,
+            preCommitRootExpectations: [],
+            destinationKeyPossessionProofDigestsSHA256: [],
+            manifestID: Self.manifestID
+        )
+        _ = try await coordinator.begin(token)
+        _ = try await coordinator.quiesce(
+            tokenID: token.tokenID,
+            expectations: [sourceExpectation, destinationExpectation]
+        )
+        let possession =
+            try await coordinator
+            .proveDestinationKeyPossession(
+                tokenID: token.tokenID,
+                destination: destinationEndpoint
+            )
+        let exportRequest = ProviderHandoffPartExportRequestV1(
+            partKind: .logging,
+            bootstrap: gatewayIdentity.bootstrap,
+            tokenID: Self.tokenID,
+            manifestID: Self.manifestID,
+            trustRegistryRevision: Self.trustRevision,
+            sourceProviderFingerprint: sourceFingerprint.digest,
+            sourceStateRootUUID: Self.sourceRoot,
+            authorityLineageUUID: Self.sourceLineage,
+            lineageDigestKeyVersion: 7,
+            sourcePreCommitExpectation: sourceExpectation,
+            destinationProviderFingerprint: destinationFingerprint.digest,
+            destinationStateRootUUID: Self.destinationRoot,
+            destinationPreCommitExpectation: destinationExpectation,
+            destinationPayloadEncryptionKey: possession.payloadEncryptionKey,
+            destinationLineageKeyEncryptionKey:
+                possession.lineageEncryptionKey,
+            destinationKeyPossessionProofs: possession.proofs,
+            resultingAuthorityLineageUUID: Self.resultingLineage,
+            resultingLineageDigestKeyVersion: 2,
+            selectedResourceIDs: [exportContainer.containerID]
+        )
+        let contribution = try await coordinator.exportPart(
+            exportRequest,
+            source: sourceEndpoint
+        )
+        let replayedContribution = try await coordinator.exportPart(
+            exportRequest,
+            source: sourceEndpoint
+        )
+        guard contribution == replayedContribution else {
+            throw ProviderHandoffGatewayCoordinatorError
+                .activeTransactionMismatch
+        }
+        var parts: [ProviderHandoffPartV1] = []
+        for kind in ProviderHandoffPartKindV1.allCases {
+            if kind == .logging {
+                parts.append(contribution.part)
+                continue
+            }
+            let payload =
+                try ProviderHandoffPayloadCodec
+                .prepareAuthenticated(
+                    ProviderHandoffPayloadPackageV1(
+                        partKind: kind,
+                        entries: [
+                            ProviderHandoffPayloadPackageEntryV1(
+                                entryID: "empty-\(kind.rawValue)",
+                                sourceStateRootUUID: Self.sourceRoot,
+                                recordKind: "empty-controller-evidence",
+                                schemaVersion: 1,
+                                canonicalRecordBytes:
+                                    ProviderHandoffCanonicalCBOR.encode(
+                                        .map([
+                                            .init(
+                                                "disposition",
+                                                .textString("empty")
+                                            )
+                                        ])
+                                    )
+                            )
+                        ]
+                    ),
+                    mediaType:
+                        "application/vnd.io.github.stephenlclarke.container.handoff-empty.v1+cbor",
+                    sourceOrder: [Self.sourceRoot]
+                )
+            try Self.publish(payload, to: sourceObjectStore)
+            parts.append(
+                ProviderHandoffPartV1(
+                    kind: kind,
+                    schemaVersion: 1,
+                    disposition: .empty,
+                    sourceStateRootUUIDs: [],
+                    requiredCapabilities: [],
+                    payload: payload.descriptor
+                )
+            )
+        }
+        let assembly = try await coordinator.assembleAndBindManifest(
+            tokenID: token.tokenID,
+            parts: parts,
+            contributions: [contribution],
+            sourceEndpoints: [Self.sourceRoot: sourceEndpoint],
+            destinationPossession: possession
+        )
+        let replayedAssembly = try await coordinator.assembleAndBindManifest(
+            tokenID: token.tokenID,
+            parts: parts,
+            contributions: [contribution],
+            sourceEndpoints: [Self.sourceRoot: sourceEndpoint],
+            destinationPossession: possession
+        )
+        guard
+            replayedAssembly.validatedManifest.manifest
+                == assembly.validatedManifest.manifest
+        else {
+            throw ProviderHandoffGatewayCoordinatorError
+                .activeTransactionMismatch
+        }
+        let sources = ProviderHandoffPartKindV1.allCases.map {
+            ProviderHandoffGatewayPartSourceV1(
+                partKind: $0,
+                endpoint: sourceEndpoint
+            )
+        }
+        let staged = try await coordinator.stage(
+            assembly.validatedManifest,
+            sources: sources,
+            destination: destinationEndpoint
+        )
+        let replayedStage = try await coordinator.stage(
+            assembly.validatedManifest,
+            sources: sources,
+            destination: destinationEndpoint
+        )
+        guard replayedStage.importedParts == staged.importedParts else {
+            throw ProviderHandoffGatewayCoordinatorError
+                .activeTransactionMismatch
+        }
+        let commit = try gatewayCommit(state: staged.gatewayState)
+        for prepare in commit.prepares {
+            _ = try await coordinator.recordPreparedRoot(prepare)
+        }
+        _ = try await coordinator.commit(commit.validated)
+        _ = try await coordinator.beginReconciliation(tokenID: token.tokenID)
+        let promotion = try await coordinator.promote(
+            tokenID: token.tokenID,
+            destination: destinationEndpoint
+        )
+        let replayedPromotion = try await coordinator.promote(
+            tokenID: token.tokenID,
+            destination: destinationEndpoint
+        )
+        guard replayedPromotion.receipts == promotion.receipts else {
+            throw ProviderHandoffGatewayCoordinatorError
+                .activeTransactionMismatch
+        }
+        let opaque = try #require(
+            promotion.receipts.first { $0.partKind == .logging }
+        )
+        let loggingReceipt = try LoggingHandoffPromotionControlCodec.decode(
+            opaque.body
+        )
+        let outcome = try completeOutcome(
+            commitRecord: commit.validated.record,
+            promotionReceipt: loggingReceipt
+        )
+        let terminal = try await coordinator.completeAndActivate(
+            outcome,
+            destination: destinationEndpoint
+        )
+        let replayedTerminal = try await coordinator.completeAndActivate(
+            outcome,
+            destination: destinationEndpoint
+        )
+        return LoggingGatewayCutoverEvidence(
+            terminal: terminal,
+            replayedTerminal: replayedTerminal,
+            destinationObject: try destinationObjectStore.load(
+                bundleObjectID: contribution.part.payload.bundleObjectID
+            ),
+            counts: await transport.counts()
+        )
+    }
+
     func controlRequest(
         operation: ContainerEngineProviderHandoffOperationV1,
         mediaType: String,
@@ -868,6 +1407,164 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                 body: body
             ),
             body
+        )
+    }
+
+    private func gatewayCommit(
+        state: ProviderHandoffGatewayStateV1
+    ) throws -> LoggingGatewayCommit {
+        let transaction = try #require(state.transactions.first)
+        let manifest = try #require(transaction.manifest)
+        let imported = try #require(transaction.token.importedParts)
+        let intent = ProviderHandoffCommitIntentV1(
+            tokenID: Self.tokenID,
+            manifestID: Self.manifestID,
+            manifestDigest: manifest.manifestDigest,
+            trustRegistryRevision: Self.trustRevision,
+            authoritativeCommitRevision:
+                state.authoritativeCommitRevision + 1,
+            preCommitRootExpectations:
+                transaction.token.preCommitRootExpectations,
+            importedParts: imported,
+            destinationKeyPossessionProofDigestsSHA256:
+                manifest.destinationKeyPossessionProofDigestsSHA256,
+            providerSelection: try selectionTransition(),
+            socketSelection: try socketTransition(),
+            resultingAuthorityLineageUUID: Self.resultingLineage,
+            resultingLineageDigestKeyVersion: 2,
+            resultingMinimumWriterSchemaVersion: 1
+        )
+        let commitDigest =
+            try ProviderHandoffProjections
+            .commitIntentDigest(intent)
+        let chainHead = try ProviderHandoffProjections.chainHeadDigest(
+            commitDigestSHA256: commitDigest,
+            orderedPreCommitHeaders:
+                intent.preCommitRootExpectations.map(\.expectedHeader)
+        )
+        let postRoots =
+            try ProviderHandoffRecordValidator
+            .derivePostCommitRoots(
+                intent: intent,
+                chainHeadDigestSHA256: chainHead
+            )
+        let prepares = zip(
+            intent.preCommitRootExpectations,
+            postRoots
+        ).map { expectation, post in
+            ProviderHandoffRootPrepareRecordV1(
+                tokenID: Self.tokenID,
+                manifestID: Self.manifestID,
+                role: expectation.role,
+                stateRootUUID: expectation.stateRootUUID,
+                commitDigestSHA256: commitDigest,
+                expectedHeaderDigestSHA256:
+                    expectation.expectedHeaderDigestSHA256,
+                preCommitRevisionVectorDigestSHA256:
+                    expectation.preCommitRevisionVector
+                    .revisionVectorDigestSHA256,
+                postCommitHeaderDigestSHA256:
+                    post.postCommitHeaderDigestSHA256,
+                postCommitRevisionVectorDigestSHA256:
+                    post.postCommitRevisionVector
+                    .revisionVectorDigestSHA256,
+                prepareRevision: 1
+            )
+        }
+        var record = try ProviderHandoffCommitRecordV1(
+            intent: intent,
+            commitDigestSHA256: commitDigest,
+            handoffChainHeadDigestSHA256: chainHead,
+            postCommitRoots: postRoots,
+            rootPrepareRecordDigestsSHA256:
+                prepares.map(ProviderHandoffProjections.rootPrepareDigest),
+            coordinatorSignature: Self.placeholderSignature(
+                purpose: .coordinatorCommitSigning,
+                role: .gatewayCoordinator,
+                provider: nil,
+                root: nil
+            )
+        )
+        record.coordinatorSignature = try gatewayIdentity.sign(
+            projectionDigestSHA256:
+                try ProviderHandoffProjections.commitRecordDigest(record),
+            purpose: .coordinatorCommitSigning,
+            trustRegistryRevision: Self.trustRevision
+        )
+        return LoggingGatewayCommit(
+            validated:
+                try ProviderHandoffRecordValidator
+                .validateCommitRecord(
+                    record,
+                    trustRegistry: validatedTrustRegistry,
+                    atUnixSeconds: Self.useTime
+                ),
+            prepares: prepares
+        )
+    }
+
+    private func completeOutcome(
+        commitRecord: ProviderHandoffCommitRecordV1,
+        promotionReceipt: LoggingHandoffControllerPromotionReceiptV1
+    ) throws -> ProviderHandoffValidatedTerminalOutcomeV1 {
+        var roots: [ProviderHandoffTerminalRootV1] = []
+        for (index, post) in commitRecord.postCommitRoots.enumerated() {
+            var header = post.postCommitHeader
+            var vector = post.postCommitRevisionVector
+            header.activeHandoffTokenID = nil
+            if index == commitRecord.postCommitRoots.count - 1 {
+                header.handoffState = .destinationActive
+                header.stagedAuthorityLineageUUID = nil
+                header.writerEpoch += 1
+                vector.rootStoreRevision += 1
+                vector.controllerRevisions = [
+                    ProviderHandoffControllerRevisionV1(
+                        controllerID: "logging",
+                        revision: promotionReceipt.controllerRevision,
+                        canonicalStateDigestSHA256:
+                            promotionReceipt.controllerStateDigestSHA256
+                    )
+                ]
+                vector.revisionVectorDigestSHA256 =
+                    try ProviderHandoffProjections.revisionVectorDigest(vector)
+            }
+            roots.append(
+                ProviderHandoffTerminalRootV1(
+                    role: post.role,
+                    stateRootUUID: post.stateRootUUID,
+                    terminalHeader: header,
+                    terminalHeaderDigestSHA256:
+                        try ProviderHandoffProjections
+                        .stateRootHeaderDigest(header),
+                    terminalRevisionVector: vector
+                )
+            )
+        }
+        var outcome = ProviderHandoffTerminalOutcomeV1(
+            tokenID: Self.tokenID,
+            manifestID: Self.manifestID,
+            manifestDigest: commitRecord.intent.manifestDigest,
+            phase: .complete,
+            roots: roots,
+            outcomeDigestSHA256: Self.digest("pending-complete"),
+            coordinatorSignature: Self.placeholderSignature(
+                purpose: .coordinatorTerminalOutcomeSigning,
+                role: .gatewayCoordinator,
+                provider: nil,
+                root: nil
+            )
+        )
+        outcome.outcomeDigestSHA256 =
+            try ProviderHandoffProjections.terminalOutcomeDigest(outcome)
+        outcome.coordinatorSignature = try gatewayIdentity.sign(
+            projectionDigestSHA256: outcome.outcomeDigestSHA256,
+            purpose: .coordinatorTerminalOutcomeSigning,
+            trustRegistryRevision: Self.trustRevision
+        )
+        return try ProviderHandoffRecordValidator.validateTerminalOutcome(
+            outcome,
+            trustRegistry: validatedTrustRegistry,
+            atUnixSeconds: Self.useTime
         )
     }
 
@@ -1286,6 +1983,27 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
 
     private static func digest(_ value: String) -> String {
         ProviderHandoffDigest.sha256(Data(value.utf8))
+    }
+
+    private static func publish(
+        _ payload: ProviderHandoffPreparedPayloadV1,
+        to store: ProviderHandoffBundleObjectStore
+    ) throws {
+        var object = try store.declare(
+            bundleObjectID: payload.descriptor.bundleObjectID,
+            transportByteLength: payload.descriptor.transportByteLength,
+            transportDigestSHA256: payload.descriptor.transportDigestSHA256
+        )
+        object = try store.append(
+            bundleObjectID: object.bundleObjectID,
+            offset: 0,
+            bytes: payload.transportBytes,
+            expectedObjectRevision: object.objectRevision
+        )
+        _ = try store.verify(
+            bundleObjectID: object.bundleObjectID,
+            expectedObjectRevision: object.objectRevision
+        )
     }
 
     private static func providerIdentity(

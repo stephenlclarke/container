@@ -313,6 +313,7 @@ let package = Package(
                 .product(name: "ContainerEngineLogging", package: "container-engine-api"),
                 .product(name: "ContainerEngineProviderSession", package: "container-engine-api"),
                 .product(name: "ContainerEngineRuntimeSPI", package: "container-engine-api"),
+                .product(name: "ContainerEngineService", package: "container-engine-api"),
                 .product(name: "ContainerEngineWire", package: "container-engine-api"),
                 "ContainerAPIClient",
                 "ContainerAPIService",
