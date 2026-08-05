@@ -458,6 +458,8 @@ struct ContainerLogsTests {
             )
         }
         var configuration = testConfiguration(id: id)
+        configuration.creationDate = Date(timeIntervalSince1970: 1_767_225_600)
+        configuration.labels = ["compose.project": "fixture"]
         configuration.logging = try version2JSONFileConfiguration(
             safeOptions: ["max-file": "1"]
         )
@@ -568,7 +570,15 @@ struct ContainerLogsTests {
                     status: .native
                 ),
                 try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerList",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
                     identifier: "engine.route.SystemInfo",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemVersion",
                     status: .native
                 ),
             ]
@@ -602,6 +612,48 @@ struct ContainerLogsTests {
                 socketPath: provider.socketPath,
                 expectedFingerprint: provider.fingerprint
             )
+            let versionResponse = await client.respond(
+                to: DockerHTTPRequest(method: .get, target: "/version")
+            )
+            #expect(versionResponse.status == 200)
+            let versionObject = try engineJSONObject(versionResponse)
+            #expect(versionObject["Version"] as? String == "test-version")
+            #expect(versionObject["ApiVersion"] as? String == "1.53")
+            #expect(versionObject["MinAPIVersion"] as? String == "1.44")
+
+            let runningListResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target: "/v1.53/containers/json"
+                )
+            )
+            #expect(runningListResponse.status == 200)
+            #expect(try engineJSONArray(runningListResponse).isEmpty)
+
+            let listResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target:
+                        "/v1.53/containers/json?all=1&filters=%7B%22label%22%3A%5B%22compose.project%3Dfixture%22%5D%2C%22status%22%3A%5B%22exited%22%5D%7D"
+                )
+            )
+            #expect(listResponse.status == 200)
+            let listObjects = try engineJSONArray(listResponse)
+            #expect(listObjects.count == 1)
+            let listObject = try #require(listObjects.first)
+            #expect(listObject["Id"] as? String == id)
+            #expect(listObject["Names"] as? [String] == ["/\(id)"])
+            #expect(listObject["Image"] as? String == configuration.image.reference)
+            #expect(listObject["ImageID"] as? String == configuration.image.digest)
+            #expect(listObject["Command"] as? String == "/bin/sh")
+            #expect(listObject["Created"] as? Int == 1_767_225_600)
+            #expect(listObject["State"] as? String == "exited")
+            #expect((listObject["Status"] as? String)?.hasPrefix("Exited (0) ") == true)
+            #expect(
+                listObject["Labels"] as? [String: String]
+                    == ["compose.project": "fixture"]
+            )
+
             let infoResponse = await client.respond(
                 to: DockerHTTPRequest(method: .get, target: "/v1.53/info")
             )
@@ -839,6 +891,137 @@ struct ContainerLogsTests {
             await provider.shutdown()
             throw error
         }
+    }
+
+    @Test func dockerContainerListProjectionCoversLifecycleFieldsAndFilters() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        var createdConfiguration = testConfiguration(id: "created-one")
+        createdConfiguration.creationDate = Date(timeIntervalSince1970: 100)
+        createdConfiguration.labels = ["role": "worker"]
+        createdConfiguration.initProcess.arguments = ["-c", "echo hello"]
+        createdConfiguration.exposedPorts = ["8080/tcp"]
+        createdConfiguration.mounts = [.tmpfs(destination: "/cache", options: [])]
+        createdConfiguration.networks = [
+            AttachmentConfiguration(
+                network: "fixture-net",
+                options: AttachmentOptions(hostname: "created-one")
+            )
+        ]
+        let created = ContainerSnapshot(
+            configuration: createdConfiguration,
+            status: .stopped,
+            networks: []
+        )
+
+        var exitedConfiguration = testConfiguration(id: "exited-two")
+        exitedConfiguration.creationDate = Date(timeIntervalSince1970: 200)
+        exitedConfiguration.labels = ["role": "worker"]
+        let exited = ContainerSnapshot(
+            configuration: exitedConfiguration,
+            status: .stopped,
+            networks: [],
+            startedDate: Date(timeIntervalSince1970: 250),
+            exitCode: 7,
+            exitedDate: Date(timeIntervalSince1970: 300)
+        )
+
+        var deadConfiguration = testConfiguration(id: "dead-three")
+        deadConfiguration.creationDate = Date(timeIntervalSince1970: 300)
+        let dead = ContainerSnapshot(
+            configuration: deadConfiguration,
+            status: .unknown,
+            networks: []
+        )
+
+        var runningConfiguration = testConfiguration(id: "running-four")
+        runningConfiguration.creationDate = Date(timeIntervalSince1970: 400)
+        let running = ContainerSnapshot(
+            configuration: runningConfiguration,
+            status: .running,
+            networks: [],
+            startedDate: Date(timeIntervalSince1970: 500)
+        )
+
+        var pausedConfiguration = testConfiguration(id: "paused-five")
+        pausedConfiguration.creationDate = Date(timeIntervalSince1970: 500)
+        let paused = ContainerSnapshot(
+            configuration: pausedConfiguration,
+            status: .paused,
+            networks: [],
+            startedDate: Date(timeIntervalSince1970: 600),
+            health: .healthy
+        )
+        let snapshots = [created, exited, dead, running, paused]
+
+        func objects(
+            all: Bool = true,
+            limit: Int? = nil,
+            size: Bool = false,
+            filters: [String: [String]] = [:]
+        ) throws -> [[String: Any]] {
+            try ContainerDockerLoggingBackend.containerListObjects(
+                snapshots: snapshots,
+                request: DockerContainerListRequest(
+                    all: all,
+                    limit: limit,
+                    size: size,
+                    filters: filters
+                ),
+                now: now
+            )
+        }
+
+        func ids(_ filters: [String: [String]]) throws -> [String] {
+            try objects(filters: filters).compactMap { $0["Id"] as? String }
+        }
+
+        #expect(try objects(all: false).compactMap { $0["Id"] as? String }
+            == ["paused-five", "running-four"])
+        #expect(try objects(limit: 2).compactMap { $0["Id"] as? String }
+            == ["paused-five", "running-four"])
+        #expect(try ids(["label": ["role=worker"]])
+            == ["exited-two", "created-one"])
+        #expect(try ids(["status": ["exited"], "exited": ["7"]])
+            == ["exited-two"])
+        #expect(try ids(["id": ["dead-th"]]) == ["dead-three"])
+        #expect(try ids(["name": ["^/running-"]]) == ["running-four"])
+        #expect(try ids(["ancestor": [createdConfiguration.image.reference]])
+            == ["paused-five", "running-four", "dead-three", "exited-two", "created-one"])
+        #expect(try ids(["before": ["dead-three"]])
+            == ["exited-two", "created-one"])
+        #expect(try ids(["since": ["running-four"]]) == ["paused-five"])
+        #expect(try ids(["network": ["fixture-net"]]) == ["created-one"])
+        #expect(try ids(["volume": ["/cache"]]) == ["created-one"])
+        #expect(try ids(["expose": ["8080/tcp"]]) == ["created-one"])
+        #expect(try ids(["health": ["healthy"]]) == ["paused-five"])
+        #expect(try ids(["is-task": ["true"]]).isEmpty)
+        #expect(try ids(["isolation": ["default"]]).count == 5)
+        #expect(throws: DockerLoggingBackendError.self) {
+            try objects(filters: ["unsupported": ["value"]])
+        }
+
+        let createdObject = try #require(
+            objects(size: true).first { $0["Id"] as? String == "created-one" }
+        )
+        #expect(createdObject["State"] as? String == "created")
+        #expect(createdObject["Status"] as? String == "Created")
+        #expect(createdObject["Command"] as? String == "/bin/sh -c 'echo hello'")
+        #expect(createdObject["SizeRw"] as? Int == 0)
+        #expect(createdObject["SizeRootFs"] as? Int == 0)
+        let createdNetworks = try #require(
+            createdObject["NetworkSettings"] as? [String: Any]
+        )
+        #expect(
+            (createdNetworks["Networks"] as? [String: Any])?["fixture-net"] != nil
+        )
+        let pausedObject = try #require(
+            objects().first { $0["Id"] as? String == "paused-five" }
+        )
+        #expect((pausedObject["Status"] as? String)?.hasSuffix("(Paused)") == true)
+        let deadObject = try #require(
+            objects().first { $0["Id"] as? String == "dead-three" }
+        )
+        #expect(deadObject["Status"] as? String == "Dead")
     }
 
     @Test func engineLoggingInspectionHidesJSONFilePathBeforeFirstStart() async throws {
@@ -1591,6 +1774,16 @@ struct ContainerLogsTests {
         }
         let object = try JSONSerialization.jsonObject(with: data)
         return try #require(object as? [String: Any])
+    }
+
+    private func engineJSONArray(
+        _ response: DockerHTTPResponse
+    ) throws -> [[String: Any]] {
+        guard case .bytes(let data) = response.body else {
+            throw EngineResponseFixtureError("expected Engine JSON byte response")
+        }
+        let object = try JSONSerialization.jsonObject(with: data)
+        return try #require(object as? [[String: Any]])
     }
 
     private func service(appRoot: URL, logLabel: String) throws -> ContainersService {

@@ -19,7 +19,32 @@ import ContainerResource
 import ContainerRuntimeLinuxClient
 import Foundation
 
-extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
+extension ContainerDockerLoggingBackend:
+    DockerEngineDiscoveryBackend,
+    DockerLoggingSharedResponseBackend
+{
+    public func systemVersionJSON() async throws -> Data {
+        try Self.jsonData(
+            Self.systemVersionObject(serverVersion: serverVersion)
+        )
+    }
+
+    public func containerListJSON(
+        request: DockerContainerListRequest
+    ) async throws -> Data {
+        do {
+            let snapshots = try await containers.list()
+            return try Self.jsonArrayData(
+                Self.containerListObjects(
+                    snapshots: snapshots,
+                    request: request
+                )
+            )
+        } catch {
+            throw Self.map(error, containerID: nil)
+        }
+    }
+
     public func systemInfoBaseJSON() async throws -> Data {
         do {
             async let snapshots = containers.list()
@@ -50,6 +75,107 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
         } catch {
             throw Self.map(error, containerID: containerID)
         }
+    }
+
+    private static func systemVersionObject(
+        serverVersion: String
+    ) -> [String: Any] {
+        let details = [
+            "ApiVersion": "1.53",
+            "Arch": "arm64",
+            "BuildTime": "",
+            "Experimental": "false",
+            "GitCommit": serverVersion,
+            "GoVersion": "",
+            "KernelVersion": "",
+            "MinAPIVersion": "1.44",
+            "Os": "linux",
+        ]
+        return [
+            "Platform": ["Name": "container Engine"],
+            "Components": [[
+                "Name": "Engine",
+                "Version": serverVersion,
+                "Details": details,
+            ]],
+            "Version": serverVersion,
+            "ApiVersion": "1.53",
+            "MinAPIVersion": "1.44",
+            "GitCommit": serverVersion,
+            "GoVersion": "",
+            "Os": "linux",
+            "Arch": "arm64",
+            "KernelVersion": "",
+            "BuildTime": "",
+        ]
+    }
+
+    static func containerListObjects(
+        snapshots: [ContainerSnapshot],
+        request: DockerContainerListRequest,
+        now: Date = Date()
+    ) throws -> [[String: Any]] {
+        let references = Dictionary(
+            uniqueKeysWithValues: snapshots.map { ($0.id, $0) }
+        )
+        var selected = snapshots
+            .filter { request.all || isRunning($0) }
+            .sorted {
+                if $0.configuration.creationDate != $1.configuration.creationDate {
+                    return $0.configuration.creationDate > $1.configuration.creationDate
+                }
+                return utf8Less($0.id, $1.id)
+            }
+        for (name, values) in request.filters where !values.isEmpty {
+            selected = try selected.filter { snapshot in
+                try values.contains { value in
+                    try matchesContainerListFilter(
+                        name: name,
+                        value: value,
+                        snapshot: snapshot,
+                        references: references
+                    )
+                }
+            }
+        }
+        if let limit = request.limit, limit > 0 {
+            selected = Array(selected.prefix(limit))
+        }
+        return selected.map {
+            containerListObject($0, includeSize: request.size, now: now)
+        }
+    }
+
+    private static func containerListObject(
+        _ snapshot: ContainerSnapshot,
+        includeSize: Bool,
+        now: Date
+    ) -> [String: Any] {
+        let configuration = snapshot.configuration
+        var result: [String: Any] = [
+            "Id": snapshot.id,
+            "Names": ["/\(snapshot.id)"],
+            "Image": configuration.image.reference,
+            "ImageID": configuration.image.digest,
+            "Command": commandString(configuration.initProcess),
+            "Created": Int64(configuration.creationDate.timeIntervalSince1970),
+            "Ports": portSummaries(configuration),
+            "Labels": configuration.labels,
+            "State": dockerStatus(snapshot),
+            "Status": containerListStatus(snapshot, now: now),
+            "HostConfig": ["NetworkMode": networkMode(configuration)],
+            "NetworkSettings": [
+                "Networks": listNetworks(snapshot),
+            ],
+            "Mounts": configuration.mounts.map(mountPointObject),
+            "Health": snapshot.health?.rawValue ?? "",
+            "ImageManifestDescriptor": NSNull(),
+        ]
+        if includeSize {
+            result["SizeRw"] = 0
+            result["SizeRootFs"] = 0
+        }
+        return result
     }
 
     private static func systemInfoObject(
@@ -180,8 +306,8 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
     ) -> [String: Any] {
         let active =
             snapshot.status == .running
-            || snapshot.status == .paused
-            || snapshot.status == .stopping
+                || snapshot.status == .paused
+                || snapshot.status == .stopping
         var result: [String: Any] = [
             "Status": dockerStatus(snapshot),
             "Running": active,
@@ -214,7 +340,7 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
         let exposed = Set(
             configuration.exposedPorts
                 + configuration.publishedPorts.flatMap { port in
-                    (0..<port.count).map {
+                    (0 ..< port.count).map {
                         "\(port.containerPort + $0)/\(port.proto.rawValue)"
                     }
                 }
@@ -437,8 +563,8 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
         }
         let mode =
             mount.options.isEmpty
-            ? ""
-            : ":\(mount.options.joined(separator: ","))"
+                ? ""
+                : ":\(mount.options.joined(separator: ","))"
         return "\(mount.source):\(mount.destination)\(mode)"
     }
 
@@ -474,7 +600,7 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
     ) -> [String: Any] {
         var result = [String: Any]()
         for port in ports {
-            for offset in 0..<port.count {
+            for offset in 0 ..< port.count {
                 let key = "\(port.containerPort + offset)/\(port.proto.rawValue)"
                 result[key] = [
                     [
@@ -565,6 +691,281 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
         return Int64(min(value.rounded(), Double(Int64.max)))
     }
 
+    private static func isRunning(_ snapshot: ContainerSnapshot) -> Bool {
+        snapshot.status == .running
+            || snapshot.status == .paused
+            || snapshot.status == .stopping
+    }
+
+    private static func matchesContainerListFilter(
+        name: String,
+        value: String,
+        snapshot: ContainerSnapshot,
+        references: [String: ContainerSnapshot]
+    ) throws -> Bool {
+        let configuration = snapshot.configuration
+        switch name {
+        case "id":
+            return snapshot.id.hasPrefix(value)
+        case "name":
+            return matchesPattern(value, in: "/\(snapshot.id)")
+        case "label":
+            let parts = value.split(
+                separator: "=",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            let key = String(parts[0])
+            guard let actual = configuration.labels[key] else {
+                return false
+            }
+            return parts.count == 1 || actual == String(parts[1])
+        case "status":
+            return dockerStatus(snapshot) == value
+        case "exited":
+            return snapshot.exitCode.map(String.init) == value
+        case "ancestor":
+            return configuration.image.reference == value
+                || configuration.image.digest == value
+                || configuration.image.digest.hasPrefix(value)
+        case "before", "since":
+            guard let reference = resolveListReference(value, in: references) else {
+                return false
+            }
+            if name == "before" {
+                return configuration.creationDate < reference.configuration.creationDate
+            }
+            return configuration.creationDate > reference.configuration.creationDate
+        case "network":
+            return networkMode(configuration) == value
+                || configuration.networks.contains { $0.network == value }
+                || snapshot.networks.contains { $0.network == value }
+        case "volume":
+            return configuration.mounts.contains {
+                $0.source == value
+                    || $0.destination == value
+                    || $0.volumeName == value
+            }
+        case "publish", "expose":
+            return portFilterMatches(value, configuration: configuration)
+        case "health":
+            return (snapshot.health ?? .none).rawValue == value
+        case "is-task":
+            return value.lowercased() == "false"
+        case "isolation":
+            return value == "" || value == "default"
+        default:
+            throw DockerLoggingBackendError.invalidParameter(
+                "Invalid filter '\(name)'"
+            )
+        }
+    }
+
+    private static func resolveListReference(
+        _ value: String,
+        in references: [String: ContainerSnapshot]
+    ) -> ContainerSnapshot? {
+        references[value]
+            ?? references.values.first { $0.id.hasPrefix(value) }
+    }
+
+    private static func matchesPattern(_ pattern: String, in value: String) -> Bool {
+        guard
+            let expression = try? NSRegularExpression(pattern: pattern),
+            expression.firstMatch(
+                in: value,
+                range: NSRange(value.startIndex..., in: value)
+            ) != nil
+        else {
+            return value.contains(pattern)
+        }
+        return true
+    }
+
+    private static func portFilterMatches(
+        _ value: String,
+        configuration: ContainerConfiguration
+    ) -> Bool {
+        let components = value.split(
+            separator: "/",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        let protocolName = components.count == 2 ? String(components[1]) : nil
+        let range = components[0].split(
+            separator: "-",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard
+            let lower = UInt16(range[0]),
+            let upper = UInt16(range.count == 2 ? range[1] : range[0]),
+            lower <= upper
+        else {
+            return false
+        }
+        let ports = Set(
+            configuration.exposedPorts
+                + configuration.publishedPorts.flatMap { port in
+                    (0 ..< port.count).map {
+                        "\(port.containerPort + $0)/\(port.proto.rawValue)"
+                    }
+                }
+        )
+        return ports.contains { port in
+            let parts = port.split(separator: "/", maxSplits: 1)
+            guard let number = UInt16(parts[0]) else {
+                return false
+            }
+            let matchesProtocol = protocolName.map {
+                parts.count == 2 && parts[1] == Substring($0)
+            } ?? true
+            return lower ... upper ~= number && matchesProtocol
+        }
+    }
+
+    private static func commandString(
+        _ process: ProcessConfiguration
+    ) -> String {
+        ([process.executable] + process.arguments)
+            .map(shellQuote)
+            .joined(separator: " ")
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        let safe = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
+        )
+        guard
+            !value.isEmpty,
+            value.unicodeScalars.allSatisfy({ safe.contains($0) })
+        else {
+            return "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+        }
+        return value
+    }
+
+    private static func portSummaries(
+        _ configuration: ContainerConfiguration
+    ) -> [[String: Any]] {
+        var result = [[String: Any]]()
+        var published = Set<String>()
+        for port in configuration.publishedPorts {
+            for offset in 0 ..< port.count {
+                let privatePort = port.containerPort + offset
+                let protocolName = port.proto.rawValue
+                published.insert("\(privatePort)/\(protocolName)")
+                result.append([
+                    "IP": String(describing: port.hostAddress),
+                    "PrivatePort": privatePort,
+                    "PublicPort": port.hostPort + offset,
+                    "Type": protocolName,
+                ])
+            }
+        }
+        for exposed in configuration.exposedPorts.sorted(by: utf8Less)
+            where !published.contains(exposed)
+        {
+            let parts = exposed.split(separator: "/", maxSplits: 1)
+            guard let privatePort = UInt16(parts[0]) else {
+                continue
+            }
+            result.append([
+                "PrivatePort": privatePort,
+                "Type": parts.count == 2 ? String(parts[1]) : "tcp",
+            ])
+        }
+        return result
+    }
+
+    private static func listNetworks(
+        _ snapshot: ContainerSnapshot
+    ) -> [String: Any] {
+        var result = Dictionary(
+            uniqueKeysWithValues: snapshot.networks.map {
+                ($0.network, endpointSettingsObject($0))
+            }
+        )
+        for attachment in snapshot.configuration.networks
+            where result[attachment.network] == nil
+        {
+            result[attachment.network] = [
+                "IPAMConfig": NSNull(),
+                "Links": NSNull(),
+                "Aliases": attachment.options.aliases,
+                "MacAddress": attachment.options.macAddress
+                    .map(String.init(describing:)) ?? "",
+                "DriverOpts": NSNull(),
+                "NetworkID": attachment.network,
+                "EndpointID": "",
+                "Gateway": "",
+                "IPAddress": "",
+                "IPPrefixLen": 0,
+                "IPv6Gateway": "",
+                "GlobalIPv6Address": "",
+                "GlobalIPv6PrefixLen": 0,
+                "DNSNames": [attachment.options.hostname]
+                    + attachment.options.aliases,
+            ]
+        }
+        return result
+    }
+
+    private static func containerListStatus(
+        _ snapshot: ContainerSnapshot,
+        now: Date
+    ) -> String {
+        switch dockerStatus(snapshot) {
+        case "created":
+            return "Created"
+        case "running", "paused":
+            let age = humanDuration(
+                from: snapshot.startedDate ?? snapshot.configuration.creationDate,
+                to: now
+            )
+            return snapshot.status == .paused ? "Up \(age) (Paused)" : "Up \(age)"
+        case "exited":
+            let age = humanDuration(
+                from: snapshot.exitedDate ?? snapshot.startedDate
+                    ?? snapshot.configuration.creationDate,
+                to: now
+            )
+            return "Exited (\(snapshot.exitCode ?? 0)) \(age) ago"
+        case "dead":
+            return "Dead"
+        default:
+            return dockerStatus(snapshot)
+        }
+    }
+
+    private static func humanDuration(from start: Date, to end: Date) -> String {
+        let seconds = max(0, Int(end.timeIntervalSince(start)))
+        switch seconds {
+        case 0:
+            return "Less than a second"
+        case 1:
+            return "1 second"
+        case 2 ..< 60:
+            return "\(seconds) seconds"
+        case 60 ..< 120:
+            return "About a minute"
+        case 120 ..< 3600:
+            return "\(seconds / 60) minutes"
+        case 3600 ..< 7200:
+            return "About an hour"
+        case 7200 ..< 172_800:
+            return "\(seconds / 3600) hours"
+        case 172_800 ..< 1_209_600:
+            return "\(seconds / 86400) days"
+        case 1_209_600 ..< 5_184_000:
+            return "\(seconds / 604_800) weeks"
+        case 5_184_000 ..< 63_072_000:
+            return "\(seconds / 2_592_000) months"
+        default:
+            return "\(seconds / 31_536_000) years"
+        }
+    }
+
     private static func dockerStatus(_ snapshot: ContainerSnapshot) -> String {
         switch snapshot.status {
         case .stopped:
@@ -594,6 +995,10 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter.string(from: date)
+    }
+
+    private static func utf8Less(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.utf8.lexicographicallyPrecedes(rhs.utf8)
     }
 
     private static func boundedInt64(_ value: UInt64) -> Int64 {
@@ -639,6 +1044,20 @@ extension ContainerDockerLoggingBackend: DockerLoggingSharedResponseBackend {
         }
         return try JSONSerialization.data(
             withJSONObject: object,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+    }
+
+    private static func jsonArrayData(
+        _ objects: [[String: Any]]
+    ) throws -> Data {
+        guard JSONSerialization.isValidJSONObject(objects) else {
+            throw DockerLoggingBackendError.server(
+                "Container Engine response is not JSON encodable"
+            )
+        }
+        return try JSONSerialization.data(
+            withJSONObject: objects,
             options: [.sortedKeys, .withoutEscapingSlashes]
         )
     }

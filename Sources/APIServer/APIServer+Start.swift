@@ -238,6 +238,10 @@ extension APIServer {
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerList",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerCreate",
                     status: .native
                 ),
@@ -255,6 +259,10 @@ extension APIServer {
                 ),
                 ContainerEngineProviderCapability(
                     identifier: "engine.route.SystemInfo",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemVersion",
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
