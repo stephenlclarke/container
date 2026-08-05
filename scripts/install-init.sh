@@ -127,12 +127,16 @@ copy_containerization_checkout() {
 	chmod -R u+w "${CONTAINERIZATION_PATH}"
 }
 
-CONTAINERIZATION_VERSION="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
 CONTAINERIZATION_PATH="${CONTAINERIZATION_INIT_SOURCE_PATH:-}"
-if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspecified" ]] ; then
-	if [[ -z "${CONTAINERIZATION_PATH}" ]]; then
-		CONTAINERIZATION_PATH="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
+CONTAINERIZATION_VERSION="unspecified"
+if [[ -z "${CONTAINERIZATION_PATH}" ]]; then
+	CONTAINERIZATION_DEPENDENCY_JSON="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json)"
+	CONTAINERIZATION_VERSION="$(printf '%s' "${CONTAINERIZATION_DEPENDENCY_JSON}" | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
+	if [[ "${CONTAINERIZATION_VERSION}" == "unspecified" ]]; then
+		CONTAINERIZATION_PATH="$(printf '%s' "${CONTAINERIZATION_DEPENDENCY_JSON}" | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
 	fi
+fi
+if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspecified" ]] ; then
 	if [ ! -d "${CONTAINERIZATION_PATH}" ] ; then
 		echo "containerization directory at ${CONTAINERIZATION_PATH} does not exist"
 		exit 1

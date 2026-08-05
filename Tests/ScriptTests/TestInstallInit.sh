@@ -30,6 +30,9 @@ FAKE_MAKE="${TEST_ROOT}/make"
 
 cat > "${FAKE_SWIFT}" <<EOF
 #!/bin/bash
+if [[ -n "\${INSTALL_INIT_TEST_SWIFT_LOG:-}" ]]; then
+    printf 'swift %s\n' "\$*" >> "\${INSTALL_INIT_TEST_SWIFT_LOG}"
+fi
 printf '%s\n' '{"dependencies":[{"identity":"containerization","version":"unspecified","path":"${CONTAINERIZATION_PATH}"}]}'
 EOF
 
@@ -88,12 +91,15 @@ chmod +x \
 
 INSTALL_INIT_TEST_LOG="${LOG_PATH}" \
 INSTALL_INIT_TEST_RUNNING="${RUNNING_PATH}" \
+INSTALL_INIT_TEST_SWIFT_LOG="${TEST_ROOT}/swift.log" \
 CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
 CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
 CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
 CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
 CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
     scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+
+test ! -e "${TEST_ROOT}/swift.log"
 
 OPERATIONS=()
 while IFS= read -r operation; do
