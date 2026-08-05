@@ -139,6 +139,28 @@ struct NativeLocalLogStoreTests {
         #expect(segment.sourceInode > 0)
         #expect(segment.bytes == expected)
         #expect(try Data(contentsOf: store.storageURL) == expected)
+
+        let exportDirectory = fixture.root.appendingPathComponent(
+            "export",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: exportDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let fileSegments =
+            try NativeLocalLogHandoffSegmentExporter.snapshotFiles(
+                directoryURL: fixture.logDirectory,
+                activeFileName: fixture.activeFileName,
+                destinationDirectoryURL: exportDirectory
+            )
+        let fileSegment = try #require(fileSegments.first)
+        #expect(fileSegments.count == 1)
+        #expect(fileSegment.byteLength == UInt64(expected.count))
+        #expect(fileSegment.maximumInternalSequence == 1)
+        #expect(try Data(contentsOf: fileSegment.fileURL) == expected)
+        #expect(fileSegment.sourceInode == segment.sourceInode)
     }
 
     @Test

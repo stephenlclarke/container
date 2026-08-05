@@ -45,6 +45,9 @@ enum LoggingHandoffHistoryFileDecoder {
             throw LoggingHandoffPayloadError.invalidPackage
         }
         guard let location else {
+            throw LoggingHandoffPayloadError.invalidPackage
+        }
+        guard let payloadRange = location.payloadRange else {
             return LoggingHandoffExtractedHistoryRecordV2(
                 canonicalRecordByteLength: UInt64(record.count),
                 metadataRecordBytes: record,
@@ -76,10 +79,10 @@ enum LoggingHandoffHistoryFileDecoder {
         }
 
         var digest = SHA256()
-        var offset = location.payloadRange.lowerBound
-        while offset < location.payloadRange.upperBound {
+        var offset = payloadRange.lowerBound
+        while offset < payloadRange.upperBound {
             let upper = min(
-                location.payloadRange.upperBound,
+                payloadRange.upperBound,
                 offset + copyChunkBytes
             )
             let chunk = record.subdata(in: offset..<upper)
@@ -108,15 +111,157 @@ enum LoggingHandoffHistoryFileDecoder {
             metadataRecordBytes: metadata,
             historyFile: LoggingHandoffHistoryFileV2(
                 url: target,
-                byteLength: UInt64(location.payloadRange.count),
+                byteLength: UInt64(payloadRange.count),
                 contentDigestSHA256: digestHex
             )
         )
     }
 
+    static func encode(
+        metadataRecordBytes: Data,
+        historyFile: LoggingHandoffHistoryFileV2,
+        outputURL: URL
+    ) throws {
+        var scanner = Scanner(data: metadataRecordBytes)
+        guard
+            let location = try scanner.historyBytesLocation(),
+            location.payloadRange == nil,
+            scanner.isAtEnd
+        else {
+            throw LoggingHandoffPayloadError.invalidPackage
+        }
+        _ = try ProviderHandoffDigest.parseSHA256(
+            historyFile.contentDigestSHA256
+        )
+        let inputDescriptor = historyFile.url.path.withCString {
+            Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard inputDescriptor >= 0 else {
+            throw LoggingHandoffPayloadError.invalidPackage
+        }
+        defer { Darwin.close(inputDescriptor) }
+        var inputMetadata = stat()
+        guard
+            Darwin.fstat(inputDescriptor, &inputMetadata) == 0,
+            inputMetadata.st_mode & S_IFMT == S_IFREG,
+            inputMetadata.st_uid == Darwin.geteuid(),
+            inputMetadata.st_nlink == 1,
+            inputMetadata.st_size == off_t(historyFile.byteLength)
+        else {
+            throw LoggingHandoffPayloadError.invalidPackage
+        }
+
+        let outputDescriptor = outputURL.path.withCString {
+            Darwin.open(
+                $0,
+                O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                S_IRUSR | S_IWUSR
+            )
+        }
+        guard outputDescriptor >= 0 else {
+            throw LoggingHandoffPayloadError.invalidPackage
+        }
+        let output = FileHandle(
+            fileDescriptor: outputDescriptor,
+            closeOnDealloc: true
+        )
+        var completed = false
+        defer {
+            try? output.close()
+            if !completed {
+                _ = outputURL.path.withCString(Darwin.unlink)
+            }
+        }
+        try output.write(
+            contentsOf: metadataRecordBytes.subdata(
+                in: 0..<location.encodedRange.lowerBound
+            )
+        )
+        try output.write(
+            contentsOf: byteStringHeader(historyFile.byteLength)
+        )
+        var digest = SHA256()
+        var offset: UInt64 = 0
+        while offset < historyFile.byteLength {
+            let count = Int(
+                min(
+                    UInt64(copyChunkBytes),
+                    historyFile.byteLength - offset
+                )
+            )
+            var chunk = Data(count: count)
+            try chunk.withUnsafeMutableBytes { buffer in
+                var completedBytes = 0
+                while completedBytes < count {
+                    let result = Darwin.pread(
+                        inputDescriptor,
+                        buffer.baseAddress?.advanced(by: completedBytes),
+                        count - completedBytes,
+                        off_t(offset + UInt64(completedBytes))
+                    )
+                    if result < 0, errno == EINTR { continue }
+                    guard result > 0 else {
+                        throw LoggingHandoffPayloadError.invalidPackage
+                    }
+                    completedBytes += result
+                }
+            }
+            try output.write(contentsOf: chunk)
+            digest.update(data: chunk)
+            offset += UInt64(count)
+        }
+        try output.write(
+            contentsOf: metadataRecordBytes.subdata(
+                in: location.encodedRange.upperBound..<metadataRecordBytes.count
+            )
+        )
+        guard
+            ProviderHandoffDigest.hex(Data(digest.finalize()))
+                == historyFile.contentDigestSHA256
+        else {
+            throw LoggingHandoffPayloadError.invalidHistory(
+                historyFile.url.lastPathComponent
+            )
+        }
+        try output.synchronize()
+        try output.close()
+        completed = true
+    }
+
+    private static func byteStringHeader(_ value: UInt64) -> Data {
+        var output = Data()
+        switch value {
+        case 0..<24:
+            output.append(0x40 | UInt8(value))
+        case 24...UInt64(UInt8.max):
+            output.append(0x58)
+            output.append(UInt8(value))
+        case 0...UInt64(UInt16.max):
+            output.append(0x59)
+            appendBigEndian(UInt16(value), to: &output)
+        case 0...UInt64(UInt32.max):
+            output.append(0x5a)
+            appendBigEndian(UInt32(value), to: &output)
+        default:
+            output.append(0x5b)
+            appendBigEndian(value, to: &output)
+        }
+        return output
+    }
+
+    private static func appendBigEndian<T: FixedWidthInteger>(
+        _ value: T,
+        to output: inout Data
+    ) {
+        var encoded = value.bigEndian
+        withUnsafeBytes(of: &encoded) {
+            output.append(contentsOf: $0)
+        }
+    }
+
     private struct ByteLocation {
         let encodedRange: Range<Int>
-        let payloadRange: Range<Int>
+        let payloadRange: Range<Int>?
     }
 
     private struct Scanner {
@@ -149,11 +294,14 @@ enum LoggingHandoffHistoryFileDecoder {
             return result
         }
 
-        private mutating func byteStringLocation() throws -> ByteLocation? {
+        private mutating func byteStringLocation() throws -> ByteLocation {
             let encodedStart = offset
             let initial = try byte()
             if initial == 0xf6 {
-                return nil
+                return ByteLocation(
+                    encodedRange: encodedStart..<offset,
+                    payloadRange: nil
+                )
             }
             let length = try argument(initial: initial, major: 2)
             guard

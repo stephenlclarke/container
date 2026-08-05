@@ -4090,17 +4090,22 @@ extension ContainersService {
             lineageKeyStore: ProviderHandoffLineageKeyStore(),
             trustRegistryStore: trustRegistryStore,
             providerIdentity: providerIdentity,
-            exportContainers: { [self] request in
-                try await loggingHandoffExportContainers(request)
+            exportContainers: { [self] request, historyDirectoryURL in
+                try await loggingHandoffExportContainers(
+                    request,
+                    historyDirectoryURL: historyDirectoryURL
+                )
             },
             downstream: destinationResponder
         )
     }
 
     private func loggingHandoffExportContainers(
-        _ request: ProviderHandoffPartExportRequestV1
-    ) async throws -> [LoggingHandoffExportContainerV1] {
+        _ request: ProviderHandoffPartExportRequestV1,
+        historyDirectoryURL: URL
+    ) async throws -> LoggingHandoffExportPayloadV2 {
         var result: [LoggingHandoffExportContainerV1] = []
+        var historyFiles: [String: LoggingHandoffHistoryFileV2] = [:]
         result.reserveCapacity(request.selectedResourceIDs.count)
         for containerID in request.selectedResourceIDs {
             guard let state = containers[containerID] else {
@@ -4139,9 +4144,16 @@ extension ContainersService {
                     owningControllerID:
                         "logging-handoff-local-\(containerID)"
                 )
-                histories = try Self.loggingHandoffLocalHistories(
+                let local = try Self.loggingHandoffLocalHistories(
                     resolved: resolved,
-                    bundle: bundle
+                    bundle: bundle,
+                    destinationDirectoryURL: historyDirectoryURL
+                )
+                histories = local.histories
+                try Self.appendLoggingHandoffHistoryFiles(
+                    local.filesByStoreID,
+                    containerID: containerID,
+                    to: &historyFiles
                 )
             } else {
                 guard let remoteLogDriverPlane else {
@@ -4162,9 +4174,16 @@ extension ContainersService {
                 lifecycleSnapshot = terminal.snapshot
                 switch resolved.readPolicy.source {
                 case .dualCache:
-                    histories = try Self.loggingHandoffLocalHistories(
+                    let local = try Self.loggingHandoffLocalHistories(
                         resolved: resolved,
-                        bundle: bundle
+                        bundle: bundle,
+                        destinationDirectoryURL: historyDirectoryURL
+                    )
+                    histories = local.histories
+                    try Self.appendLoggingHandoffHistoryFiles(
+                        local.filesByStoreID,
+                        containerID: containerID,
+                        to: &historyFiles
                     )
                 case .direct:
                     if let digest = terminal.proof.terminalHistoryDigest {
@@ -4227,17 +4246,26 @@ extension ContainersService {
                 )
             )
         }
-        return result
+        return LoggingHandoffExportPayloadV2(
+            containers: result,
+            historyFiles: historyFiles
+        )
+    }
+
+    private struct LoggingHandoffLocalHistoryExport {
+        let histories: [LoggingHandoffHistoryStoreV1]
+        let filesByStoreID: [String: LoggingHandoffHistoryFileV2]
     }
 
     private static func loggingHandoffLocalHistories(
         resolved: ResolvedContainerLogConfiguration,
-        bundle: ContainerResource.Bundle
-    ) throws -> [LoggingHandoffHistoryStoreV1] {
+        bundle: ContainerResource.Bundle,
+        destinationDirectoryURL: URL
+    ) throws -> LoggingHandoffLocalHistoryExport {
         let kind: LoggingHandoffHistoryKindV1
         let directory: URL
         let activeFileName: String
-        let snapshots: [ContainerLogHandoffSegmentSnapshot]
+        let snapshots: [ContainerLogHandoffSegmentFileSnapshot]
         if resolved.providerIdentity.kind == .core,
             resolved.driver == "json-file"
         {
@@ -4245,17 +4273,21 @@ extension ContainersService {
             directory = bundle.containerJSONFileLogDirectory
             activeFileName = ContainerResource.Bundle.jsonFileLogName
             guard FileManager.default.fileExists(atPath: directory.path) else {
-                return try [
-                    loggingHandoffEmptyHistory(
-                        storeID: "docker-json-file-0",
-                        kind: kind,
-                        terminalHistoryEpoch: 0
-                    )
-                ]
+                return LoggingHandoffLocalHistoryExport(
+                    histories: try [
+                        loggingHandoffEmptyHistory(
+                            storeID: "docker-json-file-0",
+                            kind: kind,
+                            terminalHistoryEpoch: 0
+                        )
+                    ],
+                    filesByStoreID: [:]
+                )
             }
-            snapshots = try DockerJSONFileHandoffSegmentExporter.snapshot(
+            snapshots = try DockerJSONFileHandoffSegmentExporter.snapshotFiles(
                 directoryURL: directory,
-                activeFileName: activeFileName
+                activeFileName: activeFileName,
+                destinationDirectoryURL: destinationDirectoryURL
             )
         } else if resolved.providerIdentity.kind == .core,
             resolved.driver == "local"
@@ -4264,82 +4296,112 @@ extension ContainersService {
             directory = bundle.containerNativeLocalLogDirectory
             activeFileName = ContainerResource.Bundle.nativeLocalLogName
             guard FileManager.default.fileExists(atPath: directory.path) else {
-                return try [
-                    loggingHandoffEmptyHistory(
-                        storeID: "native-local-0",
-                        kind: kind,
-                        terminalHistoryEpoch: 0
-                    )
-                ]
+                return LoggingHandoffLocalHistoryExport(
+                    histories: try [
+                        loggingHandoffEmptyHistory(
+                            storeID: "native-local-0",
+                            kind: kind,
+                            terminalHistoryEpoch: 0
+                        )
+                    ],
+                    filesByStoreID: [:]
+                )
             }
-            snapshots = try NativeLocalLogHandoffSegmentExporter.snapshot(
+            snapshots = try NativeLocalLogHandoffSegmentExporter.snapshotFiles(
                 directoryURL: directory,
-                activeFileName: activeFileName
+                activeFileName: activeFileName,
+                destinationDirectoryURL: destinationDirectoryURL
             )
         } else if resolved.readPolicy.source == .dualCache {
             kind = .dualCache
             directory = bundle.containerNativeLogCacheDirectory
             activeFileName = ContainerResource.Bundle.nativeLogCacheName
             guard FileManager.default.fileExists(atPath: directory.path) else {
-                return try [
-                    loggingHandoffEmptyHistory(
-                        storeID: "dual-cache-0",
-                        kind: kind,
-                        terminalHistoryEpoch: 0
-                    )
-                ]
+                return LoggingHandoffLocalHistoryExport(
+                    histories: try [
+                        loggingHandoffEmptyHistory(
+                            storeID: "dual-cache-0",
+                            kind: kind,
+                            terminalHistoryEpoch: 0
+                        )
+                    ],
+                    filesByStoreID: [:]
+                )
             }
-            snapshots = try NativeLocalLogHandoffSegmentExporter.snapshot(
+            snapshots = try NativeLocalLogHandoffSegmentExporter.snapshotFiles(
                 directoryURL: directory,
-                activeFileName: activeFileName
+                activeFileName: activeFileName,
+                destinationDirectoryURL: destinationDirectoryURL
             )
         } else {
-            return []
+            return LoggingHandoffLocalHistoryExport(
+                histories: [],
+                filesByStoreID: [:]
+            )
         }
 
         let terminalEpoch = try ContainerLogProcessGenerationStore(
             directoryURL: bundle.containerLoggingV2
         ).current()
         guard !snapshots.isEmpty else {
-            return try [
-                loggingHandoffEmptyHistory(
-                    storeID: "\(kind.rawValue)-0",
-                    kind: kind,
-                    terminalHistoryEpoch: terminalEpoch
-                )
-            ]
+            return LoggingHandoffLocalHistoryExport(
+                histories: try [
+                    loggingHandoffEmptyHistory(
+                        storeID: "\(kind.rawValue)-0",
+                        kind: kind,
+                        terminalHistoryEpoch: terminalEpoch
+                    )
+                ],
+                filesByStoreID: [:]
+            )
         }
-        return try snapshots.map { snapshot in
-            let maximumSequence: UInt64
-            switch kind {
-            case .nativeLocal, .dualCache:
-                maximumSequence =
-                    try NativeLocalLogHandoffSegmentValidator
-                    .inspect(
-                        snapshot.bytes,
-                        compressed: snapshot.compressed
-                    ).maximumInternalSequence
-            case .dockerJSONFile:
-                maximumSequence = 0
-            case .legacyLocalV1, .providerOwned:
-                throw ContainerizationError(
-                    .invalidState,
-                    message: "logging handoff local history kind is invalid"
-                )
+        var filesByStoreID: [String: LoggingHandoffHistoryFileV2] = [:]
+        let histories = try snapshots.map { snapshot in
+            let storeID = "\(kind.rawValue)-\(snapshot.rotationIndex)"
+            guard filesByStoreID[storeID] == nil else {
+                throw LoggingHandoffPayloadError.invalidHistory(storeID)
             }
+            filesByStoreID[storeID] = LoggingHandoffHistoryFileV2(
+                url: snapshot.fileURL,
+                byteLength: snapshot.byteLength,
+                contentDigestSHA256: snapshot.contentDigestSHA256
+            )
             return try LoggingHandoffHistoryStoreV1(
-                storeID: "\(kind.rawValue)-\(snapshot.rotationIndex)",
+                fileBackedStoreID: storeID,
                 kind: kind,
                 disposition: .importVerified,
                 formatVersion: 1,
                 rotationIndex: snapshot.rotationIndex,
                 compressed: snapshot.compressed,
                 terminalHistoryEpoch: terminalEpoch,
-                maximumInternalSequence: maximumSequence,
+                maximumInternalSequence:
+                    snapshot.maximumInternalSequence,
                 sourceDeviceID: snapshot.sourceDeviceID,
                 sourceInode: snapshot.sourceInode,
-                bytes: snapshot.bytes
+                byteLength: snapshot.byteLength,
+                contentDigestSHA256: snapshot.contentDigestSHA256
             )
+        }
+        return LoggingHandoffLocalHistoryExport(
+            histories: histories,
+            filesByStoreID: filesByStoreID
+        )
+    }
+
+    private static func appendLoggingHandoffHistoryFiles(
+        _ filesByStoreID: [String: LoggingHandoffHistoryFileV2],
+        containerID: String,
+        to destination: inout [String: LoggingHandoffHistoryFileV2]
+    ) throws {
+        for (storeID, file) in filesByStoreID {
+            let entryID = LoggingHandoffPayloadCodec.historyEntryID(
+                containerID: containerID,
+                storeID: storeID
+            )
+            guard destination[entryID] == nil else {
+                throw LoggingHandoffPayloadError.invalidEntry(entryID)
+            }
+            destination[entryID] = file
         }
     }
 

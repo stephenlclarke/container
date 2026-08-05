@@ -33,8 +33,10 @@ struct LoggingHandoffSourceControlResponder:
     Sendable
 {
     typealias ExportContainers =
-        @Sendable (ProviderHandoffPartExportRequestV1) async throws
-        -> [LoggingHandoffExportContainerV1]
+        @Sendable (
+            ProviderHandoffPartExportRequestV1,
+            URL
+        ) async throws -> LoggingHandoffExportPayloadV2
 
     private struct ValidatedExport: Sendable {
         let proofDigests: [String]
@@ -183,7 +185,6 @@ struct LoggingHandoffSourceControlResponder:
                 keyVersion: request.lineageDigestKeyVersion
             )
         )
-        let containers = try await exportContainers(request)
         let temporaryRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent(
                 "container-logging-handoff-\(UUID().uuidString)",
@@ -195,13 +196,36 @@ struct LoggingHandoffSourceControlResponder:
             attributes: [.posixPermissions: 0o700]
         )
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        let historyDirectoryURL = temporaryRoot.appendingPathComponent(
+            "history",
+            isDirectory: true
+        )
+        let recordDirectoryURL = temporaryRoot.appendingPathComponent(
+            "records",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: historyDirectoryURL,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try FileManager.default.createDirectory(
+            at: recordDirectoryURL,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let exportPayload = try await exportContainers(
+            request,
+            historyDirectoryURL
+        )
         let transportFileURL = temporaryRoot.appendingPathComponent(
             "payload.transport",
             isDirectory: false
         )
         let payload = try LoggingHandoffPayloadCodec.prepareSealedFile(
-            containers: containers,
+            payload: exportPayload,
             transportFileURL: transportFileURL,
+            recordDirectoryURL: recordDirectoryURL,
             tokenID: request.tokenID,
             manifestID: request.manifestID,
             sourceStateRootUUID: request.sourceStateRootUUID,

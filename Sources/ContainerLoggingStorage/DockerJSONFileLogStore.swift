@@ -1936,6 +1936,54 @@ package enum DockerJSONFileHandoffSegmentValidator {
 /// source must already be quiesced; this path deliberately does not construct
 /// a writer or run storage recovery that could mutate migration evidence.
 package enum DockerJSONFileHandoffSegmentExporter {
+    package static func snapshotFiles(
+        directoryURL: URL,
+        activeFileName: String,
+        destinationDirectoryURL: URL
+    ) throws -> [ContainerLogHandoffSegmentFileSnapshot] {
+        try DockerJSONFileSecureDirectory.validateActiveFileName(activeFileName)
+        let directory = try DockerJSONFileSecureDirectory(
+            url: directoryURL,
+            createIfAbsent: false
+        )
+        let files = try directory.pinnedFiles(
+            activeFileName: activeFileName,
+            maximumFileCount:
+                DockerJSONFileSecureDirectory.maximumDirectoryEntries + 1,
+            activeCompletedSize: nil,
+            didEnumerate: nil
+        )
+        return try files.map { file in
+            guard
+                file.index >= 0,
+                file.byteCount
+                    <= UInt64(
+                        DockerJSONFileHandoffSegmentValidator
+                            .maximumDecodedSegmentBytes
+                    )
+            else {
+                throw DockerJSONFileLogError.storageLimitExceeded
+            }
+            let snapshot = try ContainerLogHandoffSegmentFileCopier.copy(
+                descriptor: file.descriptor,
+                byteLength: file.byteCount,
+                rotationIndex: UInt64(file.index),
+                compressed: file.compressed,
+                maximumInternalSequence: 0,
+                destinationDirectoryURL: destinationDirectoryURL
+            )
+            let bytes = try Data(
+                contentsOf: snapshot.fileURL,
+                options: .mappedIfSafe
+            )
+            _ = try DockerJSONFileHandoffSegmentValidator.inspect(
+                bytes,
+                compressed: file.compressed
+            )
+            return snapshot
+        }
+    }
+
     package static func snapshot(
         directoryURL: URL,
         activeFileName: String
@@ -1948,17 +1996,18 @@ package enum DockerJSONFileHandoffSegmentExporter {
         let files = try directory.pinnedFiles(
             activeFileName: activeFileName,
             maximumFileCount:
-            DockerJSONFileSecureDirectory.maximumDirectoryEntries + 1,
+                DockerJSONFileSecureDirectory.maximumDirectoryEntries + 1,
             activeCompletedSize: nil,
             didEnumerate: nil
         )
         return try files.map { file in
             guard
                 file.index >= 0,
-                file.byteCount <= UInt64(
-                    DockerJSONFileHandoffSegmentValidator
-                        .maximumDecodedSegmentBytes
-                ),
+                file.byteCount
+                    <= UInt64(
+                        DockerJSONFileHandoffSegmentValidator
+                            .maximumDecodedSegmentBytes
+                    ),
                 file.byteCount <= UInt64(Int.max)
             else {
                 throw DockerJSONFileLogError.storageLimitExceeded

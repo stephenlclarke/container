@@ -2554,6 +2554,63 @@ package enum NativeLocalLogHandoffSegmentValidator {
 /// is opened and no interrupted-rotation recovery is performed on the source
 /// evidence path.
 package enum NativeLocalLogHandoffSegmentExporter {
+    package static func snapshotFiles(
+        directoryURL: URL,
+        activeFileName: String,
+        destinationDirectoryURL: URL
+    ) throws -> [ContainerLogHandoffSegmentFileSnapshot] {
+        try NativeLocalSecureDirectory.validateActiveFileName(activeFileName)
+        let directory = try NativeLocalSecureDirectory(
+            url: directoryURL,
+            createIfAbsent: false
+        )
+        let files = try directory.pinnedFiles(
+            activeFileName: activeFileName,
+            maximumFileCount: 4097,
+            activeCompletedSize: nil,
+            didEnumerate: nil
+        )
+        return try files.map { file in
+            guard
+                file.index >= 0,
+                file.byteCount
+                    <= UInt64(
+                        NativeLocalLogHandoffSegmentCodec
+                            .maximumDecodedSegmentBytes
+                    )
+            else {
+                throw NativeLocalLogError.storageLimitExceeded
+            }
+            let copied = try ContainerLogHandoffSegmentFileCopier.copy(
+                descriptor: file.descriptor,
+                byteLength: file.byteCount,
+                rotationIndex: UInt64(file.index),
+                compressed: file.compressed,
+                maximumInternalSequence: 0,
+                destinationDirectoryURL: destinationDirectoryURL
+            )
+            let bytes = try Data(
+                contentsOf: copied.fileURL,
+                options: .mappedIfSafe
+            )
+            let inspection = try NativeLocalLogHandoffSegmentValidator.inspect(
+                bytes,
+                compressed: file.compressed
+            )
+            return ContainerLogHandoffSegmentFileSnapshot(
+                rotationIndex: copied.rotationIndex,
+                compressed: copied.compressed,
+                sourceDeviceID: copied.sourceDeviceID,
+                sourceInode: copied.sourceInode,
+                byteLength: copied.byteLength,
+                contentDigestSHA256: copied.contentDigestSHA256,
+                maximumInternalSequence:
+                    inspection.maximumInternalSequence,
+                fileURL: copied.fileURL
+            )
+        }
+    }
+
     package static func snapshot(
         directoryURL: URL,
         activeFileName: String
@@ -2572,9 +2629,11 @@ package enum NativeLocalLogHandoffSegmentExporter {
         return try files.map { file in
             guard
                 file.index >= 0,
-                file.byteCount <= UInt64(
-                    NativeLocalLogHandoffSegmentCodec.maximumDecodedSegmentBytes
-                ),
+                file.byteCount
+                    <= UInt64(
+                        NativeLocalLogHandoffSegmentCodec
+                            .maximumDecodedSegmentBytes
+                    ),
                 file.byteCount <= UInt64(Int.max)
             else {
                 throw NativeLocalLogError.storageLimitExceeded

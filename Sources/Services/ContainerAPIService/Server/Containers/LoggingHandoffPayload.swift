@@ -430,6 +430,19 @@ struct LoggingHandoffExportContainerV1: Equatable, Sendable {
     }
 }
 
+struct LoggingHandoffExportPayloadV2: Equatable, Sendable {
+    let containers: [LoggingHandoffExportContainerV1]
+    let historyFiles: [String: LoggingHandoffHistoryFileV2]
+
+    init(
+        containers: [LoggingHandoffExportContainerV1],
+        historyFiles: [String: LoggingHandoffHistoryFileV2] = [:]
+    ) {
+        self.containers = containers
+        self.historyFiles = historyFiles
+    }
+}
+
 enum LoggingHandoffPayloadError: Error, Equatable, Sendable {
     case boundsExceeded
     case duplicateContainer(String)
@@ -518,6 +531,123 @@ enum LoggingHandoffPayloadCodec {
                 sourceLineageKeyVersion: sourceLineageKeyVersion,
                 sourceLineageHMACSHA256Key: sourceLineageHMACSHA256Key,
                 destinationStateRootUUID: destinationStateRootUUID
+            ),
+            transportFileURL: transportFileURL,
+            mediaType: mediaType,
+            tokenID: tokenID,
+            manifestID: manifestID,
+            sourceOrder: [sourceStateRootUUID],
+            lineageKeys: [
+                ProviderHandoffLineageKeyV1(
+                    sourceStateRootUUID: sourceStateRootUUID,
+                    authorityLineageUUID: sourceAuthorityLineageUUID,
+                    keyVersion: sourceLineageKeyVersion,
+                    rawHMACSHA256Key: sourceLineageHMACSHA256Key
+                )
+            ],
+            destinationProviderFingerprint: destinationProviderFingerprint,
+            destinationStateRootUUID: destinationStateRootUUID,
+            destinationKeyID: destinationKeyID,
+            destinationPublicKey: destinationPublicKey,
+            nonce: nonce,
+            ephemeralPrivateKey: ephemeralPrivateKey
+        )
+    }
+
+    static func prepareSealedFile(
+        payload: LoggingHandoffExportPayloadV2,
+        transportFileURL: URL,
+        recordDirectoryURL: URL,
+        tokenID: String,
+        manifestID: String,
+        sourceStateRootUUID: String,
+        sourceAuthorityLineageUUID: String,
+        sourceLineageKeyVersion: UInt64,
+        sourceLineageHMACSHA256Key: Data,
+        destinationProviderFingerprint: String,
+        destinationStateRootUUID: String,
+        destinationKeyID: String,
+        destinationPublicKey: Data,
+        nonce: Data? = nil,
+        ephemeralPrivateKey: Data? = nil
+    ) throws -> ProviderHandoffPreparedPayloadFileV2 {
+        let materialized = try package(
+            containers: payload.containers,
+            tokenID: tokenID,
+            manifestID: manifestID,
+            sourceStateRootUUID: sourceStateRootUUID,
+            sourceAuthorityLineageUUID: sourceAuthorityLineageUUID,
+            sourceLineageKeyVersion: sourceLineageKeyVersion,
+            sourceLineageHMACSHA256Key: sourceLineageHMACSHA256Key,
+            destinationStateRootUUID: destinationStateRootUUID
+        )
+        let requiredFileEntryIDs: Set<String> = Set(
+            payload.containers.flatMap { container in
+                container.historyStores.compactMap { history in
+                    guard
+                        history.bytes == nil,
+                        history.disposition == .importVerified
+                            || history.disposition == .retainOffline
+                    else {
+                        return nil
+                    }
+                    return historyEntryID(
+                        containerID: container.containerID,
+                        storeID: history.storeID
+                    )
+                }
+            }
+        )
+        guard requiredFileEntryIDs == Set(payload.historyFiles.keys) else {
+            throw LoggingHandoffPayloadError.invalidPackage
+        }
+        var sourceEntries: [ProviderHandoffPayloadPackageEntrySourceV2] = []
+        sourceEntries.reserveCapacity(materialized.entries.count)
+        for entry in materialized.entries {
+            let source: ProviderHandoffPayloadRecordSourceV2
+            if let historyFile = payload.historyFiles[entry.entryID] {
+                guard entry.recordKind == "logging-history-store-v1" else {
+                    throw LoggingHandoffPayloadError.invalidEntry(entry.entryID)
+                }
+                let recordURL = recordDirectoryURL.appendingPathComponent(
+                    "record-\(UUID().uuidString).cbor",
+                    isDirectory: false
+                )
+                try LoggingHandoffHistoryFileDecoder.encode(
+                    metadataRecordBytes: entry.canonicalRecordBytes,
+                    historyFile: historyFile,
+                    outputURL: recordURL
+                )
+                let attributes = try FileManager.default.attributesOfItem(
+                    atPath: recordURL.path
+                )
+                guard
+                    let number = attributes[.size] as? NSNumber,
+                    number.uint64Value > 0
+                else {
+                    throw LoggingHandoffPayloadError.invalidEntry(entry.entryID)
+                }
+                source = .file(
+                    url: recordURL,
+                    byteLength: number.uint64Value
+                )
+            } else {
+                source = .data(entry.canonicalRecordBytes)
+            }
+            sourceEntries.append(
+                ProviderHandoffPayloadPackageEntrySourceV2(
+                    entryID: entry.entryID,
+                    sourceStateRootUUID: entry.sourceStateRootUUID,
+                    recordKind: entry.recordKind,
+                    schemaVersion: entry.schemaVersion,
+                    canonicalRecord: source
+                )
+            )
+        }
+        return try ProviderHandoffPayloadCodec.prepareSealedFile(
+            ProviderHandoffPayloadPackageSourceV2(
+                partKind: .logging,
+                entries: sourceEntries
             ),
             transportFileURL: transportFileURL,
             mediaType: mediaType,
@@ -1895,7 +2025,7 @@ enum LoggingHandoffPayloadCodec {
         "logging:\(encodedIdentifier(containerID)):10:option:\(encodedIdentifier(optionName))"
     }
 
-    private static func historyEntryID(containerID: String, storeID: String) -> String {
+    static func historyEntryID(containerID: String, storeID: String) -> String {
         "logging:\(encodedIdentifier(containerID)):20:history:\(encodedIdentifier(storeID))"
     }
 }

@@ -1110,7 +1110,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
             ),
             trustRegistryStore: trustRegistryStore,
             providerIdentity: sourceIdentity,
-            exportContainers: { request in
+            exportContainers: { request, _ in
                 guard
                     request.selectedResourceIDs
                         == [exportedContainer.containerID]
@@ -1118,7 +1118,9 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                     throw LoggingHandoffSourceControlResponderError
                         .invalidRequest
                 }
-                return [exportedContainer]
+                return LoggingHandoffExportPayloadV2(
+                    containers: [exportedContainer]
+                )
             },
             nowUnixSeconds: { Self.useTime },
             downstream: ContainerEngineProviderHandoffControlService(

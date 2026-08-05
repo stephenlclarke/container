@@ -129,9 +129,69 @@ struct LoggingHandoffPayloadTests {
             ProviderHandoffCrypto.generateX25519PrivateKey()
         let tokenID = "token-logging-file-1"
         let manifestID = "manifest-logging-file-1"
+        let originalContainer = try exportContainer()
+        let originalHistory = try #require(originalContainer.historyStores.first)
+        let historyBytes = try #require(originalHistory.bytes)
+        let sourceHistoryURL = root.appendingPathComponent("source-history")
+        try historyBytes.write(to: sourceHistoryURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: sourceHistoryURL.path
+        )
+        let fileHistory = try LoggingHandoffHistoryStoreV1(
+            fileBackedStoreID: originalHistory.storeID,
+            kind: originalHistory.kind,
+            disposition: originalHistory.disposition,
+            formatVersion: originalHistory.formatVersion,
+            rotationIndex: originalHistory.rotationIndex,
+            compressed: originalHistory.compressed,
+            terminalHistoryEpoch: originalHistory.terminalHistoryEpoch,
+            maximumInternalSequence:
+                originalHistory.maximumInternalSequence,
+            sourceDeviceID: originalHistory.sourceDeviceID,
+            sourceInode: originalHistory.sourceInode,
+            byteLength: originalHistory.byteLength,
+            contentDigestSHA256: try #require(
+                originalHistory.contentDigestSHA256
+            )
+        )
+        let fileContainer = try LoggingHandoffExportContainerV1(
+            containerID: originalContainer.containerID,
+            configuration: originalContainer.configuration,
+            protectedOptions: [
+                "password": "correct horse",
+                "token": "battery staple",
+            ],
+            historyStores: [fileHistory],
+            lifecycleSnapshot: emptyLifecycleSnapshot()
+        )
+        let recordDirectory = root.appendingPathComponent(
+            "records",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: recordDirectory,
+            withIntermediateDirectories: false
+        )
+        let entryID = LoggingHandoffPayloadCodec.historyEntryID(
+            containerID: fileContainer.containerID,
+            storeID: fileHistory.storeID
+        )
         let prepared = try LoggingHandoffPayloadCodec.prepareSealedFile(
-            containers: [try exportContainer()],
+            payload: LoggingHandoffExportPayloadV2(
+                containers: [fileContainer],
+                historyFiles: [
+                    entryID: LoggingHandoffHistoryFileV2(
+                        url: sourceHistoryURL,
+                        byteLength: fileHistory.byteLength,
+                        contentDigestSHA256: try #require(
+                            fileHistory.contentDigestSHA256
+                        )
+                    )
+                ]
+            ),
             transportFileURL: root.appendingPathComponent("transport"),
+            recordDirectoryURL: recordDirectory,
             tokenID: tokenID,
             manifestID: manifestID,
             sourceStateRootUUID: sourceRoot,
@@ -145,17 +205,9 @@ struct LoggingHandoffPayloadTests {
                 for: destinationPrivateKey
             )
         )
-        let recordDirectory = root.appendingPathComponent(
-            "records",
-            isDirectory: true
-        )
         let historyDirectory = root.appendingPathComponent(
             "history",
             isDirectory: true
-        )
-        try FileManager.default.createDirectory(
-            at: recordDirectory,
-            withIntermediateDirectories: false
         )
         try FileManager.default.createDirectory(
             at: historyDirectory,
@@ -187,14 +239,14 @@ struct LoggingHandoffPayloadTests {
             privateFileOwner: LoggingHandoffPrivateFileOwner(rootURL: root)
         )
         let container = try #require(decoded.containers.first)
-        let entryID = try #require(container.historyEntryIDs.first)
-        let history = try #require(decoded.historyStores[entryID])
-        let file = try #require(decoded.historyFiles[entryID])
+        let decodedEntryID = try #require(container.historyEntryIDs.first)
+        let history = try #require(decoded.historyStores[decodedEntryID])
+        let file = try #require(decoded.historyFiles[decodedEntryID])
         #expect(history.bytes == nil)
         #expect(file.byteLength == history.byteLength)
         #expect(file.contentDigestSHA256 == history.contentDigestSHA256)
         #expect(
-            try decoded.withHistoryBytes(entryID: entryID) { bytes in
+            try decoded.withHistoryBytes(entryID: decodedEntryID) { bytes in
                 bytes == Data("preserved docker log\n".utf8)
             }
         )
