@@ -1029,6 +1029,227 @@ struct ContainerLogsTests {
         #expect(deadObject["Status"] as? String == "Dead")
     }
 
+    @Test func dockerImageDiscoveryProjectsNativeCatalogAndInspectMetadata() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-image-discovery-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        func resource(
+            reference: String,
+            digest: String,
+            created: Date,
+            labels: [String: String],
+            size: Int64
+        ) -> ImageResource {
+            let descriptor = Descriptor(
+                mediaType: MediaTypes.index,
+                digest: digest,
+                size: 9226
+            )
+            let description = ImageDescription(
+                reference: "docker.io/library/\(reference)",
+                descriptor: descriptor
+            )
+            return ImageResource(
+                configuration: ImageResource.ImageConfiguration(
+                    description: description,
+                    creationDate: created
+                ),
+                variants: [
+                    ImageResource.Variant(
+                        platform: Platform(
+                            arch: "arm64",
+                            os: "linux",
+                            variant: "v8"
+                        ),
+                        digest: "sha256:" + String(repeating: "f", count: 64),
+                        size: size,
+                        config: Image(
+                            created: "2026-04-16T23:53:24.896953537Z",
+                            architecture: "arm64",
+                            os: "linux",
+                            variant: "v8",
+                            config: ImageConfig(
+                                env: ["PATH=/usr/local/bin:/usr/bin:/bin"],
+                                cmd: ["/bin/sh"],
+                                workingDir: "/",
+                                labels: labels
+                            ),
+                            rootfs: Rootfs(
+                                type: "layers",
+                                diffIDs: [
+                                    "sha256:" + String(repeating: "e", count: 64)
+                                ]
+                            ),
+                            history: [History(comment: "fixture image")]
+                        ),
+                        healthCheck: ImageResource.HealthCheck(
+                            test: ["CMD", "/bin/true"]
+                        )
+                    )
+                ],
+                displayReference: reference
+            )
+        }
+
+        let digest = "sha256:" + String(repeating: "d", count: 64)
+        let created = Date(timeIntervalSince1970: 1_776_383_604)
+        let alpine = resource(
+            reference: "alpine:3.20",
+            digest: digest,
+            created: created,
+            labels: ["fixture": "true"],
+            size: 4_103_199
+        )
+        let stable = resource(
+            reference: "alpine:stable",
+            digest: digest,
+            created: created,
+            labels: ["fixture": "true"],
+            size: 4_103_199
+        )
+        let busyboxDigest = "sha256:" + String(repeating: "b", count: 64)
+        let busybox = resource(
+            reference: "busybox:latest",
+            digest: busyboxDigest,
+            created: Date(timeIntervalSince1970: 1_700_000_000),
+            labels: [:],
+            size: 2_000_000
+        )
+
+        let bundle = ContainerResource.Bundle(
+            path: tempURL.appendingPathComponent("containers/image-user")
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.path,
+            withIntermediateDirectories: true
+        )
+        var configuration = testConfiguration(id: "image-user")
+        configuration.image = ImageDescription(
+            reference: alpine.name,
+            descriptor: alpine.configuration.descriptor
+        )
+        try bundle.set(configuration: configuration)
+
+        let backend = ContainerDockerLoggingBackend(
+            containers: try service(
+                appRoot: tempURL,
+                logLabel: "container-engine-image-discovery-test"
+            ),
+            imageResourceProvider: { [alpine, stable, busybox] }
+        )
+        let listData = try await backend.imageListJSON(
+            request: DockerImageListRequest(
+                sharedSize: true,
+                filters: [
+                    "label": ["fixture=true"],
+                    "reference": ["alpine:3.*"],
+                ]
+            )
+        )
+        let list = try #require(
+            try JSONSerialization.jsonObject(with: listData)
+                as? [[String: Any]]
+        )
+        #expect(list.count == 1)
+        let summary = try #require(list.first)
+        #expect(summary["Id"] as? String == digest)
+        #expect(summary["RepoTags"] as? [String] == ["alpine:3.20", "alpine:stable"])
+        #expect(summary["RepoDigests"] as? [String] == ["alpine@\(digest)"])
+        #expect(summary["Containers"] as? Int == 1)
+        #expect(summary["Created"] as? Int == 1_776_383_604)
+        #expect(summary["Size"] as? Int == 4_103_199)
+        #expect(summary["SharedSize"] as? Int == -1)
+        #expect(summary["Labels"] as? [String: String] == ["fixture": "true"])
+
+        let inspectData = try await backend.imageInspectJSON(name: "alpine:3.20")
+        let inspect = try #require(
+            try JSONSerialization.jsonObject(with: inspectData)
+                as? [String: Any]
+        )
+        #expect(inspect["Id"] as? String == digest)
+        #expect(inspect["Architecture"] as? String == "arm64")
+        #expect(inspect["Os"] as? String == "linux")
+        #expect(inspect["Variant"] as? String == "v8")
+        #expect(inspect["Comment"] as? String == "fixture image")
+        #expect(inspect["Size"] as? Int == 4_103_199)
+        let config = try #require(inspect["Config"] as? [String: Any])
+        #expect(config["Cmd"] as? [String] == ["/bin/sh"])
+        #expect(config["Labels"] as? [String: String] == ["fixture": "true"])
+        let healthCheck = try #require(config["Healthcheck"] as? [String: Any])
+        #expect(healthCheck["Test"] as? [String] == ["CMD", "/bin/true"])
+        let rootFS = try #require(inspect["RootFS"] as? [String: Any])
+        #expect(rootFS["Type"] as? String == "layers")
+        #expect((rootFS["Layers"] as? [String])?.count == 1)
+
+        func inspectedID(_ name: String) async throws -> String? {
+            let data = try await backend.imageInspectJSON(name: name)
+            let object = try #require(
+                try JSONSerialization.jsonObject(with: data)
+                    as? [String: Any]
+            )
+            return object["Id"] as? String
+        }
+
+        #expect(try await inspectedID(String(repeating: "d", count: 12)) == digest)
+        #expect(try await inspectedID("busybox") == busyboxDigest)
+
+        func listedIDs(_ filters: [String: [String]]) async throws -> [String] {
+            let data = try await backend.imageListJSON(
+                request: DockerImageListRequest(filters: filters)
+            )
+            let objects = try #require(
+                try JSONSerialization.jsonObject(with: data)
+                    as? [[String: Any]]
+            )
+            return objects.compactMap { $0["Id"] as? String }
+        }
+
+        #expect(try await listedIDs(["dangling": ["false"]])
+            == [digest, busyboxDigest])
+        #expect(try await listedIDs(["dangling": ["true"]]).isEmpty)
+        #expect(try await listedIDs(["before": ["alpine:3.20"]])
+            == [busyboxDigest])
+        #expect(try await listedIDs(["since": ["busybox:latest"]])
+            == [digest])
+        #expect(try await listedIDs(["label": ["fixture"]]) == [digest])
+
+        await #expect(
+            throws: DockerLoggingBackendError.imageNotFound("missing:latest")
+        ) {
+            try await backend.imageInspectJSON(name: "missing:latest")
+        }
+        await #expect(throws: DockerLoggingBackendError.self) {
+            try await backend.imageListJSON(
+                request: DockerImageListRequest(
+                    filters: ["unsupported": ["value"]]
+                )
+            )
+        }
+        await #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                "invalid filter 'dangling=[banana]'"
+            )
+        ) {
+            try await backend.imageListJSON(
+                request: DockerImageListRequest(
+                    filters: ["dangling": ["banana"]]
+                )
+            )
+        }
+        await #expect(
+            throws: DockerLoggingBackendError.imageNotFound("missing:latest")
+        ) {
+            try await backend.imageListJSON(
+                request: DockerImageListRequest(
+                    filters: ["before": ["missing:latest"]]
+                )
+            )
+        }
+    }
+
     @Test func engineLoggingInspectionHidesJSONFilePathBeforeFirstStart() async throws {
         let tempURL = try canonicalTemporaryDirectory()
             .appendingPathComponent(

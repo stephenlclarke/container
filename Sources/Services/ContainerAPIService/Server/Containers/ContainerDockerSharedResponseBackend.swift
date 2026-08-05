@@ -17,10 +17,44 @@
 import ContainerEngineLogging
 import ContainerResource
 import ContainerRuntimeLinuxClient
+import ContainerizationOCI
 import Foundation
+
+private struct DockerImageGroup {
+    let digest: String
+    let descriptor: Descriptor
+    let resources: [ImageResource]
+    let variant: ImageResource.Variant?
+
+    var creationDate: Date {
+        resources.map(\.creationDate).min()
+            ?? Date(timeIntervalSince1970: 0)
+    }
+
+    var repoTags: [String] {
+        resources.map(\.displayReference)
+            .filter { !$0.contains("@") }
+            .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+    }
+
+    var repoDigests: [String] {
+        Set(repoTags.map { "\(ContainerDockerLoggingBackend.repositoryName($0))@\(digest)" })
+            .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+    }
+
+    var referenceAliases: Set<String> {
+        Set(
+            resources.flatMap { [$0.name, $0.displayReference] }
+                + repoTags
+                + repoDigests
+                + [digest]
+        )
+    }
+}
 
 extension ContainerDockerLoggingBackend:
     DockerEngineDiscoveryBackend,
+    DockerImageDiscoveryBackend,
     DockerLoggingSharedResponseBackend
 {
     public func systemVersionJSON() async throws -> Data {
@@ -40,6 +74,38 @@ extension ContainerDockerLoggingBackend:
                     request: request
                 )
             )
+        } catch {
+            throw Self.map(error, containerID: nil)
+        }
+    }
+
+    public func imageListJSON(
+        request: DockerImageListRequest
+    ) async throws -> Data {
+        do {
+            async let resources = imageResourceProvider()
+            async let snapshots = containers.list()
+            return try Self.jsonArrayData(
+                Self.imageListObjects(
+                    resources: try await resources,
+                    snapshots: try await snapshots,
+                    request: request
+                )
+            )
+        } catch {
+            throw Self.map(error, containerID: nil)
+        }
+    }
+
+    public func imageInspectJSON(name: String) async throws -> Data {
+        do {
+            let groups = Self.imageGroups(
+                try await imageResourceProvider()
+            )
+            guard let group = Self.resolveImageReference(name, in: groups) else {
+                throw DockerLoggingBackendError.imageNotFound(name)
+            }
+            return try Self.jsonData(Self.imageInspectObject(group))
         } catch {
             throw Self.map(error, containerID: nil)
         }
@@ -144,6 +210,265 @@ extension ContainerDockerLoggingBackend:
         return selected.map {
             containerListObject($0, includeSize: request.size, now: now)
         }
+    }
+
+    static func imageListObjects(
+        resources: [ImageResource],
+        snapshots: [ContainerSnapshot],
+        request: DockerImageListRequest
+    ) throws -> [[String: Any]] {
+        let allGroups = imageGroups(resources)
+        var selected = allGroups
+        for (name, values) in request.filters where !values.isEmpty {
+            selected = try selected.filter { group in
+                try values.contains { value in
+                    try matchesImageListFilter(
+                        name: name,
+                        value: value,
+                        group: group,
+                        allGroups: allGroups
+                    )
+                }
+            }
+        }
+        selected.sort {
+            if $0.creationDate != $1.creationDate {
+                return $0.creationDate > $1.creationDate
+            }
+            return utf8Less($0.digest, $1.digest)
+        }
+        return try selected.map {
+            try imageListObject($0, snapshots: snapshots)
+        }
+    }
+
+    private static func imageListObject(
+        _ group: DockerImageGroup,
+        snapshots: [ContainerSnapshot]
+    ) throws -> [String: Any] {
+        let aliases = group.referenceAliases
+        let containers = snapshots.count {
+            let image = $0.configuration.image
+            return image.digest == group.digest
+                || aliases.contains(image.reference)
+        }
+        return [
+            "Containers": containers,
+            "Created": Int64(group.creationDate.timeIntervalSince1970),
+            "Descriptor": descriptorObject(group.descriptor),
+            "Id": group.digest,
+            "Labels": group.variant?.imageConfigLabels ?? [:],
+            "ParentId": "",
+            "RepoDigests": group.repoDigests,
+            "RepoTags": group.repoTags,
+            "SharedSize": -1,
+            "Size": group.variant?.size ?? group.descriptor.size,
+        ]
+    }
+
+    private static func imageInspectObject(
+        _ group: DockerImageGroup
+    ) throws -> [String: Any] {
+        guard let variant = group.variant else {
+            throw DockerLoggingBackendError.server(
+                "image \(group.digest) has no runnable platform variant"
+            )
+        }
+        var config = try encodableJSONObject(variant.config.config)
+        if let healthCheck = variant.healthCheck {
+            config["Healthcheck"] = try encodableJSONObject(healthCheck)
+        }
+        let pullRepositories = Set(group.repoTags.map(repositoryName))
+            .sorted(by: utf8Less)
+            .map { ["Repository": $0] }
+        return [
+            "Architecture": variant.config.architecture,
+            "Comment": variant.config.history?.compactMap(\.comment).last ?? "",
+            "Config": config,
+            "Created": variant.config.created ?? dockerDate(group.creationDate),
+            "Descriptor": descriptorObject(group.descriptor),
+            "Id": group.digest,
+            "Identity": ["Pull": pullRepositories],
+            "Metadata": ["LastTagTime": "0001-01-01T00:00:00Z"],
+            "Os": variant.config.os,
+            "RepoDigests": group.repoDigests,
+            "RepoTags": group.repoTags,
+            "RootFS": [
+                "Layers": variant.config.rootfs.diffIDs,
+                "Type": variant.config.rootfs.type,
+            ],
+            "Size": variant.size,
+            "Variant": variant.config.variant ?? variant.platform.variant ?? "",
+        ]
+    }
+
+    private static func imageGroups(
+        _ resources: [ImageResource]
+    ) -> [DockerImageGroup] {
+        Dictionary(grouping: resources) {
+            $0.configuration.descriptor.digest
+        }.compactMap { digest, groupedResources in
+            guard let descriptor = groupedResources.first?.configuration.descriptor else {
+                return nil
+            }
+            let variants = groupedResources.flatMap(\.variants)
+            let variant = variants.first { $0.platform == .current }
+                ?? variants.first { $0.platform.os == "linux" }
+                ?? variants.first
+            return DockerImageGroup(
+                digest: digest,
+                descriptor: descriptor,
+                resources: groupedResources,
+                variant: variant
+            )
+        }
+    }
+
+    private static func matchesImageListFilter(
+        name: String,
+        value: String,
+        group: DockerImageGroup,
+        allGroups: [DockerImageGroup]
+    ) throws -> Bool {
+        switch name {
+        case "reference":
+            return group.referenceAliases.contains {
+                wildcardMatch(pattern: value, value: $0)
+            }
+        case "label":
+            let components = value.split(
+                separator: "=",
+                maxSplits: 1,
+                omittingEmptySubsequences: false
+            )
+            let labels = group.variant?.imageConfigLabels ?? [:]
+            guard let actual = labels[String(components[0])] else {
+                return false
+            }
+            return components.count == 1 || actual == String(components[1])
+        case "dangling":
+            guard let requested = dockerBool(value) else {
+                throw DockerLoggingBackendError.invalidParameter(
+                    "invalid filter 'dangling=[\(value)]'"
+                )
+            }
+            return group.repoTags.isEmpty == requested
+        case "before", "since":
+            guard let reference = resolveImageReference(value, in: allGroups) else {
+                throw DockerLoggingBackendError.imageNotFound(value)
+            }
+            if name == "before" {
+                return group.creationDate < reference.creationDate
+            }
+            return group.creationDate > reference.creationDate
+        default:
+            throw DockerLoggingBackendError.invalidParameter(
+                "invalid filter '\(name)'"
+            )
+        }
+    }
+
+    private static func resolveImageReference(
+        _ name: String,
+        in groups: [DockerImageGroup]
+    ) -> DockerImageGroup? {
+        let defaultTagName = hasExplicitImageTag(name) ? nil : "\(name):latest"
+        let exact = groups.filter {
+            $0.referenceAliases.contains(name)
+                || defaultTagName.map($0.referenceAliases.contains) == true
+        }
+        if exact.count == 1 {
+            return exact[0]
+        }
+
+        let digestPrefix: String
+        if name.hasPrefix("sha256:") {
+            digestPrefix = name
+        } else if name.allSatisfy(\.isHexDigit) {
+            digestPrefix = "sha256:\(name)"
+        } else {
+            return nil
+        }
+        let digestMatches = groups.filter { $0.digest.hasPrefix(digestPrefix) }
+        return digestMatches.count == 1 ? digestMatches[0] : nil
+    }
+
+    private static func hasExplicitImageTag(_ reference: String) -> Bool {
+        if reference.contains("@") {
+            return true
+        }
+        let lastComponent = reference.split(separator: "/").last ?? ""
+        return lastComponent.contains(":")
+    }
+
+    fileprivate static func repositoryName(_ reference: String) -> String {
+        let withoutDigest = reference.split(separator: "@", maxSplits: 1)
+            .first.map(String.init) ?? reference
+        guard let slash = withoutDigest.lastIndex(of: "/") else {
+            return withoutDigest.split(separator: ":", maxSplits: 1)
+                .first.map(String.init) ?? withoutDigest
+        }
+        let suffix = withoutDigest[withoutDigest.index(after: slash)...]
+        guard let colon = suffix.lastIndex(of: ":") else {
+            return withoutDigest
+        }
+        let absoluteColon = withoutDigest.index(
+            slash,
+            offsetBy: suffix.distance(from: suffix.startIndex, to: colon) + 1
+        )
+        return String(withoutDigest[..<absoluteColon])
+    }
+
+    private static func wildcardMatch(
+        pattern: String,
+        value: String
+    ) -> Bool {
+        let escaped = NSRegularExpression.escapedPattern(for: pattern)
+            .replacingOccurrences(of: #"\*"#, with: ".*")
+            .replacingOccurrences(of: #"\?"#, with: ".")
+        guard let expression = try? NSRegularExpression(pattern: "^\(escaped)$") else {
+            return false
+        }
+        let range = NSRange(value.startIndex..., in: value)
+        return expression.firstMatch(in: value, range: range) != nil
+    }
+
+    private static func dockerBool(_ value: String) -> Bool? {
+        switch value.lowercased() {
+        case "1", "true":
+            true
+        case "0", "false":
+            false
+        default:
+            nil
+        }
+    }
+
+    private static func descriptorObject(
+        _ descriptor: Descriptor
+    ) -> [String: Any] {
+        [
+            "digest": descriptor.digest,
+            "mediaType": descriptor.mediaType,
+            "size": descriptor.size,
+        ]
+    }
+
+    private static func encodableJSONObject<T: Encodable>(
+        _ value: T?
+    ) throws -> [String: Any] {
+        guard let value else {
+            return [:]
+        }
+        let data = try JSONEncoder().encode(value)
+        guard let object = try JSONSerialization.jsonObject(with: data)
+            as? [String: Any]
+        else {
+            throw DockerLoggingBackendError.server(
+                "Container image metadata is not a JSON object"
+            )
+        }
+        return object
     }
 
     private static func containerListObject(

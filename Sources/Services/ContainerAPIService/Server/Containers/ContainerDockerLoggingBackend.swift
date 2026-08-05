@@ -18,6 +18,7 @@ import ContainerAPIClient
 import ContainerEngineLogging
 import ContainerEngineWire
 import ContainerLoggingStorage
+import ContainerPersistence
 import ContainerResource
 import ContainerizationError
 import ContainerizationOS
@@ -60,19 +61,49 @@ public struct ContainerDockerLoggingBackend:
     let engineIdentity: String
     let serverVersion: String
     let imageCountProvider: @Sendable () async throws -> Int
+    let imageResourceProvider: @Sendable () async throws -> [ImageResource]
 
     public init(
         containers: ContainersService,
         engineIdentity: String = "container",
         serverVersion: String = "unknown",
-        imageCountProvider: @escaping @Sendable () async throws -> Int = {
-            try await ClientImage.list().count
-        }
+        containerSystemConfig: ContainerSystemConfig = .init(),
+        imageCountProvider: (@Sendable () async throws -> Int)? = nil,
+        imageResourceProvider: (@Sendable () async throws -> [ImageResource])? = nil
     ) {
+        let authoritativeImageResources = imageResourceProvider ?? {
+            var resources = [ImageResource]()
+            for image in try await ClientImage.list() {
+                guard try !Utility.isInfraImage(
+                    name: image.description.reference,
+                    containerSystemConfig: containerSystemConfig
+                ) else {
+                    continue
+                }
+                resources.append(
+                    try await image.toImageResource(
+                        containerSystemConfig: containerSystemConfig
+                    )
+                )
+            }
+            return resources
+        }
         self.containers = containers
         self.engineIdentity = engineIdentity
         self.serverVersion = serverVersion
-        self.imageCountProvider = imageCountProvider
+        self.imageResourceProvider = authoritativeImageResources
+        self.imageCountProvider = imageCountProvider ?? {
+            var count = 0
+            for image in try await ClientImage.list() {
+                if try !Utility.isInfraImage(
+                    name: image.description.reference,
+                    containerSystemConfig: containerSystemConfig
+                ) {
+                    count += 1
+                }
+            }
+            return count
+        }
     }
 
     public func loggingSystemInfo() async throws -> DockerLoggingSystemInfo {

@@ -87,6 +87,7 @@ extension APIServer {
                 let engineLoggingProvider = try await initializeEngineLoggingProvider(
                     appRoot: appRootURL,
                     containersService: containersService,
+                    containerSystemConfig: containerSystemConfig,
                     log: log
                 )
                 try engineLoggingProvider.start()
@@ -207,6 +208,7 @@ extension APIServer {
         private func initializeEngineLoggingProvider(
             appRoot: URL,
             containersService: ContainersService,
+            containerSystemConfig: ContainerSystemConfig,
             log: Logger
         ) async throws -> ContainerEngineProviderSessionServer {
             let stateRoot = appRoot.appendingPathComponent(
@@ -239,6 +241,14 @@ extension APIServer {
                 ),
                 ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerList",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageInspect",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageList",
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
@@ -325,7 +335,8 @@ extension APIServer {
             let backend = ContainerDockerLoggingBackend(
                 containers: containersService,
                 engineIdentity: stateRootUUID.uuidString,
-                serverVersion: ReleaseVersion.version()
+                serverVersion: ReleaseVersion.version(),
+                containerSystemConfig: containerSystemConfig
             )
             let controller = try DockerLoggingAPIController(
                 backend: backend,
