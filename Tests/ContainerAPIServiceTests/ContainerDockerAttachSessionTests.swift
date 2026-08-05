@@ -91,6 +91,71 @@ struct ContainerDockerAttachSessionTests {
         #expect(await detachCount.value == 1)
     }
 
+    @Test func splitDetachSequenceLeavesProcessAvailableForReattach() async throws {
+        let firstInput = Pipe()
+        let detachCount = AttachDetachCount()
+        let first = ContainerDockerAttachSession(
+            input: firstInput.fileHandleForWriting,
+            runtimeOutputs: [],
+            logReader: nil,
+            detachKeySequence: [0x10, 0x11],
+            waitForProcess: true,
+            processWait: {
+                try await Task.sleep(for: .seconds(60))
+                return 99
+            },
+            onDetach: { await detachCount.increment() }
+        )
+        await first.start()
+        var firstChunk = Data("before detach".utf8)
+        firstChunk.append(0x10)
+        try await first.write(firstChunk)
+        try await first.write(Data([0x11]))
+
+        #expect(
+            try firstInput.fileHandleForReading.readToEnd()
+                == Data("before detach".utf8)
+        )
+        #expect(try await first.wait() == 0)
+
+        let secondInput = Pipe()
+        let secondOutput = Pipe()
+        let second = ContainerDockerAttachSession(
+            input: secondInput.fileHandleForWriting,
+            runtimeOutputs: [
+                (.standardOutput, secondOutput.fileHandleForReading)
+            ],
+            logReader: nil,
+            detachKeySequence: nil,
+            waitForProcess: false,
+            processWait: { 99 },
+            onDetach: { await detachCount.increment() }
+        )
+        await second.start()
+        try await second.write(Data("after reattach".utf8))
+        try await second.closeStandardInput()
+        #expect(
+            try secondInput.fileHandleForReading.readToEnd()
+                == Data("after reattach".utf8)
+        )
+        try secondOutput.fileHandleForWriting.write(
+            contentsOf: Data("reattached output".utf8)
+        )
+        try secondOutput.fileHandleForWriting.close()
+
+        #expect(
+            try await collect(second.frames)
+                == [
+                    DockerStreamFrame(
+                        channel: .standardOutput,
+                        data: Data("reattached output".utf8)
+                    )
+                ]
+        )
+        #expect(try await second.wait() == 0)
+        #expect(await detachCount.value == 2)
+    }
+
     @Test func canonicalLogReaderFeedsHijackFramesWithoutRuntimeOutput() async throws {
         let record = try DockerLogRecord(
             source: .standardError,

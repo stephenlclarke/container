@@ -721,17 +721,6 @@ struct ContainerLogsTests {
             }
 
             await #expect(
-                throws: DockerLoggingBackendError.invalidParameter(
-                    "terminal dimensions exceed the runtime range"
-                )
-            ) {
-                try await backend.resizeContainerTerminal(
-                    containerID: id,
-                    height: UInt32(UInt16.max) + 1,
-                    width: 80
-                )
-            }
-            await #expect(
                 throws: DockerLoggingBackendError.containerNotFound("missing")
             ) {
                 try await backend.resizeContainerTerminal(
@@ -783,6 +772,14 @@ struct ContainerLogsTests {
             )
             #expect(missingResizeResponse.status == 404)
 
+            await containers.publishEngineResizeEvent(
+                snapshot: try containers.engineAttachmentInspection(
+                    containerID: id
+                ).snapshot,
+                height: UInt32.max,
+                width: UInt32(UInt16.max) + 2
+            )
+
             let eventSubscription = await containers.events(
                 options: ContainerEventOptions(until: Date())
             )
@@ -799,9 +796,14 @@ struct ContainerLogsTests {
                 }
             #expect(
                 events.map(\.action)
-                    == ["attach", "detach", "attach", "detach"]
+                    == ["attach", "detach", "attach", "detach", "resize"]
             )
             #expect(events.allSatisfy { $0.id == id })
+            #expect(events.last?.attributes["height"] == String(UInt32.max))
+            #expect(
+                events.last?.attributes["width"]
+                    == String(UInt32(UInt16.max) + 2)
+            )
             await provider.shutdown()
         } catch {
             await provider.shutdown()
@@ -828,7 +830,7 @@ struct ContainerLogsTests {
         #expect(!plan.stderr)
     }
 
-    @Test func engineAttachStreamsUnreadableLiveOutputWithTTYMerge() {
+    @Test func engineAttachStreamsUnreadableLiveOutputWithDockerTTYSelection() {
         let nonTerminal = ContainerDockerRuntimeAttachPlan(
             request: DockerAttachRequest(
                 includeLogs: true,
@@ -853,6 +855,18 @@ struct ContainerLogsTests {
             terminal: true,
             hasLogReader: false
         )
+        let terminalBoth = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: false,
+                stream: true,
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: true,
+            hasLogReader: false
+        )
         let readable = ContainerDockerRuntimeAttachPlan(
             request: DockerAttachRequest(
                 includeLogs: true,
@@ -869,10 +883,28 @@ struct ContainerLogsTests {
         #expect(nonTerminal.input)
         #expect(nonTerminal.stdout)
         #expect(nonTerminal.stderr)
-        #expect(terminalStderr.stdout)
+        #expect(!terminalStderr.stdout)
         #expect(!terminalStderr.stderr)
+        #expect(terminalBoth.stdout)
+        #expect(!terminalBoth.stderr)
         #expect(!readable.stdout)
         #expect(!readable.stderr)
+    }
+
+    @Test func engineResizeAcceptsDockerUInt32DomainAndUsesPTYRepresentation() {
+        let maximum = ContainerDockerLoggingBackend.terminalSize(
+            height: UInt32.max,
+            width: UInt32.max
+        )
+        let wrapped = ContainerDockerLoggingBackend.terminalSize(
+            height: UInt32(UInt16.max) + 1,
+            width: UInt32(UInt16.max) + 2
+        )
+
+        #expect(maximum.height == UInt16.max)
+        #expect(maximum.width == UInt16.max)
+        #expect(wrapped.height == 0)
+        #expect(wrapped.width == 1)
     }
 
     @Test func engineActiveWireReaderPreservesExactRecordAndTerminalMode() async throws {

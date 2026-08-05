@@ -4478,6 +4478,23 @@ extension ContainersService {
         await publishContainerEvent(action: "detach", snapshot: snapshot)
     }
 
+    func publishEngineResizeEvent(
+        snapshot: ContainerSnapshot,
+        height: UInt32,
+        width: UInt32
+    ) async {
+        await eventBroadcaster.publish(
+            Self.containerEvent(
+                action: "resize",
+                snapshot: snapshot,
+                additionalAttributes: [
+                    "height": String(height),
+                    "width": String(width),
+                ]
+            )
+        )
+    }
+
     func engineLoggingSystemInfo() async throws -> (
         defaultDriver: String,
         registeredDrivers: [String]

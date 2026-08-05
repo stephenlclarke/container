@@ -67,7 +67,8 @@ without a reader, including `none`, fall back to exact-process output only for
 `stream=1`; a finite `logs=1&stream=0` request returns no invented history and
 does not open a live runtime attachment. Requested live stdin/stdout/stderr are
 attached through the existing `ContainersService` runtime path. TTY output is
-merged; non-TTY output retains Docker stdout/stderr channels.
+merged onto stdout when stdout is selected; a TTY stderr-only request remains
+empty, and non-TTY output retains Docker stdout/stderr channels.
 
 `ContainerDockerAttachSession` exposes a bounded hijack frame stream. A full
 buffer retries the same frame and applies backpressure instead of dropping it.
@@ -79,10 +80,12 @@ the canonical service event broadcaster.
 The gateway WebSocket transport consumes that same
 `ContainerDockerAttachSession`; it does not create a second reader or runtime
 attachment. `ContainerDockerLoggingBackend` also implements the narrow
-terminal-resize contract by validating Docker's unsigned dimensions exactly,
-mapping them to Containerization's terminal size, and resizing the init
-process through `ContainersService`. Missing, stopped, and out-of-range cases
-retain Docker-compatible status and message semantics.
+terminal-resize contract by accepting Docker's complete `UInt32` query domain,
+mapping its low 16 bits to Containerization's PTY size, and resizing the init
+process through `ContainersService`. Values outside the Docker domain plus
+missing and stopped containers retain compatible status and message semantics.
+Success publishes one canonical `resize` event with the original 32-bit
+dimensions; failure publishes no resize event.
 
 ## Provider identity and route gating
 
@@ -137,9 +140,10 @@ evidence.
   executable entry point supplied by `container-engine-api`.
 - Focused tests cover canonical static reads, protected inspect options,
   lossless active wire, stream cancellation, runtime I/O, detach keys,
-  finite unreadable-driver attach, live unreadable-driver output, TTY merge,
-  over-capacity no-drop behavior, provider hijack forwarding, and lifecycle
-  event ordering.
+  finite unreadable-driver attach, live unreadable-driver output, Docker TTY
+  stream selection, split detach and independent re-attach, resize-domain
+  conversion, over-capacity no-drop behavior, provider hijack forwarding, and
+  lifecycle event ordering.
 
 ## Dependency handoff
 
@@ -178,6 +182,13 @@ Current development MacBook Pro evidence:
 - focused attach/hijack/provider integration: 5 tests in 2 suites passed;
 - focused Engine logs, hijack, WebSocket, and resize integration: 38 tests
   passed;
+- focused finite-history, TTY selection, resize-domain/event, and split
+  detach/re-attach slice: 5 tests in 2 suites passed under warnings-as-errors
+  against local Containerization `38d9c695` and Engine API `5e52a0f4`;
+- pinned Moby 29.2.1 source `6bc6209b` confirms 32-bit resize parsing and exact
+  requested stream selection; a same-MBP Docker 29.5.2 black-box check returned
+  TTY bytes for stdout/both but none for stderr-only, accepted `UInt32.max`,
+  and rejected `UInt32.max + 1`;
 - complete matched Container validation: 1,835 Swift Testing tests in 213
   suites plus 94 XCTest tests passed with zero failures;
 - isolated signed-package lifecycle: `system start`, JSON `system status`,
@@ -222,7 +233,7 @@ Current development MacBook Pro evidence:
 - [x] Attach replay/live, stdin/TTY, detach-key, bounded transport, and
   lifecycle-event semantics use one authority path.
 - [x] WebSocket attach reuses the canonical session and resize maps to the
-  exact init process with Docker-compatible failures.
+  exact init process with Docker-compatible range, event, and failure behavior.
 - [x] Compose whole `/info` and inspect responses before advertising them.
 - [x] Install and supervise the public gateway.
 - [ ] Complete the remaining external-client route/certification matrix and

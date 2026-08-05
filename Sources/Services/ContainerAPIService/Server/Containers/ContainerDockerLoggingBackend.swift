@@ -293,22 +293,19 @@ public struct ContainerDockerLoggingBackend:
         height: UInt32,
         width: UInt32
     ) async throws {
-        guard
-            let terminalHeight = UInt16(exactly: height),
-            let terminalWidth = UInt16(exactly: width)
-        else {
-            throw DockerLoggingBackendError.invalidParameter(
-                "terminal dimensions exceed the runtime range"
-            )
-        }
         do {
+            let inspection = try await containers.engineAttachmentInspection(
+                containerID: containerID
+            )
             try await containers.resize(
                 id: containerID,
                 processID: containerID,
-                size: Terminal.Size(
-                    width: terminalWidth,
-                    height: terminalHeight
-                )
+                size: Self.terminalSize(height: height, width: width)
+            )
+            await containers.publishEngineResizeEvent(
+                snapshot: inspection.snapshot,
+                height: height,
+                width: width
             )
         } catch let error as ContainerizationError
             where error.code == .invalidState
@@ -319,6 +316,13 @@ public struct ContainerDockerLoggingBackend:
         } catch {
             throw Self.map(error, containerID: containerID)
         }
+    }
+
+    static func terminalSize(height: UInt32, width: UInt32) -> Terminal.Size {
+        Terminal.Size(
+            width: UInt16(truncatingIfNeeded: width),
+            height: UInt16(truncatingIfNeeded: height)
+        )
     }
 
     private func attachRuntime(
@@ -454,9 +458,7 @@ struct ContainerDockerRuntimeAttachPlan: Equatable, Sendable {
         let runtimeOutput =
             request.stream && !hasLogReader
             && (request.stdout || request.stderr)
-        stdout =
-            runtimeOutput
-            && (request.stdout || terminal && request.stderr)
+        stdout = runtimeOutput && request.stdout
         stderr = runtimeOutput && request.stderr && !terminal
     }
 }

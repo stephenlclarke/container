@@ -58,8 +58,12 @@ or nanosecond timestamp presentation.
   exact process streams only when `stream=1`, without fabricating history or
   turning finite `logs=1&stream=0` requests into live attachments.
 - [x] Runtime stdin/stdout/stderr use exact-process attachment, TTY output is
-  merged, Docker detach keys are consumed server-side, and slow hijack clients
-  cannot create an unbounded allocation or silently lose buffered frames.
+  merged only onto requested stdout while TTY stderr-only requests stay empty,
+  Docker detach keys are consumed server-side, and slow hijack clients cannot
+  create an unbounded allocation or silently lose buffered frames.
+- [x] Detach sequences split across client frames remain atomic, consume no
+  guest input bytes, leave the process running, and permit an independent
+  re-attach session.
 - [x] Attach session setup, EOF, input close, cancellation, reader failure, and
   failed runtime attachment close every local handle and reader exactly once.
 - [x] Canonical `attach` and `detach` events use the existing service event
@@ -67,8 +71,11 @@ or nanosecond timestamp presentation.
 - [x] WebSocket attach uses the same authority-owned canonical session as
   hijack attach and preserves the same stream and lifecycle semantics.
 - [x] Terminal resize maps exact Docker dimensions to the init process and
-  returns Docker-compatible invalid-parameter, missing-container, and
-  stopped-container errors.
+  accepts the full Docker `UInt32` domain before using the PTY's low 16-bit
+  representation; overflow, missing-container, and stopped-container errors
+  remain Docker compatible.
+- [x] Successful Engine resize publishes one canonical `resize` event with the
+  original 32-bit `height` and `width`; failed resize publishes none.
 - [x] The provider fingerprint declares `engine.route.ContainerAttach`,
   `engine.route.ContainerAttachWebsocket`, `engine.route.ContainerResize`, and
   `engine.route.ContainerLogs`.
@@ -141,4 +148,5 @@ only after the complete parity programme is finished.
   provider provenance, focused regressions, matched full suite, and isolated
   Docker CLI validation.
 - This slice — keep finite unreadable-driver attach requests finite
-  while retaining live exact-process output and TTY merge behavior.
+  while retaining live exact-process output and matching Docker's TTY stream
+  selection and resize domain.
