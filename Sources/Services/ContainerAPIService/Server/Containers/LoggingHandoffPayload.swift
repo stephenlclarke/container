@@ -346,6 +346,97 @@ enum LoggingHandoffPayloadCodec {
         nonce: Data? = nil,
         ephemeralPrivateKey: Data? = nil
     ) throws -> ProviderHandoffPreparedPayloadV1 {
+        try ProviderHandoffPayloadCodec.prepareSealed(
+            package(
+                containers: containers,
+                tokenID: tokenID,
+                manifestID: manifestID,
+                sourceStateRootUUID: sourceStateRootUUID,
+                sourceAuthorityLineageUUID: sourceAuthorityLineageUUID,
+                sourceLineageKeyVersion: sourceLineageKeyVersion,
+                sourceLineageHMACSHA256Key: sourceLineageHMACSHA256Key,
+                destinationStateRootUUID: destinationStateRootUUID
+            ),
+            mediaType: mediaType,
+            tokenID: tokenID,
+            manifestID: manifestID,
+            sourceOrder: [sourceStateRootUUID],
+            lineageKeys: [
+                ProviderHandoffLineageKeyV1(
+                    sourceStateRootUUID: sourceStateRootUUID,
+                    authorityLineageUUID: sourceAuthorityLineageUUID,
+                    keyVersion: sourceLineageKeyVersion,
+                    rawHMACSHA256Key: sourceLineageHMACSHA256Key
+                )
+            ],
+            destinationProviderFingerprint: destinationProviderFingerprint,
+            destinationStateRootUUID: destinationStateRootUUID,
+            destinationKeyID: destinationKeyID,
+            destinationPublicKey: destinationPublicKey,
+            nonce: nonce,
+            ephemeralPrivateKey: ephemeralPrivateKey
+        )
+    }
+
+    static func prepareSealedFile(
+        containers: [LoggingHandoffExportContainerV1],
+        transportFileURL: URL,
+        tokenID: String,
+        manifestID: String,
+        sourceStateRootUUID: String,
+        sourceAuthorityLineageUUID: String,
+        sourceLineageKeyVersion: UInt64,
+        sourceLineageHMACSHA256Key: Data,
+        destinationProviderFingerprint: String,
+        destinationStateRootUUID: String,
+        destinationKeyID: String,
+        destinationPublicKey: Data,
+        nonce: Data? = nil,
+        ephemeralPrivateKey: Data? = nil
+    ) throws -> ProviderHandoffPreparedPayloadFileV2 {
+        try ProviderHandoffPayloadCodec.prepareSealedFile(
+            package(
+                containers: containers,
+                tokenID: tokenID,
+                manifestID: manifestID,
+                sourceStateRootUUID: sourceStateRootUUID,
+                sourceAuthorityLineageUUID: sourceAuthorityLineageUUID,
+                sourceLineageKeyVersion: sourceLineageKeyVersion,
+                sourceLineageHMACSHA256Key: sourceLineageHMACSHA256Key,
+                destinationStateRootUUID: destinationStateRootUUID
+            ),
+            transportFileURL: transportFileURL,
+            mediaType: mediaType,
+            tokenID: tokenID,
+            manifestID: manifestID,
+            sourceOrder: [sourceStateRootUUID],
+            lineageKeys: [
+                ProviderHandoffLineageKeyV1(
+                    sourceStateRootUUID: sourceStateRootUUID,
+                    authorityLineageUUID: sourceAuthorityLineageUUID,
+                    keyVersion: sourceLineageKeyVersion,
+                    rawHMACSHA256Key: sourceLineageHMACSHA256Key
+                )
+            ],
+            destinationProviderFingerprint: destinationProviderFingerprint,
+            destinationStateRootUUID: destinationStateRootUUID,
+            destinationKeyID: destinationKeyID,
+            destinationPublicKey: destinationPublicKey,
+            nonce: nonce,
+            ephemeralPrivateKey: ephemeralPrivateKey
+        )
+    }
+
+    private static func package(
+        containers: [LoggingHandoffExportContainerV1],
+        tokenID: String,
+        manifestID: String,
+        sourceStateRootUUID: String,
+        sourceAuthorityLineageUUID: String,
+        sourceLineageKeyVersion: UInt64,
+        sourceLineageHMACSHA256Key: Data,
+        destinationStateRootUUID: String
+    ) throws -> ProviderHandoffPayloadPackageV1 {
         guard
             !containers.isEmpty,
             sourceLineageHMACSHA256Key.count == 32,
@@ -493,27 +584,7 @@ enum LoggingHandoffPayloadCodec {
             partKind: .logging,
             entries: entries
         )
-        return try ProviderHandoffPayloadCodec.prepareSealed(
-            package,
-            mediaType: mediaType,
-            tokenID: tokenID,
-            manifestID: manifestID,
-            sourceOrder: [sourceStateRootUUID],
-            lineageKeys: [
-                ProviderHandoffLineageKeyV1(
-                    sourceStateRootUUID: sourceStateRootUUID,
-                    authorityLineageUUID: sourceAuthorityLineageUUID,
-                    keyVersion: sourceLineageKeyVersion,
-                    rawHMACSHA256Key: sourceLineageHMACSHA256Key
-                )
-            ],
-            destinationProviderFingerprint: destinationProviderFingerprint,
-            destinationStateRootUUID: destinationStateRootUUID,
-            destinationKeyID: destinationKeyID,
-            destinationPublicKey: destinationPublicKey,
-            nonce: nonce,
-            ephemeralPrivateKey: ephemeralPrivateKey
-        )
+        return package
     }
 
     static func decodeVerified(

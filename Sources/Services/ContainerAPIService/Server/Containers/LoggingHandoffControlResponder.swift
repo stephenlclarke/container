@@ -318,7 +318,9 @@ struct LoggingHandoffControlResponder:
             part.requiredCapabilities.contains(Self.requiredCapability),
             part.payload.mediaType == LoggingHandoffPayloadCodec.mediaType,
             part.payload.protection
-                == .destinationSealedX25519HKDFSHA256XChaCha20Poly1305V1,
+                == .destinationSealedX25519HKDFSHA256XChaCha20Poly1305V1
+                || part.payload.protection
+                    == .destinationSealedFramedX25519HKDFSHA256XChaCha20Poly1305V2,
             !part.sourceStateRootUUIDs.isEmpty
         else {
             throw LoggingHandoffControlResponderError.invalidManifest
@@ -353,20 +355,51 @@ struct LoggingHandoffControlResponder:
             trustRegistry: metadata.trustRegistry,
             atUnixSeconds: metadata.atUnixSeconds
         )
-        let transport = try objectStore.readVerifiedObject(
-            bundleObjectID: metadata.part.payload.bundleObjectID
-        )
-        let package = try providerIdentity.open(
-            ProviderHandoffPreparedPayloadV1(
-                descriptor: metadata.part.payload,
-                transportBytes: transport
-            ),
-            expectedPartKind: .logging,
-            tokenID: request.manifest.tokenID,
-            manifestID: request.manifest.manifestID,
-            sourceOrder: metadata.part.sourceStateRootUUIDs,
-            lineageKeys: lineageKeys
-        )
+        let package: ProviderHandoffPayloadPackageV1
+        switch metadata.part.payload.protection {
+        case .destinationSealedX25519HKDFSHA256XChaCha20Poly1305V1:
+            let transport = try objectStore.readVerifiedObject(
+                bundleObjectID: metadata.part.payload.bundleObjectID
+            )
+            package = try providerIdentity.open(
+                ProviderHandoffPreparedPayloadV1(
+                    descriptor: metadata.part.payload,
+                    transportBytes: transport
+                ),
+                expectedPartKind: .logging,
+                tokenID: request.manifest.tokenID,
+                manifestID: request.manifest.manifestID,
+                sourceOrder: metadata.part.sourceStateRootUUIDs,
+                lineageKeys: lineageKeys
+            )
+        case .destinationSealedFramedX25519HKDFSHA256XChaCha20Poly1305V2:
+            let stagingRoot = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "logging-handoff-open-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            try FileManager.default.createDirectory(
+                at: stagingRoot,
+                withIntermediateDirectories: false
+            )
+            defer { try? FileManager.default.removeItem(at: stagingRoot) }
+            package = try providerIdentity.openFile(
+                ProviderHandoffPreparedPayloadFileV2(
+                    descriptor: metadata.part.payload,
+                    transportFileURL: try objectStore.verifiedObjectFileURL(
+                        bundleObjectID: metadata.part.payload.bundleObjectID
+                    )
+                ),
+                canonicalFileURL: stagingRoot.appendingPathComponent("canonical"),
+                expectedPartKind: .logging,
+                tokenID: request.manifest.tokenID,
+                manifestID: request.manifest.manifestID,
+                sourceOrder: metadata.part.sourceStateRootUUIDs,
+                lineageKeys: lineageKeys
+            )
+        case .authenticatedPlaintext:
+            throw LoggingHandoffControlResponderError.invalidPayload
+        }
         return try LoggingHandoffPayloadCodec.decodeVerified(
             package,
             lineageKeys: lineageKeys

@@ -112,6 +112,10 @@ struct LoggingHandoffControlResponderTests {
             try ProviderHandoffSourceControlCodec
             .decodeContribution(first.body)
         #expect(contribution.part.kind == .logging)
+        #expect(
+            contribution.part.payload.protection
+                == .destinationSealedFramedX25519HKDFSHA256XChaCha20Poly1305V2
+        )
         #expect(contribution.sourceObjectRecord.state == .verified)
 
         let replay = await fixture.sourceResponder.respond(
