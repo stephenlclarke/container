@@ -697,7 +697,9 @@ actor LoggingHandoffStagingController {
                 let count = ordered.first?.value.count,
                 count == UInt64(ordered.count),
                 ordered.allSatisfy({ $0.value.count == count }),
-                ordered.map({ $0.value.index }) == Array(0..<count)
+                ordered.enumerated().allSatisfy({ offset, value in
+                    value.value.index == UInt64(offset)
+                })
             else {
                 throw LoggingHandoffStagingControllerError.incompatibleHistory(
                     source.containerID

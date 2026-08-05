@@ -31,9 +31,7 @@ enum LoggingHandoffBundleHistoryPublisherError: Error, Equatable, Sendable {
 /// directory or the exact final directory; replay validates and resumes it.
 enum LoggingHandoffBundleHistoryPublisher {
     private static let loggingRootName = "logging-v2"
-    private static let maximumEntries = Int(
-        ProviderHandoffPortableLoggingPayloadCodec.maximumHistoryChunkCount
-    )
+    private static let maximumDirectoryEntries = 4_096
 
     static func publish(
         bundle: ContainerResource.Bundle,
@@ -249,7 +247,7 @@ enum LoggingHandoffBundleHistoryPublisher {
         _ segments: [LoggingHandoffPromotedHistorySegmentV1],
         kind: LoggingHandoffHistoryKindV1
     ) throws -> [LoggingHandoffPromotedHistorySegmentV1] {
-        guard !segments.isEmpty, segments.count <= maximumEntries else {
+        guard !segments.isEmpty else {
             throw LoggingHandoffBundleHistoryPublisherError.invalidHistory
         }
         let chunked = segments.compactMap { segment in
@@ -268,7 +266,9 @@ enum LoggingHandoffBundleHistoryPublisher {
                 let count = ordered.first?.value.count,
                 count == UInt64(ordered.count),
                 ordered.allSatisfy({ $0.value.count == count }),
-                ordered.map(\.value.index) == Array(0..<count),
+                ordered.enumerated().allSatisfy({ offset, value in
+                    value.value.index == UInt64(offset)
+                }),
                 Set(ordered.map(\.segment.terminalHistoryEpoch)).count == 1,
                 Set(ordered.map(\.segment.maximumInternalSequence)).count == 1
             else {
@@ -411,7 +411,7 @@ enum LoggingHandoffBundleHistoryPublisher {
                 }
             }
             if name == "." || name == ".." { continue }
-            guard names.count < maximumEntries, names.insert(name).inserted else {
+            guard names.count < maximumDirectoryEntries, names.insert(name).inserted else {
                 throw LoggingHandoffBundleHistoryPublisherError.unsafeStorage
             }
         }

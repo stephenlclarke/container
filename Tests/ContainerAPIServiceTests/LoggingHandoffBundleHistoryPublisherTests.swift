@@ -68,6 +68,41 @@ struct LoggingHandoffBundleHistoryPublisherTests {
     }
 
     @Test
+    func `publishes history beyond former portable store ceiling`() throws {
+        try withBundle { bundle in
+            let count = 4097
+            let segments = (0..<count).reversed().map { index in
+                let bytes = Data([UInt8(truncatingIfNeeded: index)])
+                return segment(
+                    entryID: "chunk-\(index)",
+                    storeID:
+                        ProviderHandoffPortableLoggingPayloadCodec
+                        .historyChunkStoreID(
+                            index: UInt64(index),
+                            count: UInt64(count)
+                        ),
+                    kind: .dockerJSONFile,
+                    rotationIndex: 0,
+                    bytes: bytes
+                )
+            }
+
+            try LoggingHandoffBundleHistoryPublisher.publish(
+                bundle: bundle,
+                segments: segments,
+                transactionID: "above-former-ceiling"
+            )
+
+            #expect(
+                try Data(contentsOf: bundle.containerJSONFileLog)
+                    == Data(
+                        (0..<count).map { UInt8(truncatingIfNeeded: $0) }
+                    )
+            )
+        }
+    }
+
+    @Test
     func `rejects an incomplete portable chunk set before publication`() throws {
         try withBundle { bundle in
             let incomplete = segment(
