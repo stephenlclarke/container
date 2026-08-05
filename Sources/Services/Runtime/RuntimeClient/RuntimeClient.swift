@@ -26,6 +26,9 @@ import TerminalProgress
 /// A client for interacting with a container runtime service instance.
 public struct RuntimeClient: Sendable {
     static let label = "com.apple.container.runtime"
+    static let shutdownResponseTimeout: Duration = .seconds(5)
+    private static let minimumStopResponseTimeoutSeconds: Int64 = 10
+    private static let stopResponseGraceSeconds: Int64 = 5
 
     public static func machServiceLabel(runtime: String, id: String) -> String {
         "\(Self.label).\(runtime).\(id)"
@@ -286,7 +289,12 @@ extension RuntimeClient {
         request.set(key: RuntimeKeys.stopOptions.rawValue, value: data)
 
         do {
-            try await self.client.send(request)
+            try await self.client.send(
+                request,
+                responseTimeout: Self.stopResponseTimeout(
+                    timeoutInSeconds: options.timeoutInSeconds
+                )
+            )
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -294,6 +302,16 @@ extension RuntimeClient {
                 cause: error
             )
         }
+    }
+
+    static func stopResponseTimeout(timeoutInSeconds: Int32?) -> Duration {
+        let requestedSeconds = max(0, Int64(timeoutInSeconds ?? 0))
+        return .seconds(
+            max(
+                minimumStopResponseTimeoutSeconds,
+                requestedSeconds + stopResponseGraceSeconds
+            )
+        )
     }
 
     public func pause() async throws {
@@ -403,7 +421,10 @@ extension RuntimeClient {
         let request = XPCMessage(route: RuntimeRoutes.shutdown.rawValue)
 
         do {
-            _ = try await self.client.send(request)
+            _ = try await self.client.send(
+                request,
+                responseTimeout: Self.shutdownResponseTimeout
+            )
         } catch {
             throw ContainerizationError(
                 .internalError,

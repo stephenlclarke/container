@@ -1542,6 +1542,9 @@ public actor ContainersService {
         }
 
         let currentState = try self._getContainerState(id: id)
+        guard Self.shouldSendRuntimeStop(for: currentState.snapshot.status) else {
+            return
+        }
         guard currentState.snapshot.status != .paused else {
             throw ContainerizationError(
                 .invalidState,
@@ -1575,6 +1578,10 @@ public actor ContainersService {
             }
         }
         try await handleContainerExit(id: id)
+    }
+
+    static func shouldSendRuntimeStop(for status: RuntimeStatus) -> Bool {
+        status != .stopped
     }
 
     /// Pause a running container.

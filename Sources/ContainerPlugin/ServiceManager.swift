@@ -15,6 +15,8 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerizationError
+import Darwin
+import Dispatch
 import Foundation
 
 public struct ServiceManager {
@@ -24,12 +26,25 @@ public struct ServiceManager {
         case replace
     }
 
-    private struct LaunchctlCommandResult {
+    struct LaunchctlCommandResult: Equatable {
         let status: Int32
         let standardError: String
     }
 
-    private static func runLaunchctlCommand(args: [String]) throws -> LaunchctlCommandResult {
+    struct LaunchctlCommandTimeoutError: Error, Equatable {
+        let args: [String]
+        let timeoutSeconds: TimeInterval
+    }
+
+    typealias LaunchctlCommandRunner = ([String], TimeInterval?) throws -> LaunchctlCommandResult
+
+    private static let deregistrationTimeoutSeconds: TimeInterval = 5
+    private static let terminationGraceSeconds: TimeInterval = 1
+
+    private static func runLaunchctlCommand(
+        args: [String],
+        timeoutSeconds: TimeInterval? = nil
+    ) throws -> LaunchctlCommandResult {
         let launchctl = Foundation.Process()
         launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         launchctl.arguments = args
@@ -38,14 +53,57 @@ public struct ServiceManager {
         launchctl.standardOutput = FileHandle.nullDevice
         launchctl.standardError = standardError
 
+        let completion = DispatchSemaphore(value: 0)
+        launchctl.terminationHandler = { _ in
+            completion.signal()
+        }
         try launchctl.run()
+
+        if let timeoutSeconds {
+            guard completion.wait(timeout: dispatchTimeout(seconds: timeoutSeconds)) == .success else {
+                terminateTimedOutProcess(
+                    launchctl,
+                    completion: completion,
+                    graceSeconds: terminationGraceSeconds
+                )
+                throw LaunchctlCommandTimeoutError(
+                    args: args,
+                    timeoutSeconds: timeoutSeconds
+                )
+            }
+        } else {
+            completion.wait()
+        }
+
         let errorData = standardError.fileHandleForReading.readDataToEndOfFile()
-        launchctl.waitUntilExit()
 
         return LaunchctlCommandResult(
             status: launchctl.terminationStatus,
             standardError: String(data: errorData, encoding: .utf8) ?? ""
         )
+    }
+
+    private static func dispatchTimeout(seconds: TimeInterval) -> DispatchTime {
+        let milliseconds = max(1, Int((seconds * 1_000).rounded(.up)))
+        return .now() + .milliseconds(milliseconds)
+    }
+
+    private static func terminateTimedOutProcess(
+        _ process: Foundation.Process,
+        completion: DispatchSemaphore,
+        graceSeconds: TimeInterval
+    ) {
+        guard process.isRunning else {
+            return
+        }
+        process.terminate()
+        guard completion.wait(timeout: dispatchTimeout(seconds: graceSeconds)) != .success,
+            process.isRunning
+        else {
+            return
+        }
+        _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        _ = completion.wait(timeout: dispatchTimeout(seconds: graceSeconds))
     }
 
     /// Register a service by providing the path to a plist.
@@ -64,7 +122,11 @@ public struct ServiceManager {
             return
         case .replace:
             let args = ["bootout", service]
-            let result = try runLaunchctlCommand(args: args)
+            let result = try deregister(
+                fullServiceLabel: service,
+                timeoutSeconds: deregistrationTimeoutSeconds,
+                runner: runLaunchctlCommand
+            )
             try validateLaunchctlSuccess(
                 status: result.status,
                 standardError: result.standardError,
@@ -165,12 +227,34 @@ public struct ServiceManager {
 
     /// Deregister a service by a launchd label.
     public static func deregister(fullServiceLabel label: String) throws {
-        _ = try runLaunchctlCommand(args: ["bootout", label])
+        _ = try deregister(
+            fullServiceLabel: label,
+            timeoutSeconds: deregistrationTimeoutSeconds,
+            runner: runLaunchctlCommand
+        )
     }
 
     /// Deregister a service and pass return status
     public static func deregister(fullServiceLabel label: String, status: inout Int32) throws {
-        status = try runLaunchctlCommand(args: ["bootout", label]).status
+        status = try deregister(
+            fullServiceLabel: label,
+            timeoutSeconds: deregistrationTimeoutSeconds,
+            runner: runLaunchctlCommand
+        ).status
+    }
+
+    static func deregister(
+        fullServiceLabel label: String,
+        timeoutSeconds: TimeInterval,
+        runner: LaunchctlCommandRunner
+    ) throws -> LaunchctlCommandResult {
+        let bootout = ["bootout", label]
+        do {
+            return try runner(bootout, timeoutSeconds)
+        } catch is LaunchctlCommandTimeoutError {
+            _ = try runner(["kill", "SIGKILL", label], timeoutSeconds)
+            return try runner(bootout, timeoutSeconds)
+        }
     }
 
     /// Restart a service by a launchd label.
