@@ -265,6 +265,41 @@ struct GELFConfigurationTests {
         }
     }
 
+    @Test func `rejects docker deferred tag and metadata syntax`() throws {
+        let info = gelfInfo(
+            environment: ["secret=value"],
+            labels: ["secret": "value"],
+        )
+        #expect(throws: GELFProviderError.invalidTagTemplate("{{.Missing}}")) {
+            try GELFDriverConfiguration.resolve(
+                options: [
+                    "gelf-address": "udp://127.0.0.1:12201",
+                    "tag": "{{.Missing}}",
+                ],
+                info: info,
+            )
+        }
+        for (option, value) in [
+            ("labels-regex", "(?=secret)"),
+            ("env-regex", "("),
+        ] {
+            #expect(
+                throws: GELFProviderError.invalidMetadataRegularExpression(
+                    option: option,
+                    value: value,
+                ),
+            ) {
+                try GELFDriverConfiguration.resolve(
+                    options: [
+                        "gelf-address": "udp://127.0.0.1:12201",
+                        option: value,
+                    ],
+                    info: info,
+                )
+            }
+        }
+    }
+
     @Test func descriptorExposesAllOptionsAtTheirValidationPhases() throws {
         let descriptor = GELFLogDriverContract.descriptor(providerGeneration: 7)
         #expect(descriptor.driver == "gelf")
