@@ -1923,8 +1923,11 @@ public actor ContainersService {
         }
     }
 
-    /// Get the timestamped log record file for the container.
-    public func logRecordFile(id: String) async throws -> FileHandle {
+    /// Stream a finite newline-delimited record file for the container.
+    public func logRecordFile(
+        id: String,
+        replay: ContainerLogReplayOptions = .default
+    ) async throws -> FileHandle {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -1952,24 +1955,15 @@ public actor ContainersService {
                     bundle: bundle,
                     configuration: state.snapshot.configuration,
                     options: .default,
-                    includeRotated: false
+                    includeRotated: replay.includeRotated
                 )
-                let records = try await Self.logRecords(from: reader)
-                var data = Data()
-                let encoder = JSONEncoder()
-                for record in records {
-                    data.append(try encoder.encode(record))
-                    data.append(UInt8(ascii: "\n"))
-                }
-                guard let handle = Self.temporaryFileHandle(containing: data) else {
-                    throw ContainerizationError(
-                        .internalError,
-                        message: "failed to create a native log record handle"
-                    )
-                }
-                return handle
+                return Self.logRecordHandle(for: reader)
             }
-            return try FileHandle(forReadingFrom: bundle.containerLogRecords)
+            let urls = Self.logReplayURLs(
+                for: bundle.containerLogRecords,
+                includeRotated: replay.includeRotated
+            )
+            return try Self.concatenatedFileHandle(for: urls)
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -2220,6 +2214,34 @@ public actor ContainersService {
                 }
             } catch {
                 await reader.cancel()
+            }
+        }
+        return pipe.fileHandleForReading
+    }
+
+    private nonisolated static func concatenatedFileHandle(
+        for urls: [URL]
+    ) throws -> FileHandle {
+        let handles = try urls.map(FileHandle.init(forReadingFrom:))
+        let pipe = Pipe()
+        let writer = pipe.fileHandleForWriting
+        Task.detached(priority: .utility) {
+            defer {
+                try? writer.close()
+                for handle in handles {
+                    try? handle.close()
+                }
+            }
+            do {
+                for handle in handles {
+                    while let bytes = try handle.read(upToCount: 64 * 1024),
+                        !bytes.isEmpty
+                    {
+                        try writer.write(contentsOf: bytes)
+                    }
+                }
+            } catch {
+                return
             }
         }
         return pipe.fileHandleForReading

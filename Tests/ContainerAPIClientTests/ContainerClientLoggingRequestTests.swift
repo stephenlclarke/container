@@ -68,4 +68,37 @@ struct ContainerClientLoggingRequestTests {
         #expect(error?.message == "logging request exceeds the encoded byte limit")
         #expect(!String(describing: error).contains(marker))
     }
+
+    @Test
+    func finiteRecordStreamDecodesIncrementally() async throws {
+        let records = [
+            ContainerLogRecord(
+                timestamp: Date(timeIntervalSince1970: 1_786_000_000.125),
+                stream: .stdout,
+                data: Data("first\n".utf8)
+            ),
+            ContainerLogRecord(
+                timestamp: Date(timeIntervalSince1970: 1_786_000_001.25),
+                stream: .stderr,
+                data: Data([0x00, 0xFF, 0x0A])
+            ),
+        ]
+        var encoded = Data()
+        for record in records {
+            encoded.append(try JSONEncoder().encode(record))
+            encoded.append(UInt8(ascii: "\n"))
+        }
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: encoded)
+        try pipe.fileHandleForWriting.close()
+
+        var decoded: [ContainerLogRecord] = []
+        for try await record in ContainerClient.logRecordStream(
+            file: pipe.fileHandleForReading
+        ) {
+            decoded.append(record)
+        }
+
+        #expect(decoded == records)
+    }
 }

@@ -525,9 +525,21 @@ public struct ContainerClient: Sendable {
 
     /// Get the timestamped log record file for a container.
     public func logRecordFile(id: String) async throws -> FileHandle {
+        try await logRecordFile(id: id, replay: .default)
+    }
+
+    /// Stream a finite newline-delimited record file for a container.
+    ///
+    /// Rotated records are emitted oldest-first before the active file when
+    /// requested, without collecting the complete history in one response.
+    public func logRecordFile(
+        id: String,
+        replay: ContainerLogReplayOptions
+    ) async throws -> FileHandle {
         do {
             let request = XPCMessage(route: .containerLogRecordFile)
             request.set(key: .id, value: id)
+            request.set(key: .logIncludeRotated, value: replay.includeRotated)
 
             let response = try await xpcClient.send(request)
             guard let fd = response.fileHandle(key: .logRecordFile) else {
@@ -544,6 +556,29 @@ public struct ContainerClient: Sendable {
                 cause: error
             )
         }
+    }
+
+    /// Incrementally decode a finite timestamped log-record stream.
+    ///
+    /// The underlying file descriptor is consumed in bounded chunks and each
+    /// newline-delimited record is decoded only when requested by the caller.
+    public func logRecordStream(
+        id: String,
+        replay: ContainerLogReplayOptions = .default
+    ) async throws -> AsyncThrowingStream<ContainerLogRecord, any Error> {
+        let file = try await logRecordFile(id: id, replay: replay)
+        return Self.logRecordStream(file: file)
+    }
+
+    static func logRecordStream(
+        file: FileHandle
+    ) -> AsyncThrowingStream<ContainerLogRecord, any Error> {
+        let reader = ContainerLogRecordFileReader(file: file)
+        return AsyncThrowingStream(
+            unfolding: {
+                try await reader.next()
+            }
+        )
     }
 
     /// Stream lifecycle events emitted by the API server.
@@ -768,5 +803,86 @@ public struct ContainerClient: Sendable {
                 cause: error
             )
         }
+    }
+}
+
+private actor ContainerLogRecordFileReader {
+    private static let readChunkBytes = 64 * 1_024
+
+    private let file: FileHandle
+    private var buffer = Data()
+    private var ended = false
+
+    init(file: FileHandle) {
+        self.file = file
+    }
+
+    deinit {
+        try? file.close()
+    }
+
+    func next() async throws -> ContainerLogRecord? {
+        guard !ended else {
+            return nil
+        }
+        while true {
+            if let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                guard
+                    newline
+                        <= ContainerLogReadRecordWireV1
+                        .maximumEncodedRecordBytes
+                else {
+                    throw invalidRecordStream("record exceeds the transport limit")
+                }
+                let encoded = Data(buffer[..<newline])
+                buffer.removeSubrange(...newline)
+                guard !encoded.isEmpty else {
+                    continue
+                }
+                do {
+                    return try JSONDecoder().decode(
+                        ContainerLogRecord.self,
+                        from: encoded
+                    )
+                } catch {
+                    throw invalidRecordStream("record is not valid JSON")
+                }
+            }
+            guard
+                buffer.count
+                    <= ContainerLogReadRecordWireV1.maximumEncodedRecordBytes
+            else {
+                throw invalidRecordStream("record exceeds the transport limit")
+            }
+            let file = self.file
+            let chunk = try await Task.detached(priority: .utility) {
+                try file.read(upToCount: Self.readChunkBytes) ?? Data()
+            }.value
+            if chunk.isEmpty {
+                guard buffer.isEmpty else {
+                    throw invalidRecordStream("stream ended with a partial record")
+                }
+                ended = true
+                try? file.close()
+                return nil
+            }
+            buffer.append(chunk)
+            guard
+                buffer.count
+                    <= ContainerLogReadRecordWireV1.maximumEncodedRecordBytes
+                    + Self.readChunkBytes
+            else {
+                throw invalidRecordStream("record exceeds the transport limit")
+            }
+        }
+    }
+
+    private func invalidRecordStream(_ reason: String) -> ContainerizationError {
+        ended = true
+        try? file.close()
+        return ContainerizationError(
+            .internalError,
+            message: "invalid container log record stream: \(reason)"
+        )
     }
 }

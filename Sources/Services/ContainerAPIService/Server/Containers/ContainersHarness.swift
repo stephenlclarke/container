@@ -457,7 +457,10 @@ public struct ContainersHarness: Sendable {
                 message: "id cannot be empty"
             )
         }
-        let file = try await service.logRecordFile(id: id)
+        let file = try await service.logRecordFile(
+            id: id,
+            replay: Self.logReplayOptions(from: message)
+        )
         let reply = message.reply()
         reply.set(key: .logRecordFile, value: file)
         return reply

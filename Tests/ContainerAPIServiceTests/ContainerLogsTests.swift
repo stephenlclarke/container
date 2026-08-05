@@ -1254,6 +1254,62 @@ struct ContainerLogsTests {
         #expect(data == expectedData)
     }
 
+    @Test func streamsRotatedTimestampedLogRecordFilesOldestFirst() async throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("container-log-record-stream-test-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let id = "test-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(path: containerRoot.appendingPathComponent(id))
+        try FileManager.default.createDirectory(at: bundle.path, withIntermediateDirectories: true)
+        try bundle.set(configuration: testConfiguration(id: id))
+        let oldest = try logRecordData([
+            ContainerLogRecord(
+                timestamp: date("2026-01-01T00:00:00Z"),
+                stream: .stdout,
+                data: Data("oldest\n".utf8)
+            )
+        ])
+        let newer = try logRecordData([
+            ContainerLogRecord(
+                timestamp: date("2026-01-02T00:00:00Z"),
+                stream: .stderr,
+                data: Data("newer\n".utf8)
+            )
+        ])
+        let active = try logRecordData([
+            ContainerLogRecord(
+                timestamp: date("2026-01-03T00:00:00Z"),
+                stream: .stdout,
+                data: Data("active\n".utf8)
+            )
+        ])
+        try oldest.write(
+            to: bundle.containerLogRecords.appendingPathExtension("2")
+        )
+        try newer.write(
+            to: bundle.containerLogRecords.appendingPathExtension("1")
+        )
+        try active.write(to: bundle.containerLogRecords)
+
+        let service = try service(
+            appRoot: tempURL,
+            logLabel: "container-log-record-stream-test"
+        )
+        let file = try await service.logRecordFile(
+            id: id,
+            replay: ContainerLogReplayOptions(includeRotated: true)
+        )
+        defer {
+            try? file.close()
+        }
+
+        #expect(file.readDataToEndOfFile() == oldest + newer + active)
+    }
+
     private func logRecordData(_ records: [ContainerLogRecord]) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
