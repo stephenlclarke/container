@@ -527,6 +527,7 @@ actor LoggingHandoffStagingController {
         var localRotationIndices: [String: Set<UInt64>] = [:]
         var historyEpochs = Set<UInt64>()
         var nativeSequenceRanges: [(rotationIndex: UInt64, minimum: UInt64, maximum: UInt64)] = []
+        var portableChunks: [(entryID: String, value: ProviderHandoffPortableLoggingHistoryChunkV1)] = []
         for entryID in source.historyEntryIDs {
             guard let history = payload.historyStores[entryID] else {
                 throw LoggingHandoffStagingControllerError.incompatibleHistory(
@@ -537,6 +538,28 @@ actor LoggingHandoffStagingController {
                 throw LoggingHandoffStagingControllerError.incompatibleHistory(
                     entryID
                 )
+            }
+            let portableChunk =
+                ProviderHandoffPortableLoggingPayloadCodec
+                .parseHistoryChunkStoreID(history.storeID)
+            if history.storeID.hasPrefix(
+                ProviderHandoffPortableLoggingPayloadCodec.historyStoreID
+                    + ".chunk."
+            ) {
+                guard
+                    let portableChunk,
+                    history.kind == .dockerJSONFile,
+                    history.disposition == .importVerified,
+                    history.rotationIndex == 0,
+                    !history.compressed,
+                    history.sourceDeviceID == nil,
+                    history.sourceInode == nil
+                else {
+                    throw
+                        LoggingHandoffStagingControllerError
+                        .incompatibleHistory(entryID)
+                }
+                portableChunks.append((entryID, portableChunk))
             }
             switch history.disposition {
             case .explicitResolutionRequired, .retainOffline:
@@ -631,13 +654,17 @@ actor LoggingHandoffStagingController {
             }
             if history.disposition == .importVerified
                 || history.disposition == .empty,
-                Self.isLocalHistoryKind(history.kind)
+                Self.isLocalHistoryKind(history.kind),
+                portableChunk == nil
             {
                 localRotationIndices[history.kind.rawValue, default: []]
                     .insert(history.rotationIndex)
             }
             historyEpochs.insert(history.terminalHistoryEpoch)
-            let rotationKey = "\(history.kind.rawValue):\(history.rotationIndex)"
+            let rotationKey =
+                portableChunk == nil
+                ? "\(history.kind.rawValue):\(history.rotationIndex)"
+                : "\(history.kind.rawValue):chunk:\(history.storeID)"
             guard rotationOwners.insert(rotationKey).inserted else {
                 throw LoggingHandoffStagingControllerError.incompatibleHistory(
                     entryID
@@ -657,6 +684,25 @@ actor LoggingHandoffStagingController {
             throw LoggingHandoffStagingControllerError.incompatibleHistory(
                 source.containerID
             )
+        }
+        if !portableChunks.isEmpty {
+            let dockerHistoryCount = values.count {
+                $0.value.kind == .dockerJSONFile
+            }
+            let ordered = portableChunks.sorted {
+                $0.value.index < $1.value.index
+            }
+            guard
+                dockerHistoryCount == portableChunks.count,
+                let count = ordered.first?.value.count,
+                count == UInt64(ordered.count),
+                ordered.allSatisfy({ $0.value.count == count }),
+                ordered.map({ $0.value.index }) == Array(0..<count)
+            else {
+                throw LoggingHandoffStagingControllerError.incompatibleHistory(
+                    source.containerID
+                )
+            }
         }
         for rotations in localRotationIndices.values {
             let ordered = rotations.sorted()

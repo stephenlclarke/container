@@ -61,6 +61,11 @@ struct LoggingHandoffPromotedHistorySegmentV1: Equatable, Sendable {
     let contentDigestSHA256: String
     let bytes: Data
 
+    var portableChunk: ProviderHandoffPortableLoggingHistoryChunkV1? {
+        ProviderHandoffPortableLoggingPayloadCodec
+            .parseHistoryChunkStoreID(storeID)
+    }
+
     var destinationFileName: String {
         let activeName: String
         switch kind {
@@ -73,7 +78,9 @@ struct LoggingHandoffPromotedHistorySegmentV1: Equatable, Sendable {
         case .legacyLocalV1, .providerOwned:
             preconditionFailure("non-local history cannot name a local segment")
         }
-        guard rotationIndex > 0 else { return activeName }
+        guard portableChunk == nil, rotationIndex > 0 else {
+            return activeName
+        }
         return "\(activeName).\(rotationIndex)\(compressed ? ".gz" : "")"
     }
 }

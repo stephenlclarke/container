@@ -158,6 +158,60 @@ struct LoggingHandoffPayloadTests {
     }
 
     @Test
+    func `portable history above legacy bound decodes as ordered chunks`() throws {
+        let package = try ProviderHandoffPortableLoggingPayloadCodec.package(
+            containers: [
+                ProviderHandoffPortableLoggingContainerV1(
+                    containerID: "large-portable-container",
+                    providerID: "devcontainer.apple-container",
+                    providerVersion: "1",
+                    terminalHistoryEpoch: 9,
+                    records: [
+                        ProviderHandoffPortableLogRecordV1(
+                            secondsSinceUnixEpoch: 1_786_000_000,
+                            nanoseconds: 0,
+                            stream: .stdout,
+                            data: Data(
+                                repeating: UInt8(ascii: "a"),
+                                count:
+                                    ProviderHandoffPortableLoggingPayloadCodec
+                                    .maximumHistoryBytes + 1
+                            )
+                        )
+                    ]
+                )
+            ],
+            sourceStateRootUUID: sourceRoot
+        )
+
+        let decoded = try LoggingHandoffPayloadCodec.decodeVerified(
+            package,
+            sourceStateRootUUID: sourceRoot,
+            sourceAuthorityLineageUUID: sourceLineage,
+            sourceLineageKeyVersion: 7,
+            sourceLineageHMACSHA256Key: lineageKey
+        )
+        let histories = decoded.historyStores.values.sorted {
+            $0.storeID.utf8.lexicographicallyPrecedes($1.storeID.utf8)
+        }
+        #expect(histories.count > 1)
+        #expect(
+            histories.reduce(0) { $0 + Int($1.byteLength) }
+                > ProviderHandoffPortableLoggingPayloadCodec.maximumHistoryBytes
+        )
+        for (index, history) in histories.enumerated() {
+            #expect(
+                ProviderHandoffPortableLoggingPayloadCodec
+                    .parseHistoryChunkStoreID(history.storeID)
+                    == ProviderHandoffPortableLoggingHistoryChunkV1(
+                        index: UInt64(index),
+                        count: UInt64(histories.count)
+                    )
+            )
+        }
+    }
+
+    @Test
     func `legacy logging requires explicit resolution before export`() throws {
         let configuration = ContainerLogConfiguration(
             storage: .local,

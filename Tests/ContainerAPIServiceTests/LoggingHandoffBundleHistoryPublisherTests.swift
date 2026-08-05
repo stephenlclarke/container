@@ -23,6 +23,81 @@ import Testing
 
 struct LoggingHandoffBundleHistoryPublisherTests {
     @Test
+    func `publishes portable chunks as one ordered active json file`() throws {
+        try withBundle { bundle in
+            let first = segment(
+                entryID: "chunk-0",
+                storeID:
+                    ProviderHandoffPortableLoggingPayloadCodec
+                    .historyChunkStoreID(index: 0, count: 2),
+                kind: .dockerJSONFile,
+                rotationIndex: 0,
+                bytes: Data("first\n".utf8)
+            )
+            let second = segment(
+                entryID: "chunk-1",
+                storeID:
+                    ProviderHandoffPortableLoggingPayloadCodec
+                    .historyChunkStoreID(index: 1, count: 2),
+                kind: .dockerJSONFile,
+                rotationIndex: 0,
+                bytes: Data("second\n".utf8)
+            )
+
+            try LoggingHandoffBundleHistoryPublisher.publish(
+                bundle: bundle,
+                segments: [second, first],
+                transactionID: "chunked"
+            )
+            try LoggingHandoffBundleHistoryPublisher.publish(
+                bundle: bundle,
+                segments: [second, first],
+                transactionID: "chunked"
+            )
+
+            #expect(
+                try Data(contentsOf: bundle.containerJSONFileLog)
+                    == first.bytes + second.bytes
+            )
+            #expect(
+                try FileManager.default.contentsOfDirectory(
+                    atPath: bundle.containerJSONFileLogDirectory.path
+                ) == [ContainerResource.Bundle.jsonFileLogName]
+            )
+        }
+    }
+
+    @Test
+    func `rejects an incomplete portable chunk set before publication`() throws {
+        try withBundle { bundle in
+            let incomplete = segment(
+                entryID: "chunk-0",
+                storeID:
+                    ProviderHandoffPortableLoggingPayloadCodec
+                    .historyChunkStoreID(index: 0, count: 2),
+                kind: .dockerJSONFile,
+                rotationIndex: 0,
+                bytes: Data("first\n".utf8)
+            )
+
+            #expect(
+                throws: LoggingHandoffBundleHistoryPublisherError.invalidHistory
+            ) {
+                try LoggingHandoffBundleHistoryPublisher.publish(
+                    bundle: bundle,
+                    segments: [incomplete],
+                    transactionID: "incomplete"
+                )
+            }
+            #expect(
+                !FileManager.default.fileExists(
+                    atPath: bundle.containerJSONFileLogDirectory.path
+                )
+            )
+        }
+    }
+
+    @Test
     func `publishes exact immutable history and replays without mutation`() throws {
         try withBundle { bundle in
             let active = segment(
@@ -140,6 +215,7 @@ struct LoggingHandoffBundleHistoryPublisherTests {
 
     private func segment(
         entryID: String,
+        storeID: String? = nil,
         kind: LoggingHandoffHistoryKindV1 = .nativeLocal,
         rotationIndex: UInt64,
         compressed: Bool = false,
@@ -147,7 +223,7 @@ struct LoggingHandoffBundleHistoryPublisherTests {
     ) -> LoggingHandoffPromotedHistorySegmentV1 {
         LoggingHandoffPromotedHistorySegmentV1(
             entryID: entryID,
-            storeID: "store-\(entryID)",
+            storeID: storeID ?? "store-\(entryID)",
             kind: kind,
             rotationIndex: rotationIndex,
             compressed: compressed,

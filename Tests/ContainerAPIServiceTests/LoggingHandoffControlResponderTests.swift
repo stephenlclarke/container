@@ -72,12 +72,16 @@ struct LoggingHandoffControlResponderTests {
         #expect(evidence.counts.activate == 2)
         #expect(
             evidence.publicHistory.importedPayloads
-                == [Data("before-cutover\n".utf8)]
+                == [
+                    Data("before-cutover-1\n".utf8),
+                    Data("before-cutover-2\n".utf8),
+                ]
         )
         #expect(
             evidence.publicHistory.payloadsAfterWriter
                 == [
-                    Data("before-cutover\n".utf8),
+                    Data("before-cutover-1\n".utf8),
+                    Data("before-cutover-2\n".utf8),
                     Data("after-cutover\n".utf8),
                 ]
         )
@@ -2317,18 +2321,27 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
         includeHistory: Bool
     ) throws -> LoggingHandoffExportContainerV1 {
         if includeHistory {
-            let history = try LoggingHandoffHistoryStoreV1(
-                storeID: "json-file:0",
-                kind: .dockerJSONFile,
-                disposition: .importVerified,
-                formatVersion: 1,
-                rotationIndex: 0,
-                terminalHistoryEpoch: 7,
-                maximumInternalSequence: 41,
-                sourceDeviceID: nil,
-                sourceInode: nil,
-                bytes: try jsonHistoryBytes()
-            )
+            let histories = try ["before-cutover-1", "before-cutover-2"]
+                .enumerated()
+                .map { index, payload in
+                    try LoggingHandoffHistoryStoreV1(
+                        storeID:
+                            ProviderHandoffPortableLoggingPayloadCodec
+                            .historyChunkStoreID(index: UInt64(index), count: 2),
+                        kind: .dockerJSONFile,
+                        disposition: .importVerified,
+                        formatVersion: 1,
+                        rotationIndex: 0,
+                        terminalHistoryEpoch: 7,
+                        maximumInternalSequence: 41,
+                        sourceDeviceID: nil,
+                        sourceInode: nil,
+                        bytes: try jsonHistoryBytes(
+                            payload: payload,
+                            seconds: Int64(Self.useTime - 2 + UInt64(index))
+                        )
+                    )
+                }
             let resolved = try ResolvedContainerLogConfiguration(
                 leaseGeneration: 41,
                 driver: driver.driver,
@@ -2348,7 +2361,7 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                     resolved: resolved
                 ),
                 protectedOptions: [:],
-                historyStores: [history],
+                historyStores: histories,
                 lifecycleSnapshot:
                     ContainerLogLifecycleLedgerSnapshotV1(
                         owningControllerID: "logging-controller"
@@ -2397,7 +2410,10 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
         )
     }
 
-    private static func jsonHistoryBytes() throws -> Data {
+    private static func jsonHistoryBytes(
+        payload: String,
+        seconds: Int64
+    ) throws -> Data {
         let root = FileManager.default.temporaryDirectory
             .resolvingSymlinksInPath()
             .appendingPathComponent(
@@ -2422,12 +2438,12 @@ private final class LoggingPartStageFixture: @unchecked Sendable {
                 stream: .stdout,
                 observation: ContainerLogObservation(
                     wallClock: try ContainerLogTimestamp(
-                        secondsSinceUnixEpoch: Int64(Self.useTime - 1),
+                        secondsSinceUnixEpoch: seconds,
                         nanoseconds: 0
                     ),
                     monotonicInstant: ContinuousClock().now
                 ),
-                payload: Data("before-cutover".utf8),
+                payload: Data(payload.utf8),
                 partial: nil,
                 sequence: 41,
                 processGeneration: 9

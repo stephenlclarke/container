@@ -31,7 +31,9 @@ enum LoggingHandoffBundleHistoryPublisherError: Error, Equatable, Sendable {
 /// directory or the exact final directory; replay validates and resumes it.
 enum LoggingHandoffBundleHistoryPublisher {
     private static let loggingRootName = "logging-v2"
-    private static let maximumEntries = 64
+    private static let maximumEntries = Int(
+        ProviderHandoffPortableLoggingPayloadCodec.maximumHistoryChunkCount
+    )
 
     static func publish(
         bundle: ContainerResource.Bundle,
@@ -85,15 +87,7 @@ enum LoggingHandoffBundleHistoryPublisher {
     ) throws {
         let target = directoryName(kind)
         let temporary = ".handoff-\(target)-\(transactionDigest)"
-        let ordered = segments.sorted { $0.rotationIndex < $1.rotationIndex }
-        guard
-            !ordered.isEmpty,
-            ordered.count <= maximumEntries,
-            ordered.first?.rotationIndex == 0,
-            Set(ordered.map(\.destinationFileName)).count == ordered.count
-        else {
-            throw LoggingHandoffBundleHistoryPublisherError.invalidHistory
-        }
+        let ordered = try orderedSegments(segments, kind: kind)
 
         if let existing = try openDirectoryIfPresent(
             parent: loggingDescriptor,
@@ -193,11 +187,11 @@ enum LoggingHandoffBundleHistoryPublisher {
         kind: LoggingHandoffHistoryKindV1,
         directory: Int32
     ) throws {
-        for segment in segments {
+        for group in fileGroups(segments) {
             let mode =
                 kind == .dockerJSONFile
                 ? mode_t(0o640) : mode_t(0o600)
-            let descriptor = segment.destinationFileName.withCString {
+            let descriptor = group.name.withCString {
                 Darwin.openat(
                     directory,
                     $0,
@@ -210,7 +204,9 @@ enum LoggingHandoffBundleHistoryPublisher {
             }
             defer { Darwin.close(descriptor) }
             try validateRegular(descriptor, expectedMode: mode)
-            try writeAll(segment.bytes, descriptor: descriptor)
+            for segment in group.segments {
+                try writeAll(segment.bytes, descriptor: descriptor)
+            }
             guard Darwin.fsync(descriptor) == 0 else {
                 throw LoggingHandoffBundleHistoryPublisherError.io(errno)
             }
@@ -232,8 +228,8 @@ enum LoggingHandoffBundleHistoryPublisher {
         let expectedMode =
             kind == .dockerJSONFile
             ? mode_t(0o640) : mode_t(0o600)
-        for segment in segments {
-            let file = segment.destinationFileName.withCString {
+        for group in fileGroups(segments) {
+            let file = group.name.withCString {
                 Darwin.openat(
                     descriptor,
                     $0,
@@ -245,18 +241,112 @@ enum LoggingHandoffBundleHistoryPublisher {
             }
             defer { Darwin.close(file) }
             try validateRegular(file, expectedMode: expectedMode)
-            let data = try readAll(
-                file,
-                maximumBytes: LoggingHandoffHistoryStoreV1
-                    .maximumStoredBytesPerSegment
+            try validateContents(file, segments: group.segments)
+        }
+    }
+
+    private static func orderedSegments(
+        _ segments: [LoggingHandoffPromotedHistorySegmentV1],
+        kind: LoggingHandoffHistoryKindV1
+    ) throws -> [LoggingHandoffPromotedHistorySegmentV1] {
+        guard !segments.isEmpty, segments.count <= maximumEntries else {
+            throw LoggingHandoffBundleHistoryPublisherError.invalidHistory
+        }
+        let chunked = segments.compactMap { segment in
+            segment.portableChunk.map { (segment: segment, value: $0) }
+        }
+        if !chunked.isEmpty {
+            let ordered = chunked.sorted {
+                $0.value.index < $1.value.index
+            }
+            guard
+                chunked.count == segments.count,
+                kind == .dockerJSONFile,
+                ordered.allSatisfy({
+                    $0.segment.rotationIndex == 0 && !$0.segment.compressed
+                }),
+                let count = ordered.first?.value.count,
+                count == UInt64(ordered.count),
+                ordered.allSatisfy({ $0.value.count == count }),
+                ordered.map(\.value.index) == Array(0..<count),
+                Set(ordered.map(\.segment.terminalHistoryEpoch)).count == 1,
+                Set(ordered.map(\.segment.maximumInternalSequence)).count == 1
+            else {
+                throw LoggingHandoffBundleHistoryPublisherError.invalidHistory
+            }
+            return ordered.map(\.segment)
+        }
+        guard
+            !segments.contains(where: {
+                $0.storeID.hasPrefix(
+                    ProviderHandoffPortableLoggingPayloadCodec.historyStoreID
+                        + ".chunk."
+                )
+            })
+        else {
+            throw LoggingHandoffBundleHistoryPublisherError.invalidHistory
+        }
+        let ordered = segments.sorted { $0.rotationIndex < $1.rotationIndex }
+        guard
+            ordered.first?.rotationIndex == 0,
+            Set(ordered.map(\.destinationFileName)).count == ordered.count
+        else {
+            throw LoggingHandoffBundleHistoryPublisherError.invalidHistory
+        }
+        return ordered
+    }
+
+    private static func fileGroups(
+        _ segments: [LoggingHandoffPromotedHistorySegmentV1]
+    ) -> [(name: String, segments: [LoggingHandoffPromotedHistorySegmentV1])] {
+        var result: [(name: String, segments: [LoggingHandoffPromotedHistorySegmentV1])] = []
+        for segment in segments {
+            if result.last?.name == segment.destinationFileName {
+                result[result.count - 1].segments.append(segment)
+            } else {
+                result.append((segment.destinationFileName, [segment]))
+            }
+        }
+        return result
+    }
+
+    private static func validateContents(
+        _ descriptor: Int32,
+        segments: [LoggingHandoffPromotedHistorySegmentV1]
+    ) throws {
+        var expectedSize: UInt64 = 0
+        for segment in segments {
+            let (next, overflow) = expectedSize.addingReportingOverflow(
+                UInt64(segment.bytes.count)
             )
             guard
-                data == segment.bytes,
-                ProviderHandoffDigest.sha256(data)
+                !overflow,
+                ProviderHandoffDigest.sha256(segment.bytes)
                     == segment.contentDigestSHA256
             else {
                 throw LoggingHandoffBundleHistoryPublisherError.collision
             }
+            expectedSize = next
+        }
+        var metadata = stat()
+        guard
+            expectedSize <= UInt64(Int64.max),
+            Darwin.fstat(descriptor, &metadata) == 0,
+            metadata.st_size == off_t(expectedSize)
+        else {
+            throw LoggingHandoffBundleHistoryPublisherError.collision
+        }
+        var offset: UInt64 = 0
+        for segment in segments {
+            let data = try readExactly(
+                descriptor,
+                count: segment.bytes.count,
+                offset: offset
+            )
+            guard data == segment.bytes else {
+                throw LoggingHandoffBundleHistoryPublisherError.collision
+            }
+            offset += UInt64(segment.bytes.count)
         }
     }
 
@@ -498,16 +588,14 @@ enum LoggingHandoffBundleHistoryPublisher {
         }
     }
 
-    private static func readAll(_ descriptor: Int32, maximumBytes: Int) throws -> Data {
-        var metadata = stat()
-        guard
-            Darwin.fstat(descriptor, &metadata) == 0,
-            metadata.st_size >= 0,
-            metadata.st_size <= off_t(maximumBytes)
-        else {
+    private static func readExactly(
+        _ descriptor: Int32,
+        count: Int,
+        offset initialOffset: UInt64
+    ) throws -> Data {
+        guard initialOffset <= UInt64(Int64.max) else {
             throw LoggingHandoffBundleHistoryPublisherError.unsafeStorage
         }
-        let count = Int(metadata.st_size)
         var result = Data(count: count)
         var offset = 0
         try result.withUnsafeMutableBytes { buffer in
@@ -516,7 +604,7 @@ enum LoggingHandoffBundleHistoryPublisher {
                     descriptor,
                     buffer.baseAddress?.advanced(by: offset),
                     count - offset,
-                    off_t(offset)
+                    off_t(initialOffset + UInt64(offset))
                 )
                 if readCount < 0, errno == EINTR { continue }
                 guard readCount > 0 else {

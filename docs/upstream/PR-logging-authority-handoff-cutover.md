@@ -1,4 +1,4 @@
-# Pull request handoff: exercise logging authority cutover through the gateway
+# Pull request handoff: complete logging authority cutover through the gateway
 
 > This handoff remains local on `upstream/logging-driver-parity` until the
 > complete parity programme is ready for coordinated Apple publication. No
@@ -15,11 +15,14 @@ operations directly. The focused transaction proves:
 - closed-inventory manifest assembly with explicit empty evidence for the
   unrelated controller parts;
 - immutable object streaming between distinct source and destination stores;
+- canonical, ordered 8 MiB transport stores for Docker JSON history above the
+  former 64 MiB aggregate ceiling;
 - destination stage and exact imported receipt binding;
 - prepared-root recording, signed commit, and reconciliation entry;
 - logging promotion and signed-Complete activation;
 - imported `json-file` history rematerialization through the production bundle
-  publisher, public read-back, cursor adoption, and a greater-sequence writer;
+  publisher, including multiple transport stores joined into one active
+  `json.log`, public read-back, cursor adoption, and a greater-sequence writer;
 - coordinator-driven staged abort, logging compensation, and protected-object
   cleanup; and
 - exact replay through a newly constructed coordinator over the same durable
@@ -50,8 +53,10 @@ Run only the focused slice while the matched Engine API is editable:
 swift test --filter 'gateway coordinator transfers'
 swift test --filter 'gateway coordinator aborts'
 swift test --skip-build --filter LoggingHandoffControlResponderTests
-swift-format lint --strict \
-  Tests/ContainerAPIServiceTests/LoggingHandoffControlResponderTests.swift
+swift test --skip-build --filter LoggingHandoffPayloadTests
+swift test --skip-build --filter LoggingHandoffBundleHistoryPublisherTests
+swift format lint --strict --configuration .swift-format-nolint \
+  $(git diff --name-only -- '*.swift')
 git diff --check
 ```
 
@@ -60,13 +65,18 @@ Current MacBook Pro evidence:
 - gateway cutover: 1/1 passed;
 - gateway abort/restart replay: 1/1 passed;
 - complete responder slice: 7/7 passed in parallel;
+- decoded-payload slice: 6/6 passed, including a shared Engine API payload
+  whose encoded JSON history exceeds 64 MiB;
+- bundle-history publisher slice: 5/5 passed, including strict incomplete-set
+  rejection and repeatable ordered publication into one active file;
 - the gateway streamed objects from a distinct source store, recorded two
   destination-key proofs, obtained one source signature, staged and promoted
   logging once, and replayed activation without duplicating the promoted or
   activated effect;
-- Complete rematerialized the imported Docker JSON record on the public bundle
-  path, the production reader returned it, the adopted cursor reserved epoch 8
-  from sequence 42, and a production writer appended a later readable record;
+- Complete rematerialized two ordered portable Docker JSON chunks on the public
+  bundle path as one active file, the production reader returned both records,
+  the adopted cursor reserved epoch 8 from sequence 42, and a production writer
+  appended a later readable record;
 - a staged remote-provider transaction reached signed Aborted, compensated
   logging twice with equal terminal results across coordinator reconstruction,
   and left zero protected staging objects; and
@@ -74,9 +84,13 @@ Current MacBook Pro evidence:
 
 ## Remaining closure
 
-This closes the coordinator-driven success, public-history/new-writer, and
-staged-abort/restart-replay transactions, not the whole work package. Before
-claiming logging handoff parity, retain explicit evidence for:
+This closes the former 64 MiB source-history gap, coordinator-driven success,
+public-history/new-writer, and staged-abort/restart-replay transactions. It
+does not close the whole work package. Before claiming logging handoff parity,
+retain explicit evidence for:
 
-- source histories above the current 64 MiB capture bound;
-- synchronized release, security, failure, and performance gates.
+- the defensive 4096-store limit (at most 32 GiB of encoded history per
+  container), either as an accepted operational limit or with a streaming
+  continuation design for larger histories; and
+- synchronized release, external-client, security, failure, migration, and
+  performance gates.
