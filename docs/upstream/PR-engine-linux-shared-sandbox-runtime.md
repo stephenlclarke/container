@@ -90,8 +90,12 @@ This change compiles against the local signed Containerization commits:
 - `864455bf1a104f0215b7c912a45800b0a0538973` — observation handoff docs.
 
 The repository pin must remain unchanged until the complete programme is ready
-for coordinated Apple upstream publication. Local SwiftPM editable-dependency
-metadata is not part of this change.
+for coordinated Apple upstream publication. The manifest now uses
+`CONTAINERIZATION_SOURCE` and `CONTAINERIZATION_REF` for both the selected
+remote dependency and compiled provenance. `CONTAINERIZATION_PACKAGE_PATH` and
+`CONTAINER_ENGINE_API_PACKAGE_PATH` select identity-preserving local packages
+without creating SwiftPM editable-dependency metadata. With no overrides, the
+same public Containerization revision and Engine API 0.3.5 remain selected.
 
 ## Deliberate boundaries
 
@@ -132,6 +136,11 @@ held locally until all parity development is complete.
 swift build --target container-runtime-linux
 swift test --filter EngineLinuxSandboxRuntimeServiceTests
 swift test --filter engineLinuxSandboxConfigurationReadWrite
+CONTAINERIZATION_PACKAGE_PATH=/path/to/containerization \
+  CONTAINER_ENGINE_API_PACKAGE_PATH=/path/to/container-engine-api \
+  CONTAINERIZATION_SOURCE=owner/containerization \
+  CONTAINERIZATION_REF=<signed-revision> \
+  swift test --filter EngineLinuxSandboxRuntimeServiceTests
 make check
 make test
 git diff --check
@@ -155,6 +164,10 @@ Current results on the development MacBook Pro:
 - the corrected identity-preserving mirror passed all 3 release-provenance
   tests, completing the unit evidence without another redundant full run;
 - no SDK or dependency installation was required.
+- default manifest inspection selects Containerization `77f06d4c` and Engine
+  API 0.3.5; the local-worktree graph selects signed Containerization
+  `38d9c695` and Engine API `5e52a0f4` without `swift package edit`, and the
+  focused Engine attach-state test passes under warnings-as-errors.
 
 ## Review checklist
 

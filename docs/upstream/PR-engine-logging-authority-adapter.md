@@ -160,8 +160,10 @@ Container pins `container-engine-api` exactly at 0.3.5, signed revision
 Containerization shared-sandbox worktree because the coordinated
 Containerization upstream wave has not been published. The build embeds the
 published Containerization source and revision while compiling that matched
-local work. SwiftPM editable state is removed after validation; the published
-Containerization pin remains unchanged at
+local work. The manifest's `CONTAINERIZATION_PACKAGE_PATH` and
+`CONTAINER_ENGINE_API_PACKAGE_PATH` lane preserves package identity without
+SwiftPM editable state; source/ref overrides bind compiled provenance to the
+signed local head. The published Containerization pin remains unchanged at
 `77f06d4c44341e04241941072fb69e2b85a6f5c1`.
 
 No Apple issue, pull request, branch publication, or push has been created.

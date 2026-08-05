@@ -74,6 +74,30 @@ let scSource =
 let scRef =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_REF"]
     ?? containerizationRevision
+// Keep the checked-in remote graph reproducible while allowing a matched,
+// identity-preserving local graph without mutating SwiftPM editable state.
+let containerizationDependency: Package.Dependency = {
+    if let path = ProcessInfo.processInfo.environment[
+        "CONTAINERIZATION_PACKAGE_PATH"
+    ], !path.isEmpty {
+        return .package(name: "containerization", path: path)
+    }
+    return .package(
+        url: "https://github.com/\(scSource).git",
+        revision: scRef
+    )
+}()
+let containerEngineAPIDependency: Package.Dependency = {
+    if let path = ProcessInfo.processInfo.environment[
+        "CONTAINER_ENGINE_API_PACKAGE_PATH"
+    ], !path.isEmpty {
+        return .package(name: "container-engine-api", path: path)
+    }
+    return .package(
+        url: "https://github.com/stephenlclarke/container-engine-api.git",
+        exact: containerEngineAPIVersion
+    )
+}()
 
 let package = Package(
     name: "container",
@@ -109,14 +133,8 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/awslabs/aws-sdk-swift.git", exact: "1.7.52"),
         .package(url: "https://github.com/smithy-lang/smithy-swift.git", exact: "0.238.0"),
-        .package(
-            url: "https://github.com/stephenlclarke/containerization.git",
-            revision: containerizationRevision
-        ),
-        .package(
-            url: "https://github.com/stephenlclarke/container-engine-api.git",
-            exact: containerEngineAPIVersion
-        ),
+        containerizationDependency,
+        containerEngineAPIDependency,
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-collections.git", from: "1.2.0"),
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),

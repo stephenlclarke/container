@@ -128,8 +128,10 @@ or nanosecond timestamp presentation.
 - Publish or land the matched Containerization sandbox/workload APIs. The
   canonical public `77f06d4` pin cannot compile this existing branch; the
   signed local `38d9c69` dependency passes the focused attach-state slice and
-  includes the earlier `864455b` full-suite head. It must remain local until
-  the coordinated Apple-bound wave is ready.
+  includes the earlier `864455b` full-suite head. The manifest now provides an
+  identity-preserving local package lane without edit/unedit churn, but the
+  public pin must remain unchanged until the coordinated Apple-bound wave is
+  ready.
 
 ## Apple-shaped boundary
 

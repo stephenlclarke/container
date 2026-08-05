@@ -76,6 +76,10 @@ ready.
   can rematerialize the workload.
 - [x] The full macOS unit corpus passes under warnings-as-errors; the release
   provenance suite also passes with an identity-preserving local mirror.
+- [x] The manifest has an identity-preserving local-worktree lane for the
+  matched Containerization and Engine API sources, while no-override resolution
+  retains the exact checked-in public pins. Local validation no longer needs
+  SwiftPM edit/unedit mutation.
 
 ## Follow-on integration
 
