@@ -26,11 +26,36 @@ extension ClientImage {
     /// Manifests without a platform, or whose config/manifest cannot be
     /// fetched, are skipped.
     public func toImageResource(containerSystemConfig: ContainerSystemConfig) async throws -> ImageResource {
+        try await toImageResource(
+            containerSystemConfig: containerSystemConfig,
+            selectedPlatform: nil
+        )
+    }
+
+    /// Resolves only the requested platform variant for callers that do not
+    /// need the complete multi-platform inventory.
+    public func toImageResource(
+        containerSystemConfig: ContainerSystemConfig,
+        for platform: Platform
+    ) async throws -> ImageResource {
+        try await toImageResource(
+            containerSystemConfig: containerSystemConfig,
+            selectedPlatform: platform
+        )
+    }
+
+    private func toImageResource(
+        containerSystemConfig: ContainerSystemConfig,
+        selectedPlatform: Platform?
+    ) async throws -> ImageResource {
         var variants: [ImageResource.Variant] = []
         var earliest: Date?
 
         for desc in try await self.index().manifests {
             guard let platform = desc.platform else {
+                continue
+            }
+            if let selectedPlatform, platform != selectedPlatform {
                 continue
             }
             let config: ContainerizationOCI.Image

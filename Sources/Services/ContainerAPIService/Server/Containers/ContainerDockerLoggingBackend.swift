@@ -82,7 +82,8 @@ public struct ContainerDockerLoggingBackend:
                 }
                 resources.append(
                     try await image.toImageResource(
-                        containerSystemConfig: containerSystemConfig
+                        containerSystemConfig: containerSystemConfig,
+                        for: .current
                     )
                 )
             }
