@@ -38,8 +38,9 @@ logging slot uses `LoggingHandoffSourceControlResponder`,
 The test compiles against the matched signed local `container-engine-api`
 implementation because released 0.3.5 predates the handoff coordinator API.
 `ContainerAPIServiceTests` now declares the `ContainerEngineService` product
-explicitly. Validation temporarily places that package in SwiftPM editable
-mode, then removes the edit and restores the published lockfile exactly.
+explicitly. The manifest's identity-preserving local-package lane selects the
+matched Engine API and Containerization worktrees without SwiftPM editable
+state; no-override resolution retains the published lockfile exactly.
 
 The Engine API, devcontainer source, and Container destination changes must be
 published as one synchronized dependency wave after all programme development
@@ -69,6 +70,10 @@ Current MacBook Pro evidence:
   whose encoded JSON history exceeds 64 MiB;
 - bundle-history publisher slice: 5/5 passed, including strict incomplete-set
   rejection and repeatable ordered publication into one active file;
+- Engine API signed commit `da59cff5b11ba4049f631c886ac3b09b0c3108d6`
+  removes the former 4096-store ceiling, and Container signed commit
+  `16a3419ae31bb5c18a934571c69348767a89233e` accepts and publishes the
+  complete ordered set. Their regressions construct 4097 stores and pass;
 - the gateway streamed objects from a distinct source store, recorded two
   destination-key proofs, obtained one source signature, staged and promoted
   logging once, and replayed activation without duplicating the promoted or
@@ -89,18 +94,13 @@ Current MacBook Pro evidence:
 ## Remaining closure
 
 This closes the former 64 MiB source-history gap, coordinator-driven success,
-public-history/new-writer, and staged-abort/restart-replay transactions. It
-does not close the whole work package. Before claiming logging handoff parity,
-retain explicit evidence for:
-
-- the defensive 4096-store limit (at most 32 GiB of encoded history per
-  container), either as an accepted operational limit or with a streaming
-  continuation design for larger histories; and
-- public Docker create/start routing
-  ([container#61](https://github.com/stephenlclarke/container/issues/61)) and
-  provider-root-scoped handoff trust storage (`container-engine-api#14`); and
-- synchronized release, external-client, security, failure, migration, and
-  performance gates.
+public-history/new-writer, staged-abort/restart-replay, and aggregate portable
+store-count transactions. Public Docker create/start routing is closed by
+signed Container commit `ac77f7a38819c4f96581220bb58d89107b51826a`, and
+provider-root-scoped trust is closed by signed Engine API commit
+`fe4094d0d7a2372ad586d177aea3f9b0e299ebcb`. The work package still requires
+the synchronized release, external-client, security, failure, migration, and
+performance gates before programme-level parity can be claimed.
 
 Installed-system certification and the recreated-container regression are
 retained in signed local Container commit

@@ -39,6 +39,10 @@ adapter.
 - [x] Exact portable, Docker json-file, native-local, framed transaction, and
   source-to-destination regressions pass on the programme MacBook Pro with
   warnings treated as errors.
+- [x] Portable history has no aggregate store-count ceiling: the Engine API
+  source codec and Container publisher both construct and preserve 4097
+  ordered stores, crossing the former defensive limit without aggregating the
+  complete history in memory.
 
 ## Publication boundary
 

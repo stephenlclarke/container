@@ -110,13 +110,7 @@ claims, or provider-generation-specific workload.
 
 ## Remaining programme work
 
-- Implement public Docker create/start/control routing; installed discovery,
-  native lifecycle, Docker inspect/logs, and restart are certified, but the
-  selected provider still rejects public `ContainerCreate` and
-  `ContainerStart` as unimplemented.
 - Add release-signature trust and coordinated dependency publication.
-- Namespace provider-handoff Keychain state so isolated provider roots cannot
-  invalidate one another during release and development certification.
 - Run the paired Docker Compose behavior and performance matrix, including
   slow/non-draining FIFOs, sustained writes, direct reads, and idle overhead.
 - Complete final migration, security, shutdown, rollback, and orphan-resource
@@ -162,8 +156,9 @@ handoff is held until all parity development waves are complete.
   readiness, journald runtime, native read, sandbox recovery, and two-stream
   delivery defects. All are closed with focused regressions, signed local
   checkpoints, and exact MBP runtime evidence.
-- [container#61](https://github.com/stephenlclarke/container/issues/61) retains
-  the public Docker create/control route gap.
+- [container#61](https://github.com/stephenlclarke/container/issues/61) is
+  closed by signed commit `ac77f7a38819c4f96581220bb58d89107b51826a` with
+  public Docker create/start/stop/delete certification on the programme MBP.
 - [container#62](https://github.com/stephenlclarke/container/issues/62) retains
   the restart/stale-state inspect-projection investigation; a clean installed
   certification currently projects stopped state as `exited`.
@@ -171,5 +166,6 @@ handoff is held until all parity development waves are complete.
   the recreated-container protected-effect collision and is closed by
   `36ef9c8f` with focused and installed restart evidence.
 - [container-engine-api#14](https://github.com/stephenlclarke/container-engine-api/issues/14)
-  retains the global provider-handoff Keychain namespace collision found while
-  certifying independently rebuilt isolated roots.
+  is closed by signed Engine API commit
+  `fe4094d0d7a2372ad586d177aea3f9b0e299ebcb`, which scopes handoff trust to
+  the selected provider root.

@@ -25,7 +25,9 @@ The corresponding Engine API and provider commits are dependencies, not part
 of an Apple Container pull request:
 
 - Engine API `44010b991cc5015e59ff81d2fa9917ae879d39d8` and
-  `0d008475bfb711f7b295e44342b98d1535ab3f12`;
+  `0d008475bfb711f7b295e44342b98d1535ab3f12`, followed by
+  `da59cff5b11ba4049f631c886ac3b09b0c3108d6` removing the former aggregate
+  store-count ceiling;
 - devcontainer `b428031e4f1cc1bf2ede37a2b658962309e6e4c7`.
 
 ## Container implementation
@@ -35,6 +37,8 @@ of an Apple Container pull request:
   staging and promotion.
 - `60b5d5c1482a0f7edad03c72f4777f0d5fb6635f` streams native local-history
   snapshots and canonical source records into framed sealing.
+- `16a3419ae31bb5c18a934571c69348767a89233e` publishes complete portable
+  store sets without the former 4096-store destination limit.
 
 Both commits are signed and retained on `upstream/logging-driver-parity`.
 
@@ -72,6 +76,8 @@ All commands ran on the programme MacBook Pro with
 - [x] Source mutation cannot redirect an already pinned inode.
 - [x] v1 callers retain their compatibility path.
 - [x] Focused source-to-destination replay and transaction evidence passes.
+- [x] Source and destination regressions cross the former 4096-store ceiling
+  and preserve exact order through publication.
 - [ ] Rebase onto the final Apple upstream head before publication.
 - [ ] Publish the matched Engine API proposal or replace it with an accepted
   upstream equivalent.
