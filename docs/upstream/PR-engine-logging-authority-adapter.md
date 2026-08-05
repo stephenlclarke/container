@@ -70,12 +70,23 @@ attached through the existing `ContainersService` runtime path. TTY output is
 merged onto stdout when stdout is selected; a TTY stderr-only request remains
 empty, and non-TTY output retains Docker stdout/stderr channels.
 
+Docker permits attach before start. The adapter therefore performs one
+lock-serialized, never-started-only bootstrap using the attach stdio. A
+concurrent attach or start observes the existing runtime client and attaches
+normally; a container with a durable `startedDate` can never be bootstrapped
+again by this path.
+
 `ContainerDockerAttachSession` exposes a bounded hijack frame stream. A full
 buffer retries the same frame and applies backpressure instead of dropping it.
 It consumes the Docker default or requested detach sequence, closes readers
 and file handles exactly once across success, failure, disconnect, and runtime
 attachment failure, and publishes ordered `attach`/`detach` records through
 the canonical service event broadcaster.
+Runtime pipe reads are readiness-driven and re-arm only after the current
+frame is accepted, preserving backpressure without blocking the Swift
+cooperative executor. A remote-provider foreground pump duplicates any handle
+it retains asynchronously, keeping descriptor ownership independent of the
+bootstrap caller.
 
 Before opening the canonical reader or exact-process pipes, the backend rejects
 paused containers and containers waiting in restart-policy backoff with Moby's
@@ -199,6 +210,17 @@ Current development MacBook Pro evidence:
   warnings-as-errors, covering paused and restart-backoff conflict selection,
   persistent logging after client disconnect, and stale-generation shutdown
   fencing;
+- focused created-attach/output-ownership slice: 3 Engine attach tests, 5
+  bounded attach-session tests, and 1 remote foreground test passed; the
+  foreground test closes the caller descriptor immediately after bootstrap;
+- same-MBP pinned Docker Engine 29.2.1 and signed Container candidate both pass
+  the identical terminal-session oracle: pre-start 101 upgrade, 204 start,
+  `READY`, 48-by-132 resize observation, `ctrl-x` detach with the workload still
+  running, 101 re-attach, `AFTER`, clean zero exit, EOF, and 204/404 cleanup.
+  Companion Engine API commit
+  `c7973ac641fb6f6e07df1358114f36222bd9ca59` reduces the candidate from
+  4.359129 seconds to 1.238173 seconds cold and 0.920554 seconds warm against
+  the 0.184992-second Docker fixture;
 - pinned Moby 29.2.1 source `6bc6209b` confirms 32-bit resize parsing and exact
   requested stream selection; a same-MBP Docker 29.5.2 black-box check returned
   TTY bytes for stdout/both but none for stderr-only, accepted `UInt32.max`,
@@ -254,6 +276,8 @@ Current development MacBook Pro evidence:
 - [x] Paused and restart-backoff attach failures happen before replay/live side
   effects; disconnect and stale shutdown cannot terminate persistent/newer
   logging generations.
+- [x] Created-container attach wins or joins an atomic bootstrap, live output
+  is readiness-driven, and the paired Docker/candidate terminal oracle passes.
 - [x] Compose whole `/info` and inspect responses before advertising them.
 - [x] Install and supervise the public gateway.
 - [ ] Complete the remaining external-client route/certification matrix and

@@ -1114,6 +1114,39 @@ public actor ContainersService {
 
     /// Bootstrap the init process of the container.
     public func bootstrap(id: String, stdio: [FileHandle?], dynamicEnv: [String: String]) async throws {
+        _ = try await bootstrap(
+            id: id,
+            stdio: stdio,
+            dynamicEnv: dynamicEnv,
+            onlyIfNeverStarted: false
+        )
+    }
+
+    /// Bootstrap a newly created container with attach-owned stdio.
+    ///
+    /// Returns `true` only when this call created the runtime client. A caller
+    /// that receives `false` must attach its stdio to the existing client
+    /// instead. The lifecycle check prevents a late attach from recreating an
+    /// exited container after its runtime client has been released.
+    func bootstrapForAttach(
+        id: String,
+        stdio: [FileHandle?],
+        dynamicEnv: [String: String]
+    ) async throws -> Bool {
+        try await bootstrap(
+            id: id,
+            stdio: stdio,
+            dynamicEnv: dynamicEnv,
+            onlyIfNeverStarted: true
+        )
+    }
+
+    private func bootstrap(
+        id: String,
+        stdio: [FileHandle?],
+        dynamicEnv: [String: String],
+        onlyIfNeverStarted: Bool
+    ) async throws -> Bool {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -1132,14 +1165,21 @@ public actor ContainersService {
             )
         }
 
-        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+        return try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
             var state = try await self.getContainerState(id: id, context: context)
 
             // We've already bootstrapped this container. Ideally we should be able to
             // return some sort of error code from the sandbox svc to check here, but this
             // is also a very simple check and faster than doing an rpc to get the same result.
             if state.client != nil {
-                return
+                return false
+            }
+
+            // Attach is allowed to bootstrap only a never-started container.
+            // Once startedDate is durable, recreating the runtime here would
+            // silently turn an attach to an exited container into a restart.
+            if onlyIfNeverStarted, state.snapshot.startedDate != nil {
+                return false
             }
 
             let path = try Self.containerPath(root: self.containerRoot, id: id)
@@ -1204,6 +1244,7 @@ public actor ContainersService {
 
                 state.client = runtimeClient
                 await self.setContainerState(id, state, context: context)
+                return true
             } catch {
                 let label = Self.fullLaunchdServiceLabel(
                     runtimeName: config.runtimeHandler,

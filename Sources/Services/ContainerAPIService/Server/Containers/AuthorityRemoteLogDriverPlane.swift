@@ -18,6 +18,7 @@ import ContainerLoggingProviders
 import ContainerResource
 import ContainerRuntimeClient
 import CryptoKit
+import Darwin
 import DockerSemanticHelper
 import Foundation
 import Logging
@@ -1041,13 +1042,25 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         )
         let stdoutPipe = Pipe()
         let stderrPipe = configuration.initProcess.terminal ? nil : Pipe()
+        let stdoutForeground = try Self.duplicateForegroundHandle(
+            stdio[safe: 1] ?? nil
+        )
+        let stderrForeground: FileHandle?
+        do {
+            stderrForeground = try Self.duplicateForegroundHandle(
+                stdio[safe: 2] ?? nil
+            )
+        } catch {
+            try? stdoutForeground?.close()
+            throw error
+        }
         let pump = AuthorityRemoteLogPump(
             delivery: delivery,
             processGeneration: processGeneration,
             sequenceReservation: sequenceReservation,
             sequenceStore: sequenceStore,
-            stdoutForeground: stdio[safe: 1] ?? nil,
-            stderrForeground: stdio[safe: 2] ?? nil
+            stdoutForeground: stdoutForeground,
+            stderrForeground: stderrForeground
         )
         let stdoutTask = Self.readerTask(
             handle: stdoutPipe.fileHandleForReading,
@@ -1085,6 +1098,26 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             activation: nil
         )
         return runtimeStdio
+    }
+
+    /// Takes an independent descriptor for the asynchronous foreground pump.
+    /// The bootstrap caller remains free to close its local handle as soon as
+    /// the runtime XPC transfer completes.
+    private static func duplicateForegroundHandle(
+        _ handle: FileHandle?
+    ) throws -> FileHandle? {
+        guard let handle else {
+            return nil
+        }
+        let descriptor = Darwin.fcntl(
+            handle.fileDescriptor,
+            F_DUPFD_CLOEXEC,
+            0
+        )
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     }
 
     /// Drops the authority's pipe-writer copies after XPC bootstrap has

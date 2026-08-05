@@ -535,6 +535,7 @@ struct AuthorityRemoteLogDriverPlaneTests {
                     authenticatedProtectedOptions: [:],
                     stdio: [nil, foreground.fileHandleForWriting, nil]
                 )
+                try foreground.fileHandleForWriting.close()
 
                 try #require(runtimeStdio[1]).write(
                     contentsOf: Data("plane-output\n".utf8)

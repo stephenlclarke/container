@@ -61,6 +61,14 @@ or nanosecond timestamp presentation.
   merged only onto requested stdout while TTY stderr-only requests stay empty,
   Docker detach keys are consumed server-side, and slow hijack clients cannot
   create an unbounded allocation or silently lose buffered frames.
+- [x] A Docker attach opened while the container is still in `created` state
+  atomically bootstraps that never-started runtime with the attach-owned stdio;
+  a concurrent start or attach reuses the winner, while an exited container is
+  never recreated as an attach side effect.
+- [x] Runtime output uses readiness callbacks rather than blocking a Swift
+  cooperative-executor thread. The remote logging plane owns duplicates of
+  foreground descriptors that it retains beyond bootstrap, so caller cleanup
+  cannot suppress live output.
 - [x] Detach sequences split across client frames remain atomic, consume no
   guest input bytes, leave the process running, and permit an independent
   re-attach session.
@@ -109,13 +117,23 @@ or nanosecond timestamp presentation.
 - [x] An isolated signed package passes `system start`, JSON `system status`,
   Docker CLI unversioned and `/v1.53/info`, `/_ping`, and exact shutdown/socket
   cleanup on the development MacBook Pro.
+- [x] A same-MBP paired black-box oracle passes against pinned Docker Engine
+  29.2.1 and the signed Container candidate: pre-start attach, start, TTY
+  output, 48-by-132 resize, detach without stopping, independent re-attach,
+  zero exit, and exact deletion all match. Candidate duration fell from
+  4.359129 seconds to 1.238173 seconds cold and 0.920554 seconds warm after
+  companion Engine API commit `c7973ac641fb6f6e07df1358114f36222bd9ca59`;
+  the pinned Docker fixture is 0.184992 seconds.
 
 ## Remaining Engine logging work
 
-- Certify the remaining external-client attach and shutdown matrix. Attach wait
-  currently reports the runtime process exit where it is needed to keep an
-  input-only session alive; the Docker hijack protocol itself does not expose
-  that code to the HTTP client.
+- Certify the remaining non-terminal external-client and shutdown matrix.
+  Attach wait currently reports the runtime process exit where it is needed to
+  keep an input-only session alive; the Docker hijack protocol itself does not
+  expose that code to the HTTP client. The live TTY resize and detach/re-attach
+  route is now paired-oracle certified. Its candidate is inside the programme's
+  <10× failure threshold but remains 4.98× slower warm, primarily because the
+  first pre-start attach boots the VM-backed runtime.
 - Direct isolated-provider `ReadLogs` sessions now route through the authority
   in signed local commit `08677dc8b5a677533de80cf634fee1d14f4da069`.
   Complete installed third-party plugin certification, staged provider

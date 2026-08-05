@@ -370,10 +370,17 @@ public struct ContainerDockerLoggingBackend:
             stderrPipe?.fileHandleForWriting,
         ]
         do {
-            try await containers.attach(
+            let bootstrapped = try await containers.bootstrapForAttach(
                 id: containerID,
-                stdio: serviceHandles
+                stdio: serviceHandles,
+                dynamicEnv: [:]
             )
+            if !bootstrapped {
+                try await containers.attach(
+                    id: containerID,
+                    stdio: serviceHandles
+                )
+            }
         } catch {
             for handle in serviceHandles.compactMap({ $0 }) {
                 try? handle.close()
@@ -546,7 +553,6 @@ private enum ContainerDockerAttachSessionError: Error {
 actor ContainerDockerAttachSession: DockerHijackSession {
     nonisolated let frames: AsyncThrowingStream<DockerStreamFrame, any Error>
 
-    private static let readChunkBytes = 64 * 1_024
     private static let maximumBufferedFrames = 256
 
     private let continuation:
@@ -679,30 +685,48 @@ actor ContainerDockerAttachSession: DockerHijackSession {
         channel: DockerStreamChannel,
         handle: FileHandle
     ) {
-        let task = Task.detached(priority: .utility) { [weak self] in
-            do {
-                while !Task.isCancelled {
-                    let data =
-                        try handle.read(
-                            upToCount: Self.readChunkBytes
-                        ) ?? Data()
-                    guard !data.isEmpty else {
-                        break
-                    }
-                    guard
-                        try await self?.emit(
-                            DockerStreamFrame(channel: channel, data: data)
-                        ) == true
-                    else {
-                        return
-                    }
-                }
-                await self?.sourceEnded()
-            } catch {
-                await self?.sourceFailed(error)
+        guard !finished else {
+            try? handle.close()
+            return
+        }
+        handle.readabilityHandler = { [weak self] readable in
+            readable.readabilityHandler = nil
+            let data = readable.availableData
+            Task { [weak self] in
+                await self?.receiveRuntimeData(
+                    data,
+                    channel: channel,
+                    handle: readable
+                )
             }
         }
-        tasks.append(task)
+    }
+
+    private func receiveRuntimeData(
+        _ data: Data,
+        channel: DockerStreamChannel,
+        handle: FileHandle
+    ) async {
+        guard !finished else {
+            try? handle.close()
+            return
+        }
+        guard !data.isEmpty else {
+            await sourceEnded()
+            return
+        }
+        do {
+            guard
+                try await emit(
+                    DockerStreamFrame(channel: channel, data: data)
+                )
+            else {
+                return
+            }
+            startRuntimePump(channel: channel, handle: handle)
+        } catch {
+            await sourceFailed(error)
+        }
     }
 
     private func startLogPump(reader: any DockerLogReadSession) {
@@ -811,6 +835,7 @@ actor ContainerDockerAttachSession: DockerHijackSession {
         tasks.removeAll(keepingCapacity: false)
         try? input?.close()
         for (_, handle) in runtimeOutputs {
+            handle.readabilityHandler = nil
             try? handle.close()
         }
         if let logReader, !logReaderFinished {
