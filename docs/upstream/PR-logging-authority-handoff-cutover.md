@@ -80,6 +80,10 @@ Current MacBook Pro evidence:
 - a staged remote-provider transaction reached signed Aborted, compensated
   logging twice with equal terminal results across coordinator reconstruction,
   and left zero protected staging objects; and
+- the installed readable-plugin fixture completed native lifecycle and
+  independent Docker info/inspect/logs certification, then the same deleted
+  container ID completed another lifecycle after daemon restart without
+  colliding with its prior protected-effect tombstone; and
 - SwiftPM editable state was removed after validation.
 
 ## Remaining closure
@@ -92,5 +96,12 @@ retain explicit evidence for:
 - the defensive 4096-store limit (at most 32 GiB of encoded history per
   container), either as an accepted operational limit or with a streaming
   continuation design for larger histories; and
+- public Docker create/start routing
+  ([container#61](https://github.com/stephenlclarke/container/issues/61)) and
+  provider-root-scoped handoff trust storage (`container-engine-api#14`); and
 - synchronized release, external-client, security, failure, migration, and
   performance gates.
+
+Installed-system certification and the recreated-container regression are
+retained in signed local Container commit
+`36ef9c8fbed136641550eed695039440e578de70`.

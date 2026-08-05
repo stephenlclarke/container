@@ -98,13 +98,25 @@ claims, or provider-generation-specific workload.
   one stderr Docker frame (76 bytes total), closed its process generation with
   disposition `complete`, and left no active service writer, reader, or pending
   effect removal.
+- [x] The installed deterministic readable-plugin bundle is discovered from
+  the protected install root; two native create/start/stop cycles produce exact
+  FIFO history; independent Docker `info`, `inspect`, and `logs` use the same
+  authority; stopped state projects as `exited`; and history remains readable
+  after the API service and shared sandbox restart.
+- [x] Deleting and recreating the same Docker-compatible container ID no longer
+  collides with an immutable protected-effect tombstone. The installed plugin
+  completed another start/stop/delete after daemon restart and advanced exact
+  history without `integrityMismatch`.
 
 ## Remaining programme work
 
-- Exercise a distributable third-party OCI plugin bundle through the complete
-  installed discovery, materialization, Container create/start/logs/stop/delete,
-  and restart path.
+- Implement public Docker create/start/control routing; installed discovery,
+  native lifecycle, Docker inspect/logs, and restart are certified, but the
+  selected provider still rejects public `ContainerCreate` and
+  `ContainerStart` as unimplemented.
 - Add release-signature trust and coordinated dependency publication.
+- Namespace provider-handoff Keychain state so isolated provider roots cannot
+  invalidate one another during release and development certification.
 - Run the paired Docker Compose behavior and performance matrix, including
   slow/non-draining FIFOs, sustained writes, direct reads, and idle overhead.
 - Complete final migration, security, shutdown, rollback, and orphan-resource
@@ -133,6 +145,9 @@ handoff is held until all parity development waves are complete.
   deterministic terminalisation, and lifecycle diagnostics checkpoint.
 - `0c4738c4a273730ec98bd948d90faa991c25e5b8` — signed single-admission
   protected-service readiness and exact-generation dial/probe retry checkpoint.
+- `36ef9c8fbed136641550eed695039440e578de70` — signed installed-system
+  certification runner and container-incarnation-bound writer/reader identity,
+  preventing recreated IDs from colliding with prior protected tombstones.
 - [container#47](https://github.com/stephenlclarke/container/issues/47) records
   the queued connection-lane cancellation defect and is closed with regression
   coverage.
@@ -147,3 +162,14 @@ handoff is held until all parity development waves are complete.
   readiness, journald runtime, native read, sandbox recovery, and two-stream
   delivery defects. All are closed with focused regressions, signed local
   checkpoints, and exact MBP runtime evidence.
+- [container#61](https://github.com/stephenlclarke/container/issues/61) retains
+  the public Docker create/control route gap.
+- [container#62](https://github.com/stephenlclarke/container/issues/62) retains
+  the restart/stale-state inspect-projection investigation; a clean installed
+  certification currently projects stopped state as `exited`.
+- [container#63](https://github.com/stephenlclarke/container/issues/63) records
+  the recreated-container protected-effect collision and is closed by
+  `36ef9c8f` with focused and installed restart evidence.
+- [container-engine-api#14](https://github.com/stephenlclarke/container-engine-api/issues/14)
+  retains the global provider-handoff Keychain namespace collision found while
+  certifying independently rebuilt isolated roots.
