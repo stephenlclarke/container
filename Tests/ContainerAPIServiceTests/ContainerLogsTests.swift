@@ -809,6 +809,72 @@ struct ContainerLogsTests {
         }
     }
 
+    @Test func engineAttachDoesNotStreamUnreadableFiniteHistory() {
+        let plan = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: true,
+                stream: false,
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: false,
+            hasLogReader: false
+        )
+
+        #expect(!plan.input)
+        #expect(!plan.stdout)
+        #expect(!plan.stderr)
+    }
+
+    @Test func engineAttachStreamsUnreadableLiveOutputWithTTYMerge() {
+        let nonTerminal = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: true,
+                stream: true,
+                stdin: true,
+                stdout: true,
+                stderr: true,
+                detachKeys: "ctrl-x"
+            ),
+            terminal: false,
+            hasLogReader: false
+        )
+        let terminalStderr = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: false,
+                stream: true,
+                stdin: false,
+                stdout: false,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: true,
+            hasLogReader: false
+        )
+        let readable = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: true,
+                stream: true,
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: false,
+            hasLogReader: true
+        )
+
+        #expect(nonTerminal.input)
+        #expect(nonTerminal.stdout)
+        #expect(nonTerminal.stderr)
+        #expect(terminalStderr.stdout)
+        #expect(!terminalStderr.stderr)
+        #expect(!readable.stdout)
+        #expect(!readable.stderr)
+    }
+
     @Test func engineActiveWireReaderPreservesExactRecordAndTerminalMode() async throws {
         let source = try ContainerLogReadRecordV1(
             stream: .stdout,

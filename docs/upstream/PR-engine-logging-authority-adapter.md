@@ -63,10 +63,11 @@ generation cross the XPC file-descriptor boundary losslessly.
 
 Attach uses the same reader with `follow` for readable drivers, so historical
 replay and the retained active generation remain one ordered source. Drivers
-without a reader, including `none`, fall back to exact-process output without
-inventing historical bytes. Requested live stdin/stdout/stderr are attached
-through the existing `ContainersService` runtime path. TTY output is merged;
-non-TTY output retains Docker stdout/stderr channels.
+without a reader, including `none`, fall back to exact-process output only for
+`stream=1`; a finite `logs=1&stream=0` request returns no invented history and
+does not open a live runtime attachment. Requested live stdin/stdout/stderr are
+attached through the existing `ContainersService` runtime path. TTY output is
+merged; non-TTY output retains Docker stdout/stderr channels.
 
 `ContainerDockerAttachSession` exposes a bounded hijack frame stream. A full
 buffer retries the same frame and applies backpressure instead of dropping it.
@@ -136,6 +137,7 @@ evidence.
   executable entry point supplied by `container-engine-api`.
 - Focused tests cover canonical static reads, protected inspect options,
   lossless active wire, stream cancellation, runtime I/O, detach keys,
+  finite unreadable-driver attach, live unreadable-driver output, TTY merge,
   over-capacity no-drop behavior, provider hijack forwarding, and lifecycle
   event ordering.
 

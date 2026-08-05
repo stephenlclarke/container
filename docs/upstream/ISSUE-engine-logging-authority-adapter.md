@@ -55,7 +55,8 @@ or nanosecond timestamp presentation.
   provider-owned state-root UUID.
 - [x] Docker attach replays readable history and follows the retained active
   generation without a replay/live gap; unreadable drivers fall back to the
-  exact process streams without fabricating history.
+  exact process streams only when `stream=1`, without fabricating history or
+  turning finite `logs=1&stream=0` requests into live attachments.
 - [x] Runtime stdin/stdout/stderr use exact-process attachment, TTY output is
   merged, Docker detach keys are consumed server-side, and slow hijack clients
   cannot create an unbounded allocation or silently lose buffered frames.
@@ -139,3 +140,5 @@ only after the complete parity programme is finished.
   service packaging and lifecycle, side-effect-free info discovery, exact
   provider provenance, focused regressions, matched full suite, and isolated
   Docker CLI validation.
+- This slice — keep finite unreadable-driver attach requests finite
+  while retaining live exact-process output and TTY merge behavior.

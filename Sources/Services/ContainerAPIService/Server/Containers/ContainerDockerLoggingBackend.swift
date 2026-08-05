@@ -238,19 +238,19 @@ public struct ContainerDockerLoggingBackend:
                 logReader = nil
             }
 
-            let useRuntimeOutput =
-                outputRequested && logReader == nil
-                && (request.stream || request.includeLogs)
-            let useRuntimeInput = request.stdin && request.stream
+            let runtimePlan = ContainerDockerRuntimeAttachPlan(
+                request: request,
+                terminal: inspection.terminal,
+                hasLogReader: logReader != nil
+            )
             let pipes: ContainerDockerRuntimeAttachPipes
             do {
                 pipes = try await attachRuntime(
                     containerID: containerID,
                     terminal: inspection.terminal,
-                    input: useRuntimeInput,
-                    stdout: useRuntimeOutput
-                        && (request.stdout || inspection.terminal && request.stderr),
-                    stderr: useRuntimeOutput && request.stderr && !inspection.terminal
+                    input: runtimePlan.input,
+                    stdout: runtimePlan.stdout,
+                    stderr: runtimePlan.stderr
                 )
             } catch {
                 if let logReader {
@@ -264,7 +264,7 @@ public struct ContainerDockerLoggingBackend:
                 runtimeOutputs: pipes.outputs,
                 logReader: logReader,
                 detachKeySequence: detachKeys?.bytes,
-                waitForProcess: useRuntimeInput && pipes.outputs.isEmpty,
+                waitForProcess: runtimePlan.input && pipes.outputs.isEmpty,
                 processWait: { [containers] in
                     try await containers.wait(
                         id: containerID,
@@ -437,6 +437,27 @@ public struct ContainerDockerLoggingBackend:
             return .invalidParameter("invalid logging request")
         }
         return .server("container logging operation failed")
+    }
+}
+
+struct ContainerDockerRuntimeAttachPlan: Equatable, Sendable {
+    let input: Bool
+    let stdout: Bool
+    let stderr: Bool
+
+    init(
+        request: DockerAttachRequest,
+        terminal: Bool,
+        hasLogReader: Bool
+    ) {
+        input = request.stdin && request.stream
+        let runtimeOutput =
+            request.stream && !hasLogReader
+            && (request.stdout || request.stderr)
+        stdout =
+            runtimeOutput
+            && (request.stdout || terminal && request.stderr)
+        stderr = runtimeOutput && request.stderr && !terminal
     }
 }
 
