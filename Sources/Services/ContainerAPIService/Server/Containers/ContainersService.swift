@@ -1296,6 +1296,17 @@ public actor ContainersService {
     }
 
     static func mapLoggingStartError(_ error: any Error) -> ContainerizationError {
+        if let resolutionError = error as? ContainerLogResolutionError,
+            case .invalidOption(let driver, let name, let reason) = resolutionError,
+            driver == "local",
+            name == "compress",
+            reason == "compression cannot be enabled when max file count is 1"
+        {
+            return ContainerizationError(
+                .invalidState,
+                message: "failed to initialize logging driver: \(reason)"
+            )
+        }
         if let error = error as? ContainerLogStartValidationError {
             return ContainerizationError(
                 .invalidState,
