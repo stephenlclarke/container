@@ -19,12 +19,14 @@ The gap applies to both TCP and UDP. It is a native transport-placement issue: t
 
 - [x] Docker Engine 29.2.1 / Docker CLI 29.7.1 reconnect oracle starts with `tcp://host.docker.internal:PORT`, drops the first connection, and recovers a subsequent GELF stream.
 - [x] A focused `GELFTransportLoopbackTests.productionDockerHostAliasRoutesTCPAndUDPToNativeLoopback` regression passes through the matched local Containerization `38d9c69` and Engine API `4949e743` graph.
-- [ ] Build a fresh signed Container archive from the final source commit and run the public Docker CLI reconnect certificate twice through the native socket.
-- [ ] Compare the exact candidate timing with the retained Docker reference, update the gap-only ledger, and complete the clean checkpoint review.
+- [x] A fresh signed Container archive from `2a60d0ad0341ef6947d30289488e3a7c8eac56ed` passes the public Docker CLI reconnect certificate twice through the native socket.
+- [x] The exact candidate timings are compared with the retained Docker reference and the gap-only ledger records the clean checkpoint review.
 
 ## Local evidence
 
-The focused test was executed with `CONTAINERIZATION_PACKAGE_PATH=/Users/sclarke/Documents/container/containerization-engine-sandbox`, `CONTAINERIZATION_REF=38d9c69`, and `CONTAINER_ENGINE_API_PACKAGE_PATH=/Users/sclarke/github/container-engine-api`. The marker-protected test log is `/private/tmp/container-gelf-native-alias-unit-matched.D850uv/swift-test.log`. The unmodified Docker reference reconnect certificate is retained at `/private/tmp/container-gelf-tcp-reconnect-reference-v2.yjav2A/docker-reference-result.json`.
+The focused test was executed with `CONTAINERIZATION_PACKAGE_PATH=/Users/sclarke/Documents/container/containerization-engine-sandbox`, `CONTAINERIZATION_REF=38d9c69`, and `CONTAINER_ENGINE_API_PACKAGE_PATH=/Users/sclarke/github/container-engine-api`. The marker-protected test log is `/private/tmp/container-gelf-native-alias-unit-matched.D850uv/swift-test.log`. The unmodified Docker reference reconnect certificate is retained at `/private/tmp/container-gelf-tcp-reconnect-reference-v2.yjav2A/docker-reference-result.json` and passed in `5.524841000s`.
+
+`/private/tmp/container-gelf-tcp-reconnect-candidate-v2.nmMgi1` is the marker-protected final evidence root. Its `FINGERPRINT-PREFLIGHT.json`, `ARCHIVE-VERIFICATION.json`, and `FINGERPRINT-COMPLETE.json` bind the exact source/dependency graph, code-signed archive, binaries, guest images, harness, wrapper, Docker reference, and two isolated public-socket runs. The candidate runs passed in `6.508964500s` and `6.340717583s` (1.18x and 1.15x Docker). They satisfy the focused fixture's 10x functional guard; programme-wide comparable-or-better release performance remains a separate gap.
 
 The Stephen-owned tracking issue is [stephenlclarke/container#75](https://github.com/stephenlclarke/container/issues/75). It is intentionally separate from this Apple-shaped handoff.
 
