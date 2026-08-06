@@ -136,6 +136,32 @@ struct ContainerLogLifecycleLedgerTests {
         )
     }
 
+    @Test func filePersistenceAcceptsDirectTemporaryDirectoryAliases() async throws {
+        #if os(macOS)
+        for temporaryRoot in ["/private/tmp", "/tmp"] {
+            let directory = URL(
+                fileURLWithPath: temporaryRoot,
+                isDirectory: true
+            ).appending(
+                path: "container-log-ledger-private-tmp-\(UUID().uuidString)",
+                directoryHint: .isDirectory
+            )
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true
+            )
+            defer { try? FileManager.default.removeItem(at: directory) }
+
+            let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+                fileURL: directory.appending(path: "lifecycle.json")
+            )
+            let snapshot = Data("{}".utf8)
+            try await persistence.save(snapshot)
+            #expect(try await persistence.load() == snapshot)
+        }
+        #endif
+    }
+
     @Test func deadlineFenceTransfersExactReferenceAtomicallyAndCanReplay() async throws {
         let persistence = InMemoryContainerLogLifecycleLedgerPersistenceV1()
         let ledger = try await ContainerLogLifecycleLedgerV1.open(

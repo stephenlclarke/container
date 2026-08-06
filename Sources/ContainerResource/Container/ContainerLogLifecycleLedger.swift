@@ -150,8 +150,7 @@ public actor FileContainerLogLifecycleLedgerPersistenceV1:
         guard
             values.isDirectory == true,
             values.isSymbolicLink != true,
-            directory.resolvingSymlinksInPath().standardizedFileURL.path
-                == directory.path
+            try !containsSymbolicLink(in: directory.path)
         else {
             throw ContainerLogLifecycleLedgerError.corruptSnapshot(
                 "lifecycle snapshot directory must be a non-symbolic-link directory"
@@ -161,6 +160,55 @@ public actor FileContainerLogLifecycleLedgerPersistenceV1:
             [.posixPermissions: 0o700],
             ofItemAtPath: directory.path
         )
+    }
+
+    /// Checks the concrete path spelling component-by-component. URL
+    /// canonicalization is not suitable here: on macOS it may rewrite the
+    /// direct `/private/tmp` path through the system `/tmp` alias even though
+    /// no component selected by the caller is a symbolic link.
+    private func containsSymbolicLink(in path: String) throws -> Bool {
+        var currentPath = ""
+        for component in URL(fileURLWithPath: path).pathComponents {
+            if component == "/" {
+                currentPath = "/"
+                continue
+            }
+            currentPath =
+                currentPath == "/"
+                ? "/\(component)"
+                : "\(currentPath)/\(component)"
+            var status = stat()
+            guard Darwin.lstat(currentPath, &status) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            if status.st_mode & S_IFMT == S_IFLNK {
+                if isSystemTemporaryDirectoryAlias(currentPath) {
+                    continue
+                }
+                return true
+            }
+        }
+        return false
+    }
+
+    /// macOS-owned root aliases are safe only when they retain their documented
+    /// relative destinations. Every other symbolic-link component is rejected.
+    private func isSystemTemporaryDirectoryAlias(_ path: String) -> Bool {
+        #if os(macOS)
+        let expectedDestinations = [
+            "/tmp": "private/tmp",
+            "/var": "private/var",
+        ]
+        guard let expectedDestination = expectedDestinations[path] else {
+            return false
+        }
+        return
+            (try? FileManager.default.destinationOfSymbolicLink(
+                atPath: path
+            )) == expectedDestination
+        #else
+        false
+        #endif
     }
 
     private func rejectNonRegularOrSymbolicLink(manager: FileManager) throws {
