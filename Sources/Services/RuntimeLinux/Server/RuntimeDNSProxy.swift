@@ -26,7 +26,7 @@ import NIOCore
 import NIOPosix
 
 struct RuntimeDNSAddress: Sendable, Equatable {
-    let ipv4: IPv4Address
+    let ipv4: IPv4Address?
     let ipv6: IPv6Address?
 }
 
@@ -232,8 +232,11 @@ private struct RuntimeNetworkDNSHandler: DNSHandler {
         let answers: [any ResourceRecord]
         switch question.type {
         case .host:
-            answers = orderedAddresses.map {
-                HostRecord(name: question.name, ttl: 5, ip: $0.ipv4)
+            answers = orderedAddresses.compactMap {
+                guard let ipv4 = $0.ipv4 else {
+                    return nil
+                }
+                return HostRecord(name: question.name, ttl: 5, ip: ipv4)
             }
         case .host6:
             answers = orderedAddresses.compactMap {

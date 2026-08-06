@@ -23,6 +23,7 @@ import Logging
 public actor DefaultNetworkService: NetworkService {
     private let network: any Network
     private let log: Logger
+    private let enableIPv4: Bool
     private var allocator: AttachmentAllocator
     private var macAddresses: [UInt32: MACAddress]
     private var ipv6Addresses: [UInt32: IPv6Address]
@@ -71,6 +72,7 @@ public actor DefaultNetworkService: NetworkService {
         }
         self.network = network
         self.log = log
+        self.enableIPv4 = network.enableIPv4
         self.allocator = allocator
         self.macAddresses = [:]
         self.ipv6Addresses = [:]
@@ -117,6 +119,9 @@ public actor DefaultNetworkService: NetworkService {
             throw ContainerizationError(.invalidState, message: "network \(network.id) must be running")
         }
 
+        if !enableIPv4, requestedIPv4Address != nil {
+            throw ContainerizationError(.invalidArgument, message: "requested IPv4 address requires IPv4 to be enabled")
+        }
         let requestedIndex = try requestedIPv4Address.map {
             try allocatableIPv4Index($0, subnet: status.ipv4Subnet, gateway: status.ipv4Gateway)
         }
@@ -172,8 +177,8 @@ public actor DefaultNetworkService: NetworkService {
             metadata: [
                 "hostname": "\(hostname)",
                 "aliases": "\(aliases.joined(separator: ","))",
-                "ipv4Address": "\(attachment.ipv4Address)",
-                "ipv4Gateway": "\(attachment.ipv4Gateway)",
+                "ipv4Address": "\(attachment.ipv4Address?.description ?? "unavailable")",
+                "ipv4Gateway": "\(attachment.ipv4Gateway?.description ?? "unavailable")",
                 "ipv6Address": "\(attachment.ipv6Address?.description ?? "unavailable")",
                 "ipv6Gateway": "\(attachment.ipv6Gateway?.description ?? "unavailable")",
                 "macAddress": "\(attachment.macAddress?.description ?? "unspecified")",
@@ -248,7 +253,7 @@ public actor DefaultNetworkService: NetworkService {
             "lookup attachments",
             metadata: [
                 "hostname": "\(hostname)",
-                "addresses": "\(attachments.map(\.ipv4Address.address.description).joined(separator: ","))",
+                "addresses": "\(attachments.map { $0.ipv4Address?.address.description ?? "IPv6-only" }.joined(separator: ","))",
             ])
 
         return attachments
@@ -317,8 +322,8 @@ public actor DefaultNetworkService: NetworkService {
             network: network.id,
             hostname: hostname,
             aliases: aliases,
-            ipv4Address: try CIDRv4(IPv4Address(index), prefix: status.ipv4Subnet.prefix),
-            ipv4Gateway: status.ipv4Gateway,
+            ipv4Address: enableIPv4 ? try CIDRv4(IPv4Address(index), prefix: status.ipv4Subnet.prefix) : nil,
+            ipv4Gateway: enableIPv4 ? status.ipv4Gateway : nil,
             ipv6Address: ipv6CIDR,
             ipv6Gateway: status.ipv6Gateway,
             macAddress: macAddress,

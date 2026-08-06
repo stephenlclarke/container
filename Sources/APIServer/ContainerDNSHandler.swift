@@ -79,7 +79,9 @@ struct ContainerDNSHandler: DNSHandler {
         guard let ipAllocation = try await networkService.lookup(hostname: question.name) else {
             return nil
         }
-        let ipv4 = ipAllocation.ipv4Address.address.description
+        guard let ipv4 = ipAllocation.ipv4Address?.address.description else {
+            return nil
+        }
         guard let ip = try? IPv4Address(ipv4) else {
             throw DNSResolverError.serverError("failed to parse IP address: \(ipv4)")
         }

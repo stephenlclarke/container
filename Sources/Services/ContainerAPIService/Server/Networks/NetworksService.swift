@@ -172,6 +172,7 @@ public actor NetworksService {
             let finalConfiguration = try NetworkConfiguration(
                 name: configuration.name,
                 mode: configuration.mode,
+                enableIPv4: configuration.enableIPv4,
                 ipv4Subnet: configuration.ipv4Subnet,
                 ipv4Gateway: configuration.ipv4Gateway,
                 ipv4AllocationRange: configuration.ipv4AllocationRange,
@@ -363,6 +364,9 @@ public actor NetworksService {
         }
         if !configuration.enableIPv6 {
             args.append("--disable-ipv6")
+        }
+        if !configuration.enableIPv4 {
+            args.append("--disable-ipv4")
         }
 
         if let ipv4Subnet = configuration.ipv4Subnet {

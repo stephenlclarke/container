@@ -124,6 +124,7 @@ struct DefaultNetworkServiceTest {
 private actor RunningTestNetwork: Network {
     nonisolated let id = "test-network"
     nonisolated let variant: String? = nil
+    nonisolated let enableIPv4 = true
     let status: NetworkStatus?
 
     init(status: NetworkStatus) {

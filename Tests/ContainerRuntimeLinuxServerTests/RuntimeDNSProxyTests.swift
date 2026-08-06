@@ -249,14 +249,32 @@ struct RuntimeDNSProxyTests {
         #expect(response.answers.isEmpty)
     }
 
-    @Test func resolvesIPv6FromAttachedNetwork() async throws {
+    @Test func returnsNoDataForKnownIPv6OnlyHostname() async throws {
+        let request = try query(name: "web.", type: .host)
+        let resolver = RuntimeDNSResolver(
+            networkLookups: [
+                { _ in
+                    [RuntimeDNSAddress(ipv4: nil, ipv6: try IPv6Address("fd00::2"))]
+                }
+            ],
+            upstreamNameservers: [],
+            upstream: unexpectedUpstream
+        )
+
+        let response = try Message(deserialize: await resolver.resolve(request))
+
+        #expect(response.returnCode == .noError)
+        #expect(response.answers.isEmpty)
+    }
+
+    @Test func resolvesIPv6FromIPv6OnlyAttachedNetwork() async throws {
         let request = try query(name: "web.", type: .host6)
         let resolver = RuntimeDNSResolver(
             networkLookups: [
                 { _ in
                     [
                         RuntimeDNSAddress(
-                            ipv4: try IPv4Address("192.168.64.2"),
+                            ipv4: nil,
                             ipv6: try IPv6Address("fd00::2")
                         )
                     ]

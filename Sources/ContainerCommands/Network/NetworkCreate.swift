@@ -85,6 +85,9 @@ extension Application {
         @Flag(name: .customLong("disable-ipv6"), help: "Disable IPv6 on the network")
         var disableIPv6: Bool = false
 
+        @Flag(name: .customLong("disable-ipv4"), help: "Disable IPv4 endpoint addressing on the network")
+        var disableIPv4: Bool = false
+
         @OptionGroup
         public var logOptions: Flags.Logging
 
@@ -100,6 +103,7 @@ extension Application {
             let config = try NetworkConfiguration(
                 name: self.name,
                 mode: mode,
+                enableIPv4: !disableIPv4,
                 ipv4Subnet: ipv4Subnet,
                 ipv4Gateway: ipv4Gateway,
                 ipv4AllocationRange: ipv4AllocationRange,
