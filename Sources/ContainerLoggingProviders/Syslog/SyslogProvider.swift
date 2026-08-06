@@ -314,6 +314,29 @@ public actor SyslogLogDriverProvider: ContainerLogDriverProvider {
         return try acknowledgement(request, observation: .closed)
     }
 
+    /// Reproduces Moby's stopped-container logger construction. `ContainerLogs`
+    /// creates the logger first; Syslog eagerly dials the configured endpoint,
+    /// then the daemon discovers that the logger has no `LogReader`
+    /// implementation.
+    ///
+    /// This deliberately does not retain a provider session or an effect
+    /// token. It is a one-shot configuration probe, and a close failure is
+    /// ignored just as Moby's deferred logger close does not replace its
+    /// unsupported-reader result.
+    package func recreateStoppedLogger(
+        configuration: SyslogDriverConfiguration
+    ) async throws {
+        await acquireOperation()
+        defer { releaseOperation() }
+
+        let session = try await SyslogDriverSession(
+            configuration: configuration,
+            transportFactory: transportFactory,
+            clock: clock
+        )
+        try? await session.closeUsingPolicy()
+    }
+
     public func openReader(
         _ request: LogDriverReaderOpenRequestV1
     ) async throws -> StartedLogDriverReaderV1 {

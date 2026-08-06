@@ -1398,6 +1398,42 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         }
     }
 
+    /// Reconstructs Moby's stopped, cache-disabled Syslog logger before the
+    /// Docker API maps the non-reader capability to its public error. This is
+    /// intentionally outside the reader lifecycle ledger: it has no reader
+    /// effect, token, or retained history session.
+    package func recreateStoppedUnavailableSyslogLogger(
+        containerID: String,
+        configuration: ContainerConfiguration,
+        authenticatedProtectedOptions: [String: String]
+    ) async throws {
+        guard
+            configuration.id == containerID,
+            let resolved = configuration.logging.resolved,
+            resolved.driver == "syslog",
+            resolved.readPolicy.source == .unavailable,
+            resolved.providerIdentity.kind != .core
+        else {
+            throw AuthorityRemoteLogDriverPlaneError.incompleteConfiguration
+        }
+        let selection = try await providers.registry.selection(for: resolved)
+        guard let provider = selection.provider as? SyslogLogDriverProvider else {
+            throw AuthorityRemoteLogDriverPlaneError.unsupportedDriver(
+                resolved.driver
+            )
+        }
+        try await provider.recreateStoppedLogger(
+            configuration: try syslogDriverConfiguration(
+                resolved: resolved,
+                options: try Self.mergedOptions(
+                    resolved: resolved,
+                    protected: authenticatedProtectedOptions
+                ),
+                info: resolvedDockerLogInfo(configuration)
+            )
+        )
+    }
+
     private func closeReader(readerSessionID: String) async throws {
         guard !closingReaderIDs.contains(readerSessionID) else {
             return
@@ -1683,21 +1719,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         configuration: ContainerConfiguration
     ) async throws {
         let resolved = try Self.requireResolved(configuration.logging)
-        let imageName: String
-        if let containerSystemConfig,
-            let displayReference = try? ClientImage.denormalizeReference(
-                configuration.image.reference,
-                containerSystemConfig: containerSystemConfig
-            )
-        {
-            imageName = displayReference
-        } else {
-            imageName = configuration.image.reference
-        }
-        let info = Self.dockerLogInfo(
-            configuration: configuration,
-            imageName: imageName
-        )
+        let info = resolvedDockerLogInfo(configuration)
         if resolved.providerIdentity.kind == .dockerPlugin {
             try await providers.configurations.register(
                 DockerPluginConfigurationBinding(
@@ -1717,16 +1739,10 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         }
         switch resolved.driver {
         case "syslog":
-            let helper = try DockerSemanticHelperClient.shared(
-                for: DockerSemanticHelperGeneration(
-                    providerID: request.providerID,
-                    providerGeneration: request.providerGeneration
-                )
-            )
-            let driverConfiguration = try SyslogDriverConfiguration.resolve(
+            let driverConfiguration = try syslogDriverConfiguration(
+                resolved: resolved,
                 options: options,
-                info: info,
-                semanticService: helper
+                info: info
             )
             try await providers.configurations.register(
                 SyslogConfigurationBinding(
@@ -1879,6 +1895,46 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 resolved.driver
             )
         }
+    }
+
+    /// Resolves the one typed Syslog configuration used both to start a
+    /// writer and to reconstruct Moby's stopped-container logger probe.
+    private func syslogDriverConfiguration(
+        resolved: ResolvedContainerLogConfiguration,
+        options: [String: String],
+        info: SyslogContainerInfo
+    ) throws -> SyslogDriverConfiguration {
+        let helper = try DockerSemanticHelperClient.shared(
+            for: DockerSemanticHelperGeneration(
+                providerID: resolved.providerIdentity.id,
+                providerGeneration: resolved.providerGenerationAtResolution
+            )
+        )
+        return try SyslogDriverConfiguration.resolve(
+            options: options,
+            info: info,
+            semanticService: helper
+        )
+    }
+
+    private func resolvedDockerLogInfo(
+        _ configuration: ContainerConfiguration
+    ) -> SyslogContainerInfo {
+        let imageName: String
+        if let containerSystemConfig,
+            let displayReference = try? ClientImage.denormalizeReference(
+                configuration.image.reference,
+                containerSystemConfig: containerSystemConfig
+            )
+        {
+            imageName = displayReference
+        } else {
+            imageName = configuration.image.reference
+        }
+        return Self.dockerLogInfo(
+            configuration: configuration,
+            imageName: imageName
+        )
     }
 
     static func dockerLogInfo(

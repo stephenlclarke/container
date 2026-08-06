@@ -4770,6 +4770,37 @@ extension ContainersService {
             return .direct(reader: reader, terminal: terminal)
         }
 
+        if let resolved = configuration.logging.resolved,
+            resolved.driver == "syslog",
+            resolved.readPolicy.source == .unavailable,
+            resolved.providerIdentity.kind != .core,
+            !isLiveForLogFollow(id: containerID)
+        {
+            guard let remoteLogDriverPlane else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "direct logging provider is unavailable"
+                )
+            }
+            var protectedOptions = [String: String]()
+            if let reference = resolved.protectedOptionReference {
+                let binding = try LoggingProtectedOptionsBinding(
+                    containerID: containerID,
+                    configuration: configuration.logging
+                )
+                protectedOptions = try await loggingProtectedOptionsStore.load(
+                    reference,
+                    boundTo: binding
+                )
+            }
+            try await remoteLogDriverPlane.recreateStoppedUnavailableSyslogLogger(
+                containerID: containerID,
+                configuration: configuration,
+                authenticatedProtectedOptions: protectedOptions
+            )
+            throw ContainerLogReaderError.configuredDriverDoesNotSupportReading
+        }
+
         if request.follow, isLiveForLogFollow(id: containerID) {
             do {
                 let file = try await state.getClient().followLogReadRecordsV1(

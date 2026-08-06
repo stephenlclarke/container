@@ -273,6 +273,47 @@ struct SyslogProviderTests {
         #expect(await factory.connectCallCount == 2)
         #expect(await resolver.callCount == 2)
     }
+
+    @Test func stoppedLoggerRecreatesAndClosesItsTransport() async throws {
+        let transport = RecordingSyslogTransport()
+        let factory = ScriptedSyslogTransportFactory([.transport(transport)])
+        let request = try syslogStartRequest()
+        let resolver = FixedSyslogConfigurationResolver(
+            try syslogBinding(for: request)
+        )
+        let provider = SyslogLogDriverProvider(
+            configurationResolver: resolver,
+            transportFactory: factory,
+            clock: SyslogTestClock(),
+            tokenGenerator: FixedSyslogTokenGenerator(bytes: Data([1]))
+        )
+
+        try await provider.recreateStoppedLogger(
+            configuration: try syslogTestConfiguration()
+        )
+
+        #expect(await factory.connectCallCount == 1)
+        #expect(await transport.closeCallCount == 1)
+        #expect(await resolver.callCount == 0)
+    }
+
+    @Test func stoppedLoggerPropagatesConnectFailure() async throws {
+        let request = try syslogStartRequest()
+        let resolver = FixedSyslogConfigurationResolver(
+            try syslogBinding(for: request)
+        )
+        let provider = SyslogLogDriverProvider(
+            configurationResolver: resolver,
+            transportFactory: ScriptedSyslogTransportFactory([.failure(.connect)]),
+            tokenGenerator: FixedSyslogTokenGenerator(bytes: Data([1]))
+        )
+
+        await #expect(throws: SyslogTestFailure.connect) {
+            try await provider.recreateStoppedLogger(
+                configuration: try syslogTestConfiguration()
+            )
+        }
+    }
 }
 
 private func syslogStartRequest(
