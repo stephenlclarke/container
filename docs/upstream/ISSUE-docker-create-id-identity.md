@@ -41,8 +41,8 @@ and every logging-driver input.
   from one exact local source/dependency/archive/guest/root fingerprint.
 - [x] The source implementation is retained in signed commit
   `9d2257a81176a895a31388124bd6a7b0b74d10e6`.
-- [ ] The matched Compose documentation and harness checkpoint must be signed
-  before the complete cross-repository contract is called `Verified`.
+- [x] The matched Compose documentation and harness checkpoint is signed as
+  `f79284097edc6729109ebda658dac25403384740`.
 
 ## Local evidence
 
@@ -64,9 +64,11 @@ reference took `0.700619291s`; candidates took `1.591354583s` and
 guard, but do not establish the programme's comparable-or-better release
 performance requirement.
 
-The Stephen-owned tracking issue `stephenlclarke/container#74` is closed only
-after the final signed cross-repository checkpoint. It is separate from this
-Apple-shaped handoff.
+The Stephen-owned tracking issue
+[`stephenlclarke/container#74`](https://github.com/stephenlclarke/container/issues/74)
+was commented with the exact evidence and closed as completed after the final
+signed cross-repository checkpoint. It remains separate from this Apple-shaped
+handoff.
 
 ## Apple-shaped boundary
 

@@ -69,8 +69,10 @@ on the programme MBP.
   pass with retained cleanup evidence.
 - [x] The signed source implementation is
   `9d2257a81176a895a31388124bd6a7b0b74d10e6`.
-- [ ] The matching Compose evidence/docs checkpoint and owned issue closure
-  remain required for a complete cross-repository verification claim.
+- [x] The matching Compose evidence/docs checkpoint is signed as
+  `f79284097edc6729109ebda658dac25403384740`, and owned
+  [`container#74`](https://github.com/stephenlclarke/container/issues/74) is
+  commented and closed as completed.
 
 ## Publication boundary
 
