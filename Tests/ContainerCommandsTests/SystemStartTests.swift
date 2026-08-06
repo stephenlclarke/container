@@ -24,6 +24,15 @@ import Testing
 @testable import ContainerCommands
 
 struct SystemStartTests {
+    @Test func parsesInitialFilesystemArchive() throws {
+        let archive = "/tmp/container-system-start-init-image.tar"
+        let command = try Application.SystemStart.parse([
+            "--init-image-archive", archive,
+        ])
+
+        #expect(command.initImageArchive?.string == archive)
+    }
+
     @Test func initialFilesystemPullDoesNotParseSystemStartArguments() throws {
         let reference =
             "ghcr.io/stephenlclarke/containerization/vminit:"

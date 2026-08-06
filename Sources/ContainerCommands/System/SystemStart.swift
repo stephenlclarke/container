@@ -21,6 +21,7 @@ import ContainerPersistence
 import ContainerPlugin
 import ContainerXPC
 import ContainerizationError
+import ContainerizationOS
 import Foundation
 import MachineAPIClient
 import SystemPackage
@@ -53,6 +54,14 @@ extension Application {
             transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) }
         )
         var logRoot: FilePath? = nil
+
+        @Option(
+            name: .long,
+            help: "Load and unpack the initial filesystem from an OCI image archive before any registry pull",
+            completion: .file(),
+            transform: { FilePathOps.absolutePath(FilePath($0)) }
+        )
+        var initImageArchive: FilePath? = nil
 
         @Flag(
             name: .long,
@@ -163,9 +172,17 @@ extension Application {
             try await startContainerEngineGateway()
 
             if await !initImageExists(containerSystemConfig: containerSystemConfig) {
-                try await installInitialFilesystem(
-                    initImage: containerSystemConfig.vminit.image
-                )
+                if let initImageArchive {
+                    try await installInitialFilesystemArchive(
+                        initImageArchive,
+                        initImage: containerSystemConfig.vminit.image,
+                        containerSystemConfig: containerSystemConfig
+                    )
+                } else {
+                    try await installInitialFilesystem(
+                        initImage: containerSystemConfig.vminit.image
+                    )
+                }
             }
 
             guard await !kernelExists() else {
@@ -290,6 +307,47 @@ extension Application {
             )
             log.info("Installing base container filesystem...")
             try await pullCommand.run()
+        }
+
+        private func installInitialFilesystemArchive(
+            _ archive: FilePath,
+            initImage: String,
+            containerSystemConfig: ContainerSystemConfig
+        ) async throws {
+            let archiveURL = URL(fileURLWithPath: archive.string)
+            guard FileManager.default.fileExists(atPath: archiveURL.path) else {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "initial filesystem archive does not exist: \(archive.string)"
+                )
+            }
+
+            log.info(
+                "Loading initial filesystem archive...",
+                metadata: ["archive": "\(archive)", "image": "\(initImage)"]
+            )
+            let result = try await ClientImage.load(from: archive.string)
+            guard result.rejectedMembers.isEmpty else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "initial filesystem archive contains rejected members"
+                )
+            }
+
+            let image: ClientImage
+            do {
+                image = try await ClientImage.get(
+                    reference: initImage,
+                    containerSystemConfig: containerSystemConfig
+                )
+            } catch {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "initial filesystem archive does not contain configured image \(initImage)",
+                    cause: error
+                )
+            }
+            try await image.unpack(platform: .current)
         }
 
         private func installDefaultKernel(kernelURL: URL, kernelBinaryPath: String, kernelDigest: String) async throws {
