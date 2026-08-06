@@ -128,7 +128,8 @@ struct DefaultNetworkServiceTest {
             status: NetworkStatus(
                 ipv4Subnet: try CIDRv4("192.0.2.0/29"),
                 ipv4Gateway: try IPv4Address("192.0.2.1"),
-                ipv6Subnet: nil
+                ipv6Subnet: try CIDRv6("fd00:2026:806::/64"),
+                ipv6Gateway: try IPv6Address("fd00:2026:806::1")
             )
         )
         let service = try await DefaultNetworkService(
@@ -163,6 +164,7 @@ struct DefaultNetworkServiceTest {
         #expect(try await service.lookup(hostname: "retained")?.ipv4Address == retained.ipv4Address)
         #expect(try await service.lookup(hostname: "transient") == nil)
 
+        try await service.release(hostname: "retained")
         try await service.release(hostname: "retained")
 
         #expect(try await service.lookup(hostname: "retained") == nil)
