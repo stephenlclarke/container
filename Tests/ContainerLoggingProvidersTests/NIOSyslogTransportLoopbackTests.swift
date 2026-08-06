@@ -100,6 +100,78 @@ struct NIOSyslogTransportLoopbackTests {
         }
     }
 
+    @Test func productionDockerHostAliasRoutesTCPAndUDPToNativeLoopback() async throws {
+        try await withEventLoopGroup { group in
+            let udpPromise = group.next().makePromise(of: Data.self)
+            let udpServer = try await DatagramBootstrap(group: group)
+                .channelInitializer { channel in
+                    channel.pipeline.addHandler(
+                        DatagramCaptureHandler(promise: udpPromise)
+                    )
+                }
+                .bind(host: "127.0.0.1", port: 0)
+                .get()
+            defer { udpServer.close(promise: nil) }
+            let udpPort = try #require(udpServer.localAddress?.port)
+            let udpEndpoint = SyslogEndpoint.udp(
+                SyslogNetworkAddress(
+                    host: "HOST.DOCKER.INTERNAL",
+                    port: UInt16(udpPort)
+                )
+            )
+            let udpExpected = try encodedMessage(
+                endpoint: udpEndpoint,
+                payload: "udp-host-alias"
+            )
+            let udpTransport = try await NIOSyslogTransportFactory(eventLoopGroup: group)
+                .connect(
+                    to: udpEndpoint,
+                    tls: nil,
+                    timeout: .seconds(2)
+                )
+            try await udpTransport.write(udpExpected, timeout: .seconds(2))
+            #expect(try await udpPromise.futureResult.syslogTestBounded().get() == udpExpected)
+            try await udpTransport.close(timeout: .seconds(2))
+
+            let tcpPromise = group.next().makePromise(of: Data.self)
+            let tcpEndpoint = SyslogEndpoint.tcp(
+                SyslogNetworkAddress(host: "host.docker.internal", port: 0)
+            )
+            let tcpExpected = try encodedMessage(
+                endpoint: tcpEndpoint,
+                payload: "tcp-host-alias"
+            )
+            let tcpServer = try await ServerBootstrap(group: group)
+                .childChannelInitializer { channel in
+                    channel.pipeline.addHandler(
+                        StreamCaptureHandler(
+                            byteCount: tcpExpected.count,
+                            promise: tcpPromise
+                        )
+                    )
+                }
+                .bind(host: "127.0.0.1", port: 0)
+                .get()
+            defer { tcpServer.close(promise: nil) }
+            let tcpPort = try #require(tcpServer.localAddress?.port)
+            let connectedTCPEndpoint = SyslogEndpoint.tcp(
+                SyslogNetworkAddress(
+                    host: "host.docker.internal",
+                    port: UInt16(tcpPort)
+                )
+            )
+            let tcpTransport = try await NIOSyslogTransportFactory(eventLoopGroup: group)
+                .connect(
+                    to: connectedTCPEndpoint,
+                    tls: nil,
+                    timeout: .seconds(2)
+                )
+            try await tcpTransport.write(tcpExpected, timeout: .seconds(2))
+            #expect(try await tcpPromise.futureResult.syslogTestBounded().get() == tcpExpected)
+            try await tcpTransport.close(timeout: .seconds(2))
+        }
+    }
+
     @Test func sendsExactUnixStreamAndDatagramPayloads() async throws {
         let uniqueSuffix = UUID().uuidString.prefix(8)
         let directory = URL(fileURLWithPath: "/tmp", isDirectory: true)

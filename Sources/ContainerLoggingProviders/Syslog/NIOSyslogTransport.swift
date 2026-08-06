@@ -107,14 +107,15 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
         tls: SyslogTLSConfiguration?,
         timeout: Duration
     ) async throws -> any SyslogTransport {
-        let host: String
+        let configuredHost: String
         do {
-            host = try DockerSocketAddress.host(address.host)
+            configuredHost = try DockerSocketAddress.host(address.host)
         } catch {
             throw SyslogProviderError.malformedAddress(
                 "network host is not valid UTF-8"
             )
         }
+        let host = Self.nativeConnectionHost(configuredHost)
         let bootstrap = ClientBootstrap(group: eventLoopGroup)
             .connectTimeout(timeout.nioTimeAmount)
 
@@ -129,7 +130,7 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
                     "could not load configured TLS material"
                 )
             }
-            let requestedIdentity = host
+            let requestedIdentity = configuredHost.isEmpty ? "localhost" : configuredHost
             let promise = eventLoopGroup.next().makePromise(of: Void.self)
             let completion = TLSHandshakeCompletion(promise: promise)
             handshakeCompletion = completion
@@ -219,11 +220,26 @@ public final class NIOSyslogTransportFactory: SyslogTransportFactory, @unchecked
                 "network host is not valid UTF-8"
             )
         }
-        let host = decodedHost.isEmpty ? "localhost" : decodedHost
+        let host = Self.nativeConnectionHost(decodedHost)
         let channel = try await DatagramBootstrap(group: eventLoopGroup)
             .connect(host: host, port: Int(address.port))
             .get()
         return NIOConnectedSyslogTransport(channel: channel)
+    }
+
+    /// Converts Docker's VM host alias only at the native macOS transport boundary.
+    ///
+    /// Persisted Syslog configuration retains `host.docker.internal` for Docker API
+    /// parity, while the provider connects from the macOS host rather than the Linux VM.
+    /// TLS verification continues to use the originally requested identity.
+    private static func nativeConnectionHost(_ configuredHost: String) -> String {
+        let host = configuredHost.isEmpty ? "localhost" : configuredHost
+        #if os(macOS)
+        if host.caseInsensitiveCompare("host.docker.internal") == .orderedSame {
+            return "127.0.0.1"
+        }
+        #endif
+        return host
     }
 
     private func connectUnixDatagram(
