@@ -21,6 +21,7 @@ import ContainerResource
 import ContainerRuntimeClient
 import CryptoKit
 import Darwin
+import Dispatch
 import DockerSemanticHelper
 import Foundation
 import Logging
@@ -88,6 +89,18 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         let provider: any ContainerLogDriverProvider
         let controller: ContainerLogLifecycleControllerV1
         let session: LoggingReaderSessionV1
+    }
+
+    /// One authority-owned pipe reader. The task which owns this value is the
+    /// sole reader and closer for its handle.
+    private struct OutputReader: @unchecked Sendable {
+        let handle: FileHandle
+        let stream: ContainerLogStream
+    }
+
+    private struct OutputReaderTask {
+        let task: Task<Void, Never>
+        let started: AsyncStream<Void>
     }
 
     private let providers: BuiltinRemoteLogDriverProviderSet
@@ -1069,23 +1082,26 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             stdoutForeground: stdoutForeground,
             stderrForeground: stderrForeground
         )
-        let stdoutTask = Self.readerTask(
-            handle: stdoutPipe.fileHandleForReading,
-            stream: .stdout,
-            pump: pump
-        )
-        var readerTasks = [stdoutTask]
+        var readers = [
+            OutputReader(
+                handle: stdoutPipe.fileHandleForReading,
+                stream: .stdout
+            )
+        ]
         var authorityWriteHandles = [stdoutPipe.fileHandleForWriting]
         if let stderrPipe {
-            readerTasks.append(
-                Self.readerTask(
+            readers.append(
+                OutputReader(
                     handle: stderrPipe.fileHandleForReading,
-                    stream: .stderr,
-                    pump: pump
+                    stream: .stderr
                 )
             )
             authorityWriteHandles.append(stderrPipe.fileHandleForWriting)
         }
+        let readerTask = Self.readerTask(readers: readers, pump: pump)
+        var startIterator = readerTask.started.makeAsyncIterator()
+        _ = await startIterator.next()
+        let readerTasks = [readerTask.task]
 
         var runtimeStdio = Array(stdio.prefix(3))
         while runtimeStdio.count < 3 {
@@ -2071,27 +2087,155 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 
     private nonisolated static func readerTask(
-        handle: FileHandle,
-        stream: ContainerLogStream,
+        readers: [OutputReader],
         pump: AuthorityRemoteLogPump
-    ) -> Task<Void, Never> {
-        Task.detached(priority: .utility) {
-            defer { try? handle.close() }
-            do {
-                while true {
-                    guard
-                        let data = try handle.read(upToCount: 64 * 1024),
-                        !data.isEmpty
-                    else {
-                        break
-                    }
-                    await pump.consume(data, stream: stream)
+    ) -> OutputReaderTask {
+        let start = AsyncStream<Void>.makeStream()
+        let task = Task.detached(priority: .utility) {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    start.continuation.yield()
+                    start.continuation.finish()
+                    Self.drainReaders(readers, pump: pump)
+                    continuation.resume()
                 }
-                await pump.finish(stream: stream)
-            } catch {
-                await pump.fail(stream: stream)
             }
         }
+        return OutputReaderTask(task: task, started: start.stream)
+    }
+
+    /// A dedicated blocking poller sees readiness from both output pipes on
+    /// one serial authority. Separate Swift tasks can be scheduled after both
+    /// pipes have data, which destroys the observable cross-stream order.
+    private nonisolated static func drainReaders(
+        _ readers: [OutputReader],
+        pump: AuthorityRemoteLogPump
+    ) {
+        var activeReaders = readers
+        defer {
+            for reader in activeReaders {
+                try? reader.handle.close()
+            }
+        }
+        while !activeReaders.isEmpty {
+            var descriptors = activeReaders.map {
+                pollfd(
+                    fd: $0.handle.fileDescriptor,
+                    events: Int16(POLLIN),
+                    revents: 0
+                )
+            }
+            let readyCount: Int32 = descriptors.withUnsafeMutableBufferPointer { buffer in
+                guard let baseAddress = buffer.baseAddress else {
+                    return Int32(0)
+                }
+                return Darwin.poll(baseAddress, nfds_t(buffer.count), 100)
+            }
+            if readyCount < 0 {
+                guard errno == EINTR else {
+                    for reader in activeReaders {
+                        failReader(reader, pump: pump)
+                    }
+                    return
+                }
+                continue
+            }
+            guard readyCount > 0 else {
+                continue
+            }
+            var finished = [Int]()
+            for index in descriptors.indices {
+                let events = descriptors[index].revents
+                guard events & Int16(POLLIN | POLLHUP | POLLERR | POLLNVAL) != 0 else {
+                    continue
+                }
+                let reader = activeReaders[index]
+                do {
+                    guard
+                        let data = try readAvailableData(from: reader),
+                        !data.isEmpty
+                    else {
+                        finishReader(reader, pump: pump)
+                        finished.append(index)
+                        continue
+                    }
+                    consume(data, from: reader, pump: pump)
+                } catch {
+                    failReader(reader, pump: pump)
+                    finished.append(index)
+                }
+            }
+            for index in finished.sorted(by: >) {
+                activeReaders.remove(at: index)
+            }
+        }
+    }
+
+    /// Reads only the bytes already reported ready by `poll`. Foundation's
+    /// `FileHandle` read may wait for more bytes or EOF on a pipe, letting a
+    /// later write on stdout overtake an earlier write on stderr.
+    private nonisolated static func readAvailableData(
+        from reader: OutputReader
+    ) throws -> Data? {
+        var bytes = [UInt8](repeating: 0, count: 64 * 1024)
+        let count: ssize_t = try bytes.withUnsafeMutableBytes { buffer in
+            while true {
+                let result = Darwin.read(
+                    reader.handle.fileDescriptor,
+                    buffer.baseAddress,
+                    buffer.count
+                )
+                if result >= 0 {
+                    return result
+                }
+                guard errno == EINTR else {
+                    throw POSIXError(
+                        POSIXErrorCode(rawValue: errno) ?? .EIO
+                    )
+                }
+            }
+        }
+        guard count > 0 else {
+            return nil
+        }
+        return Data(bytes.prefix(Int(count)))
+    }
+
+    private nonisolated static func consume(
+        _ data: Data,
+        from reader: OutputReader,
+        pump: AuthorityRemoteLogPump
+    ) {
+        let completion = DispatchSemaphore(value: 0)
+        Task {
+            await pump.consume(data, stream: reader.stream)
+            completion.signal()
+        }
+        completion.wait()
+    }
+
+    private nonisolated static func finishReader(
+        _ reader: OutputReader,
+        pump: AuthorityRemoteLogPump
+    ) {
+        let completion = DispatchSemaphore(value: 0)
+        Task {
+            await pump.finish(stream: reader.stream)
+            completion.signal()
+        }
+        completion.wait()
+    }
+
+    private nonisolated static func failReader(
+        _ reader: OutputReader,
+        pump: AuthorityRemoteLogPump
+    ) {
+        let completion = DispatchSemaphore(value: 0)
+        Task {
+            await pump.fail(stream: reader.stream)
+            completion.signal()
+        }
+        completion.wait()
     }
 }
 

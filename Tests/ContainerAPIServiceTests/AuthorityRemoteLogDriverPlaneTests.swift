@@ -534,8 +534,11 @@ struct AuthorityRemoteLogDriverPlaneTests {
     func gelfProductionPlaneForwardsForegroundAndProviderBytes() async throws {
         try await withTemporaryRoot { root in
             let serverGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-            let promise = serverGroup.next().makePromise(of: Data.self)
-            let capture = AuthorityDatagramCaptureHandler(promise: promise)
+            let promise = serverGroup.next().makePromise(of: [Data].self)
+            let capture = AuthorityDatagramSequenceCaptureHandler(
+                expectedCount: 3,
+                promise: promise
+            )
             let server = try await DatagramBootstrap(group: serverGroup)
                 .channelInitializer { channel in
                     channel.pipeline.addHandler(capture)
@@ -558,10 +561,11 @@ struct AuthorityRemoteLogDriverPlaneTests {
                     at: bundle.path,
                     withIntermediateDirectories: true
                 )
-                let configuration = try gelfConfiguration(
+                var configuration = try gelfConfiguration(
                     id: id,
                     port: port
                 )
+                configuration.initProcess.terminal = false
                 let foreground = Pipe()
                 let runtimeStdio = try await plane.prepareBootstrap(
                     containerID: id,
@@ -573,7 +577,15 @@ struct AuthorityRemoteLogDriverPlaneTests {
                 try foreground.fileHandleForWriting.close()
 
                 try #require(runtimeStdio[1]).write(
-                    contentsOf: Data("plane-output\n".utf8)
+                    contentsOf: Data("plane-output-one\n".utf8)
+                )
+                try await Task.sleep(for: .milliseconds(50))
+                try #require(runtimeStdio[2]).write(
+                    contentsOf: Data("plane-error\n".utf8)
+                )
+                try await Task.sleep(for: .milliseconds(50))
+                try #require(runtimeStdio[1]).write(
+                    contentsOf: Data("plane-output-two\n".utf8)
                 )
                 try await plane.bootstrapSucceeded(containerID: id)
                 try await plane.activate(containerID: id)
@@ -581,11 +593,31 @@ struct AuthorityRemoteLogDriverPlaneTests {
 
                 let foregroundData = foreground.fileHandleForReading
                     .readDataToEndOfFile()
-                #expect(foregroundData == Data("plane-output\n".utf8))
-                let datagram = try await promise.futureResult.get()
-                let json = try #require(String(data: datagram, encoding: .utf8))
-                #expect(json.contains("\"short_message\":\"plane-output\""))
-                #expect(json.contains("\"_image_name\":\"alpine:latest\""))
+                #expect(
+                    foregroundData
+                        == Data("plane-output-one\nplane-output-two\n".utf8)
+                )
+                let datagrams = try await promise.futureResult.get()
+                let messages = try datagrams.map { datagram in
+                    let json = try #require(
+                        String(data: datagram, encoding: .utf8)
+                    )
+                    let object = try #require(
+                        JSONSerialization.jsonObject(with: Data(json.utf8))
+                            as? [String: Any]
+                    )
+                    return try #require(object["short_message"] as? String)
+                }
+                #expect(
+                    messages
+                        == ["plane-output-one", "plane-error", "plane-output-two"]
+                )
+                #expect(
+                    datagrams.allSatisfy { datagram in
+                        String(data: datagram, encoding: .utf8)?
+                            .contains("\"_image_name\":\"alpine:latest\"") == true
+                    }
+                )
 
                 try await server.close().get()
                 capture.cancel()
@@ -1640,6 +1672,63 @@ private final class AuthorityDatagramCaptureHandler: ChannelInboundHandler,
     }
 
     private func complete(_ result: Result<Data, any Error>) {
+        let shouldComplete = lock.withLock {
+            guard !completed else {
+                return false
+            }
+            completed = true
+            return true
+        }
+        guard shouldComplete else {
+            return
+        }
+        promise.completeWith(result)
+    }
+}
+
+private final class AuthorityDatagramSequenceCaptureHandler:
+    ChannelInboundHandler, @unchecked Sendable
+{
+    typealias InboundIn = AddressedEnvelope<ByteBuffer>
+
+    private let expectedCount: Int
+    private let promise: EventLoopPromise<[Data]>
+    private let lock = NSLock()
+    private var datagrams = [Data]()
+    private var completed = false
+
+    init(expectedCount: Int, promise: EventLoopPromise<[Data]>) {
+        self.expectedCount = expectedCount
+        self.promise = promise
+    }
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        var envelope = unwrapInboundIn(data)
+        let bytes = envelope.data.readBytes(length: envelope.data.readableBytes) ?? []
+        let result = lock.withLock { () -> Result<[Data], any Error>? in
+            guard !completed else {
+                return nil
+            }
+            datagrams.append(Data(bytes))
+            guard datagrams.count == expectedCount else {
+                return nil
+            }
+            completed = true
+            return .success(datagrams)
+        }
+        result.map(promise.completeWith)
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: any Error) {
+        complete(.failure(error))
+        context.close(promise: nil)
+    }
+
+    func cancel() {
+        complete(.failure(CancellationError()))
+    }
+
+    private func complete(_ result: Result<[Data], any Error>) {
         let shouldComplete = lock.withLock {
             guard !completed else {
                 return false
