@@ -281,6 +281,36 @@ struct GELFTransportLoopbackTests {
         }
     }
 
+    @Test func productionTCPConnectionFailurePreservesConfiguredEndpoint() async throws {
+        try await withGELFEventLoopGroup { group in
+            let server = try await ServerBootstrap(group: group)
+                .bind(host: "127.0.0.1", port: 0)
+                .get()
+            defer { server.close(promise: nil) }
+            let port = try #require(server.localAddress?.port)
+            try await server.close().get()
+
+            let endpoint = GELFNetworkAddress(
+                host: "host.docker.internal",
+                port: String(port)
+            )
+            do {
+                _ = try await NIOGELFTransportFactory(eventLoopGroup: group).connect(
+                    to: .tcp(endpoint),
+                    timeout: .seconds(1)
+                )
+                Issue.record("expected a refused TCP GELF connection")
+            } catch let error as GELFProviderError {
+                guard case let .connectionFailed(actualEndpoint, reason) = error else {
+                    Issue.record("unexpected GELF connection error: \(error)")
+                    return
+                }
+                #expect(actualEndpoint == endpoint)
+                #expect(reason.localizedCaseInsensitiveContains("connection refused"))
+            }
+        }
+    }
+
     @Test func productionFactoryRejectsServiceSignedAndEncodedPortsWithoutLookup() async throws {
         try await withGELFEventLoopGroup { group in
             let factory = NIOGELFTransportFactory(eventLoopGroup: group)

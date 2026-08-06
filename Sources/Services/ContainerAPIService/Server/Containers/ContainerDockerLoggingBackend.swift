@@ -17,6 +17,7 @@
 import ContainerAPIClient
 import ContainerEngineLogging
 import ContainerEngineWire
+import ContainerLoggingProviders
 import ContainerLoggingStorage
 import ContainerPersistence
 import ContainerResource
@@ -567,6 +568,11 @@ public struct ContainerDockerLoggingBackend:
     ) -> DockerLoggingBackendError {
         if let error = error as? DockerLoggingBackendError {
             return error
+        }
+        if case let .connectionFailed(endpoint, reason) = error as? GELFProviderError {
+            return .server(
+                "failed to create task for container: failed to initialize logging driver: gelf: cannot connect to GELF endpoint: \(endpoint.host):\(endpoint.port) \(reason)"
+            )
         }
         if let error = error as? ContainerizationError {
             switch error.code {

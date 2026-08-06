@@ -67,6 +67,11 @@ public final class NIOGELFTransportFactory: GELFTransportFactory, @unchecked Sen
             return NIOConnectedGELFTransport(channel: channel)
         } catch ChannelError.connectTimeout {
             throw GELFProviderError.connectionTimedOut
+        } catch {
+            throw GELFProviderError.connectionFailed(
+                endpoint: address,
+                reason: String(describing: error)
+            )
         }
     }
 

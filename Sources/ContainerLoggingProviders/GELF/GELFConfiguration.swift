@@ -39,6 +39,7 @@ public enum GELFProviderError: Error, Equatable, Sendable {
     case chunkIdentifierInvalid
     case tooManyChunks(maximum: Int, actual: Int)
     case connectionTimedOut
+    case connectionFailed(endpoint: GELFNetworkAddress, reason: String)
     case writeTimedOut
     case closeTimedOut
     case flushTimedOut

@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerLoggingProviders
 import Testing
 
 @testable import ContainerAPIService
@@ -45,6 +46,26 @@ struct ContainerLoggingStartErrorTests {
         #expect(
             mapped.message
                 == "container logging configuration is not valid for start: invalid log option \"compress\" for driver \"json-file\": compress cannot be true when max-file is less than 2 or max-size is not set"
+        )
+    }
+
+    @Test func mapsGELFTCPConnectionFailureToDockerDiagnostic() {
+        let mapped = ContainerDockerLoggingBackend.map(
+            GELFProviderError.connectionFailed(
+                endpoint: GELFNetworkAddress(
+                    host: "host.docker.internal",
+                    port: "12201"
+                ),
+                reason: "connection refused"
+            ),
+            containerID: "gelf-container"
+        )
+
+        #expect(
+            mapped
+                == .server(
+                    "failed to create task for container: failed to initialize logging driver: gelf: cannot connect to GELF endpoint: host.docker.internal:12201 connection refused"
+                )
         )
     }
 }
