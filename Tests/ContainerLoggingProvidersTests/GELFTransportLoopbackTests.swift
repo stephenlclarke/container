@@ -168,6 +168,48 @@ struct GELFTransportLoopbackTests {
         }
     }
 
+    @Test func productionDockerHostAliasRoutesTCPAndUDPToNativeLoopback() async throws {
+        try await withGELFEventLoopGroup { group in
+            try await withGELFUDPServer(group: group, expectedDatagrams: 1) {
+                port,
+                captured in
+                let session = try await makeGELFLoopbackSession(
+                    group: group,
+                    endpoint: .udp(
+                        GELFNetworkAddress(host: "HOST.DOCKER.INTERNAL", port: String(port))
+                    )
+                )
+                do {
+                    try await session.write(gelfRecord(payload: Data("loopback".utf8)))
+                    #expect(try await gelfTestBoundedValue(captured) == [gelfLoopbackGoldenJSON])
+                    try await session.closeUsingPolicy()
+                } catch {
+                    try? await session.closeUsingPolicy()
+                    throw error
+                }
+            }
+
+            try await withGELFTCPServer(group: group) { port, captured in
+                let session = try await makeGELFLoopbackSession(
+                    group: group,
+                    endpoint: .tcp(
+                        GELFNetworkAddress(host: "host.docker.internal", port: String(port))
+                    )
+                )
+                do {
+                    try await session.write(gelfRecord(payload: Data("loopback".utf8)))
+                    var golden = gelfLoopbackGoldenJSON
+                    golden.append(0)
+                    #expect(try await gelfTestBoundedValue(captured) == golden)
+                    try await session.closeUsingPolicy()
+                } catch {
+                    try? await session.closeUsingPolicy()
+                    throw error
+                }
+            }
+        }
+    }
+
     @Test func productionTCPEOFReconnectsAndResendsSameGoldenFrame() async throws {
         try await withGELFEventLoopGroup { group in
             let framePromise = group.next().makePromise(of: Data.self)

@@ -57,7 +57,7 @@ public final class NIOGELFTransportFactory: GELFTransportFactory, @unchecked Sen
         do {
             let connection = ClientBootstrap(group: eventLoopGroup)
                 .connectTimeout(timeout.gelfNIOTimeAmount)
-                .connect(host: address.host.isEmpty ? "localhost" : address.host, port: port)
+                .connect(host: Self.nativeConnectionHost(address.host), port: port)
             let channel =
                 try await connection
                 .gelfConnectBounded(by: timeout) { channel in
@@ -77,7 +77,7 @@ public final class NIOGELFTransportFactory: GELFTransportFactory, @unchecked Sen
         let port = try Self.resolvePort(address.port)
         do {
             let connection = DatagramBootstrap(group: eventLoopGroup)
-                .connect(host: address.host.isEmpty ? "localhost" : address.host, port: port)
+                .connect(host: Self.nativeConnectionHost(address.host), port: port)
             let channel =
                 try await connection
                 .gelfConnectBounded(by: timeout) { channel in
@@ -100,6 +100,20 @@ public final class NIOGELFTransportFactory: GELFTransportFactory, @unchecked Sen
             throw GELFProviderError.malformedAddress("invalid decimal port")
         }
         return port
+    }
+
+    /// Converts Docker's VM host alias only at the native macOS transport boundary.
+    ///
+    /// The persisted GELF endpoint must retain `host.docker.internal` for Docker API
+    /// parity, but this provider connects from the macOS host rather than the Linux VM.
+    private static func nativeConnectionHost(_ configuredHost: String) -> String {
+        let host = configuredHost.isEmpty ? "localhost" : configuredHost
+        #if os(macOS)
+        if host.caseInsensitiveCompare("host.docker.internal") == .orderedSame {
+            return "127.0.0.1"
+        }
+        #endif
+        return host
     }
 }
 
