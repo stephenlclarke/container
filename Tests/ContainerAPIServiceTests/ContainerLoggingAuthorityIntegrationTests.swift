@@ -963,7 +963,11 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 ) as? [String: Any]
             )
             let initialState = try #require(initialObject["State"] as? [String: Any])
+            #expect((initialState["Status"] as? String) == "created")
+            #expect((initialState["ExitCode"] as? Int) == 128)
             #expect((initialState["Error"] as? String) == expected)
+            #expect((initialState["StartedAt"] as? String) == "0001-01-01T00:00:00Z")
+            #expect((initialState["FinishedAt"] as? String) == "0001-01-01T00:00:00Z")
 
             let restartedService = try makeService(appRoot: root, includeRuntime: true)
             let restartedBackend = ContainerDockerLoggingBackend(containers: restartedService)
@@ -973,7 +977,11 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 ) as? [String: Any]
             )
             let restartedState = try #require(restartedObject["State"] as? [String: Any])
+            #expect((restartedState["Status"] as? String) == "created")
+            #expect((restartedState["ExitCode"] as? Int) == 128)
             #expect((restartedState["Error"] as? String) == expected)
+            #expect((restartedState["StartedAt"] as? String) == "0001-01-01T00:00:00Z")
+            #expect((restartedState["FinishedAt"] as? String) == "0001-01-01T00:00:00Z")
         }
     }
 

@@ -645,7 +645,9 @@ extension ContainerDockerLoggingBackend:
             "OOMKilled": false,
             "Dead": snapshot.status == .unknown,
             "Pid": active ? 1 : 0,
-            "ExitCode": snapshot.exitCode ?? 0,
+            // Docker reports a rejected start as a created container with exit code 128,
+            // even though no native init process was ever started.
+            "ExitCode": snapshot.exitCode ?? (error.isEmpty ? 0 : 128),
             "Error": error,
             "StartedAt": snapshot.startedDate.map(dockerDate)
                 ?? "0001-01-01T00:00:00Z",
