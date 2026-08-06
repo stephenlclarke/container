@@ -699,7 +699,8 @@ struct AuthorityRemoteLogDriverPlaneTests {
                 "absent-containers",
                 isDirectory: true
             )
-            let absentReferences = try await AuthorityRemoteLogDriverPlane
+            let absentReferences =
+                try await AuthorityRemoteLogDriverPlane
                 .durableProtectedEffectReferences(
                     containerRoot: absentContainerRoot
                 )
@@ -731,7 +732,8 @@ struct AuthorityRemoteLogDriverPlaneTests {
             try await plane.bootstrapSucceeded(containerID: configuration.id)
             try await plane.activate(containerID: configuration.id)
 
-            let liveReferences = try await AuthorityRemoteLogDriverPlane
+            let liveReferences =
+                try await AuthorityRemoteLogDriverPlane
                 .durableProtectedEffectReferences(containerRoot: containerRoot)
             #expect(liveReferences.count == 1)
 
