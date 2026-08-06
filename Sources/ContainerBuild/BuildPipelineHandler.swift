@@ -99,6 +99,7 @@ public actor BuildPipeline {
         try await untilFirstError { group in
             for try await packet in receiver {
                 try Task.checkCancellation()
+                try Self.throwIfBuildComplete(packet)
                 for handler in self.handlers {
                     try Task.checkCancellation()
                     guard try handler.accept(packet) else {
@@ -110,6 +111,13 @@ public actor BuildPipeline {
                 }
             }
         }
+    }
+
+    static func throwIfBuildComplete(_ packet: ServerStream) throws {
+        guard case .commandComplete? = packet.packetType else {
+            return
+        }
+        throw Builder.Error.buildComplete
     }
 
     /// untilFirstError() throws when any one of its submitted tasks fail.
