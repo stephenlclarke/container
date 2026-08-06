@@ -547,7 +547,8 @@ struct AuthorityRemoteLogDriverPlaneTests {
                 let plane = try await AuthorityRemoteLogDriverPlane.create(
                     appRoot: root,
                     awsLogsClientFactory:
-                        AuthorityUnavailableAWSLogsClientFactory()
+                        AuthorityUnavailableAWSLogsClientFactory(),
+                    containerSystemConfig: ContainerSystemConfig()
                 )
                 let id = "gelf-plane"
                 let bundle = ContainerResource.Bundle(
@@ -584,6 +585,7 @@ struct AuthorityRemoteLogDriverPlaneTests {
                 let datagram = try await promise.futureResult.get()
                 let json = try #require(String(data: datagram, encoding: .utf8))
                 #expect(json.contains("\"short_message\":\"plane-output\""))
+                #expect(json.contains("\"_image_name\":\"alpine:latest\""))
 
                 try await server.close().get()
                 capture.cancel()

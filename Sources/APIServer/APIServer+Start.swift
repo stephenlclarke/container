@@ -563,7 +563,8 @@ extension APIServer {
                     appRoot: appRootURL,
                     awsLogsClientFactory: AWSCloudWatchLogsClientFactory(),
                     journaldService: journaldService,
-                    dockerPluginInstallations: dockerPluginInstallations
+                    dockerPluginInstallations: dockerPluginInstallations,
+                    containerSystemConfig: containerSystemConfig
                 )
             try await remoteLogDriverPlane.reconcileProtectedEffects(
                 containerRoot: appRootURL.appendingPathComponent(

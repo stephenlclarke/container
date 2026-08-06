@@ -14,7 +14,9 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerAPIClient
 import ContainerLoggingProviders
+import ContainerPersistence
 import ContainerResource
 import ContainerRuntimeClient
 import CryptoKit
@@ -92,6 +94,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     private let protectedEffects: ProtectedLoggingEffectStore
     private let eventLoopOwner: AuthorityRemoteLogEventLoopOwner
     private let gcpLoggingServiceFactory: AuthorityGCPLoggingServiceFactory
+    private let containerSystemConfig: ContainerSystemConfig?
     private let log = Logger(label: "com.apple.container.logging.authority")
     private var runs = [String: Run]()
     private var readerRuns = [String: ReaderRun]()
@@ -101,12 +104,14 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         providers: BuiltinRemoteLogDriverProviderSet,
         protectedEffects: ProtectedLoggingEffectStore,
         eventLoopOwner: AuthorityRemoteLogEventLoopOwner,
-        gcpLoggingServiceFactory: @escaping AuthorityGCPLoggingServiceFactory
+        gcpLoggingServiceFactory: @escaping AuthorityGCPLoggingServiceFactory,
+        containerSystemConfig: ContainerSystemConfig?
     ) {
         self.providers = providers
         self.protectedEffects = protectedEffects
         self.eventLoopOwner = eventLoopOwner
         self.gcpLoggingServiceFactory = gcpLoggingServiceFactory
+        self.containerSystemConfig = containerSystemConfig
     }
 
     package static func create(
@@ -121,7 +126,8 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 launchConfiguration: .discover(inheritEnvironment: true)
             )
         },
-        providerGeneration: UInt64 = 1
+        providerGeneration: UInt64 = 1,
+        containerSystemConfig: ContainerSystemConfig? = nil
     ) async throws -> AuthorityRemoteLogDriverPlane {
         let threadCount = max(
             1,
@@ -155,7 +161,8 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             providers: providers,
             protectedEffects: protectedEffects,
             eventLoopOwner: eventLoopOwner,
-            gcpLoggingServiceFactory: gcpLoggingServiceFactory
+            gcpLoggingServiceFactory: gcpLoggingServiceFactory,
+            containerSystemConfig: containerSystemConfig
         )
     }
 
@@ -1660,13 +1667,24 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         configuration: ContainerConfiguration
     ) async throws {
         let resolved = try Self.requireResolved(configuration.logging)
+        let imageName: String
+        if let containerSystemConfig,
+            let displayReference = try? ClientImage.denormalizeReference(
+                configuration.image.reference,
+                containerSystemConfig: containerSystemConfig
+            )
+        {
+            imageName = displayReference
+        } else {
+            imageName = configuration.image.reference
+        }
         let info = SyslogContainerInfo(
             containerID: configuration.id,
             containerName: configuration.id,
             containerEntrypoint: configuration.initProcess.executable,
             containerArguments: configuration.initProcess.arguments,
             containerImageID: configuration.image.digest,
-            containerImageName: configuration.image.reference,
+            containerImageName: imageName,
             containerCreated: configuration.creationDate,
             containerEnvironment: configuration.initProcess.environment,
             containerLabels: configuration.labels,
