@@ -134,8 +134,11 @@ extension ContainerDockerLoggingBackend:
         containerID: String
     ) async throws -> Data {
         do {
+            let resolvedID = try await containers.resolveDockerContainerIdentifier(
+                containerID
+            )
             let base = try await containers.engineInspectBase(
-                containerID: containerID
+                containerID: resolvedID
             )
             return try Self.jsonData(Self.inspectObject(base))
         } catch {
@@ -181,16 +184,19 @@ extension ContainerDockerLoggingBackend:
         request: DockerContainerListRequest,
         now: Date = Date()
     ) throws -> [[String: Any]] {
-        let references = Dictionary(
-            uniqueKeysWithValues: snapshots.map { ($0.id, $0) }
-        )
+        var references = [String: ContainerSnapshot]()
+        for snapshot in snapshots {
+            references[snapshot.id] = snapshot
+            references[dockerContainerID(snapshot)] = snapshot
+            references[dockerContainerName(snapshot)] = snapshot
+        }
         var selected = snapshots
             .filter { request.all || isRunning($0) }
             .sorted {
                 if $0.configuration.creationDate != $1.configuration.creationDate {
                     return $0.configuration.creationDate > $1.configuration.creationDate
                 }
-                return utf8Less($0.id, $1.id)
+                return utf8Less(dockerContainerID($0), dockerContainerID($1))
             }
         for (name, values) in request.filters where !values.isEmpty {
             selected = try selected.filter { snapshot in
@@ -478,8 +484,8 @@ extension ContainerDockerLoggingBackend:
     ) -> [String: Any] {
         let configuration = snapshot.configuration
         var result: [String: Any] = [
-            "Id": snapshot.id,
-            "Names": ["/\(snapshot.id)"],
+            "Id": dockerContainerID(snapshot),
+            "Names": ["/\(dockerContainerName(snapshot))"],
             "Image": configuration.image.reference,
             "ImageID": configuration.image.digest,
             "Command": commandString(configuration.initProcess),
@@ -596,7 +602,7 @@ extension ContainerDockerLoggingBackend:
             try? JSONDecoder().decode(LinuxRuntimeData.self, from: $0)
         }
         return [
-            "Id": snapshot.id,
+            "Id": dockerContainerID(snapshot),
             "Created": dockerDate(configuration.creationDate),
             "Path": configuration.initProcess.executable,
             "Args": configuration.initProcess.arguments,
@@ -606,7 +612,7 @@ extension ContainerDockerLoggingBackend:
             "HostnamePath": "",
             "HostsPath": "",
             "LogPath": "",
-            "Name": "/\(snapshot.id)",
+            "Name": "/\(dockerContainerName(snapshot))",
             "RestartCount": 0,
             "Driver": "apple-container",
             "Platform": String(describing: configuration.platform.os),
@@ -1037,9 +1043,9 @@ extension ContainerDockerLoggingBackend:
         let configuration = snapshot.configuration
         switch name {
         case "id":
-            return snapshot.id.hasPrefix(value)
+            return dockerContainerID(snapshot).hasPrefix(value)
         case "name":
-            return matchesPattern(value, in: "/\(snapshot.id)")
+            return matchesPattern(value, in: "/\(dockerContainerName(snapshot))")
         case "label":
             let parts = value.split(
                 separator: "=",
@@ -1097,7 +1103,15 @@ extension ContainerDockerLoggingBackend:
         in references: [String: ContainerSnapshot]
     ) -> ContainerSnapshot? {
         references[value]
-            ?? references.values.first { $0.id.hasPrefix(value) }
+            ?? references.values.first { dockerContainerID($0).hasPrefix(value) }
+    }
+
+    private static func dockerContainerID(_ snapshot: ContainerSnapshot) -> String {
+        snapshot.configuration.dockerID ?? snapshot.id
+    }
+
+    private static func dockerContainerName(_ snapshot: ContainerSnapshot) -> String {
+        snapshot.configuration.dockerName ?? snapshot.id
     }
 
     private static func matchesPattern(_ pattern: String, in value: String) -> Bool {

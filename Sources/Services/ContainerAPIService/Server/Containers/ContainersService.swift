@@ -706,6 +706,46 @@ public actor ContainersService {
         }
     }
 
+    /// Resolves a Docker route identifier to the native resource identifier.
+    /// Docker accepts an exact container name, a full immutable ID, or a
+    /// unique ID prefix. Native callers continue to use their resource ID.
+    func resolveDockerContainerIdentifier(_ identifier: String) throws -> String {
+        if containers[identifier] != nil {
+            return identifier
+        }
+
+        let namedMatches = containers.values.compactMap { state -> String? in
+            state.snapshot.configuration.dockerName == identifier
+                ? state.snapshot.id
+                : nil
+        }
+        if namedMatches.count == 1, let match = namedMatches.first {
+            return match
+        }
+
+        let idMatches = containers.values.compactMap { state -> String? in
+            guard let dockerID = state.snapshot.configuration.dockerID,
+                dockerID.hasPrefix(identifier)
+            else {
+                return nil
+            }
+            return state.snapshot.id
+        }
+        if idMatches.count == 1, let match = idMatches.first {
+            return match
+        }
+        if idMatches.count > 1 {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "ambiguous Docker container ID prefix \(identifier)"
+            )
+        }
+        throw ContainerizationError(
+            .notFound,
+            message: "container not found: \(identifier)"
+        )
+    }
+
     /// Execute an operation with the current container list while maintaining atomicity
     /// This prevents race conditions where containers are created during the operation
     public func withContainerList<T: Sendable>(
@@ -3969,6 +4009,8 @@ extension ContainersService {
             )
         }
         let id = Utility.createContainerID(name: requestedName)
+        let dockerID = Utility.createDockerContainerID()
+        let dockerName = requestedName ?? id
         guard ManagedContainer.nameValid(id) else {
             throw ContainerizationError(
                 .invalidArgument,
@@ -4084,14 +4126,17 @@ extension ContainersService {
             restartDelay: nil,
             restartWindow: nil
         )
+        var configuration = prepared.0
+        configuration.dockerID = dockerID
+        configuration.dockerName = dockerName
         try await create(
-            configuration: prepared.0,
+            configuration: configuration,
             loggingRequest: loggingRequest,
             kernel: prepared.1,
             options: options,
             initImage: prepared.2
         )
-        return id
+        return dockerID
     }
 
     private static func dockerRestartPolicy(

@@ -1107,6 +1107,80 @@ struct ContainerLogsTests {
         #expect(deadObject["Status"] as? String == "Dead")
     }
 
+    @Test func dockerContainerIdentityUsesCanonicalIDAndNameAliases() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-docker-identity-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try FileManager.default.createDirectory(
+            at: tempURL,
+            withIntermediateDirectories: true
+        )
+
+        let nativeID = "native-docker-resource"
+        let dockerID = String(repeating: "a", count: 64)
+        let dockerName = "visible-docker-name"
+        let bundle = ContainerResource.Bundle(
+            path: tempURL.appendingPathComponent("containers/\(nativeID)")
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.path,
+            withIntermediateDirectories: true
+        )
+        var configuration = testConfiguration(id: nativeID)
+        configuration.dockerID = dockerID
+        configuration.dockerName = dockerName
+        try bundle.set(configuration: configuration)
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-docker-identity-test"
+        )
+        let backend = ContainerDockerLoggingBackend(containers: containers)
+        let aliases = [nativeID, dockerName, dockerID, String(dockerID.prefix(12))]
+        for alias in aliases {
+            #expect(
+                try await containers.resolveDockerContainerIdentifier(alias)
+                    == nativeID
+            )
+            let inspectData = try await backend.containerInspectBaseJSON(
+                containerID: alias
+            )
+            let inspect = try #require(
+                JSONSerialization.jsonObject(with: inspectData) as? [String: Any]
+            )
+            #expect(inspect["Id"] as? String == dockerID)
+            #expect(inspect["Name"] as? String == "/\(dockerName)")
+        }
+
+        let listedData = try await backend.containerListJSON(
+            request: DockerContainerListRequest(
+                all: true,
+                filters: [
+                    "id": [String(dockerID.prefix(12))],
+                    "name": ["^/visible-docker-name$"],
+                ]
+            )
+        )
+        let listed = try #require(
+            JSONSerialization.jsonObject(with: listedData) as? [[String: Any]]
+        )
+        let listedContainer = try #require(listed.first)
+        #expect(listedContainer["Id"] as? String == dockerID)
+        #expect(listedContainer["Names"] as? [String] == ["/\(dockerName)"])
+
+        let generatedDockerID = Utility.createDockerContainerID()
+        #expect(generatedDockerID.count == 64)
+        #expect(
+            generatedDockerID.range(
+                of: "^[0-9a-f]{64}$",
+                options: .regularExpression
+            ) != nil
+        )
+        #expect(generatedDockerID == generatedDockerID.lowercased())
+    }
+
     @Test func dockerImageDiscoveryProjectsNativeCatalogAndInspectMetadata() async throws {
         let tempURL = try canonicalTemporaryDirectory()
             .appendingPathComponent(

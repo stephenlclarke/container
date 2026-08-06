@@ -1694,18 +1694,9 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         } else {
             imageName = configuration.image.reference
         }
-        let info = SyslogContainerInfo(
-            containerID: configuration.id,
-            containerName: configuration.id,
-            containerEntrypoint: configuration.initProcess.executable,
-            containerArguments: configuration.initProcess.arguments,
-            containerImageID: configuration.image.digest,
-            containerImageName: imageName,
-            containerCreated: configuration.creationDate,
-            containerEnvironment: configuration.initProcess.environment,
-            containerLabels: configuration.labels,
-            hostname: configuration.hostname
-                ?? ProcessInfo.processInfo.hostName
+        let info = Self.dockerLogInfo(
+            configuration: configuration,
+            imageName: imageName
         )
         if resolved.providerIdentity.kind == .dockerPlugin {
             try await providers.configurations.register(
@@ -1890,6 +1881,25 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         }
     }
 
+    static func dockerLogInfo(
+        configuration: ContainerConfiguration,
+        imageName: String
+    ) -> SyslogContainerInfo {
+        SyslogContainerInfo(
+            containerID: configuration.dockerID ?? configuration.id,
+            containerName: configuration.dockerName ?? configuration.id,
+            containerEntrypoint: configuration.initProcess.executable,
+            containerArguments: configuration.initProcess.arguments,
+            containerImageID: configuration.image.digest,
+            containerImageName: imageName,
+            containerCreated: configuration.creationDate,
+            containerEnvironment: configuration.initProcess.environment,
+            containerLabels: configuration.labels,
+            hostname: configuration.hostname
+                ?? ProcessInfo.processInfo.hostName
+        )
+    }
+
     private func registerReaderConfiguration(
         request: LogDriverReaderOpenRequestV1,
         options: [String: String],
@@ -1919,17 +1929,21 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         configuration: ContainerConfiguration,
         options: [String: String]
     ) throws -> DockerPluginInfo {
-        try DockerPluginInfo(
+        let info = dockerLogInfo(
+            configuration: configuration,
+            imageName: configuration.image.reference
+        )
+        return try DockerPluginInfo(
             config: options,
-            containerID: configuration.id,
-            containerName: "/\(configuration.id)",
-            containerEntrypoint: configuration.initProcess.executable,
-            containerArgs: configuration.initProcess.arguments,
-            containerImageID: configuration.image.digest,
-            containerImageName: configuration.image.reference,
-            containerCreated: configuration.creationDate,
-            containerEnv: configuration.initProcess.environment,
-            containerLabels: configuration.labels,
+            containerID: info.containerID,
+            containerName: "/\(info.containerName)",
+            containerEntrypoint: info.containerEntrypoint,
+            containerArgs: info.containerArguments,
+            containerImageID: info.containerImageID,
+            containerImageName: info.containerImageName,
+            containerCreated: info.containerCreated,
+            containerEnv: info.containerEnvironment,
+            containerLabels: info.containerLabels,
             logPath: "",
             daemonName: "docker"
         )

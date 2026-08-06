@@ -20,6 +20,12 @@ import Foundation
 public struct ContainerConfiguration: Sendable, Codable {
     /// Identifier for the container.
     public var id: String
+    /// Canonical Docker Engine identifier when this container was created
+    /// through the Docker-compatible API. Native containers leave this unset.
+    public var dockerID: String?
+    /// Docker-visible container name when this container was created through
+    /// the Docker-compatible API. Native containers leave this unset.
+    public var dockerName: String?
     /// Image used to create the container.
     public var image: ImageDescription
     /// External mounts to add to the container.
@@ -105,6 +111,8 @@ public struct ContainerConfiguration: Sendable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case id
+        case dockerID
+        case dockerName
         case image
         case mounts
         case publishedPorts
@@ -152,6 +160,8 @@ public struct ContainerConfiguration: Sendable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
 
         id = try container.decode(String.self, forKey: .id)
+        dockerID = try container.decodeIfPresent(String.self, forKey: .dockerID)
+        dockerName = try container.decodeIfPresent(String.self, forKey: .dockerName)
         image = try container.decode(ImageDescription.self, forKey: .image)
         mounts = try container.decodeIfPresent([Filesystem].self, forKey: .mounts) ?? []
         publishedPorts = try container.decodeIfPresent([PublishPort].self, forKey: .publishedPorts) ?? []
@@ -229,6 +239,8 @@ public struct ContainerConfiguration: Sendable, Codable {
     ) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(dockerID, forKey: .dockerID)
+        try container.encodeIfPresent(dockerName, forKey: .dockerName)
         try container.encode(image, forKey: .image)
         try container.encode(mounts, forKey: .mounts)
         try container.encode(publishedPorts, forKey: .publishedPorts)

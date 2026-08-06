@@ -860,6 +860,23 @@ struct AuthorityRemoteLogDriverPlaneTests {
     }
 
     @Test
+    func dockerLogInfoUsesCanonicalDockerIdentityWhenAvailable() throws {
+        var configuration = try gcpLogsConfiguration(id: "native-resource-id")
+        let dockerID = String(repeating: "a", count: 64)
+        configuration.dockerID = dockerID
+        configuration.dockerName = "visible-docker-name"
+
+        let info = AuthorityRemoteLogDriverPlane.dockerLogInfo(
+            configuration: configuration,
+            imageName: "alpine:3.20"
+        )
+
+        #expect(info.containerID == dockerID)
+        #expect(info.containerName == "visible-docker-name")
+        #expect(info.containerImageName == "alpine:3.20")
+    }
+
+    @Test
     func reservedWriterIsReconciledBeforeNextGenerationStarts() async throws {
         try await withTemporaryRoot { root in
             let serverGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)

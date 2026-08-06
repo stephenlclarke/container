@@ -213,6 +213,14 @@ public struct ContainerDockerLoggingBackend:
         }
     }
 
+    private func resolveDockerContainerID(_ identifier: String) async throws -> String {
+        do {
+            return try await containers.resolveDockerContainerIdentifier(identifier)
+        } catch {
+            throw Self.map(error, containerID: identifier)
+        }
+    }
+
     public func createContainer(
         request: DockerContainerCreateRequest,
         requestedName: String?
@@ -229,20 +237,21 @@ public struct ContainerDockerLoggingBackend:
     }
 
     public func startContainer(containerID: String) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
         do {
             try await containers.bootstrap(
-                id: containerID,
+                id: resolvedID,
                 stdio: [nil, nil, nil],
                 dynamicEnv: [:]
             )
             try await containers.startProcess(
-                id: containerID,
-                processID: containerID
+                id: resolvedID,
+                processID: resolvedID
             )
         } catch {
             let mapped = Self.map(error, containerID: containerID)
             await containers.recordDockerStartError(
-                containerID: containerID,
+                containerID: resolvedID,
                 error: mapped.message
             )
             throw mapped
@@ -253,6 +262,7 @@ public struct ContainerDockerLoggingBackend:
         containerID: String,
         timeoutSeconds: Int64?
     ) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
         let timeout = timeoutSeconds.flatMap { Int32(exactly: $0) }
         if timeoutSeconds != nil, timeout == nil {
             throw DockerLoggingBackendError.invalidParameter(
@@ -261,7 +271,7 @@ public struct ContainerDockerLoggingBackend:
         }
         do {
             try await containers.stop(
-                id: containerID,
+                id: resolvedID,
                 options: ContainerStopOptions(
                     timeoutInSeconds: timeout,
                     signal: nil
@@ -277,8 +287,9 @@ public struct ContainerDockerLoggingBackend:
         force: Bool,
         removeVolumes _: Bool
     ) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
         do {
-            try await containers.delete(id: containerID, force: force)
+            try await containers.delete(id: resolvedID, force: force)
         } catch {
             throw Self.map(error, containerID: containerID)
         }
@@ -287,9 +298,10 @@ public struct ContainerDockerLoggingBackend:
     public func inspectContainerLogging(
         containerID: String
     ) async throws -> DockerContainerLoggingInspection {
+        let resolvedID = try await resolveDockerContainerID(containerID)
         do {
             let inspection = try await containers.engineLoggingInspection(
-                containerID: containerID
+                containerID: resolvedID
             )
             return DockerContainerLoggingInspection(
                 configuration: DockerResolvedLogConfiguration(
@@ -308,9 +320,10 @@ public struct ContainerDockerLoggingBackend:
         containerID: String,
         request: DockerLogReadRequest
     ) async throws -> any DockerLogReadSession {
+        let resolvedID = try await resolveDockerContainerID(containerID)
         do {
             let source = try await containers.engineLogReadSource(
-                containerID: containerID,
+                containerID: resolvedID,
                 request: try Self.containerRequest(request)
             )
             switch source {
@@ -334,9 +347,10 @@ public struct ContainerDockerLoggingBackend:
         containerID: String,
         request: DockerAttachRequest
     ) async throws -> DockerAttachConnection {
+        let resolvedID = try await resolveDockerContainerID(containerID)
         do {
             let inspection = try await containers.engineAttachmentInspection(
-                containerID: containerID
+                containerID: resolvedID
             )
             try Self.validateAttachState(
                 containerID: containerID,
@@ -353,7 +367,7 @@ public struct ContainerDockerLoggingBackend:
             if request.includeLogs, outputRequested {
                 do {
                     logReader = try await openContainerLogs(
-                        containerID: containerID,
+                        containerID: resolvedID,
                         request: DockerLogReadRequest(
                             stdout: request.stdout,
                             stderr: request.stderr,
@@ -383,7 +397,7 @@ public struct ContainerDockerLoggingBackend:
             let pipes: ContainerDockerRuntimeAttachPipes
             do {
                 pipes = try await attachRuntime(
-                    containerID: containerID,
+                    containerID: resolvedID,
                     terminal: inspection.terminal,
                     input: runtimePlan.input,
                     stdout: runtimePlan.stdout,
@@ -404,8 +418,8 @@ public struct ContainerDockerLoggingBackend:
                 waitForProcess: runtimePlan.input && pipes.outputs.isEmpty,
                 processWait: { [containers] in
                     try await containers.wait(
-                        id: containerID,
-                        processID: containerID
+                        id: resolvedID,
+                        processID: resolvedID
                     ).exitCode
                 },
                 onDetach: { [containers, snapshot = inspection.snapshot] in
@@ -430,13 +444,14 @@ public struct ContainerDockerLoggingBackend:
         height: UInt32,
         width: UInt32
     ) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
         do {
             let inspection = try await containers.engineAttachmentInspection(
-                containerID: containerID
+                containerID: resolvedID
             )
             try await containers.resize(
-                id: containerID,
-                processID: containerID,
+                id: resolvedID,
+                processID: resolvedID,
                 size: Self.terminalSize(height: height, width: width)
             )
             await containers.publishEngineResizeEvent(

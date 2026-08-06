@@ -45,6 +45,17 @@ public struct Utility {
         return name
     }
 
+    /// Docker Engine exposes a stable 256-bit hexadecimal container identity
+    /// that is distinct from the requested container name. Keep the native
+    /// resource identifier unchanged and mint this protocol identity only for
+    /// Docker-created containers.
+    public static func createDockerContainerID() -> String {
+        [UUID(), UUID()]
+            .map { $0.uuidString.replacingOccurrences(of: "-", with: "") }
+            .joined()
+            .lowercased()
+    }
+
     public static func imageReferenceAliases(
         _ reference: String,
         containerSystemConfig: ContainerSystemConfig
