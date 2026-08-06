@@ -1516,7 +1516,7 @@ Starts the container services and (optionally) installs a default kernel. It wil
 **Usage**
 
 ```bash
-container system start [--app-root <app-root>] [--install-root <install-root>] [--log-root <log-root>] [--enable-kernel-install] [--disable-kernel-install] [--timeout <timeout>] [--debug]
+container system start [--app-root <app-root>] [--install-root <install-root>] [--log-root <log-root>] [--init-image-archive <init-image-archive>] [--enable-kernel-install] [--disable-kernel-install] [--timeout <timeout>] [--debug]
 ```
 
 **Options**
@@ -1524,6 +1524,7 @@ container system start [--app-root <app-root>] [--install-root <install-root>] [
 *   `-a, --app-root <app-root>`: Path to the root directory for application data
 *   `--install-root <install-root>`: Path to the root directory for application executables and plugins
 *   `--log-root <log-root>`: Path to the root directory for log data, using macOS log facility if not set
+*   `--init-image-archive <init-image-archive>`: OCI image archive containing the configured initial filesystem image; when that filesystem is absent, load and unpack it before attempting the normal registry pull
 *   `--enable-kernel-install/--disable-kernel-install`: Specify whether the default kernel should be installed or not (default: prompt user)
 *   `--timeout <timeout>`: Number of seconds to wait for API service to become responsive
 
