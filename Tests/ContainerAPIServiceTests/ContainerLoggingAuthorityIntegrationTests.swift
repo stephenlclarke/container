@@ -933,6 +933,50 @@ struct ContainerLoggingAuthorityIntegrationTests {
         }
     }
 
+    @Test func dockerRejectedStartErrorIsInspectableAfterAuthorityRestart() async throws {
+        try await withTemporaryRoot { root in
+            let id = "invalid-local-compression"
+            let expected = "failed to initialize logging driver: compression cannot be enabled when max file count is 1"
+            let prepared = try makeResolver().prepare(
+                ContainerLogRequest(
+                    driver: "local",
+                    options: [
+                        "compress": "true",
+                        "max-file": "1",
+                        "max-size": "4k",
+                    ]
+                )
+            )
+            let logging = try prepared.finalizedConfiguration(protectedReference: nil)
+            try persistConfiguration(appRoot: root, id: id, logging: logging)
+
+            let service = try makeService(appRoot: root, includeRuntime: true)
+            let backend = ContainerDockerLoggingBackend(containers: service)
+            let error = await #expect(throws: DockerLoggingBackendError.self) {
+                try await backend.startContainer(containerID: id)
+            }
+            #expect(error == .conflict(expected))
+
+            let initialObject = try #require(
+                JSONSerialization.jsonObject(
+                    with: try await backend.containerInspectBaseJSON(containerID: id)
+                ) as? [String: Any]
+            )
+            let initialState = try #require(initialObject["State"] as? [String: Any])
+            #expect((initialState["Error"] as? String) == expected)
+
+            let restartedService = try makeService(appRoot: root, includeRuntime: true)
+            let restartedBackend = ContainerDockerLoggingBackend(containers: restartedService)
+            let restartedObject = try #require(
+                JSONSerialization.jsonObject(
+                    with: try await restartedBackend.containerInspectBaseJSON(containerID: id)
+                ) as? [String: Any]
+            )
+            let restartedState = try #require(restartedObject["State"] as? [String: Any])
+            #expect((restartedState["Error"] as? String) == expected)
+        }
+    }
+
     @Test func bootReconciliationDeletesProtectedObjectsWithoutDurableOwners() async throws {
         try await withTemporaryRoot { root in
             let store = try LoggingProtectedOptionsStore(rootURL: protectedStoreURL(appRoot: root))

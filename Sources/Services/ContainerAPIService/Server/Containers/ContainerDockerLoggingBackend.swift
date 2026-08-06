@@ -110,6 +110,7 @@ struct ContainerEngineInspectBase: Sendable {
     let snapshot: ContainerSnapshot
     let options: ContainerCreateOptions
     let runtimeData: Data?
+    let stateError: String
 }
 
 enum ContainerEngineLogReadSource: Sendable {
@@ -238,7 +239,12 @@ public struct ContainerDockerLoggingBackend:
                 processID: containerID
             )
         } catch {
-            throw Self.map(error, containerID: containerID)
+            let mapped = Self.map(error, containerID: containerID)
+            await containers.recordDockerStartError(
+                containerID: containerID,
+                error: mapped.message
+            )
+            throw mapped
         }
     }
 

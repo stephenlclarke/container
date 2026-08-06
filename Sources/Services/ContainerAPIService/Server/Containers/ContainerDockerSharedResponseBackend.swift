@@ -600,7 +600,7 @@ extension ContainerDockerLoggingBackend:
             "Created": dockerDate(configuration.creationDate),
             "Path": configuration.initProcess.executable,
             "Args": configuration.initProcess.arguments,
-            "State": stateObject(snapshot),
+            "State": stateObject(snapshot, error: base.stateError),
             "Image": configuration.image.digest,
             "ResolvConfPath": "",
             "HostnamePath": "",
@@ -630,7 +630,8 @@ extension ContainerDockerLoggingBackend:
     }
 
     private static func stateObject(
-        _ snapshot: ContainerSnapshot
+        _ snapshot: ContainerSnapshot,
+        error: String
     ) -> [String: Any] {
         let active =
             snapshot.status == .running
@@ -645,7 +646,7 @@ extension ContainerDockerLoggingBackend:
             "Dead": snapshot.status == .unknown,
             "Pid": active ? 1 : 0,
             "ExitCode": snapshot.exitCode ?? 0,
-            "Error": "",
+            "Error": error,
             "StartedAt": snapshot.startedDate.map(dockerDate)
                 ?? "0001-01-01T00:00:00Z",
             "FinishedAt": snapshot.exitedDate.map(dockerDate)

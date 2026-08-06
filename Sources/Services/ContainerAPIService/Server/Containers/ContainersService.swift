@@ -63,6 +63,7 @@ public actor ContainersService {
         var snapshot: ContainerSnapshot
         var client: RuntimeClient? = nil
         var restart = ContainerRestartTracker()
+        var dockerStateError = ""
 
         func getClient() throws -> RuntimeClient {
             guard let client else {
@@ -596,8 +597,9 @@ public actor ContainersService {
                         message: "failed to find runtime plugin \(config.runtimeHandler)"
                     )
                 }
-                let lifecycle = try ContainerResource.Bundle(path: dir)
-                    .lifecycleState
+                let bundle = ContainerResource.Bundle(path: dir)
+                let lifecycle = try bundle.lifecycleState
+                let dockerState = try bundle.dockerState
                 let state = ContainerState(
                     snapshot: .init(
                         configuration: config,
@@ -607,6 +609,7 @@ public actor ContainersService {
                         exitCode: lifecycle?.exitCode,
                         exitedDate: lifecycle?.exitedDate
                     ),
+                    dockerStateError: dockerState?.error ?? ""
                 )
                 results[config.id] = state
             } catch {
@@ -1479,7 +1482,12 @@ public actor ContainersService {
                     root: self.containerRoot,
                     id: id
                 )
-                try ContainerResource.Bundle(path: path).setDurably(
+                let bundle = ContainerResource.Bundle(path: path)
+                try bundle.setDurably(
+                    dockerState: ContainerDockerStateV1()
+                )
+                state.dockerStateError = ""
+                try bundle.setDurably(
                     lifecycleState: ContainerLifecycleStateV1(
                         startedDate: startedDate
                     )
@@ -3383,6 +3391,32 @@ public actor ContainersService {
         self.containers[id] = state
     }
 
+    func recordDockerStartError(
+        containerID: String,
+        error: String
+    ) async {
+        await self.lock.withLock(logMetadata: ["acquirer": "\\(#function)", "id": "\\(containerID)"]) { context in
+            guard var state = try? await self.getContainerState(id: containerID, context: context),
+                state.snapshot.status == .stopped
+            else {
+                return
+            }
+            do {
+                let path = try Self.containerPath(root: self.containerRoot, id: containerID)
+                try ContainerResource.Bundle(path: path).setDurably(
+                    dockerState: ContainerDockerStateV1(error: error)
+                )
+                state.dockerStateError = error
+                await self.setContainerState(containerID, state, context: context)
+            } catch {
+                self.log.error(
+                    "failed to persist Docker start error",
+                    metadata: ["id": "\\(containerID)", "error": "\\(error)"]
+                )
+            }
+        }
+    }
+
     private func startHealthCheckMonitor(
         id: String,
         healthCheck: ContainerHealthCheck?,
@@ -4504,7 +4538,8 @@ extension ContainersService {
     func engineInspectBase(
         containerID: String
     ) throws -> ContainerEngineInspectBase {
-        let snapshot = try _getContainerState(id: containerID).snapshot
+        let state = try _getContainerState(id: containerID)
+        let snapshot = state.snapshot
         let path = try Self.containerPath(
             root: containerRoot,
             id: containerID
@@ -4519,7 +4554,8 @@ extension ContainersService {
         return ContainerEngineInspectBase(
             snapshot: snapshot,
             options: runtime?.options ?? legacyOptions ?? .default,
-            runtimeData: runtime?.runtimeData
+            runtimeData: runtime?.runtimeData,
+            stateError: state.dockerStateError
         )
     }
 
