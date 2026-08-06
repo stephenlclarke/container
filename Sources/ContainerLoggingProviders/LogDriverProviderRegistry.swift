@@ -306,9 +306,10 @@ public struct FileLogDriverProviderRegistryPersistenceV1:
     private let fileURL: URL
 
     public init(fileURL: URL) throws {
-        self.fileURL = fileURL.standardizedFileURL
-        try Self.ensureProtectedDirectory(
-            self.fileURL.deletingLastPathComponent()
+        let directory = fileURL.deletingLastPathComponent()
+        try Self.ensureProtectedDirectory(directory)
+        self.fileURL = directory.standardizedFileURL.appendingPathComponent(
+            fileURL.lastPathComponent
         )
     }
 
@@ -367,26 +368,32 @@ public struct FileLogDriverProviderRegistryPersistenceV1:
 
     private static func ensureProtectedDirectory(_ url: URL) throws {
         let manager = FileManager.default
-        if !manager.fileExists(atPath: url.path) {
+        var canonical = url.standardizedFileURL
+        if !manager.fileExists(atPath: canonical.path) {
             try manager.createDirectory(
-                at: url,
+                at: canonical,
                 withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700]
             )
+            // macOS only normalizes the /private directory aliases after the
+            // final path component exists. Re-evaluate after creation so the
+            // protected-path check distinguishes a real alias from a link.
+            canonical = canonical.standardizedFileURL
         }
-        let values = try url.resourceValues(
+        let values = try canonical.resourceValues(
             forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
         )
         guard
             values.isDirectory == true,
             values.isSymbolicLink != true,
-            url.resolvingSymlinksInPath().standardizedFileURL.path == url.path
+            canonical.resolvingSymlinksInPath().standardizedFileURL.path
+                == canonical.path
         else {
             throw LogDriverProviderRegistryError.invalidPersistedState
         }
         try manager.setAttributes(
             [.posixPermissions: 0o700],
-            ofItemAtPath: url.path
+            ofItemAtPath: canonical.path
         )
     }
 

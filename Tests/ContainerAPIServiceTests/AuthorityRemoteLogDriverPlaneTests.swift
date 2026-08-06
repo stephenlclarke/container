@@ -180,6 +180,40 @@ private final class AuthorityRecordingGCPLoggingService:
 @Suite(.serialized)
 struct AuthorityRemoteLogDriverPlaneTests {
     @Test
+    func journaldCatalogAcceptsPrecreatedPluginStateDirectory() async throws {
+        try await withPrivateTemporaryRoot { root in
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755],
+                ofItemAtPath: root.path
+            )
+            let pluginStateDirectory = root.appendingPathComponent(
+                "engine-services",
+                isDirectory: true
+            ).appendingPathComponent(
+                "docker-plugins",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: pluginStateDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory:
+                    AuthorityUnavailableAWSLogsClientFactory(),
+                journaldService: AuthorityCatalogJournaldService(generation: 9)
+            )
+
+            #expect(
+                try await plane.logDriverCatalog()
+                    .descriptor(named: "journald") != nil
+            )
+        }
+    }
+
+    @Test
     func journaldCatalogTracksConcreteServiceReadiness() async throws {
         try await withTemporaryRoot { root in
             let service = AuthorityCatalogJournaldService(generation: 9)
@@ -1219,6 +1253,23 @@ struct AuthorityRemoteLogDriverPlaneTests {
             "authority-remote-log-plane-\(UUID().uuidString)",
             isDirectory: true
         )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try await operation(root)
+    }
+
+    private func withPrivateTemporaryRoot(
+        _ operation: (URL) async throws -> Void
+    ) async throws {
+        let root = URL(fileURLWithPath: "/private/tmp")
+            .appendingPathComponent(
+                "authority-remote-log-plane-\(UUID().uuidString)",
+                isDirectory: true
+            )
         try FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true,
