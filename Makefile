@@ -37,7 +37,10 @@ PYTHON3 ?= python3
 SWIFT_BUILD = $(SWIFT) build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION)
 DEST_DIR ?= /usr/local/
 ROOT_DIR := $(shell git rev-parse --show-toplevel)
-BUILD_BIN_DIR = $(shell $(SWIFT) build -c $(BUILD_CONFIGURATION) --show-bin-path)
+# Keep staging on the exact build graph selected by SWIFT_BUILD.  In
+# particular, callers that select an isolated SwiftPM scratch path must not
+# silently package stale products from the default .build directory.
+BUILD_BIN_DIR = $(shell $(SWIFT_BUILD) --show-bin-path)
 SEMANTIC_HELPER_BUILD_DIR := $(ROOT_DIR)/.build/container-semantic-helper
 SEMANTIC_HELPER_BINARY := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper
 SEMANTIC_HELPER_MANIFEST := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper.manifest.json
@@ -290,7 +293,10 @@ dsym:
 	@echo Packaging the debug symbols...
 	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
 
-.PHONY: test test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+.PHONY: test test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test-build-artifact-directory:
+	@bash Tests/ScriptTests/TestBuildArtifactDirectory.sh
+
 test-homebrew-archive-checksum:
 	@Tests/ScriptTests/TestHomebrewArchiveChecksum.sh
 
@@ -300,7 +306,7 @@ test-install-init:
 test-verify-developer-id-archive:
 	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
 
-test: build-tests test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test: build-tests test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
