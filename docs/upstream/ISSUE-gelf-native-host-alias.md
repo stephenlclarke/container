@@ -28,7 +28,7 @@ The focused test was executed with `CONTAINERIZATION_PACKAGE_PATH=/Users/sclarke
 
 `/private/tmp/container-gelf-tcp-reconnect-candidate-v2.nmMgi1` is the marker-protected final evidence root. Its `FINGERPRINT-PREFLIGHT.json`, `ARCHIVE-VERIFICATION.json`, and `FINGERPRINT-COMPLETE.json` bind the exact source/dependency graph, code-signed archive, binaries, guest images, harness, wrapper, Docker reference, and two isolated public-socket runs. The candidate runs passed in `6.508964500s` and `6.340717583s` (1.18x and 1.15x Docker). They satisfy the focused fixture's 10x functional guard; programme-wide comparable-or-better release performance remains a separate gap.
 
-The Stephen-owned tracking issue is [stephenlclarke/container#75](https://github.com/stephenlclarke/container/issues/75). It is intentionally separate from this Apple-shaped handoff.
+The Stephen-owned tracking issue [stephenlclarke/container#75](https://github.com/stephenlclarke/container/issues/75) was closed after its final evidence comment. It remains intentionally separate from this Apple-shaped handoff.
 
 ## Apple-shaped boundary
 
