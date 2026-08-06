@@ -191,6 +191,7 @@ homebrew-package: build $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-runtime-linux.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
 	@tar -czf "$(HOMEBREW_ARCHIVE)" -C "$(STAGING_DIR)" .
