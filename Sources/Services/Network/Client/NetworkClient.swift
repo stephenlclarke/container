@@ -66,13 +66,16 @@ extension NetworkClient {
     ///
     /// Use `connect()` to obtain a session, then pass it here. The session
     /// must remain open for the lifetime of the allocation; closing it
-    /// releases the allocation on the network helper automatically.
+    /// releases the allocation on the network helper automatically unless
+    /// `retainOnDisconnect` is true. Retained allocations belong to the
+    /// container authority and must be released explicitly.
     public func allocate(
         hostname: String,
         aliases: [String] = [],
         macAddress: MACAddress? = nil,
         requestedIPv4Address: IPv4Address? = nil,
         requestedIPv6Address: IPv6Address? = nil,
+        retainOnDisconnect: Bool = false,
         on session: XPCClientSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?) {
         let request = XPCMessage(route: NetworkRoutes.allocate.rawValue)
@@ -89,10 +92,23 @@ extension NetworkClient {
         if let requestedIPv6Address {
             request.set(key: NetworkKeys.requestedIPv6Address.rawValue, value: requestedIPv6Address.description)
         }
+        if retainOnDisconnect {
+            request.set(key: NetworkKeys.retainOnDisconnect.rawValue, value: true)
+        }
         let response = try await session.send(request)
         let attachment = try response.attachment()
         let additionalData = response.additionalData()
         return (attachment, additionalData)
+    }
+
+    /// Release a retained container-owned attachment.
+    ///
+    /// Session-scoped allocations are released automatically when their
+    /// session closes and do not need this call.
+    public func release(hostname: String) async throws {
+        let request = XPCMessage(route: NetworkRoutes.release.rawValue)
+        request.set(key: NetworkKeys.hostname.rawValue, value: hostname)
+        _ = try await createClient().send(request)
     }
 
     public func lookup(hostname: String) async throws -> Attachment? {

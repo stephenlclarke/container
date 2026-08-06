@@ -251,6 +251,7 @@ public actor RuntimeService {
                         macAddress: attachmentConfig.options.macAddress,
                         requestedIPv4Address: attachmentConfig.options.requestedIPv4Address,
                         requestedIPv6Address: attachmentConfig.options.requestedIPv6Address,
+                        retainOnDisconnect: true,
                         on: session
                     )
                     if let mtu = attachmentConfig.options.mtu {

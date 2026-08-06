@@ -327,6 +327,17 @@ public actor NetworksService {
         return serviceState.configuration.plugin
     }
 
+    /// Release a container-owned attachment while its network service is still live.
+    public func releaseAttachment(network id: String, hostname: String) async throws {
+        let client = try await stateLock.withLock { _ in
+            guard let serviceState = await self.serviceStates[id] else {
+                throw ContainerizationError(.notFound, message: "no network for id \(id)")
+            }
+            return serviceState.client
+        }
+        try await client.release(hostname: hostname)
+    }
+
     private static func getClient(configuration: NetworkConfiguration) throws -> ContainerNetworkClient.NetworkClient {
         NetworkClient(id: configuration.id, plugin: configuration.plugin)
     }

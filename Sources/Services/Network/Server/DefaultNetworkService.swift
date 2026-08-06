@@ -28,7 +28,7 @@ public actor DefaultNetworkService: NetworkService {
     private var macAddresses: [UInt32: MACAddress]
     private var ipv6Addresses: [UInt32: IPv6Address]
     private var ipv6AddressIndexes: [IPv6Address: UInt32]
-    private var allocationsBySession: [XPCServerSession: [(hostname: String, index: UInt32)]]
+    private var allocationsBySession: [XPCServerSession: [String]]
 
     /// Set up a network service for the specified network.
     public init(
@@ -110,6 +110,7 @@ public actor DefaultNetworkService: NetworkService {
         macAddress: MACAddress?,
         requestedIPv4Address: IPv4Address?,
         requestedIPv6Address: IPv6Address?,
+        retainOnDisconnect: Bool,
         session: XPCServerSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?) {
         log.debug("enter", metadata: ["func": "\(#function)"])
@@ -188,27 +189,38 @@ public actor DefaultNetworkService: NetworkService {
         try network.withAdditionalData {
             additionalData = $0
         }
-        if allocationsBySession[session] == nil {
-            allocationsBySession[session] = []
-            await session.onDisconnect { [weak self] in
-                await self?.releaseSession(session)
+        if !retainOnDisconnect {
+            if allocationsBySession[session] == nil {
+                allocationsBySession[session] = []
+                await session.onDisconnect { [weak self] in
+                    await self?.releaseSession(session)
+                }
             }
+            allocationsBySession[session]!.append(hostname)
         }
-        allocationsBySession[session]!.append((hostname: hostname, index: index))
 
         return (attachment: attachment, additionalData: additionalData)
     }
 
-    private func releaseSession(_ session: XPCServerSession) async {
+    /// Release a retained attachment after its container resource is removed.
+    @Sendable
+    public func release(hostname: String) async throws {
+        guard let index = try await allocator.deallocate(hostname: hostname) else {
+            return
+        }
+        macAddresses.removeValue(forKey: index)
+        if let ipv6Address = ipv6Addresses.removeValue(forKey: index) {
+            ipv6AddressIndexes.removeValue(forKey: ipv6Address)
+        }
+        log.info("released attachment", metadata: ["hostname": "\(hostname)"])
+    }
+
+    func releaseSession(_ session: XPCServerSession) async {
         guard let allocations = allocationsBySession.removeValue(forKey: session) else {
             return
         }
-        for allocation in allocations {
-            _ = try? await allocator.deallocate(hostname: allocation.hostname)
-            macAddresses.removeValue(forKey: allocation.index)
-            if let ipv6Address = ipv6Addresses.removeValue(forKey: allocation.index) {
-                ipv6AddressIndexes.removeValue(forKey: ipv6Address)
-            }
+        for hostname in allocations {
+            try? await release(hostname: hostname)
         }
         log.info("released session", metadata: ["allocations": "\(allocations.count)"])
     }

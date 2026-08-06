@@ -19,6 +19,8 @@ public enum NetworkRoutes: String {
     case status = "com.apple.container.network/status"
     /// Allocates parameters for attaching a sandbox to the network.
     case allocate = "com.apple.container.network/allocate"
+    /// Releases a container-owned attachment that outlives a runtime session.
+    case release = "com.apple.container.network/release"
     /// Retrieves the allocation for a hostname.
     case lookup = "com.apple.container.network/lookup"
 }

@@ -81,6 +81,14 @@ struct AttachmentAllocatorTest {
         #expect(requested == 101)
     }
 
+    @Test func testDeallocateDynamicAllocationReleasesItsSubrangeOnce() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10, dynamicLower: 104, dynamicSize: 3)
+        let dynamic = try await allocator.allocate(hostname: "dynamic")
+
+        #expect(try await allocator.deallocate(hostname: "dynamic") == dynamic)
+        #expect(try await allocator.lookup(hostname: "dynamic") == nil)
+    }
+
     @Test func testExistingHostnameRejectsDifferentRequestedAddress() async throws {
         let allocator = try AttachmentAllocator(lower: 100, size: 10)
 

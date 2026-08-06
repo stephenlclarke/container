@@ -44,6 +44,7 @@ public actor NetworkHarness: Sendable {
             .map { try MACAddress($0) }
         let requestedIPv4Address = try message.requestedIPv4Address()
         let requestedIPv6Address = try message.requestedIPv6Address()
+        let retainOnDisconnect = message.bool(key: NetworkKeys.retainOnDisconnect.rawValue)
 
         let (attachment:attachment, additionalData:additionalData) = try await service.allocate(
             hostname: hostname,
@@ -51,6 +52,7 @@ public actor NetworkHarness: Sendable {
             macAddress: macAddress,
             requestedIPv4Address: requestedIPv4Address,
             requestedIPv6Address: requestedIPv6Address,
+            retainOnDisconnect: retainOnDisconnect,
             session: session
         )
 
@@ -61,6 +63,12 @@ public actor NetworkHarness: Sendable {
         }
 
         return reply
+    }
+
+    @Sendable
+    public func release(_ message: XPCMessage) async throws -> XPCMessage {
+        try await service.release(hostname: message.hostname())
+        return message.reply()
     }
 
     @Sendable

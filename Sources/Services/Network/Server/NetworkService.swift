@@ -24,14 +24,21 @@ public protocol NetworkService: Sendable {
     func status() async throws -> NetworkStatus
 
     /// Register a hostname and allocate associated addresses.
+    ///
+    /// A retained allocation survives a runtime XPC session closing and must
+    /// later be released by the resource authority.
     func allocate(
         hostname: String,
         aliases: [String],
         macAddress: MACAddress?,
         requestedIPv4Address: IPv4Address?,
         requestedIPv6Address: IPv6Address?,
+        retainOnDisconnect: Bool,
         session: XPCServerSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?)
+
+    /// Release a retained attachment by its primary hostname.
+    func release(hostname: String) async throws
 
     /// Return the attachment for a hostname if it is registered with the network.
     func lookup(hostname: String) async throws -> Attachment?
