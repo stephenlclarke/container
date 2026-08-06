@@ -435,7 +435,7 @@ struct ContainerLogStartValidatorTests {
             throws: ContainerLogResolutionError.invalidOption(
                 driver: "local",
                 name: "compress",
-                reason: "compress cannot be true when max-file is less than 2 or max-size is not set"
+                reason: "compression cannot be enabled when max file count is 1"
             )
         ) {
             try validator.validate(

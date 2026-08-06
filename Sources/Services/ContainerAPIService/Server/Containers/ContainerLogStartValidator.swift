@@ -321,10 +321,18 @@ struct ContainerLogStartValidator: Sendable {
             options["max-size"] != nil
             || descriptor.capabilities.fileDefaults?.maxSizeInBytes != nil
         guard maxFile >= 2, hasMaximumSize else {
+            // Moby's local driver has a concrete default max-size, so its
+            // start-time diagnostic can identify a one-file rotation policy.
+            let reason: String
+            if descriptor.driver == "local", maxFile < 2 {
+                reason = "compression cannot be enabled when max file count is \(maxFile)"
+            } else {
+                reason = "compress cannot be true when max-file is less than 2 or max-size is not set"
+            }
             throw ContainerLogResolutionError.invalidOption(
                 driver: descriptor.driver,
                 name: "compress",
-                reason: "compress cannot be true when max-file is less than 2 or max-size is not set"
+                reason: reason
             )
         }
     }
