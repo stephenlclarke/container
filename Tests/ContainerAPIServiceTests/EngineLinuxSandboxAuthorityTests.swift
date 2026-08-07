@@ -99,6 +99,74 @@ struct EngineLinuxSandboxAuthorityTests {
     }
 
     @Test
+    func defaultFileLedgerPersistsSharedSandboxLifecycle() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:file-ledger-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+
+        let ledgerURL = fixture.sandboxRoot.appendingPathComponent(
+            EngineLinuxSandboxAuthorityV1.ledgerFilename
+        )
+        let values = try ledgerURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: ledgerURL.path
+        )
+        #expect(running.state == .running)
+        #expect(values.isRegularFile == true)
+        #expect(values.isSymbolicLink != true)
+        #expect(
+            (attributes[.posixPermissions] as? NSNumber)?.uint16Value
+                == 0o600
+        )
+
+        let reopened = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher
+        )
+        let recovered = try await reopened.ensureReady(
+            configuration: fixture.sandboxConfiguration
+        )
+        #expect(recovered.state == .ready)
+        #expect(recovered.generation == 1)
+        #expect((await reopened.snapshot()).workloads == [running])
+    }
+
+    @Test
+    func diagnosticLedgerPersistencePreservesUnderlyingFailure() async throws {
+        let persistence = FailingLedgerPersistence()
+        let diagnostics = EngineLinuxSandboxLedgerPersistenceDiagnosticsV1(
+            persistence: persistence,
+            ledgerURL: URL(fileURLWithPath: "/tmp/engine-workload-ledger-v1.json")
+        )
+
+        await #expect(throws: LedgerPersistenceTestError.injectedFailure) {
+            _ = try await diagnostics.load()
+        }
+        await #expect(throws: LedgerPersistenceTestError.injectedFailure) {
+            try await diagnostics.save(Data([0x01]))
+        }
+        #expect(await persistence.loadCount == 1)
+        #expect(await persistence.saveCount == 1)
+    }
+
+    @Test
     func monitoredTerminalWorkloadIsReconciledBeforeRestartAndDial() async throws {
         let fixture = try EngineSandboxAuthorityFixture()
         defer { fixture.remove() }
@@ -264,6 +332,26 @@ struct EngineLinuxSandboxAuthorityTests {
         )
         #expect(replay == stopped)
         #expect(await runtime.workloadStopCount == 1)
+    }
+}
+
+private enum LedgerPersistenceTestError: Error, Equatable {
+    case injectedFailure
+}
+
+private actor FailingLedgerPersistence: EngineWorkloadLedgerPersistenceV1 {
+    private(set) var loadCount = 0
+    private(set) var saveCount = 0
+
+    func load() throws -> Data? {
+        loadCount += 1
+        throw LedgerPersistenceTestError.injectedFailure
+    }
+
+    func save(_ data: Data) throws {
+        saveCount += 1
+        _ = data
+        throw LedgerPersistenceTestError.injectedFailure
     }
 }
 

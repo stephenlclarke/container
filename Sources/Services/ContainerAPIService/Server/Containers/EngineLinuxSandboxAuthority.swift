@@ -21,6 +21,7 @@ import Containerization
 import ContainerizationError
 import CryptoKit
 import Foundation
+import Logging
 
 public protocol EngineLinuxSandboxLaunchingV1: Sendable {
     func launch(
@@ -75,6 +76,60 @@ public struct LaunchdEngineLinuxSandboxLauncherV1: EngineLinuxSandboxLaunchingV1
         try loader.deregisterWithLaunchd(
             plugin: plugin,
             instanceId: configuration.sandboxID
+        )
+    }
+}
+
+/// Retains the first durable-ledger failure at the authority boundary.
+///
+/// `EngineWorkloadLedgerV1` correctly fails closed after a persistence error,
+/// but later callers then observe its generic failed state. Keeping the
+/// original operation and path in the service log makes the root cause
+/// recoverable without weakening that fail-closed behaviour.
+actor EngineLinuxSandboxLedgerPersistenceDiagnosticsV1:
+    EngineWorkloadLedgerPersistenceV1
+{
+    private static let logger = Logger(
+        label: "com.apple.container.engine-linux-sandbox.ledger"
+    )
+
+    private let persistence: any EngineWorkloadLedgerPersistenceV1
+    private let ledgerURL: URL
+
+    init(
+        persistence: any EngineWorkloadLedgerPersistenceV1,
+        ledgerURL: URL
+    ) {
+        self.persistence = persistence
+        self.ledgerURL = ledgerURL
+    }
+
+    func load() async throws -> Data? {
+        do {
+            return try await persistence.load()
+        } catch {
+            logFailure(operation: "load", error: error)
+            throw error
+        }
+    }
+
+    func save(_ data: Data) async throws {
+        do {
+            try await persistence.save(data)
+        } catch {
+            logFailure(operation: "save", error: error)
+            throw error
+        }
+    }
+
+    private func logFailure(operation: String, error: Error) {
+        Self.logger.error(
+            "Engine Linux sandbox ledger persistence failed",
+            metadata: [
+                "operation": "\(operation)",
+                "path": "\(ledgerURL.path)",
+                "error": "\(error)",
+            ]
         )
     }
 }
@@ -135,8 +190,13 @@ public actor EngineLinuxSandboxAuthorityV1 {
         if let persistence {
             resolvedPersistence = persistence
         } else {
-            resolvedPersistence = try FileEngineWorkloadLedgerPersistenceV1(
-                fileURL: canonicalRoot.appendingPathComponent(ledgerFilename)
+            let ledgerURL = canonicalRoot.appendingPathComponent(ledgerFilename)
+            let filePersistence = try FileEngineWorkloadLedgerPersistenceV1(
+                fileURL: ledgerURL
+            )
+            resolvedPersistence = EngineLinuxSandboxLedgerPersistenceDiagnosticsV1(
+                persistence: filePersistence,
+                ledgerURL: ledgerURL
             )
         }
         let ledger = try await EngineWorkloadLedgerV1.open(
