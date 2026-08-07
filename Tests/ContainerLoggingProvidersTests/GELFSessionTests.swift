@@ -146,6 +146,10 @@ struct GELFSessionTests {
         #expect(await third.messages == [firstFrame])
     }
 
+    @Test func systemClockPermitsDockerStyleZeroReconnectDelay() async throws {
+        try await SystemGELFClock().sleep(for: .zero)
+    }
+
     @Test func TCPFinalFailureReconnectsAndRetainsReplacementForNextRecord() async throws {
         let first = RecordingGELFTransport(outcomes: [.failure(.write)])
         let replacement = RecordingGELFTransport()
