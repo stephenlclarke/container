@@ -295,13 +295,31 @@ private final class FluentdTLSHandshakeObserver: ChannelInboundHandler,
     }
 
     func errorCaught(context: ChannelHandlerContext, error: any Error) {
-        completion.complete(.failure(error))
-        context.fireErrorCaught(error)
+        let mappedError = FluentdTLSHandshakeErrorMapper.map(error)
+        completion.complete(.failure(mappedError))
+        context.fireErrorCaught(mappedError)
     }
 
     func channelInactive(context: ChannelHandlerContext) {
         completion.complete(.failure(FluentdProviderError.transportClosed))
         context.fireChannelInactive()
+    }
+}
+
+enum FluentdTLSHandshakeErrorMapper {
+    /// Normalizes BoringSSL's public trust-verification signal without
+    /// reclassifying transport, protocol, or post-handshake identity failures.
+    static func map(_ error: any Error) -> any Error {
+        guard
+            let tlsError = error as? NIOSSLError,
+            case let .handshakeFailed(.sslError(errorStack)) = tlsError,
+            errorStack.contains(where: {
+                $0.description.contains("CERTIFICATE_VERIFY_FAILED")
+            })
+        else {
+            return error
+        }
+        return FluentdProviderError.tlsTrustVerificationFailed
     }
 }
 

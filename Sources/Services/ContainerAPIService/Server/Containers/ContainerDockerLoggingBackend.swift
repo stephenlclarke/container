@@ -607,6 +607,13 @@ public struct ContainerDockerLoggingBackend:
                 "failed to create task for container: failed to initialize logging driver: gelf: cannot connect to GELF endpoint: \(endpoint.host):\(endpoint.port) \(reason)"
             )
         }
+        if let error = error as? FluentdProviderError,
+            case .tlsTrustVerificationFailed = error
+        {
+            return .server(
+                "failed to create task for container: failed to initialize logging driver: tls: failed to verify certificate: x509: certificate signed by unknown authority"
+            )
+        }
         if let error = error as? ContainerizationError {
             switch error.code {
             case .notFound:

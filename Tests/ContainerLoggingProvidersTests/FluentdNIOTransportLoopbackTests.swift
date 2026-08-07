@@ -217,7 +217,7 @@ struct FluentdNIOTransportLoopbackTests {
             )
             try await verifiedIP.close(timeout: .seconds(2))
 
-            await #expect(throws: (any Error).self) {
+            await #expect(throws: FluentdProviderError.tlsTrustVerificationFailed) {
                 try await NIOFluentdTransportFactory(eventLoopGroup: group)
                     .connect(
                         to: .tls(
@@ -242,6 +242,14 @@ struct FluentdNIOTransportLoopbackTests {
                 )
             }
         }
+    }
+
+    @Test func tlsTrustErrorMapperPreservesNonTrustFailures() {
+        let error = FluentdTLSHandshakeErrorMapper.map(
+            FluentdProviderError.transportClosed
+        )
+
+        #expect(error as? FluentdProviderError == .transportClosed)
     }
 
     @Test func tlsIdentityUsesOnlyRequestedSANTypeAndNeverLegacyCN() throws {

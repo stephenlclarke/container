@@ -68,4 +68,18 @@ struct ContainerLoggingStartErrorTests {
                 )
         )
     }
+
+    @Test func mapsFluentdTLSTrustFailureToDockerDiagnostic() {
+        let mapped = ContainerDockerLoggingBackend.map(
+            FluentdProviderError.tlsTrustVerificationFailed,
+            containerID: "fluentd-container"
+        )
+
+        #expect(
+            mapped
+                == .server(
+                    "failed to create task for container: failed to initialize logging driver: tls: failed to verify certificate: x509: certificate signed by unknown authority"
+                )
+        )
+    }
 }

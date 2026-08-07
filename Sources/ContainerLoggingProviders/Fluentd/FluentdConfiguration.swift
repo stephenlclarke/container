@@ -38,6 +38,7 @@ public enum FluentdProviderError: Error, Equatable, Sendable {
     case closeTimedOut
     case flushTimedOut
     case transportClosed
+    case tlsTrustVerificationFailed
     case tlsIdentityVerificationFailed
     case acknowledgementTooLarge(maximumBytes: Int)
     case invalidAcknowledgement
