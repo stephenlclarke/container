@@ -558,6 +558,7 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
         eventLoopGroup: any EventLoopGroup,
         awsLogsClientFactory: any AWSLogsClientFactory,
         journaldService: (any JournaldService)? = nil,
+        gelfTCPService: (any GELFTCPService)? = nil,
         dockerPluginInstallations: [DockerPluginLogDriverInstallation] = [],
         providerGeneration: UInt64 = 1,
         baseCatalog: LogDriverCatalog = BuiltinLogDriverDescriptors.current,
@@ -579,12 +580,23 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
                 eventLoopGroup: eventLoopGroup
             )
         )
+        let gelfTransportFactory: any GELFTransportFactory
+        if let gelfTCPService {
+            gelfTransportFactory = GELFServiceTransportFactory(
+                nativeTransportFactory: NIOGELFTransportFactory(
+                    eventLoopGroup: eventLoopGroup
+                ),
+                tcpService: gelfTCPService
+            )
+        } else {
+            gelfTransportFactory = NIOGELFTransportFactory(
+                eventLoopGroup: eventLoopGroup
+            )
+        }
         let gelf = GELFLogDriverProvider(
             providerGeneration: providerGeneration,
             configurationResolver: configurations,
-            transportFactory: NIOGELFTransportFactory(
-                eventLoopGroup: eventLoopGroup
-            )
+            transportFactory: gelfTransportFactory
         )
         let splunk = SplunkLogDriverProvider(
             providerGeneration: providerGeneration,
@@ -676,9 +688,7 @@ public struct BuiltinRemoteLogDriverProviderSet: Sendable {
             GELFLogDriverProvider(
                 providerGeneration: $0,
                 configurationResolver: configurations,
-                transportFactory: NIOGELFTransportFactory(
-                    eventLoopGroup: eventLoopGroup
-                )
+                transportFactory: gelfTransportFactory
             )
         }
         try await installNativeGeneration(splunk, registry: registry) {

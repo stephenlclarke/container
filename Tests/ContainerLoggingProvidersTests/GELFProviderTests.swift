@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import Foundation
+import NIOPosix
 import Testing
 
 @testable import ContainerLoggingProviders
@@ -275,6 +276,66 @@ struct GELFProviderTests {
             try await tcpProvider.start(tcpRequest)
         }
         #expect(await tcpWarnings.warnings.isEmpty)
+    }
+
+    @Test func installedProviderSetRoutesTCPGELFThroughInjectedLinuxService() async throws {
+        let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+        let transport = RecordingGELFTransport()
+        let service = ProviderSetGELFTCPService(transport: transport)
+        do {
+            let providers = try await BuiltinRemoteLogDriverProviderSet.install(
+                eventLoopGroup: group,
+                awsLogsClientFactory: FixedAWSLogsClientFactory(
+                    client: RecordingAWSLogsClient()
+                ),
+                gelfTCPService: service
+            )
+            let request = try gelfStartRequest(sessionID: "gelf-linux-service")
+            let address = GELFNetworkAddress(
+                host: "host.docker.internal",
+                port: "12201"
+            )
+            let configuration = try gelfTestConfiguration(
+                endpoint: .tcp(address)
+            )
+            try await providers.configurations.register(
+                try gelfBinding(for: request, configuration: configuration),
+                for: request
+            )
+
+            let started = try await providers.gelf.start(request)
+            #expect(await service.addresses == [address])
+            #expect(await transport.closeCallCount == 0)
+
+            let call = try gelfSessionCall(
+                request: request,
+                token: started.receipt.effectTokenMaterial
+            )
+            #expect(try await providers.gelf.closeSession(call).observation == .closed)
+            #expect(await transport.closeCallCount == 1)
+            try await group.shutdownGracefully()
+        } catch {
+            try? await group.shutdownGracefully()
+            throw error
+        }
+    }
+}
+
+private actor ProviderSetGELFTCPService: GELFTCPService {
+    private let transport: RecordingGELFTransport
+    private(set) var addresses = [GELFNetworkAddress]()
+
+    init(transport: RecordingGELFTransport) {
+        self.transport = transport
+    }
+
+    func connect(
+        to address: GELFNetworkAddress,
+        timeout: Duration
+    ) async throws -> any GELFTransport {
+        _ = timeout
+        addresses.append(address)
+        return transport
     }
 }
 

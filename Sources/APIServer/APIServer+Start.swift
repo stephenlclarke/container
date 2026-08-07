@@ -35,6 +35,20 @@ import Foundation
 import Logging
 import SystemPackage
 
+/// Prevents a missing Engine-Linux service from silently moving TCP GELF back
+/// onto macOS, where reset observation differs from Docker's Linux behavior.
+private struct UnavailableGELFTCPService: GELFTCPService {
+    let reason: String
+
+    func connect(
+        to address: GELFNetworkAddress,
+        timeout: Duration
+    ) async throws -> any GELFTransport {
+        _ = timeout
+        throw GELFProviderError.connectionFailed(endpoint: address, reason: reason)
+    }
+}
+
 extension APIServer {
     struct Start: AsyncParsableCommand {
         static let configuration = CommandConfiguration(
@@ -549,6 +563,14 @@ extension APIServer {
                 authority: providerSandboxAuthority,
                 log: log
             )
+            let gelfTCPService = await initializeGELFTCPService(
+                appRoot: appRootURL,
+                installRoot: installRootURL,
+                kernelService: kernelService,
+                containerSystemConfig: containerSystemConfig,
+                authority: providerSandboxAuthority,
+                log: log
+            )
             let dockerPluginInstallations = await initializeDockerLoggingPlugins(
                 appRoot: appRootURL,
                 pluginLoader: pluginLoader,
@@ -563,6 +585,7 @@ extension APIServer {
                     appRoot: appRootURL,
                     awsLogsClientFactory: AWSCloudWatchLogsClientFactory(),
                     journaldService: journaldService,
+                    gelfTCPService: gelfTCPService,
                     dockerPluginInstallations: dockerPluginInstallations,
                     containerSystemConfig: containerSystemConfig
                 )
@@ -650,6 +673,44 @@ extension APIServer {
                     metadata: ["error": "\(error)"]
                 )
                 return nil
+            }
+        }
+
+        private func initializeGELFTCPService(
+            appRoot: URL,
+            installRoot: URL,
+            kernelService: KernelService,
+            containerSystemConfig: ContainerSystemConfig,
+            authority: EngineLinuxSandboxAuthorityV1?,
+            log: Logger
+        ) async -> any GELFTCPService {
+            do {
+                guard let authority else {
+                    throw ContainerizationError(
+                        .notFound,
+                        message:
+                            "container-runtime-linux is unavailable for the GELF TCP service"
+                    )
+                }
+                let service = try EngineLinuxSandboxGELFTCPServiceV1.create(
+                    appRoot: appRoot,
+                    installRoot: installRoot,
+                    kernelService: kernelService,
+                    containerSystemConfig: containerSystemConfig,
+                    authority: authority
+                )
+                log.info(
+                    "verified lazy GELF TCP logging service",
+                    metadata: [
+                        "sandbox": "engine-linux-sandbox",
+                        "workload": "container-gelf-service",
+                    ]
+                )
+                return service
+            } catch {
+                let reason = "Engine-Linux GELF TCP service is unavailable: \(error)"
+                log.warning("\(reason)")
+                return UnavailableGELFTCPService(reason: reason)
             }
         }
 

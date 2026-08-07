@@ -131,6 +131,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         appRoot: URL,
         awsLogsClientFactory: any AWSLogsClientFactory,
         journaldService: (any JournaldService)? = nil,
+        gelfTCPService: (any GELFTCPService)? = nil,
         dockerPluginInstallations: [DockerPluginLogDriverInstallation] = [],
         gcpLoggingServiceFactory: @escaping AuthorityGCPLoggingServiceFactory = {
             generation in
@@ -160,6 +161,7 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             eventLoopGroup: eventLoopOwner.group,
             awsLogsClientFactory: awsLogsClientFactory,
             journaldService: journaldService,
+            gelfTCPService: gelfTCPService,
             dockerPluginInstallations: dockerPluginInstallations,
             providerGeneration: providerGeneration,
             registryPersistence: registryPersistence

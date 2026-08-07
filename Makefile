@@ -50,6 +50,14 @@ JOURNALD_SERVICE_ARCHIVE := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-ser
 JOURNALD_SERVICE_MANIFEST := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.manifest.json
 JOURNALD_SERVICE_BUILD_TOOL := Tools/ContainerJournaldService/build.py
 JOURNALD_SERVICE_BUILDER_SETUP := scripts/ensure-journald-builder.sh
+# SwiftPM owns and may prune $(ROOT_DIR)/.build. Keep sealed service assets
+# outside that scratch tree so an exact-path Swift test cannot invalidate the
+# staged workload it is validating.
+GELF_SERVICE_BUILD_DIR := $(ROOT_DIR)/bin/services/container-gelf-service
+GELF_SERVICE_ARCHIVE := $(GELF_SERVICE_BUILD_DIR)/container-gelf-service.oci.tar
+GELF_SERVICE_MANIFEST := $(GELF_SERVICE_BUILD_DIR)/container-gelf-service.manifest.json
+GELF_SERVICE_BUILD_TOOL := Tools/ContainerGELFService/build.py
+GELF_SERVICE_BUILDER_SETUP := scripts/ensure-gelf-builder.sh
 STAGING_DIR := bin/$(BUILD_CONFIGURATION)/staging/
 PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer-unsigned.pkg
 DSYM_DIR := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM
@@ -130,6 +138,29 @@ verify-journald-service: journald-service
 		--archive "$(JOURNALD_SERVICE_ARCHIVE)" \
 		--manifest "$(JOURNALD_SERVICE_MANIFEST)"
 
+.PHONY: gelf-service
+gelf-service:
+	@echo Building pinned Linux GELF TCP service workload...
+	@$(GELF_SERVICE_BUILDER_SETUP)
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) build --output-directory "$(GELF_SERVICE_BUILD_DIR)"
+
+.PHONY: test-gelf-service
+test-gelf-service:
+	@echo Testing pinned Linux GELF TCP service workload...
+	@$(GELF_SERVICE_BUILDER_SETUP)
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) test --output-directory "$(GELF_SERVICE_BUILD_DIR)"
+
+.PHONY: test-gelf-service-asset
+test-gelf-service-asset: gelf-service
+	@echo Testing the installed GELF TCP service asset outside SwiftPM scratch space...
+	@./scripts/test-gelf-service-asset.sh --asset-directory "$(GELF_SERVICE_BUILD_DIR)"
+
+.PHONY: verify-gelf-service
+verify-gelf-service: gelf-service
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(GELF_SERVICE_ARCHIVE)" \
+		--manifest "$(GELF_SERVICE_MANIFEST)"
+
 .PHONY: build
 build: semantic-helper
 	@echo Building container binaries...
@@ -186,7 +217,7 @@ install: installer-pkg
 		$(SUDO) installer -pkg $(PKG_PATH) -target / ; \
 	fi
 
-$(STAGING_DIR): semantic-helper journald-service
+$(STAGING_DIR): semantic-helper journald-service gelf-service
 	@echo Installing container binaries from "$(BUILD_BIN_DIR)" into "$(STAGING_DIR)"...
 	@rm -rf "$(STAGING_DIR)"
 	@mkdir -p "$(join $(STAGING_DIR), bin)"
@@ -197,6 +228,7 @@ $(STAGING_DIR): semantic-helper journald-service
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/helpers)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/journald)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/gelf)"
 
 	@install "$(BUILD_BIN_DIR)/container" "$(join $(STAGING_DIR), bin/container)"
 	@install "$(BUILD_BIN_DIR)/container-apiserver" "$(join $(STAGING_DIR), bin/container-apiserver)"
@@ -218,6 +250,11 @@ $(STAGING_DIR): semantic-helper journald-service
 	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
 		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@install -m 0644 "$(GELF_SERVICE_ARCHIVE)" "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)"
+	@install -m 0644 "$(GELF_SERVICE_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
 
 	@echo Install update script
 	@install scripts/update-container.sh "$(join $(STAGING_DIR), bin/update-container.sh)"
@@ -244,6 +281,9 @@ installer-pkg: $(STAGING_DIR)
 	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
 		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
 
 	@echo Creating application installer
 	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(PKG_PATH)
@@ -272,6 +312,9 @@ homebrew-package: build $(STAGING_DIR)
 	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
 		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
 	@tar -czf "$(HOMEBREW_ARCHIVE)" -C "$(STAGING_DIR)" .
