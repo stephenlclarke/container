@@ -344,7 +344,7 @@ public struct FluentdDriverConfiguration: Equatable, Sendable {
             writeTimeout: writeTimeout,
             tag: tag,
             containerID: info.containerID,
-            containerName: info.containerName,
+            containerName: "/\(info.name)",
             metadata: metadata,
             policy: policy
         )

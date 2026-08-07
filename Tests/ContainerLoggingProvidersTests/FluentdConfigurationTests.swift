@@ -217,6 +217,18 @@ struct FluentdConfigurationTests {
         )
     }
 
+    @Test func normalizesBareRuntimeContainerNamesForForwardRecords() throws {
+        let semanticService = try semanticService("bare-container-name")
+        let configuration = try FluentdDriverConfiguration.resolve(
+            options: ["tag": "{{.Name}}"],
+            info: fluentdInfo(containerName: "web"),
+            semanticService: semanticService
+        )
+
+        #expect(configuration.containerName == "/web")
+        #expect(configuration.tag == Data("web".utf8))
+    }
+
     @Test func rejectsUnknownMalformedAndOutOfRangeOptions() throws {
         let semanticService = try semanticService("invalid-options")
         #expect(throws: FluentdProviderError.unknownOption("opaque")) {
@@ -447,12 +459,13 @@ struct FluentdConfigurationTests {
 }
 
 private func fluentdInfo(
+    containerName: String = "/web",
     environment: [String] = [],
     labels: [String: String] = [:]
 ) -> FluentdContainerInfo {
     FluentdContainerInfo(
         containerID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        containerName: "/web",
+        containerName: containerName,
         containerEntrypoint: "/bin/server",
         containerArguments: ["--listen", ":8080"],
         containerImageID: "sha256:abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
