@@ -93,13 +93,17 @@ public final class NIOFluentdTransportFactory: FluentdTransportFactory,
                 "network host is not valid UTF-8"
             )
         }
-        let host = decodedHost.isEmpty ? FluentdEndpoint.defaultHost : decodedHost
+        let configuredHost =
+            decodedHost.isEmpty
+            ? FluentdEndpoint.defaultHost
+            : decodedHost
+        let host = Self.nativeConnectionHost(configuredHost)
         let inbound = FluentdInboundByteHandler()
         let handshakeCompletion: FluentdTLSHandshakeCompletion?
         let initializer: @Sendable (any Channel) -> EventLoopFuture<Void>
 
         if useTLS {
-            let requestedIdentity = host
+            let requestedIdentity = configuredHost
             let context: NIOSSLContext
             do {
                 var configuration = TLSConfiguration.makeClientConfiguration()
@@ -220,6 +224,20 @@ public final class NIOFluentdTransportFactory: FluentdTransportFactory,
         } catch ChannelError.connectTimeout {
             throw FluentdProviderError.connectionTimedOut
         }
+    }
+
+    /// Converts Docker's VM host alias only at the native macOS transport boundary.
+    ///
+    /// Persisted Fluentd configuration retains the Docker host alias for Docker
+    /// API parity, while the provider connects from the macOS host rather than the
+    /// Linux VM. TLS verification continues to use the originally requested identity.
+    private static func nativeConnectionHost(_ configuredHost: String) -> String {
+        #if os(macOS)
+        if configuredHost.caseInsensitiveCompare("host.docker.internal") == .orderedSame {
+            return "127.0.0.1"
+        }
+        #endif
+        return configuredHost
     }
 
     private func remaining(until deadline: Duration) throws -> Duration {

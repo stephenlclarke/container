@@ -77,6 +77,53 @@ struct FluentdNIOTransportLoopbackTests {
         }
     }
 
+    @Test func tcpDockerHostAliasRoutesToNativeLoopbackAndDrainsAcknowledgement() async throws {
+        try await withFluentdEventLoopGroup { group in
+            let chunkID = "docker-host-alias-ack"
+            let expected = try fluentdEncodedLoopbackEvent(chunkID: chunkID)
+            let capturePromise = group.next().makePromise(of: Data.self)
+            let capture = FluentdLoopbackPromise(capturePromise)
+            let handler = FluentdCaptureAndRespondHandler(
+                byteCount: expected.count,
+                capture: capture,
+                responseFragments: [
+                    FluentdForwardAcknowledgementCodec.encode(chunkID: chunkID)
+                ]
+            )
+            defer { handler.cancel() }
+            let server = try await waitForFluentdFuture(
+                ServerBootstrap(group: group)
+                    .childChannelInitializer { channel in
+                        channel.pipeline.addHandler(handler)
+                    }
+                    .bind(host: "127.0.0.1", port: 0)
+            )
+            defer { server.close(promise: nil) }
+            let port = try #require(server.localAddress?.port)
+            let transport = try await NIOFluentdTransportFactory(
+                eventLoopGroup: group
+            ).connect(
+                to: .tcp(
+                    FluentdNetworkAddress(
+                        host: "HOST.DOCKER.INTERNAL",
+                        port: UInt16(port)
+                    )
+                ),
+                timeout: .seconds(2)
+            )
+
+            try await transport.write(expected, timeout: .seconds(2))
+            #expect(try await waitForFluentdFuture(capturePromise.futureResult) == expected)
+            #expect(
+                try await transport.readAcknowledgement(
+                    timeout: .seconds(2),
+                    maximumBytes: 64 * 1_024
+                ) == chunkID
+            )
+            try await transport.close(timeout: .seconds(2))
+        }
+    }
+
     @Test func unixStreamWritesExactBytesAndCloseDeactivatesPeer() async throws {
         let directory = URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("cc-fluentd-\(UUID().uuidString.prefix(8))")
