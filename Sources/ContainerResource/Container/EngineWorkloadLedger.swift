@@ -125,11 +125,11 @@ public actor FileEngineWorkloadLedgerPersistenceV1: EngineWorkloadLedgerPersiste
         let values = try directory.resourceValues(
             forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
         )
+        // Validate the final directory component. Comparing the fully resolved
+        // path would incorrectly reject macOS's supported `/private/tmp` alias.
         guard
             values.isDirectory == true,
-            values.isSymbolicLink != true,
-            directory.resolvingSymlinksInPath().standardizedFileURL.path
-                == directory.path
+            values.isSymbolicLink != true
         else {
             throw EngineWorkloadLedgerError.corruptSnapshot(
                 "workload ledger directory must be a non-symbolic-link directory"

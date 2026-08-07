@@ -300,6 +300,37 @@ struct EngineWorkloadLedgerTests {
         }
     }
 
+    @Test func filePersistenceAcceptsDirectPrivateTemporaryDirectory() async throws {
+        #if os(macOS)
+        let directory = URL(
+            fileURLWithPath: "/private/tmp",
+            isDirectory: true
+        ).appending(
+            path: "engine-workload-ledger-private-tmp-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let persistence = try FileEngineWorkloadLedgerPersistenceV1(
+            fileURL: directory.appending(path: "ledger.json")
+        )
+        let snapshot = Data("{}".utf8)
+        try await persistence.save(snapshot)
+
+        #expect(try await persistence.load() == snapshot)
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: directory.path
+        )
+        #expect(
+            (attributes[.posixPermissions] as? NSNumber)?.intValue == 0o700
+        )
+        #endif
+    }
+
     @Test func managerReconcilesLostBootResponseWithoutDuplicateBoot() async throws {
         let persistence = InMemoryEngineWorkloadLedgerPersistenceV1()
         let ledger = try await EngineWorkloadLedgerV1.open(
