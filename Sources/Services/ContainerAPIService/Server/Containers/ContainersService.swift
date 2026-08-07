@@ -77,6 +77,16 @@ public actor ContainersService {
         }
     }
 
+    private struct DockerContainerWaiter {
+        let condition: DockerContainerWaitCondition
+        let continuation: CheckedContinuation<DockerContainerWaitResult, any Error>
+    }
+
+    enum DockerContainerWaitCompletion {
+        case exited
+        case removed
+    }
+
     private struct StartedExecProcess {
         let snapshot: ContainerSnapshot
         let processID: String
@@ -112,6 +122,7 @@ public actor ContainersService {
     private var restartStabilityTaskTokens: [String: UUID] = [:]
     private var execEventTracker = ContainerExecEventTracker()
     private var execExitTasks: [String: [String: Task<Void, Never>]] = [:]
+    private var dockerContainerWaiters: [String: [UUID: DockerContainerWaiter]] = [:]
 
     // FIXME: Find a better mechanism for services running on the APIServer to work with each other
     private weak var networksService: NetworksService?
@@ -1823,6 +1834,48 @@ public actor ContainersService {
         return try await client.wait(processID)
     }
 
+    /// Waits for the Docker Engine container lifecycle condition without
+    /// polling the runtime or racing a terminal state transition.
+    public func waitForDockerContainer(
+        id: String,
+        condition: DockerContainerWaitCondition
+    ) async throws -> DockerContainerWaitResult {
+        let waiterID = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<DockerContainerWaitResult, any Error>) in
+                do {
+                    let snapshot = try self._getContainerState(id: id).snapshot
+                    if let result = Self.dockerWaitResult(
+                        snapshot: snapshot,
+                        condition: condition
+                    ) {
+                        continuation.resume(returning: result)
+                        return
+                    }
+                    guard !Task.isCancelled else {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
+                    self.dockerContainerWaiters[id, default: [:]][waiterID] =
+                        DockerContainerWaiter(
+                            condition: condition,
+                            continuation: continuation
+                        )
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        } onCancel: {
+            Task {
+                await self.cancelDockerContainerWaiter(
+                    id: id,
+                    waiterID: waiterID
+                )
+            }
+        }
+    }
+
     /// Resize resizes the container's PTY if one exists.
     public func resize(id: String, processID: String, size: Terminal.Size) async throws {
         log.trace(
@@ -2924,6 +2977,21 @@ public actor ContainersService {
             let client = try state.getClient()
             try await client.stop(options: opts)
             events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+                var stoppedSnapshot = state.snapshot
+                stoppedSnapshot.status = .stopped
+                stoppedSnapshot.networks = []
+                stoppedSnapshot.health = nil
+                stoppedSnapshot.exitCode = 128 + Signal.kill.rawValue
+                stoppedSnapshot.exitedDate = .now
+                var stoppedState = state
+                stoppedState.snapshot = stoppedSnapshot
+                stoppedState.client = nil
+                await self.setContainerState(id, stoppedState, context: context)
+                await self.completeDockerContainerWaiters(
+                    id: id,
+                    snapshot: stoppedSnapshot,
+                    completion: .exited
+                )
                 self.log.info(
                     "ContainersService: attempt cleanup",
                     metadata: [
@@ -2939,12 +3007,6 @@ public actor ContainersService {
                         "id": "\(id)",
                     ]
                 )
-                var stoppedSnapshot = state.snapshot
-                stoppedSnapshot.status = .stopped
-                stoppedSnapshot.networks = []
-                stoppedSnapshot.health = nil
-                stoppedSnapshot.exitCode = 128 + Signal.kill.rawValue
-                stoppedSnapshot.exitedDate = .now
                 return Self.terminalLifecycleEvents(snapshot: stoppedSnapshot)
                     + Self.removalEvents(snapshot: stoppedSnapshot)
             }
@@ -3167,21 +3229,105 @@ public actor ContainersService {
 
         let options = try getContainerCreationOptions(id: id)
         let terminalEvents = Self.terminalLifecycleEvents(snapshot: state.snapshot)
-        if options.autoRemove {
-            await self.setContainerState(id, state, context: context)
-            try await self.cleanUp(id: id, context: context)
-            return terminalEvents + Self.removalEvents(snapshot: state.snapshot)
-        }
-
         let restartDelay = state.restart.restartDelay(
             policy: options.restartPolicy,
             exitCode: code?.exitCode
         )
         await self.setContainerState(id, state, context: context)
+        self.completeDockerContainerWaiters(
+            id: id,
+            snapshot: state.snapshot,
+            completion: .exited
+        )
+        if options.autoRemove {
+            try await self.cleanUp(id: id, context: context)
+            return terminalEvents + Self.removalEvents(snapshot: state.snapshot)
+        }
         if let restartDelay {
             self.scheduleRestart(id: id, delayInNanoseconds: restartDelay)
         }
         return terminalEvents
+    }
+
+    /// Returns immediately only for Docker's `not-running` condition and a
+    /// snapshot that no longer owns a live init process.
+    static func dockerWaitResult(
+        snapshot: ContainerSnapshot,
+        condition: DockerContainerWaitCondition
+    ) -> DockerContainerWaitResult? {
+        guard condition == .notRunning,
+            !Self.dockerWaitRequiresLiveProcess(snapshot.status)
+        else {
+            return nil
+        }
+        return DockerContainerWaitResult(statusCode: snapshot.exitCode ?? 0)
+    }
+
+    static func dockerWaitCompletes(
+        condition: DockerContainerWaitCondition,
+        completion: DockerContainerWaitCompletion
+    ) -> Bool {
+        switch completion {
+        case .exited:
+            condition == .notRunning || condition == .nextExit
+        case .removed:
+            true
+        }
+    }
+
+    private static func dockerWaitRequiresLiveProcess(
+        _ status: RuntimeStatus
+    ) -> Bool {
+        switch status {
+        case .running, .paused, .stopping:
+            true
+        case .unknown, .stopped:
+            false
+        }
+    }
+
+    private func completeDockerContainerWaiters(
+        id: String,
+        snapshot: ContainerSnapshot,
+        completion: DockerContainerWaitCompletion
+    ) {
+        guard let waiters = dockerContainerWaiters[id] else {
+            return
+        }
+        let result = DockerContainerWaitResult(statusCode: snapshot.exitCode ?? 0)
+        var remaining = [UUID: DockerContainerWaiter]()
+        for (waiterID, waiter) in waiters {
+            if Self.dockerWaitCompletes(
+                condition: waiter.condition,
+                completion: completion
+            ) {
+                waiter.continuation.resume(returning: result)
+            } else {
+                remaining[waiterID] = waiter
+            }
+        }
+        if remaining.isEmpty {
+            dockerContainerWaiters.removeValue(forKey: id)
+        } else {
+            dockerContainerWaiters[id] = remaining
+        }
+    }
+
+    private func cancelDockerContainerWaiter(
+        id: String,
+        waiterID: UUID
+    ) {
+        guard var waiters = dockerContainerWaiters[id],
+            let waiter = waiters.removeValue(forKey: waiterID)
+        else {
+            return
+        }
+        if waiters.isEmpty {
+            dockerContainerWaiters.removeValue(forKey: id)
+        } else {
+            dockerContainerWaiters[id] = waiters
+        }
+        waiter.continuation.resume(throwing: CancellationError())
     }
 
     private static func fullLaunchdServiceLabel(runtimeName: String, instanceId: String) -> String {
@@ -3329,7 +3475,15 @@ public actor ContainersService {
             throw error
         }
 
+        let removedSnapshot = self.containers[id]?.snapshot
         self.containers.removeValue(forKey: id)
+        if let removedSnapshot {
+            self.completeDockerContainerWaiters(
+                id: id,
+                snapshot: removedSnapshot,
+                completion: .removed
+            )
+        }
 
         do {
             try await remoteLogDriverPlane?.reconcileProtectedEffects(

@@ -124,6 +124,7 @@ enum ContainerEngineLogReadSource: Sendable {
 /// provider session and therefore cannot diverge from native clients.
 public struct ContainerDockerLoggingBackend:
     DockerContainerLifecycleBackend,
+    DockerContainerWaitBackend,
     DockerLoggingBackend,
     DockerTerminalResizeBackend,
     Sendable
@@ -290,6 +291,23 @@ public struct ContainerDockerLoggingBackend:
         let resolvedID = try await resolveDockerContainerID(containerID)
         do {
             try await containers.delete(id: resolvedID, force: force)
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func waitForContainer(
+        containerID: String,
+        condition: DockerContainerWaitCondition
+    ) async throws -> DockerContainerWaitResult {
+        let resolvedID = try await resolveDockerContainerID(containerID)
+        do {
+            return try await containers.waitForDockerContainer(
+                id: resolvedID,
+                condition: condition
+            )
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw Self.map(error, containerID: containerID)
         }

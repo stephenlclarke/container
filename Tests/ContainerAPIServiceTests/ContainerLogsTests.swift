@@ -644,6 +644,10 @@ struct ContainerLogsTests {
                     status: .native
                 ),
                 try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerWait",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerInspect",
                     status: .native
                 ),
@@ -731,6 +735,15 @@ struct ContainerLogsTests {
                 listObject["Labels"] as? [String: String]
                     == ["compose.project": "fixture"]
             )
+
+            let waitResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target: "/v1.53/containers/\(id)/wait?condition=not-running"
+                )
+            )
+            #expect(waitResponse.status == 200)
+            #expect(try engineJSONObject(waitResponse)["StatusCode"] as? Int == 0)
 
             let infoResponse = await client.respond(
                 to: DockerHTTPRequest(method: .get, target: "/v1.53/info")
@@ -1179,6 +1192,74 @@ struct ContainerLogsTests {
             ) != nil
         )
         #expect(generatedDockerID == generatedDockerID.lowercased())
+    }
+
+    @Test func dockerContainerWaitUsesNativeLifecycleStateAndRemoval() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-docker-wait-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let immediateID = "wait-immediate"
+        let removalID = "wait-removal"
+        let cancellationID = "wait-cancellation"
+        for id in [immediateID, removalID, cancellationID] {
+            _ = try createBundle(appRoot: tempURL, id: id)
+        }
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-docker-wait-test"
+        )
+        let backend = ContainerDockerLoggingBackend(containers: containers)
+
+        #expect(
+            try await backend.waitForContainer(
+                containerID: immediateID,
+                condition: .notRunning
+            ) == DockerContainerWaitResult(statusCode: 0)
+        )
+
+        let nextExit = Task {
+            try await backend.waitForContainer(
+                containerID: removalID,
+                condition: .nextExit
+            )
+        }
+        let removed = Task {
+            try await backend.waitForContainer(
+                containerID: removalID,
+                condition: .removed
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        try await containers.delete(id: removalID, force: false)
+
+        #expect(try await nextExit.value == DockerContainerWaitResult(statusCode: 0))
+        #expect(try await removed.value == DockerContainerWaitResult(statusCode: 0))
+
+        let cancellation = Task {
+            try await backend.waitForContainer(
+                containerID: cancellationID,
+                condition: .removed
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        cancellation.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await cancellation.value
+        }
+        try await containers.delete(id: cancellationID, force: false)
+
+        await #expect(
+            throws: DockerLoggingBackendError.containerNotFound("missing")
+        ) {
+            try await backend.waitForContainer(
+                containerID: "missing",
+                condition: .notRunning
+            )
+        }
     }
 
     @Test func dockerImageDiscoveryProjectsNativeCatalogAndInspectMetadata() async throws {

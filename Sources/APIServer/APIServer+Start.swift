@@ -290,6 +290,10 @@ extension APIServer {
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerWait",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
                     identifier: "engine.route.ContainerDelete",
                     status: .native
                 ),
