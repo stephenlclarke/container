@@ -14,43 +14,60 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import ArgumentParser
-import Foundation
 import Testing
 
 @testable import ContainerCommands
+@testable import ContainerXPC
 
 struct SystemStopValidationTests {
     @Test
-    func rejectsPathPrefix() {
-        #expect {
-            try Self.parseAndValidate(["--prefix", "/usr/local/container"])
-        } throws: { error in
-            String(describing: error).contains("invalid --prefix \"/usr/local/container\"")
+    func rejectsPathPrefix() throws {
+        let namespace = try ContainerServiceNamespace("com.example.svc")
+        #expect(throws: ContainerServiceNamespace.Error.self) {
+            try namespace.servicePrefix(requestedPrefix: "/usr/local/container")
         }
     }
 
     @Test
-    func rejectsInvalidCharacters() {
-        #expect {
-            try Self.parseAndValidate(["--prefix", "foo bar"])
-        } throws: { error in
-            String(describing: error).contains("invalid --prefix \"foo bar\"")
+    func rejectsInvalidCharacters() throws {
+        let namespace = try ContainerServiceNamespace("com.example.svc")
+        #expect(throws: ContainerServiceNamespace.Error.self) {
+            try namespace.servicePrefix(requestedPrefix: "foo bar")
         }
     }
 
     @Test
     func acceptsDefaultPrefix() throws {
-        try Self.parseAndValidate([])
+        let namespace = try ContainerServiceNamespace("com.apple.container")
+        #expect(try namespace.servicePrefix(requestedPrefix: nil) == "com.apple.container.")
     }
 
     @Test
     func acceptsCustomReverseDNSPrefix() throws {
-        try Self.parseAndValidate(["--prefix", "com.example.svc."])
+        let namespace = try ContainerServiceNamespace("com.example.svc")
+        #expect(
+            try namespace.servicePrefix(requestedPrefix: "com.example.svc.")
+                == "com.example.svc."
+        )
     }
 
-    private static func parseAndValidate(_ args: [String]) throws {
-        var command = try Application.SystemStop.parse(args)
-        try command.validate()
+    @Test
+    func rejectsAParsedPrefixThatCannotMatchTheDefaultNamespace() async throws {
+        let command = try Application.SystemStop.parse([
+            "--prefix", "com.example.svc.",
+        ])
+
+        do {
+            try await command.run()
+            Issue.record("expected a mismatched service prefix to fail before service discovery")
+        } catch let error as ContainerServiceNamespace.Error {
+            #expect(
+                error
+                    == .mismatchedServicePrefix(
+                        expected: "com.apple.container.",
+                        actual: "com.example.svc."
+                    )
+            )
+        }
     }
 }

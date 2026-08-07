@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerPlugin
+import ContainerXPC
 import ContainerizationError
 import Darwin
 import Foundation
@@ -60,6 +61,7 @@ struct SystemStartTests {
             configuration.publicSocketPath.string
                 == "/tmp/container-engine-501/docker.sock"
         )
+        #expect(configuration.launchdLabel == ContainerEngineServiceConfiguration.defaultLaunchdLabel)
         #expect(
             configuration.providerSocketPath.string
                 == "/tmp/container-state/engine-provider/provider.sock"
@@ -83,6 +85,21 @@ struct SystemStartTests {
         )
     }
 
+    @Test func engineConfigurationScopesCustomPublicSocketAndLaunchdLabel() throws {
+        let serviceNamespace = try ContainerServiceNamespace("io.github.example.candidate")
+        let configuration = ContainerEngineServiceConfiguration(
+            appRoot: FilePath("/tmp/container-state"),
+            serviceNamespace: serviceNamespace,
+            effectiveUserID: 501
+        )
+
+        #expect(configuration.launchdLabel == "io.github.example.candidate.engine")
+        #expect(
+            configuration.publicSocketPath.string
+                == "/tmp/container-engine-501-\(serviceNamespace.socketDirectorySuffix)/docker.sock"
+        )
+    }
+
     @Test func engineLaunchPlistIsPrivateAndComplete() throws {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "container-engine-config-\(UUID())")
@@ -95,7 +112,7 @@ struct SystemStartTests {
         )
         try configuration.writeLaunchPlist(
             LaunchPlist(
-                label: ContainerEngineServiceConfiguration.launchdLabel,
+                label: configuration.launchdLabel,
                 arguments: arguments,
                 runAtLoad: true,
                 keepAlive: true
@@ -115,7 +132,7 @@ struct SystemStartTests {
         )
         #expect(
             plist["Label"] as? String
-                == ContainerEngineServiceConfiguration.launchdLabel
+                == configuration.launchdLabel
         )
         #expect(plist["ProgramArguments"] as? [String] == arguments)
         #expect(plist["RunAtLoad"] as? Bool == true)

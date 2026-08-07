@@ -15,23 +15,34 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerPlugin
+import ContainerXPC
 import ContainerizationError
 import Darwin
 import Foundation
 import SystemPackage
 
 struct ContainerEngineServiceConfiguration: Equatable, Sendable {
-    static let launchdLabel = "io.github.stephenlclarke.container.engine"
+    static let defaultLaunchdLabel = ContainerServiceNamespace.defaultEngineLaunchdLabel
 
+    let launchdLabel: String
     let publicSocketPath: FilePath
     let providerSocketPath: FilePath
     let stateDirectory: FilePath
     let plistPath: FilePath
 
-    init(appRoot: FilePath, effectiveUserID: uid_t = geteuid()) {
-        let publicDirectory = FilePath(
-            "/tmp/container-engine-\(effectiveUserID)"
-        )
+    init(
+        appRoot: FilePath,
+        serviceNamespace: ContainerServiceNamespace = .current,
+        effectiveUserID: uid_t = geteuid()
+    ) {
+        launchdLabel = serviceNamespace.engineLaunchdLabel
+        let publicDirectoryName: String
+        if serviceNamespace.value == ContainerServiceNamespace.defaultValue {
+            publicDirectoryName = "container-engine-\(effectiveUserID)"
+        } else {
+            publicDirectoryName = "container-engine-\(effectiveUserID)-\(serviceNamespace.socketDirectorySuffix)"
+        }
+        let publicDirectory = FilePath("/tmp/\(publicDirectoryName)")
         publicSocketPath = publicDirectory.appending(
             FilePath.Component("docker.sock")
         )
@@ -97,7 +108,7 @@ struct ContainerEngineServiceConfiguration: Equatable, Sendable {
         }
     }
 
-    static func deregister() throws {
+    func deregister() throws {
         let domain = try ServiceManager.getDomainString()
         let fullLabel = "\(domain)/\(launchdLabel)"
         var status: Int32 = 0

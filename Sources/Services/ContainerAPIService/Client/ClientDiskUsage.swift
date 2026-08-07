@@ -20,7 +20,9 @@ import Foundation
 
 /// Client API for disk usage operations
 public struct ClientDiskUsage {
-    static let serviceIdentifier = "com.apple.container.apiserver"
+    static var serviceIdentifier: String {
+        ContainerServiceNamespace.current.apiServerIdentifier
+    }
 
     /// Get disk usage statistics for all resource types
     public static func get() async throws -> DiskUsageStats {

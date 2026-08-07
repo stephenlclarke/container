@@ -87,6 +87,7 @@ extension Application {
         public init() {}
 
         public func run() async throws {
+            let serviceNamespace = try ContainerServiceNamespace.resolve()
             try ConfigurationLoader.copyConfigurationToReadOnly(to: appRoot)
             // Pass appRoot before installRoot: ConfigurationLoader uses first-match-wins
             // precedence, so user-provided config in appRoot overrides the defaults
@@ -124,16 +125,17 @@ extension Application {
             var env = PluginLoader.filterEnvironment()
             env[ApplicationRoot.environmentName] = appRoot.string
             env[InstallRoot.environmentName] = installRoot.string
+            env[ContainerServiceNamespace.environmentName] = serviceNamespace.value
             if let logRoot {
                 env[LogRoot.environmentName] = logRoot.string
             }
             let plist = LaunchPlist(
-                label: "com.apple.container.apiserver",
+                label: serviceNamespace.apiServerIdentifier,
                 arguments: args,
                 environment: env,
                 limitLoadToSessionType: [.Aqua, .Background, .System],
                 runAtLoad: true,
-                machServices: ["com.apple.container.apiserver"]
+                machServices: [serviceNamespace.apiServerIdentifier]
             )
 
             let plistPath = apiServerDataPath.appending(FilePath.Component("apiserver.plist"))
@@ -169,7 +171,7 @@ extension Application {
                 )
             }
 
-            try await startContainerEngineGateway()
+            try await startContainerEngineGateway(serviceNamespace: serviceNamespace)
 
             if await !initImageExists(containerSystemConfig: containerSystemConfig) {
                 if let initImageArchive {
@@ -195,19 +197,23 @@ extension Application {
             )
         }
 
-        private func startContainerEngineGateway() async throws {
+        private func startContainerEngineGateway(
+            serviceNamespace: ContainerServiceNamespace
+        ) async throws {
             let configuration = ContainerEngineServiceConfiguration(
-                appRoot: appRoot
+                appRoot: appRoot,
+                serviceNamespace: serviceNamespace
             )
             let executablePath = try CommandLine.executablePath
                 .removingLastComponent()
                 .appending(FilePath.Component("container-engine"))
                 .resolvingSymlinks()
             let plist = LaunchPlist(
-                label: ContainerEngineServiceConfiguration.launchdLabel,
+                label: configuration.launchdLabel,
                 arguments: configuration.arguments(
                     executablePath: executablePath
                 ),
+                environment: [ContainerServiceNamespace.environmentName: serviceNamespace.value],
                 limitLoadToSessionType: [.Aqua, .Background, .System],
                 runAtLoad: true,
                 keepAlive: true
@@ -221,7 +227,7 @@ extension Application {
                 ]
             )
             let wasRegistered = try ServiceManager.isRegistered(
-                fullServiceLabel: ContainerEngineServiceConfiguration.launchdLabel
+                fullServiceLabel: configuration.launchdLabel
             )
             try ServiceManager.register(
                 plistPath: configuration.plistPath.string
@@ -236,7 +242,7 @@ extension Application {
             } catch {
                 guard wasRegistered else {
                     do {
-                        try ContainerEngineServiceConfiguration.deregister()
+                        try configuration.deregister()
                     } catch let cleanupError {
                         throw ContainerizationError(
                             .internalError,
@@ -252,7 +258,7 @@ extension Application {
                     "Restarting stale Container Engine gateway...",
                     metadata: ["error": "\(error)"]
                 )
-                try ContainerEngineServiceConfiguration.deregister()
+                try configuration.deregister()
                 try ServiceManager.register(
                     plistPath: configuration.plistPath.string
                 )
@@ -266,7 +272,7 @@ extension Application {
                     )
             } catch {
                 do {
-                    try ContainerEngineServiceConfiguration.deregister()
+                    try configuration.deregister()
                 } catch let cleanupError {
                     throw ContainerizationError(
                         .internalError,

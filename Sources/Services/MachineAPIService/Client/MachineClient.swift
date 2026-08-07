@@ -25,7 +25,9 @@ import TerminalProgress
 
 /// A client for interacting with the container machine API server.
 public struct MachineClient: Sendable {
-    public static let serviceIdentifier = "com.apple.container.core.machine-apiserver"
+    public static var serviceIdentifier: String {
+        ContainerServiceNamespace.current.machineAPIServerIdentifier
+    }
 
     public static func machineConfigFromFlags(
         id: String,

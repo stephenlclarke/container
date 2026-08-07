@@ -83,7 +83,9 @@ public actor ContainersService {
         let client: RuntimeClient
     }
 
-    private static let machServicePrefix = "com.apple.container"
+    private static var machServicePrefix: String {
+        ContainerServiceNamespace.current.value
+    }
     private static let launchdDomainString = try! ServiceManager.getDomainString()
     private static let logTailReadChunkSize = UInt64(32 * 1024)
     static let loggingProtectedOptionsDirectoryName = "logging-protected-options"

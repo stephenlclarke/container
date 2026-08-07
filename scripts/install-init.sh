@@ -36,6 +36,10 @@ Environment:
                                checkout instead of the SwiftPM resolved path
     CONTAINERIZATION_INIT_FORCE_COPY
                                Force a temporary writable source copy (default: false)
+    CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT
+                               Optional absolute host path for temporary Swift build
+                               artifacts. Keeps build products out of the source
+                               checkout that is shared with the guest builder.
 
 EOF
     exit 0
@@ -98,6 +102,7 @@ default_image_name() {
 IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-$(default_image_name)}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
+TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT=""
 BOOTSTRAP_RUNTIME_STARTED=false
 
 cleanup() {
@@ -121,10 +126,11 @@ copy_containerization_checkout() {
 	mkdir -p "${CONTAINERIZATION_PATH}"
 	(
 		set -o pipefail
-		tar --exclude='./.build' -C "${source_path}" -cf - . |
+		tar --exclude='./.build' --exclude='./vminitd/.build' -C "${source_path}" -cf - . |
 			tar -C "${CONTAINERIZATION_PATH}" -xf -
 	)
 	chmod -R u+w "${CONTAINERIZATION_PATH}"
+	TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT="${TEMP_CONTAINERIZATION_ROOT}/build-cache"
 }
 
 CONTAINERIZATION_PATH="${CONTAINERIZATION_INIT_SOURCE_PATH:-}"
@@ -151,7 +157,17 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 		BOOTSTRAP_RUNTIME_STARTED=true
 		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BUILD_START_ARGS[@]}"
 	fi
-	"${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
+	BUILD_SCRATCH_ROOT="${CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT:-${TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT}}"
+	if [[ -n "${BUILD_SCRATCH_ROOT}" ]]; then
+		if [[ "${BUILD_SCRATCH_ROOT}" != /* ]]; then
+			echo "CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT must be an absolute path"
+			exit 1
+		fi
+		mkdir -p "${BUILD_SCRATCH_ROOT}"
+		SCRATCH_ROOT="${BUILD_SCRATCH_ROOT}" "${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
+	else
+		"${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
+	fi
 	INIT_IMAGE_TAR="$(mktemp -t container-init.XXXXXX.tar)"
 	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o "${INIT_IMAGE_TAR}" "${IMAGE_NAME}"
 

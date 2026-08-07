@@ -22,7 +22,9 @@ import Foundation
 
 /// A client for interacting with a single network.
 public struct NetworkClient: Sendable {
-    static let label = "com.apple.container.network"
+    static var label: String {
+        ContainerServiceNamespace.current.networkServicePrefix
+    }
 
     public static func machServiceLabel(id: String, plugin: String) -> String {
         "\(Self.label).\(plugin).\(id)"

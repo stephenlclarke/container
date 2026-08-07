@@ -59,7 +59,13 @@ set -euo pipefail
 test -f "${INSTALL_INIT_TEST_RUNNING}"
 if [[ -n "${INSTALL_INIT_TEST_FORBIDDEN_BUILD_CACHE:-}" ]]; then
     test ! -e "$2/.build"
+    test ! -e "$2/vminitd/.build"
     test -f "$2/Package.swift"
+    test -n "${SCRATCH_ROOT:-}"
+    [[ "${SCRATCH_ROOT}" != "$2"/* ]]
+    if [[ -n "${INSTALL_INIT_TEST_EXPECTED_SCRATCH_ROOT:-}" ]]; then
+        test "${SCRATCH_ROOT}" = "${INSTALL_INIT_TEST_EXPECTED_SCRATCH_ROOT}"
+    fi
 fi
 printf 'make %s\n' "$*" >> "${INSTALL_INIT_TEST_LOG}"
 if [[ "${INSTALL_INIT_TEST_FAILURE:-}" == "make" ]]; then
@@ -170,6 +176,8 @@ READ_ONLY_LOG_PATH="${TEST_ROOT}/read-only.log"
 READ_ONLY_RUNNING_PATH="${TEST_ROOT}/read-only-running"
 mkdir -p "${CONTAINERIZATION_PATH}/.build/ModuleCache"
 touch "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
+mkdir -p "${CONTAINERIZATION_PATH}/vminitd/.build/ModuleCache"
+touch "${CONTAINERIZATION_PATH}/vminitd/.build/ModuleCache/stale.pcm"
 chmod a-w "${CONTAINERIZATION_PATH}/Package.swift"
 chmod a-w \
     "${CONTAINERIZATION_PATH}/.build" \
@@ -178,7 +186,9 @@ chmod a-w \
 INSTALL_INIT_TEST_LOG="${READ_ONLY_LOG_PATH}" \
 INSTALL_INIT_TEST_RUNNING="${READ_ONLY_RUNNING_PATH}" \
 INSTALL_INIT_TEST_FORBIDDEN_BUILD_CACHE=1 \
+INSTALL_INIT_TEST_EXPECTED_SCRATCH_ROOT="${TEST_ROOT}/source-build-cache" \
 CONTAINERIZATION_INIT_FORCE_COPY=true \
+CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT="${TEST_ROOT}/source-build-cache" \
 CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
 CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
 CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
@@ -187,6 +197,7 @@ CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
     scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
 
 test -e "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
+test -e "${CONTAINERIZATION_PATH}/vminitd/.build/ModuleCache/stale.pcm"
 grep -Eq '^make -C .*/containerization init VMINIT_IMAGE=test-init:latest$' "${READ_ONLY_LOG_PATH}"
 chmod -R u+w "${CONTAINERIZATION_PATH}/.build"
 chmod u+w "${CONTAINERIZATION_PATH}/Package.swift"

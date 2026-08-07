@@ -18,6 +18,7 @@ import ArgumentParser
 import ContainerAPIClient
 import ContainerEngineService
 import ContainerPlugin
+import ContainerXPC
 import ContainerizationError
 import Foundation
 import Logging
@@ -30,7 +31,7 @@ extension Application {
         )
 
         @Option(name: .shortAndLong, help: "Launchd prefix for services")
-        var prefix: String = "com.apple.container."
+        var prefix: String?
 
         @Option(name: .long, help: "Format of the output")
         var format: ListFormat = .table
@@ -69,7 +70,7 @@ extension Application {
                 apiServerBuilderShimDigest: String? = nil,
                 engineStatus: String = "unregistered",
                 engineSocket: String = ContainerEngineServiceConfiguration(
-                    appRoot: ApplicationRoot.defaultPath
+                    appRoot: ApplicationRoot.path
                 ).publicSocketPath.string
             ) {
                 self.status = status
@@ -102,11 +103,15 @@ extension Application {
         }
 
         public func run() async throws {
-            let engineSocket = ContainerEngineServiceConfiguration(
-                appRoot: ApplicationRoot.defaultPath
-            ).publicSocketPath.string
+            let serviceNamespace = try ContainerServiceNamespace.resolve()
+            let servicePrefix = try serviceNamespace.servicePrefix(requestedPrefix: prefix)
+            let engineConfiguration = ContainerEngineServiceConfiguration(
+                appRoot: ApplicationRoot.path,
+                serviceNamespace: serviceNamespace
+            )
+            let engineSocket = engineConfiguration.publicSocketPath.string
             let engineRegistered = try ServiceManager.isRegistered(
-                fullServiceLabel: ContainerEngineServiceConfiguration.launchdLabel
+                fullServiceLabel: engineConfiguration.launchdLabel
             )
             let engineRunning: Bool
             do {
@@ -121,7 +126,7 @@ extension Application {
                 engineRunning
                 ? "running"
                 : (engineRegistered ? "not running" : "unregistered")
-            let isRegistered = try ServiceManager.isRegistered(fullServiceLabel: "\(prefix)apiserver")
+            let isRegistered = try ServiceManager.isRegistered(fullServiceLabel: "\(servicePrefix)apiserver")
             if !isRegistered {
                 try Output.render(
                     payload: PrintableStatus(

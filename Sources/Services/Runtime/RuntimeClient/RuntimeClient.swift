@@ -25,7 +25,9 @@ import TerminalProgress
 
 /// A client for interacting with a container runtime service instance.
 public struct RuntimeClient: Sendable {
-    static let label = "com.apple.container.runtime"
+    static var label: String {
+        ContainerServiceNamespace.current.runtimeServicePrefix
+    }
     static let shutdownResponseTimeout: Duration = .seconds(5)
     private static let minimumStopResponseTimeoutSeconds: Int64 = 10
     private static let stopResponseGraceSeconds: Int64 = 5

@@ -25,7 +25,9 @@ import Logging
 
 extension RuntimeLinuxHelper {
     struct SharedSandbox: AsyncParsableCommand {
-        static let label = "com.apple.container.runtime.container-runtime-linux"
+        static var label: String {
+            ContainerServiceNamespace.current.serviceIdentifier("runtime.container-runtime-linux")
+        }
 
         static let configuration = CommandConfiguration(
             commandName: "shared-sandbox",
