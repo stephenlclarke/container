@@ -14,6 +14,8 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerResource
+import ContainerizationOCI
 import Testing
 
 @testable import ContainerAPIService
@@ -24,5 +26,52 @@ struct NetworksServiceTests {
         #expect(NetworksService.isReservedNetworkModeName("host"))
         #expect(NetworksService.isReservedNetworkModeName("none"))
         #expect(!NetworksService.isReservedNetworkModeName("default"))
+    }
+
+    @Test
+    func hostNetworkSkipsCompatibilityNetworkBootstrapAttachment() {
+        var configuration = testConfiguration()
+        configuration.hostNetwork = true
+        configuration.networks = [
+            AttachmentConfiguration(
+                network: "default",
+                options: AttachmentOptions(hostname: "demo-api-1")
+            )
+        ]
+
+        #expect(ContainersService.networkBootstrapAttachments(for: configuration).isEmpty)
+    }
+
+    @Test
+    func attachedNetworkingRetainsBootstrapAttachments() {
+        var configuration = testConfiguration()
+        configuration.networks = [
+            AttachmentConfiguration(
+                network: "default",
+                options: AttachmentOptions(hostname: "demo-api-1")
+            )
+        ]
+
+        #expect(
+            ContainersService.networkBootstrapAttachments(for: configuration)
+                .map(\.network) == ["default"]
+        )
+    }
+
+    private func testConfiguration() -> ContainerConfiguration {
+        let image = ImageDescription(
+            reference: "docker.io/library/alpine:3.20",
+            descriptor: Descriptor(
+                mediaType: "application/vnd.oci.image.manifest.v1+json",
+                digest: "sha256:" + String(repeating: "0", count: 64),
+                size: 0
+            )
+        )
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: []
+        )
+        return ContainerConfiguration(id: "demo-api-1", image: image, process: process)
     }
 }

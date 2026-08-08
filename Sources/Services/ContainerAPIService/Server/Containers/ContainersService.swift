@@ -1163,6 +1163,14 @@ public actor ContainersService {
         return conflictingHostnames.sorted()
     }
 
+    /// Host-mode workloads share the sandbox VM network and therefore must not
+    /// ask a network plugin to allocate a private endpoint.
+    static func networkBootstrapAttachments(
+        for configuration: ContainerConfiguration
+    ) -> [AttachmentConfiguration] {
+        configuration.hostNetwork ? [] : configuration.networks
+    }
+
     private static func normalizedNetworkName(_ name: String) -> String {
         let name = name.hasSuffix(".") ? String(name.dropLast()) : name
         return name.lowercased()
@@ -1248,7 +1256,7 @@ public actor ContainersService {
                 )
 
             var networkBootstrapInfos = [NetworkBootstrapInfo]()
-            for n in config.networks {
+            for n in Self.networkBootstrapAttachments(for: config) {
                 guard let plugin = try await self.networksService?.plugin(for: n.network) else {
                     throw ContainerizationError(.internalError, message: "failed to get plugin for network \(n.network)")
                 }

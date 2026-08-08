@@ -234,7 +234,10 @@ public actor RuntimeService {
             let upstreamNameservers = config.dns?.nameservers ?? []
             try RuntimeDNSUpstream.validate(nameservers: upstreamNameservers)
 
-            let networkBootstrapInfos = try message.networkBootstrapInfos()
+            let networkBootstrapInfos = Self.effectiveNetworkBootstrapInfos(
+                config: config,
+                requested: try message.networkBootstrapInfos()
+            )
 
             var bindings: [NetworkBinding] = []
             var attachments: [Attachment] = []
@@ -1447,6 +1450,16 @@ public actor RuntimeService {
 
     static func shouldStartSocketForwarders(config: ContainerConfiguration, hasInterfaces: Bool) -> Bool {
         hasInterfaces && !config.hostNetwork
+    }
+
+    /// Host-mode workloads join the sandbox VM's existing network namespace.
+    /// They must not allocate or configure a private attachment, even if an
+    /// older API service supplied the compatibility default-network request.
+    static func effectiveNetworkBootstrapInfos(
+        config: ContainerConfiguration,
+        requested: [NetworkBootstrapInfo]
+    ) -> [NetworkBootstrapInfo] {
+        config.hostNetwork ? [] : requested
     }
 
     struct LinuxDeviceMetadata: Sendable {
