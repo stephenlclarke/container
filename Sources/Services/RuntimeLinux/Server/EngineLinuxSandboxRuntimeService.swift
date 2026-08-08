@@ -1001,19 +1001,35 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         }
         serviceDialsInFlight += 1
         defer { serviceDialsInFlight -= 1 }
-        if declaredGuestVsockPort == request.port {
-            return try await sandbox.dialVsock(port: request.port)
-        }
-        let listener = try await serviceListener(for: request)
-        do {
-            return try await acceptServiceConnection(from: listener.listener)
-        } catch {
-            await closeServiceListener(
-                for: request.workloadID,
-                matching: listener
+        if declaredReverseVsockPort == request.port {
+            log.debug(
+                "protected service transport selected",
+                metadata: [
+                    "transport": "reverse-host-vsock",
+                    "workloadID": "\(request.workloadID)",
+                    "port": "\(request.port)",
+                ]
             )
-            throw error
+            let listener = try await serviceListener(for: request)
+            do {
+                return try await acceptServiceConnection(from: listener.listener)
+            } catch {
+                await closeServiceListener(
+                    for: request.workloadID,
+                    matching: listener
+                )
+                throw error
+            }
         }
+        log.debug(
+            "protected service transport selected",
+            metadata: [
+                "transport": "direct-guest-vsock",
+                "workloadID": "\(request.workloadID)",
+                "port": "\(request.port)",
+            ]
+        )
+        return try await sandbox.dialVsock(port: request.port)
     }
 
     private func serviceListener(
