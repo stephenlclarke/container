@@ -147,6 +147,15 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
             ]
         )
+        #expect(
+            await sandbox.configuredGuestDevices == [
+                LinuxGuestDeviceRequest(
+                    path: EngineLinuxSandboxServiceEndpointV1
+                        .reverseHostVsockDevicePath,
+                    permissions: "rw"
+                )
+            ]
+        )
     }
 
     @Test
@@ -338,6 +347,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             workloadRequest(root: fixture.root),
             stdio: []
         )
+        #expect(await sandbox.configuredGuestDevices.isEmpty)
 
         await #expect(throws: ContainerizationError.self) {
             _ = try await service.dialService(
@@ -561,6 +571,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var stopContainerCount = 0
     private(set) var removeCount = 0
     private(set) var configuredArguments: [String] = []
+    private(set) var configuredGuestDevices: [LinuxGuestDeviceRequest] = []
     private(set) var configuredStdout = false
     private(set) var configuredStderr = false
     private(set) var listenedVsockPorts: [UInt32] = []
@@ -610,6 +621,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
         try configuration(&config)
         addCount += 1
         configuredArguments = config.process.arguments
+        configuredGuestDevices = config.guestDevices
         configuredStdout = config.process.stdout != nil
         configuredStderr = config.process.stderr != nil
         if failAdd {

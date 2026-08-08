@@ -633,6 +633,15 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                             loggingCapture: capture,
                             log: log
                         )
+                        if sealedServicePort != nil {
+                            workload.guestDevices.append(
+                                LinuxGuestDeviceRequest(
+                                    path: EngineLinuxSandboxServiceEndpointV1
+                                        .reverseHostVsockDevicePath,
+                                    permissions: "rw"
+                                )
+                            )
+                        }
                     }
                 }
                 try await sandbox.startContainer(id)
