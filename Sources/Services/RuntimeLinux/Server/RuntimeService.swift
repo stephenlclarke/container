@@ -234,6 +234,9 @@ public actor RuntimeService {
             let upstreamNameservers = config.dns?.nameservers ?? []
             try RuntimeDNSUpstream.validate(nameservers: upstreamNameservers)
 
+            let networkConfigurations = Self.effectiveNetworkConfigurations(
+                config: config
+            )
             let networkBootstrapInfos = Self.effectiveNetworkBootstrapInfos(
                 config: config,
                 requested: try message.networkBootstrapInfos()
@@ -244,7 +247,7 @@ public actor RuntimeService {
             var interfaces: [Interface] = []
             do {
                 for (index, info) in networkBootstrapInfos.enumerated() {
-                    let attachmentConfig = config.networks[index]
+                    let attachmentConfig = networkConfigurations[index]
                     let client = ContainerNetworkClient.NetworkClient(id: attachmentConfig.network, plugin: info.plugin)
                     let session = client.connect()
                     bindings.append(NetworkBinding(client: client, session: session))
@@ -357,7 +360,7 @@ public actor RuntimeService {
                 if config.dns != nil {
                     try await self.startDNSProxy(
                         container: container,
-                        networkConfigurations: config.networks,
+                        networkConfigurations: networkConfigurations,
                         upstreamNameservers: upstreamNameservers
                     )
                 }
@@ -1460,6 +1463,16 @@ public actor RuntimeService {
         requested: [NetworkBootstrapInfo]
     ) -> [NetworkBootstrapInfo] {
         config.hostNetwork ? [] : requested
+    }
+
+    /// Host-mode workloads join the sandbox VM's existing network namespace.
+    /// Compatibility attachments must therefore be suppressed consistently for
+    /// allocation and DNS proxy startup, not only for the runtime bootstrap
+    /// request.
+    static func effectiveNetworkConfigurations(
+        config: ContainerConfiguration
+    ) -> [AttachmentConfiguration] {
+        config.hostNetwork ? [] : config.networks
     }
 
     struct LinuxDeviceMetadata: Sendable {

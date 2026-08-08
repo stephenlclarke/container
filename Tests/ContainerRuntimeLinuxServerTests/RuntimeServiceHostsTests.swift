@@ -283,6 +283,14 @@ struct RuntimeServiceHostsTests {
     }
 
     @Test
+    func hostNetworkDropsCompatibilityNetworkConfigurations() {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.hostNetwork = true
+
+        #expect(RuntimeService.effectiveNetworkConfigurations(config: config).isEmpty)
+    }
+
+    @Test
     func attachedNetworkingRetainsNetworkBootstrapRequests() {
         let config = runtimeTestConfiguration(id: "demo-api-1")
 
@@ -292,6 +300,17 @@ struct RuntimeServiceHostsTests {
         )
 
         #expect(infos.map(\.plugin) == ["container-network-vmnet"])
+    }
+
+    @Test
+    func attachedNetworkingRetainsNetworkConfigurations() {
+        let config = runtimeTestConfiguration(id: "demo-api-1")
+
+        let configurations = RuntimeService.effectiveNetworkConfigurations(
+            config: config
+        )
+
+        #expect(configurations.map(\.network) == config.networks.map(\.network))
     }
 
     @Test
