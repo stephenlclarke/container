@@ -455,7 +455,7 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
             materializer: materializer
         )
 
-        await #expect(throws: ContainerizationError.self) {
+        await #expect(throws: GELFTCPServiceBootstrapError.serviceStartFailed) {
             _ = try await connector.connect()
         }
         #expect(await authority.ensureReadyCount == 1)
@@ -482,9 +482,7 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
             materializer: materializer
         )
 
-        await #expect(
-            throws: EngineLinuxSandboxGELFTCPServiceError.invalidWorkloadReceipt
-        ) {
+        await #expect(throws: GELFTCPServiceBootstrapError.serviceStartFailed) {
             _ = try await connector.connect()
         }
         #expect(await authority.ensureReadyCount == 1)
@@ -512,9 +510,7 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
             materializer: materializer
         )
 
-        await #expect(
-            throws: EngineLinuxSandboxGELFTCPServiceError.invalidWorkloadReceipt
-        ) {
+        await #expect(throws: GELFTCPServiceBootstrapError.serviceStartFailed) {
             _ = try await connector.connect()
         }
         #expect(await authority.ensureReadyCount == 1)
@@ -572,9 +568,7 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
         )
 
         await #expect(
-            throws:
-                EngineLinuxSandboxGELFTCPServiceError
-                .generationMismatch(expected: 7, actual: 6)
+            throws: GELFTCPServiceBootstrapError.serviceIdentityRejected
         ) {
             _ = try await connector.connect()
         }
@@ -604,7 +598,9 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
             retryDelay: .milliseconds(1)
         )
 
-        await #expect(throws: ContainerizationError.self) {
+        await #expect(
+            throws: GELFTCPServiceBootstrapError.serviceReadinessTimedOut
+        ) {
             _ = try await connector.connect()
         }
         #expect(await authority.ensureReadyCount == 1)

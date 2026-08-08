@@ -65,6 +65,31 @@ public enum GELFTCPServiceWireError: Error, Equatable, Sendable {
     case responseMismatch
 }
 
+/// Redacted bootstrap outcomes that can safely cross from the protected
+/// Engine-Linux service into the Docker-facing GELF provider.
+///
+/// The underlying bootstrap error can include protected configuration or host
+/// details, so the wire client carries only the failing phase. This preserves
+/// a causal diagnostic without leaking those details through the Docker API.
+public enum GELFTCPServiceBootstrapError: Error, Equatable, Sendable,
+    CustomStringConvertible
+{
+    case serviceStartFailed
+    case serviceReadinessTimedOut
+    case serviceIdentityRejected
+
+    public var description: String {
+        switch self {
+        case .serviceStartFailed:
+            "Engine-Linux GELF TCP service startup failed"
+        case .serviceReadinessTimedOut:
+            "Engine-Linux GELF TCP service readiness timed out"
+        case .serviceIdentityRejected:
+            "Engine-Linux GELF TCP service identity verification failed"
+        }
+    }
+}
+
 public enum GELFTCPServiceWireOperationV1: String, Codable, Sendable {
     case activeSandboxGeneration
     case open
@@ -486,7 +511,15 @@ private actor GELFTCPServiceWireConnectionV1 {
             endpoint: endpoint,
             timeout: timeout
         )
-        let response = try await call(request)
+        let response: GELFTCPServiceWireResponseV1
+        do {
+            response = try await call(request)
+        } catch let error as GELFTCPServiceBootstrapError {
+            throw GELFProviderError.connectionFailed(
+                endpoint: address,
+                reason: error.description
+            )
+        }
         if let failure = response.failure {
             throw Self.openError(failure, address: address)
         }
@@ -556,6 +589,16 @@ private actor GELFTCPServiceWireConnectionV1 {
         } catch is CancellationError {
             invalidateHandle()
             throw CancellationError()
+        } catch let error as GELFTCPServiceBootstrapError {
+            Self.logger.error(
+                "Engine-Linux GELF TCP service bootstrap failed",
+                metadata: [
+                    "operation": "\(request.operation.rawValue)",
+                    "reason": "\(error)",
+                ]
+            )
+            invalidateHandle()
+            throw error
         } catch {
             Self.logger.error(
                 "Engine-Linux GELF TCP service request failed",

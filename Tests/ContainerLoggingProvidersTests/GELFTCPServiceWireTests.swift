@@ -224,6 +224,82 @@ struct GELFTCPServiceWireTests {
         #expect(await writeConnector.connectionCount == 1)
     }
 
+    @Test func serviceClientMapsServiceOpenFailureToEndpointDiagnostic()
+        async throws
+    {
+        let handles = try gelfServiceWireSocketPair()
+        let connector = GELFServiceWireSocketConnector(handles: [handles.client])
+        let client = GELFTCPServiceWireClientV1 {
+            try await connector.connect()
+        }
+        let address = GELFNetworkAddress(
+            host: "host.docker.internal",
+            port: "12201"
+        )
+        let server = Task.detached {
+            defer { try? handles.server.close() }
+            let request = try GELFTCPServiceFrameCodecV1.read(
+                GELFTCPServiceWireRequestV1.self,
+                from: handles.server
+            )
+            try GELFTCPServiceFrameCodecV1.write(
+                GELFTCPServiceWireResponseV1.failure(
+                    operationID: request.operationID,
+                    failure: .connectionFailed
+                ),
+                to: handles.server
+            )
+        }
+
+        await #expect(
+            throws: GELFProviderError.connectionFailed(
+                endpoint: address,
+                reason: "Engine-Linux GELF service could not connect"
+            )
+        ) {
+            _ = try await client.connect(to: address, timeout: .seconds(1))
+        }
+        try await server.value
+        #expect(await connector.connectionCount == 1)
+    }
+
+    @Test func serviceClientPreservesTypedBootstrapFailuresAsEndpointDiagnostics()
+        async
+    {
+        let address = GELFNetworkAddress(
+            host: "host.docker.internal",
+            port: "12201"
+        )
+        let failures: [(GELFTCPServiceBootstrapError, String)] = [
+            (
+                .serviceStartFailed,
+                "Engine-Linux GELF TCP service startup failed"
+            ),
+            (
+                .serviceReadinessTimedOut,
+                "Engine-Linux GELF TCP service readiness timed out"
+            ),
+            (
+                .serviceIdentityRejected,
+                "Engine-Linux GELF TCP service identity verification failed"
+            ),
+        ]
+
+        for (failure, reason) in failures {
+            let client = GELFTCPServiceWireClientV1 {
+                throw failure
+            }
+            await #expect(
+                throws: GELFProviderError.connectionFailed(
+                    endpoint: address,
+                    reason: reason
+                )
+            ) {
+                _ = try await client.connect(to: address, timeout: .seconds(1))
+            }
+        }
+    }
+
     @Test func serviceClientInvalidatesFailedWriteBeforeTheNextSession() async throws {
         let failed = try gelfServiceWireSocketPair()
         let recovered = try gelfServiceWireSocketPair()

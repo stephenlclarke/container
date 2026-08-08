@@ -20,7 +20,6 @@ import ContainerPersistence
 import ContainerResource
 import ContainerRuntimeClient
 import Containerization
-import ContainerizationError
 import CryptoKit
 import Foundation
 
@@ -522,6 +521,26 @@ package actor EngineLinuxSandboxGELFTCPConnectorV1 {
     }
 
     package func connect() async throws -> FileHandle {
+        do {
+            return try await openService()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as GELFTCPServiceBootstrapError {
+            throw error
+        } catch let error as EngineLinuxSandboxGELFTCPServiceError {
+            switch error {
+            case .generationMismatch:
+                throw GELFTCPServiceBootstrapError.serviceIdentityRejected
+            case .invalidInstalledAsset, .exactWorkloadImageNotFound,
+                .invalidWorkloadReceipt, .readinessTimedOut:
+                throw GELFTCPServiceBootstrapError.serviceStartFailed
+            }
+        } catch {
+            throw GELFTCPServiceBootstrapError.serviceStartFailed
+        }
+    }
+
+    private func openService() async throws -> FileHandle {
         try Task.checkCancellation()
         let configuration = try await materializer.sandboxConfiguration()
         let ready = try await authority.ensureReady(configuration: configuration)
@@ -588,11 +607,7 @@ package actor EngineLinuxSandboxGELFTCPConnectorV1 {
                 throw CancellationError()
             } catch {
                 guard clock.now < deadline else {
-                    throw ContainerizationError(
-                        .internalError,
-                        message: "GELF TCP logging service readiness timed out",
-                        cause: error
-                    )
+                    throw GELFTCPServiceBootstrapError.serviceReadinessTimedOut
                 }
                 try await Task.sleep(for: retryDelay)
             }

@@ -69,6 +69,26 @@ struct ContainerLoggingStartErrorTests {
         )
     }
 
+    @Test func mapsGELFTCPServiceBootstrapFailureToDockerDiagnostic() {
+        let mapped = ContainerDockerLoggingBackend.map(
+            GELFProviderError.connectionFailed(
+                endpoint: GELFNetworkAddress(
+                    host: "host.docker.internal",
+                    port: "12201"
+                ),
+                reason: "Engine-Linux GELF TCP service readiness timed out"
+            ),
+            containerID: "gelf-container"
+        )
+
+        #expect(
+            mapped
+                == .server(
+                    "failed to create task for container: failed to initialize logging driver: gelf: cannot connect to GELF endpoint: host.docker.internal:12201 Engine-Linux GELF TCP service readiness timed out"
+                )
+        )
+    }
+
     @Test func mapsFluentdTLSTrustFailureToDockerDiagnostic() {
         let mapped = ContainerDockerLoggingBackend.map(
             FluentdProviderError.tlsTrustVerificationFailed,
