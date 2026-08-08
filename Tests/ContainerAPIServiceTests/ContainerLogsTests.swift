@@ -1213,18 +1213,27 @@ struct ContainerLogsTests {
             logLabel: "container-engine-docker-wait-test"
         )
         let backend = ContainerDockerLoggingBackend(containers: containers)
+        let immediateRegistration = WaitRegistrationProbe()
 
         #expect(
             try await backend.waitForContainer(
                 containerID: immediateID,
-                condition: .notRunning
+                condition: .notRunning,
+                onRegistered: {
+                    immediateRegistration.record()
+                }
             ) == DockerContainerWaitResult(statusCode: 0)
         )
+        #expect(immediateRegistration.count == 1)
 
+        let nextExitRegistration = WaitRegistrationProbe()
         let nextExit = Task {
             try await backend.waitForContainer(
                 containerID: removalID,
-                condition: .nextExit
+                condition: .nextExit,
+                onRegistered: {
+                    nextExitRegistration.record()
+                }
             )
         }
         let removed = Task {
@@ -1234,6 +1243,7 @@ struct ContainerLogsTests {
             )
         }
         try await Task.sleep(for: .milliseconds(20))
+        #expect(nextExitRegistration.count == 1)
         try await containers.delete(id: removalID, force: false)
 
         #expect(try await nextExit.value == DockerContainerWaitResult(statusCode: 0))
@@ -2494,6 +2504,21 @@ private struct FollowReadTimeout: Error, CustomStringConvertible {
 
     var description: String {
         "timed out waiting for followed log output; observed: \(output)"
+    }
+}
+
+private final class WaitRegistrationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var registrations = 0
+
+    var count: Int {
+        lock.withLock { registrations }
+    }
+
+    func record() {
+        lock.withLock {
+            registrations += 1
+        }
     }
 }
 

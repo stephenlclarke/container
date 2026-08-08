@@ -300,11 +300,24 @@ public struct ContainerDockerLoggingBackend:
         containerID: String,
         condition: DockerContainerWaitCondition
     ) async throws -> DockerContainerWaitResult {
+        try await waitForContainer(
+            containerID: containerID,
+            condition: condition,
+            onRegistered: {}
+        )
+    }
+
+    public func waitForContainer(
+        containerID: String,
+        condition: DockerContainerWaitCondition,
+        onRegistered: @escaping @Sendable () -> Void
+    ) async throws -> DockerContainerWaitResult {
         let resolvedID = try await resolveDockerContainerID(containerID)
         do {
             return try await containers.waitForDockerContainer(
                 id: resolvedID,
-                condition: condition
+                condition: condition,
+                onRegistered: onRegistered
             )
         } catch is CancellationError {
             throw CancellationError()

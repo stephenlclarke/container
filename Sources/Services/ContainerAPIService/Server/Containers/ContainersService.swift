@@ -1848,6 +1848,20 @@ public actor ContainersService {
         id: String,
         condition: DockerContainerWaitCondition
     ) async throws -> DockerContainerWaitResult {
+        try await waitForDockerContainer(
+            id: id,
+            condition: condition,
+            onRegistered: {}
+        )
+    }
+
+    /// Waits for the Docker Engine lifecycle condition after either recording
+    /// its cancellation-aware waiter or resolving an already-terminal state.
+    public func waitForDockerContainer(
+        id: String,
+        condition: DockerContainerWaitCondition,
+        onRegistered: @escaping @Sendable () -> Void
+    ) async throws -> DockerContainerWaitResult {
         let waiterID = UUID()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation {
@@ -1858,6 +1872,7 @@ public actor ContainersService {
                         snapshot: snapshot,
                         condition: condition
                     ) {
+                        onRegistered()
                         continuation.resume(returning: result)
                         return
                     }
@@ -1870,6 +1885,7 @@ public actor ContainersService {
                             condition: condition,
                             continuation: continuation
                         )
+                    onRegistered()
                 } catch {
                     continuation.resume(throwing: error)
                 }
