@@ -46,7 +46,7 @@ struct ImageWarmup {
         switch image {
         case .alpine318, .alpine320:
             break
-        case .busybox136:
+        case .busybox136, .kindestNodeV1_35_5:
             return
         }
 

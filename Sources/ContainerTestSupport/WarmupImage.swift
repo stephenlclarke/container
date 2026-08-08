@@ -24,6 +24,7 @@ public enum WarmupImage: String, CaseIterable, Sendable {
     case alpine320 = "ghcr.io/linuxcontainers/alpine:3.20"
     case alpine318 = "ghcr.io/linuxcontainers/alpine:3.18"
     case busybox136 = "ghcr.io/containerd/busybox:1.36"
+    case kindestNodeV1_35_5 = "docker.io/kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95"
 
     /// The locally prepared image used by integration tests.
     ///
@@ -41,7 +42,7 @@ public enum WarmupImage: String, CaseIterable, Sendable {
             return "registry.local/clitest-alpine:3.20-ca"
         case .alpine318:
             return "registry.local/clitest-alpine:3.18-ca"
-        case .busybox136:
+        case .busybox136, .kindestNodeV1_35_5:
             return rawValue
         }
     }

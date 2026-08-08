@@ -65,7 +65,7 @@ let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_RE
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-30784216505-806feb1c9cc1"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c"
 let scVersion = "0.40.1"
-let containerizationRevision = "4d49879df7da26cf38d7e7fe5b464952133f977b"
+let containerizationRevision = "bedb7240829db3d80292e12c949321fcfd92161f"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -101,6 +101,7 @@ let package = Package(
         .library(name: "TerminalProgress", targets: ["TerminalProgress"]),
         .library(name: "MachineAPIClient", targets: ["MachineAPIClient"]),
         .library(name: "MachineAPIService", targets: ["MachineAPIService"]),
+        .library(name: "ContainerK8s", targets: ["ContainerK8s"]),
     ],
     dependencies: [
         .package(
@@ -223,30 +224,36 @@ let package = Package(
         .testTarget(
             name: "K8sTests",
             dependencies: [
-                "k8s",
+                "ContainerK8s",
                 "ContainerResource",
                 "Yams",
             ],
             path: "Tests/K8sPluginTests"
         ),
-        .executableTarget(
-            name: "k8s",
+        .target(
+            name: "ContainerK8s",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
+                .product(name: "ContainerizationOS", package: "containerization"),
+                .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerAPIClient",
                 "ContainerLog",
                 "ContainerPersistence",
+                "ContainerPlugin",
                 "ContainerResource",
                 "ContainerVersion",
                 "TerminalProgress",
                 "Yams",
-            ],
+            ]
+        ),
+        .executableTarget(
+            name: "k8s",
+            dependencies: ["ContainerK8s"],
             path: "Sources/Plugins/K8s",
-            exclude: ["config.toml"],
-            resources: [.process("Resources/kindnet.yaml")]
+            exclude: ["config.toml", "Resources"]
         ),
         .executableTarget(
             name: "container-apiserver",
