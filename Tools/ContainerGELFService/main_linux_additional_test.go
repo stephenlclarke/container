@@ -27,6 +27,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestRunWithContextRejectsInvalidArgumentsBeforeOpeningAListener(t *testing.T) {
@@ -182,5 +184,37 @@ func TestOpenServiceListenerCreatesNestedUnixPathAndHandlesVsockAvailability(t *
 		if listener == nil {
 			t.Fatal("AF_VSOCK listener is nil")
 		}
+	}
+}
+
+func TestOpenServiceListenerUsesWildcardVsockContextID(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("create substitute listener: %v", err)
+	}
+	var receivedContextID uint32
+	var receivedPort uint32
+	opened, cleanup, err := openServiceListenerWith(
+		21000,
+		"",
+		func(contextID uint32, port uint32) (net.Listener, error) {
+			receivedContextID = contextID
+			receivedPort = port
+			return listener, nil
+		},
+	)
+	if err != nil {
+		_ = listener.Close()
+		t.Fatalf("open wildcard VSOCK listener: %v", err)
+	}
+	defer cleanup()
+	if opened == nil {
+		t.Fatal("wildcard VSOCK listener is nil")
+	}
+	if receivedContextID != unix.VMADDR_CID_ANY {
+		t.Fatalf("VSOCK context ID = %d, want VMADDR_CID_ANY", receivedContextID)
+	}
+	if receivedPort != 21000 {
+		t.Fatalf("VSOCK port = %d, want 21000", receivedPort)
 	}
 }

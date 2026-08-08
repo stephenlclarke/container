@@ -30,9 +30,17 @@ import (
 	"time"
 
 	"github.com/mdlayher/vsock"
+	"golang.org/x/sys/unix"
 )
 
 const defaultServicePort = uint(19531)
+
+// The VZ guest agent listens on VMADDR_CID_ANY. Sealed service workloads can
+// run in a different guest network namespace, so use the same wildcard CID
+// instead of inferring a namespace-specific local CID from /dev/vsock.
+const serviceVsockContextID = unix.VMADDR_CID_ANY
+
+type serviceVsockListenerOpener func(uint32, uint32) (net.Listener, error)
 
 func main() {
 	if err := run(); err != nil {
@@ -132,8 +140,19 @@ func loadAuthenticationKey(path string) ([]byte, error) {
 }
 
 func openServiceListener(port uint32, unixSocket string) (net.Listener, func(), error) {
+	openVSockListener := func(contextID uint32, port uint32) (net.Listener, error) {
+		return vsock.ListenContextID(contextID, port, nil)
+	}
+	return openServiceListenerWith(port, unixSocket, openVSockListener)
+}
+
+func openServiceListenerWith(
+	port uint32,
+	unixSocket string,
+	openVSockListener serviceVsockListenerOpener,
+) (net.Listener, func(), error) {
 	if unixSocket == "" {
-		listener, err := vsock.Listen(port, nil)
+		listener, err := openVSockListener(serviceVsockContextID, port)
 		if err != nil {
 			return nil, func() {}, err
 		}
