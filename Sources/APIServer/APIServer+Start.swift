@@ -98,9 +98,15 @@ extension APIServer {
                     log: log,
                     routes: &routes
                 )
+                let volumesService = try await initializeVolumeService(
+                    containersService: containersService,
+                    log: log,
+                    routes: &routes
+                )
                 let engineLoggingProvider = try await initializeEngineLoggingProvider(
                     appRoot: appRootURL,
                     containersService: containersService,
+                    volumesService: volumesService,
                     containerSystemConfig: containerSystemConfig,
                     log: log
                 )
@@ -114,7 +120,6 @@ extension APIServer {
                 )
                 await containersService.setNetworksService(networkService)
                 initializeHealthCheckService(log: log, routes: &routes)
-                let volumesService = try await initializeVolumeService(containersService: containersService, log: log, routes: &routes)
                 try initializeDiskUsageService(
                     containersService: containersService,
                     volumesService: volumesService,
@@ -222,6 +227,7 @@ extension APIServer {
         private func initializeEngineLoggingProvider(
             appRoot: URL,
             containersService: ContainersService,
+            volumesService: VolumesService,
             containerSystemConfig: ContainerSystemConfig,
             log: Logger
         ) async throws -> ContainerEngineProviderSessionServer {
@@ -275,6 +281,10 @@ extension APIServer {
                 ),
                 ContainerEngineProviderCapability(
                     identifier: "engine.route.ImageDelete",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.VolumeCreate",
                     status: .native
                 ),
                 ContainerEngineProviderCapability(
@@ -364,9 +374,11 @@ extension APIServer {
                 serverVersion: ReleaseVersion.version(),
                 containerSystemConfig: containerSystemConfig
             )
+            let volumeBackend = ContainerDockerVolumeBackend(volumes: volumesService)
             let controller = try DockerLoggingAPIController(
                 backend: backend,
-                sharedResponseBackend: backend
+                sharedResponseBackend: backend,
+                volumeBackend: volumeBackend
             )
             let objectStore = ProviderHandoffBundleObjectStore(
                 root: stateRoot.appendingPathComponent(

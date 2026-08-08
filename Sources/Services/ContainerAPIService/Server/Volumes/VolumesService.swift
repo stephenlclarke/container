@@ -274,6 +274,15 @@ public actor VolumesService {
         return sizeInBytes
     }
 
+    static func resolveDriver(_ driver: String) throws -> String {
+        switch driver {
+        case "", "local":
+            return "local"
+        default:
+            throw VolumeError.driverNotSupported(driver)
+        }
+    }
+
     private nonisolated func volumePath(for name: String) throws -> String {
         try Self.volumePath(root: URL(filePath: resourceRoot.string), name: name).path
     }
@@ -349,6 +358,8 @@ public actor VolumesService {
         driverOpts: [String: String],
         labels: [String: String]
     ) async throws -> VolumeConfiguration {
+        let resolvedDriver = try Self.resolveDriver(driver)
+
         guard VolumeStorage.isValidVolumeName(name) else {
             throw VolumeError.invalidVolumeName("invalid volume name '\(name)': must match \(VolumeStorage.volumeNamePattern)")
         }
@@ -375,7 +386,7 @@ public actor VolumesService {
 
         let volume = VolumeConfiguration(
             name: name,
-            driver: driver,
+            driver: resolvedDriver,
             format: "ext4",
             source: try blockPath(for: name),
             labels: labels,
@@ -389,7 +400,7 @@ public actor VolumesService {
             "created volume",
             metadata: [
                 "name": "\(name)",
-                "driver": "\(driver)",
+                "driver": "\(resolvedDriver)",
                 "isAnonymous": "\(volume.isAnonymous)",
             ])
         return volume
