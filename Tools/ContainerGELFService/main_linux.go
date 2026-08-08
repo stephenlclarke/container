@@ -52,8 +52,9 @@ func run() error {
 	return runWithContext(os.Args[0], os.Args[1:], ctx, openServiceListener)
 }
 
-type serviceListenerOpener func(uint32, string) (net.Listener, func(), error)
+type serviceListenerOpener func(uint32, string, bool) (net.Listener, func(), error)
 type serviceVsockListenerOpener func(uint32, uint32) (net.Listener, error)
+type serviceVsockDialer func(uint32, uint32) (net.Conn, error)
 
 func runWithContext(
 	program string,
@@ -66,16 +67,18 @@ func runWithContext(
 	port := flags.Uint("port", defaultServicePort, "protected AF_VSOCK service port")
 	sandboxGeneration := flags.Uint64("sandbox-generation", 0, "active EngineLinuxSandbox generation")
 	unixSocket := flags.String("listen-unix", "", "test-only Unix listener")
+	connectHostVsock := flags.Bool("connect-host-vsock", false, "dial the sealed host VSOCK listener")
 	maximumConnections := flags.Int("max-connections", defaultMaximumConnections, "bounded concurrent clients")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *port == 0 || *port > uint(^uint32(0)) ||
-		*sandboxGeneration == 0 || *maximumConnections <= 0 {
+		*sandboxGeneration == 0 || *maximumConnections <= 0 ||
+		(*connectHostVsock && *unixSocket != "") {
 		return errors.New("invalid service arguments")
 	}
 
-	listener, cleanup, err := listenerOpener(uint32(*port), *unixSocket)
+	listener, cleanup, err := listenerOpener(uint32(*port), *unixSocket, *connectHostVsock)
 	if err != nil {
 		return err
 	}
@@ -83,18 +86,36 @@ func runWithContext(
 	return serveListener(ctx, listener, *sandboxGeneration, *maximumConnections)
 }
 
-func openServiceListener(port uint32, unixSocket string) (net.Listener, func(), error) {
+func openServiceListener(port uint32, unixSocket string, connectHostVsock bool) (net.Listener, func(), error) {
 	openVSockListener := func(contextID uint32, port uint32) (net.Listener, error) {
 		return vsock.ListenContextID(contextID, port, nil)
 	}
-	return openServiceListenerWith(port, unixSocket, openVSockListener)
+	dialVSock := func(contextID uint32, port uint32) (net.Conn, error) {
+		return vsock.Dial(contextID, port, nil)
+	}
+	return openServiceListenerWith(
+		port,
+		unixSocket,
+		connectHostVsock,
+		openVSockListener,
+		dialVSock,
+	)
 }
 
 func openServiceListenerWith(
 	port uint32,
 	unixSocket string,
+	connectHostVsock bool,
 	openVSockListener serviceVsockListenerOpener,
+	dialVSock serviceVsockDialer,
 ) (net.Listener, func(), error) {
+	if connectHostVsock {
+		if unixSocket != "" {
+			return nil, func() {}, errors.New("host VSOCK and Unix listeners are mutually exclusive")
+		}
+		listener := newReverseVsockListener(port, dialVSock)
+		return listener, func() { _ = listener.Close() }, nil
+	}
 	if unixSocket == "" {
 		listener, err := openVSockListener(serviceVsockContextID, port)
 		if err != nil {

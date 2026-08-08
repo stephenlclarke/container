@@ -554,9 +554,6 @@ public actor EngineLinuxSandboxAuthorityV1 {
     ) async throws -> EngineLinuxSandboxRecordV1 {
         let snapshot = await ledger.snapshot()
         if snapshot.sandbox.state == .absent {
-            try? EngineLinuxSandboxServiceEndpointV1.removeRelayDirectory(
-                sandboxRoot: configuration.path
-            )
             return snapshot.sandbox
         }
         if runtime == nil {
@@ -580,9 +577,6 @@ public actor EngineLinuxSandboxAuthorityV1 {
             effectID: "stop-effect-\(sandboxID)-\(generation)"
         )
         try await launcher.stop(configuration: configuration)
-        try? EngineLinuxSandboxServiceEndpointV1.removeRelayDirectory(
-            sandboxRoot: configuration.path
-        )
         runtime = nil
         manager = nil
         activeConfigurationDigest = nil

@@ -19,9 +19,114 @@ import ContainerRuntimeClient
 import ContainerXPC
 import Containerization
 import ContainerizationError
-import Darwin
 import Foundation
 import Logging
+
+/// A host VSOCK listener that yields reverse connections from one protected
+/// workload. The listener is private to the runtime authority and is closed
+/// whenever its associated workload generation becomes terminal.
+public protocol EngineLinuxSandboxServiceListenerV1: AnyObject, Sendable {
+    func nextConnection() async throws -> FileHandle
+    func close() async
+}
+
+private actor ContainerizationEngineLinuxSandboxServiceListenerV1:
+    EngineLinuxSandboxServiceListenerV1
+{
+    private let listener: VsockListener
+    private var bufferedConnections = [FileHandle]()
+    private var waiters = [CheckedContinuation<FileHandle?, Never>]()
+    private var acceptTask: Task<Void, Never>?
+    private var closed = false
+
+    init(listener: VsockListener) {
+        self.listener = listener
+    }
+
+    func startAccepting() {
+        guard acceptTask == nil, !closed else {
+            return
+        }
+        let listener = self.listener
+        acceptTask = Task { [weak self, listener] in
+            for await connection in listener {
+                await self?.receive(connection)
+            }
+            await self?.finishAccepting()
+        }
+    }
+
+    func nextConnection() async throws -> FileHandle {
+        if !bufferedConnections.isEmpty {
+            return bufferedConnections.removeFirst()
+        }
+        guard !closed else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "sealed reverse VSOCK listener is closed"
+            )
+        }
+        guard let connection = await withCheckedContinuation({ continuation in
+            waiters.append(continuation)
+        }) else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "sealed reverse VSOCK listener finished without a connection"
+            )
+        }
+        return connection
+    }
+
+    func close() async {
+        guard !closed else {
+            return
+        }
+        closed = true
+        acceptTask?.cancel()
+        acceptTask = nil
+        try? listener.finish()
+        resumeWaiters()
+        closeBufferedConnections()
+    }
+
+    private func receive(_ connection: FileHandle) {
+        guard !closed else {
+            try? connection.close()
+            return
+        }
+        if !waiters.isEmpty {
+            waiters.removeFirst().resume(returning: connection)
+        } else {
+            bufferedConnections.append(connection)
+        }
+    }
+
+    private func finishAccepting() {
+        guard !closed else {
+            return
+        }
+        closed = true
+        acceptTask = nil
+        resumeWaiters()
+        closeBufferedConnections()
+    }
+
+    private func resumeWaiters() {
+        let suspended = waiters
+        waiters.removeAll()
+        for waiter in suspended {
+            waiter.resume(returning: nil)
+        }
+    }
+
+    private func closeBufferedConnections() {
+        let connections = bufferedConnections
+        bufferedConnections.removeAll()
+        for connection in connections {
+            try? connection.close()
+        }
+    }
+}
 
 /// Narrow lifecycle surface needed by the Engine-owned runtime service.
 public protocol EngineLinuxSandboxInstanceV1: Sendable {
@@ -42,9 +147,24 @@ public protocol EngineLinuxSandboxInstanceV1: Sendable {
         timeoutInSeconds: Int64?
     ) async throws -> ExitStatus
     func dialVsock(port: UInt32) async throws -> FileHandle
+    func listenVsock(port: UInt32) async throws
+        -> any EngineLinuxSandboxServiceListenerV1
 }
 
-extension LinuxPod: EngineLinuxSandboxInstanceV1 {}
+extension LinuxPod: EngineLinuxSandboxInstanceV1 {
+    public func listenVsock(port: UInt32) async throws
+        -> any EngineLinuxSandboxServiceListenerV1
+    {
+        let listener = try await withVirtualMachineInstance { vm in
+            try vm.listen(port)
+        }
+        let serviceListener = ContainerizationEngineLinuxSandboxServiceListenerV1(
+            listener: listener
+        )
+        await serviceListener.startAccepting()
+        return serviceListener
+    }
+}
 
 /// Production XPC authority for the single Engine-owned Linux sandbox.
 ///
@@ -67,12 +187,35 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
 
     private struct WorkloadStartInFlight: Sendable {
         let request: EngineLinuxSandboxWorkloadStartRequestV1
-        let task: Task<WorkloadProcessReceiptV1, any Error>
+        let task: Task<WorkloadStartResult, any Error>
     }
 
     private struct WorkloadStopInFlight: Sendable {
         let request: EngineLinuxSandboxWorkloadStopRequestV1
         let task: Task<EngineLinuxSandboxWorkloadStopReceiptV1, any Error>
+    }
+
+    private struct ServiceListenerSlot: Sendable {
+        let sandboxGeneration: UInt64
+        let workloadProcessGeneration: UInt64
+        let port: UInt32
+        let listener: any EngineLinuxSandboxServiceListenerV1
+
+        func matches(_ request: EngineLinuxSandboxServiceDialRequestV1) -> Bool {
+            sandboxGeneration == request.sandboxGeneration
+                && workloadProcessGeneration == request.workloadProcessGeneration
+                && port == request.port
+        }
+    }
+
+    private struct WorkloadStartResult: Sendable {
+        let receipt: WorkloadProcessReceiptV1
+        let serviceListener: ServiceListenerSlot?
+    }
+
+    private struct ServiceListenerOpenInFlight: Sendable {
+        let request: EngineLinuxSandboxServiceDialRequestV1
+        let task: Task<ServiceListenerSlot, any Error>
     }
 
     private let connection: xpc_connection_t?
@@ -92,8 +235,10 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     private var workloadCaptures: [String: ContainerLogRuntimeCapture] = [:]
     private var workloadTerminalMonitors: [String: Task<Void, Never>] = [:]
     private var terminalWorkloadGenerations: [String: UInt64] = [:]
+    private var serviceListeners: [String: ServiceListenerSlot] = [:]
+    private var serviceListenerOpenInFlight: [String: ServiceListenerOpenInFlight] = [:]
     private var serviceDialsInFlight = 0
-    private static let protectedServiceRelayDialTimeoutMilliseconds: Int32 = 1_000
+    private static let protectedServiceListenerAcceptTimeout = Duration.seconds(1)
 
     public init(
         sandbox: any EngineLinuxSandboxInstanceV1,
@@ -236,6 +381,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             bootInFlight == nil,
             workloadStartInFlight.isEmpty,
             workloadStopInFlight.isEmpty,
+            serviceListenerOpenInFlight.isEmpty,
             serviceDialsInFlight == 0
         else {
             throw conflictingOperation("sandbox shutdown")
@@ -260,6 +406,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             bootReceipt = nil
             closeWorkloadCaptures()
             cancelWorkloadTerminalMonitors()
+            await closeServiceListeners()
             workloadRequests.removeAll()
             workloadReceipts.removeAll()
             workloadStopRequests.removeAll()
@@ -291,6 +438,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             bootReceipt = nil
             closeWorkloadCaptures()
             cancelWorkloadTerminalMonitors()
+            await closeServiceListeners()
             workloadRequests.removeAll()
             workloadReceipts.removeAll()
             workloadStopRequests.removeAll()
@@ -344,7 +492,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             guard inFlight.request == request else {
                 throw conflictingOperation("workload start for \(id)")
             }
-            return try await inFlight.task.value
+            return try await inFlight.task.value.receipt
         }
 
         var snapshot = await sandbox.snapshot()
@@ -396,6 +544,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         if isNewMaterialization {
             if observed?.state == .stopped {
                 workloadCaptures.removeValue(forKey: id)?.close()
+                await closeServiceListener(for: id)
                 workloadRequests[id] = nil
                 workloadReceipts[id] = nil
                 workloadStopRequests[id] = nil
@@ -434,6 +583,13 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             containerConfiguration = nil
         }
 
+        let sealedServicePort = containerConfiguration.flatMap {
+            EngineLinuxSandboxServiceEndpointV1.reverseVsockPort(
+                arguments: $0.initProcess.arguments,
+                publishedSockets: $0.publishedSockets
+            )
+        }
+
         let receipt = WorkloadProcessReceiptV1(
             containerID: id,
             operationGeneration: request.context.operationGeneration,
@@ -443,60 +599,85 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         )
         let sandbox = self.sandbox
         let log = self.log
-        let task = Task<WorkloadProcessReceiptV1, any Error> {
-            if observed?.state == .stopped {
-                try await sandbox.removeContainer(id)
-            }
-            if let runtimeConfiguration,
-                let containerConfiguration,
-                let rootfs = runtimeConfiguration.containerRootFilesystem,
-                let capture
-            {
-                try await sandbox.addContainer(
-                    id,
-                    rootfs: rootfs.asMount
-                ) { workload in
-                    try EngineLinuxSandboxWorkloadMapper.configure(
-                        &workload,
-                        from: containerConfiguration,
-                        runtimeData: runtimeConfiguration.runtimeData,
-                        dynamicEnvironment: request.dynamicEnvironment,
-                        networkEndpoints: request.networkEndpoints,
-                        stdio: stdio,
-                        loggingCapture: capture,
-                        log: log
+        let task = Task<WorkloadStartResult, any Error> {
+            var serviceListener: ServiceListenerSlot?
+            do {
+                if let sealedServicePort {
+                    let listener = try await sandbox.listenVsock(port: sealedServicePort)
+                    serviceListener = ServiceListenerSlot(
+                        sandboxGeneration: receipt.sandboxGeneration,
+                        workloadProcessGeneration: receipt.processGeneration,
+                        port: sealedServicePort,
+                        listener: listener
                     )
                 }
-            }
-            try await sandbox.startContainer(id)
-            let observation = await sandbox.snapshot()
-            guard
-                let workload = observation.workloads.first(where: { $0.id == id }),
-                workload.state == .running,
-                workload.initProcessID != nil
-            else {
-                throw ContainerizationError(
-                    .internalError,
-                    message: "workload start returned without a running process observation"
+                if observed?.state == .stopped {
+                    try await sandbox.removeContainer(id)
+                }
+                if let runtimeConfiguration,
+                    let containerConfiguration,
+                    let rootfs = runtimeConfiguration.containerRootFilesystem,
+                    let capture
+                {
+                    try await sandbox.addContainer(
+                        id,
+                        rootfs: rootfs.asMount
+                    ) { workload in
+                        try EngineLinuxSandboxWorkloadMapper.configure(
+                            &workload,
+                            from: containerConfiguration,
+                            runtimeData: runtimeConfiguration.runtimeData,
+                            dynamicEnvironment: request.dynamicEnvironment,
+                            networkEndpoints: request.networkEndpoints,
+                            stdio: stdio,
+                            loggingCapture: capture,
+                            log: log
+                        )
+                    }
+                }
+                try await sandbox.startContainer(id)
+                let observation = await sandbox.snapshot()
+                guard
+                    let workload = observation.workloads.first(where: { $0.id == id }),
+                    workload.state == .running,
+                    workload.initProcessID != nil
+                else {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "workload start returned without a running process observation"
+                    )
+                }
+                return WorkloadStartResult(
+                    receipt: receipt,
+                    serviceListener: serviceListener
                 )
+            } catch {
+                if let serviceListener {
+                    await serviceListener.listener.close()
+                }
+                throw error
             }
-            return receipt
         }
         workloadStartInFlight[id] = WorkloadStartInFlight(request: request, task: task)
         do {
             let applied = try await task.value
             workloadRequests[id] = request
-            workloadReceipts[id] = applied
+            workloadReceipts[id] = applied.receipt
             terminalWorkloadGenerations[id] = nil
+            if let serviceListener = applied.serviceListener,
+                serviceListeners[id] == nil
+            {
+                serviceListeners[id] = serviceListener
+            }
             if let capture {
                 workloadCaptures[id]?.close()
                 workloadCaptures[id] = capture
             }
             if request.monitorTerminal {
-                startWorkloadTerminalMonitor(id: id, receipt: applied)
+                startWorkloadTerminalMonitor(id: id, receipt: applied.receipt)
             }
             workloadStartInFlight[id] = nil
-            return applied
+            return applied.receipt
         } catch {
             let failureSnapshot = await sandbox.snapshot()
             if let capture {
@@ -658,6 +839,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             terminalWorkloadGenerations[id] = request.workloadProcessGeneration
             workloadCaptures.removeValue(forKey: id)?.close()
             workloadTerminalMonitors.removeValue(forKey: id)?.cancel()
+            await closeServiceListener(for: id)
             workloadStopInFlight[id] = nil
             return applied
         } catch {
@@ -779,190 +961,151 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 == start.workloadRoot.resolvingSymlinksInPath()
                 .standardizedFileURL.path,
             let containerConfiguration = runtimeConfiguration.containerConfiguration,
-            let sandboxRoot = Self.sandboxRoot(
-                forWorkloadRoot: start.workloadRoot
-            ),
             EngineLinuxSandboxServiceEndpointV1
-                .declaresExclusiveUnixRelay(
+                .declaresExclusiveReverseVsockRelay(
                     arguments: containerConfiguration.initProcess.arguments,
                     port: request.port,
-                    sandboxRoot: sandboxRoot,
                     publishedSockets: containerConfiguration.publishedSockets
                 )
         else {
             throw unattributedState(
-                "protected service workload has no matching sealed Unix relay endpoint"
+                "protected service workload has no matching sealed reverse VSOCK endpoint"
             )
         }
-        let relaySocket =
-            EngineLinuxSandboxServiceEndpointV1
-            .relayHostSocket(
-                sandboxRoot: sandboxRoot,
-                port: request.port
-            )
-        try Self.validatePrivateRelaySocket(
-            relaySocket,
-            sandboxRoot: sandboxRoot
-        )
         serviceDialsInFlight += 1
         defer { serviceDialsInFlight -= 1 }
-        return try Self.dialUnixSocket(at: relaySocket)
-    }
-
-    private static func sandboxRoot(forWorkloadRoot workloadRoot: URL) -> URL? {
-        let canonicalWorkloadRoot =
-            workloadRoot
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-        let workloadsRoot = canonicalWorkloadRoot.deletingLastPathComponent()
-        guard
-            !canonicalWorkloadRoot.lastPathComponent.isEmpty,
-            workloadsRoot.lastPathComponent == "workloads"
-        else {
-            return nil
+        let listener = try await serviceListener(for: request)
+        do {
+            return try await acceptServiceConnection(from: listener.listener)
+        } catch {
+            await closeServiceListener(
+                for: request.workloadID,
+                matching: listener
+            )
+            throw error
         }
-        return
-            workloadsRoot
-            .deletingLastPathComponent()
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
     }
 
-    private static func validatePrivateRelaySocket(
-        _ socketURL: URL,
-        sandboxRoot: URL
-    ) throws {
-        let relayDirectory =
-            EngineLinuxSandboxServiceEndpointV1
-            .relayDirectory(sandboxRoot: sandboxRoot)
-        try validatePrivateDirectory(
-            EngineLinuxSandboxServiceEndpointV1.relayBaseDirectory
+    private func serviceListener(
+        for request: EngineLinuxSandboxServiceDialRequestV1
+    ) async throws -> ServiceListenerSlot {
+        let id = request.workloadID
+        if let existing = serviceListeners[id] {
+            guard existing.matches(request) else {
+                await closeServiceListener(for: id)
+                throw unattributedState(
+                    "protected service listener does not match the requested generation"
+                )
+            }
+            return existing
+        }
+        if let inFlight = serviceListenerOpenInFlight[id] {
+            guard inFlight.request == request else {
+                throw conflictingOperation("protected service listener open for \(id)")
+            }
+            return try await inFlight.task.value
+        }
+
+        let sandbox = self.sandbox
+        let task = Task<ServiceListenerSlot, any Error> {
+            let listener = try await sandbox.listenVsock(port: request.port)
+            if Task.isCancelled {
+                await listener.close()
+                throw CancellationError()
+            }
+            return ServiceListenerSlot(
+                sandboxGeneration: request.sandboxGeneration,
+                workloadProcessGeneration: request.workloadProcessGeneration,
+                port: request.port,
+                listener: listener
+            )
+        }
+        serviceListenerOpenInFlight[id] = ServiceListenerOpenInFlight(
+            request: request,
+            task: task
         )
-        try validatePrivateDirectory(relayDirectory)
-
-        var metadata = stat()
-        let result = socketURL.path.withCString { lstat($0, &metadata) }
-        guard result == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-        guard
-            metadata.st_mode & S_IFMT == S_IFSOCK,
-            metadata.st_mode & 0o077 == 0
-        else {
-            throw ContainerizationError(
-                .invalidState,
-                message: "sealed service relay is not a protected Unix socket"
-            )
-        }
-    }
-
-    private static func validatePrivateDirectory(_ directory: URL) throws {
-        var metadata = stat()
-        let result = directory.path.withCString { lstat($0, &metadata) }
-        guard result == 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-        guard
-            metadata.st_mode & S_IFMT == S_IFDIR,
-            metadata.st_mode & 0o077 == 0
-        else {
-            throw ContainerizationError(
-                .invalidState,
-                message: "sealed service relay directory is not private"
-            )
-        }
-    }
-
-    private static func dialUnixSocket(at socketURL: URL) throws -> FileHandle {
-        let path = Array(socketURL.path.utf8)
-        var address = sockaddr_un()
-        guard
-            !path.isEmpty,
-            path.count < MemoryLayout.size(ofValue: address.sun_path)
-        else {
-            throw ContainerizationError(
-                .invalidArgument,
-                message: "sealed service relay path exceeds Unix socket limits"
-            )
-        }
-        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-        address.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutableBytes(of: &address.sun_path) { destination in
-            destination.copyBytes(from: path)
-            destination[path.count] = 0
-        }
-
-        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-        guard descriptor >= 0 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-        var connected = false
-        defer {
-            if !connected {
-                Darwin.close(descriptor)
-            }
-        }
-        let flags = Darwin.fcntl(descriptor, F_GETFL)
-        guard flags != -1 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-        guard Darwin.fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-        let result = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.connect(
-                    descriptor,
-                    $0,
-                    socklen_t(MemoryLayout<sockaddr_un>.size)
-                )
-            }
-        }
-        if result != 0, errno != EINPROGRESS {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-        if result != 0 {
-            // A stalled relay must not indefinitely block the runtime actor.
-            var readiness = pollfd(
-                fd: descriptor,
-                events: Int16(POLLOUT),
-                revents: 0
-            )
-            let ready = withUnsafeMutablePointer(to: &readiness) {
-                Darwin.poll(
-                    $0,
-                    1,
-                    protectedServiceRelayDialTimeoutMilliseconds
-                )
-            }
-            guard ready > 0 else {
-                if ready == 0 {
-                    throw POSIXError(.ETIMEDOUT)
+        do {
+            let opened = try await task.value
+            serviceListenerOpenInFlight[id] = nil
+            if let existing = serviceListeners[id] {
+                await opened.listener.close()
+                guard existing.matches(request) else {
+                    throw unattributedState(
+                        "protected service listener changed while opening"
+                    )
                 }
-                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+                return existing
             }
+            serviceListeners[id] = opened
+            return opened
+        } catch {
+            serviceListenerOpenInFlight[id] = nil
+            throw error
+        }
+    }
 
-            var socketError: Int32 = 0
-            var socketErrorLength = socklen_t(MemoryLayout.size(ofValue: socketError))
-            guard
-                Darwin.getsockopt(
-                    descriptor,
-                    SOL_SOCKET,
-                    SO_ERROR,
-                    &socketError,
-                    &socketErrorLength
-                ) == 0,
-                socketError == 0
-            else {
-                let error = socketError == 0 ? errno : socketError
-                throw POSIXError(POSIXErrorCode(rawValue: error) ?? .EIO)
+    private func acceptServiceConnection(
+        from listener: any EngineLinuxSandboxServiceListenerV1
+    ) async throws -> FileHandle {
+        try await withThrowingTaskGroup(of: FileHandle?.self) { group in
+            do {
+                group.addTask {
+                    try await listener.nextConnection()
+                }
+                group.addTask {
+                    try await Task.sleep(
+                        for: Self.protectedServiceListenerAcceptTimeout
+                    )
+                    return nil
+                }
+                guard let result = try await group.next(), let connection = result else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "sealed reverse VSOCK listener did not connect before timeout"
+                    )
+                }
+                group.cancelAll()
+                return connection
+            } catch {
+                group.cancelAll()
+                await listener.close()
+                throw error
             }
         }
-        guard Darwin.fcntl(descriptor, F_SETFL, flags) != -1 else {
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+
+    private func closeServiceListener(for id: String) async {
+        let listener = serviceListeners.removeValue(forKey: id)
+        let opening = serviceListenerOpenInFlight.removeValue(forKey: id)
+        opening?.task.cancel()
+        if let listener {
+            await listener.listener.close()
         }
-        connected = true
-        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+    }
+
+    private func closeServiceListener(
+        for id: String,
+        matching expected: ServiceListenerSlot
+    ) async {
+        guard let listener = serviceListeners[id],
+            listener.listener === expected.listener
+        else {
+            return
+        }
+        serviceListeners[id] = nil
+        await listener.listener.close()
+    }
+
+    private func closeServiceListeners() async {
+        let identifiers = Array(serviceListeners.keys)
+        for id in identifiers {
+            await closeServiceListener(for: id)
+        }
+        let openings = serviceListenerOpenInFlight.values
+        serviceListenerOpenInFlight.removeAll()
+        for opening in openings {
+            opening.task.cancel()
+        }
     }
 
     /// Return an endpoint from the helper's anonymous XPC connection.
@@ -1247,6 +1390,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             ]
         )
         workloadCaptures.removeValue(forKey: id)?.close()
+        await closeServiceListener(for: id)
         do {
             try await sandbox.stopContainer(id)
         } catch {
@@ -1262,12 +1406,13 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         id: String,
         receipt: WorkloadProcessReceiptV1,
         error: any Error
-    ) {
+    ) async {
         guard workloadReceipts[id] == receipt else {
             return
         }
         terminalWorkloadGenerations[id] = receipt.processGeneration
         workloadCaptures.removeValue(forKey: id)?.close()
+        await closeServiceListener(for: id)
         workloadTerminalMonitors[id] = nil
         log.error(
             "Engine Linux sandbox terminal workload observation failed",

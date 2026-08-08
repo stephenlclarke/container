@@ -15,118 +15,53 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
-import CryptoKit
 import Foundation
 
-/// Sealed Unix-socket relay declaration for one protected service slot.
+/// Sealed reverse-VSOCK declaration for one protected service slot.
 ///
 /// The runtime admits a dial only when the recorded workload configuration
-/// declares exactly one matching `--port`, a fixed private Unix listener, and
-/// the corresponding Engine-owned published socket. Containerization relays
-/// that private socket through Vminitd; neither path is a user-facing socket.
+/// declares exactly one matching `--port`, the Engine-owned reverse-VSOCK
+/// marker, and no published sockets. The service dials a listener which the
+/// host opens on the shared VM; no guest path crosses a workload mount
+/// namespace.
 public enum EngineLinuxSandboxServiceEndpointV1 {
-    /// Guest path shared by all sealed one-service workloads. Each workload has
-    /// its own mount namespace, so this is never shared between services.
-    public static let relayGuestSocketPath = "/run/container-engine-service.sock"
+    /// The exact, valueless process flag that authorizes a reverse connection
+    /// from the workload to the host listener for its sealed service port.
+    public static let reverseHostVsockFlag = "--connect-host-vsock"
 
-    /// The protected shared parent for compact host-side relay directories.
-    ///
-    /// `sandboxRoot` may be a long application-support path and cannot be used
-    /// directly in a Unix socket pathname. This directory is intentionally
-    /// outside that root, while each child remains private to one sandbox.
-    public static let relayBaseDirectory = URL(
-        fileURLWithPath: "/tmp/container-engine-services",
-        isDirectory: true
-    )
-
-    /// The Engine-owned directory containing short host-side socket paths.
-    ///
-    /// Keeping the pathname short is intentional: Unix-domain socket path
-    /// limits apply even when the application root is a long temporary path.
-    public static func relayDirectory(sandboxRoot: URL) -> URL {
-        let canonicalRoot =
-            sandboxRoot
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-        let identifier = SHA256.hash(data: Data(canonicalRoot.utf8))
-            .prefix(16)
-            .map { String(format: "%02x", $0) }
-            .joined()
-        return relayBaseDirectory.appendingPathComponent(
-            identifier,
-            isDirectory: true
-        )
-    }
-
-    /// The deterministic private host socket for a sealed service port.
-    public static func relayHostSocket(
-        sandboxRoot: URL,
-        port: UInt32
-    ) -> URL {
-        relayDirectory(sandboxRoot: sandboxRoot)
-            .appendingPathComponent(String(port), isDirectory: false)
-    }
-
-    /// Removes only the exact private relay directory derived for a stopped
-    /// sandbox. Cleanup is deliberately scoped to the leaf directory, never
-    /// to the shared relay base.
-    public static func removeRelayDirectory(sandboxRoot: URL) throws {
-        let directory = relayDirectory(sandboxRoot: sandboxRoot)
-        let manager = FileManager.default
-        guard
-            manager.fileExists(atPath: relayBaseDirectory.path),
-            manager.fileExists(atPath: directory.path),
-            try isCanonicalDirectory(relayBaseDirectory),
-            try isCanonicalDirectory(directory)
-        else {
-            return
-        }
-        try manager.removeItem(at: directory)
-    }
-
-    /// Builds the only published socket shape accepted for a sealed service.
-    public static func sealedRelaySocket(
-        sandboxRoot: URL,
-        port: UInt32
-    ) throws -> PublishSocket {
-        try PublishSocket(
-            containerPath: .init(relayGuestSocketPath),
-            hostPath: .init(
-                relayHostSocket(sandboxRoot: sandboxRoot, port: port).path
-            ),
-            permissions: .init(rawValue: 0o600)
-        )
-    }
-
-    public static func declaresExclusiveUnixRelay(
+    /// Returns the sealed reverse-VSOCK port, if the process declaration has
+    /// exactly the Engine-owned shape. A caller must still fence the returned
+    /// port to its active workload and sandbox generations.
+    public static func reverseVsockPort(
         arguments: [String],
-        port: UInt32,
-        sandboxRoot: URL,
         publishedSockets: [PublishSocket]
-    ) -> Bool {
+    ) -> UInt32? {
         guard
-            port > 0,
+            publishedSockets.isEmpty,
             let declaredPorts = values(for: "--port", in: arguments),
-            declaredPorts == [String(port)],
-            let declaredUnixSockets = values(
-                for: "--listen-unix",
+            declaredPorts.count == 1,
+            let port = UInt32(declaredPorts[0]),
+            port > 0,
+            hasExactlyOneValuelessFlag(
+                reverseHostVsockFlag,
                 in: arguments
             ),
-            declaredUnixSockets == [relayGuestSocketPath],
-            publishedSockets.count == 1,
-            let expectedSocket = try? sealedRelaySocket(
-                sandboxRoot: sandboxRoot,
-                port: port
-            )
+            !containsFlag("--listen-unix", in: arguments)
         else {
-            return false
+            return nil
         }
-        let publishedSocket = publishedSockets[0]
-        return publishedSocket.containerPath == expectedSocket.containerPath
-            && publishedSocket.hostPath == expectedSocket.hostPath
-            && publishedSocket.permissions?.rawValue
-                == expectedSocket.permissions?.rawValue
+        return port
+    }
+
+    public static func declaresExclusiveReverseVsockRelay(
+        arguments: [String],
+        port: UInt32,
+        publishedSockets: [PublishSocket]
+    ) -> Bool {
+        reverseVsockPort(
+            arguments: arguments,
+            publishedSockets: publishedSockets
+        ) == port
     }
 
     private static func values(
@@ -134,24 +69,53 @@ public enum EngineLinuxSandboxServiceEndpointV1 {
         in arguments: [String]
     ) -> [String]? {
         var values = [String]()
-        for index in arguments.indices where arguments[index] == flag {
+        var index = arguments.startIndex
+        while index < arguments.endIndex {
+            guard arguments[index] == flag else {
+                index = arguments.index(after: index)
+                continue
+            }
             let valueIndex = arguments.index(after: index)
-            guard valueIndex < arguments.endIndex else {
+            guard
+                valueIndex < arguments.endIndex,
+                !arguments[valueIndex].hasPrefix("--")
+            else {
                 return nil
             }
             values.append(arguments[valueIndex])
+            index = arguments.index(after: valueIndex)
         }
-        return values
+        return values.isEmpty ? nil : values
     }
 
-    private static func isCanonicalDirectory(_ url: URL) throws -> Bool {
-        let values = try url.resourceValues(
-            forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
-        )
-        return values.isDirectory == true
-            && values.isSymbolicLink != true
-            && url.standardizedFileURL.path
-                == url.resolvingSymlinksInPath().standardizedFileURL.path
+    private static func hasExactlyOneValuelessFlag(
+        _ flag: String,
+        in arguments: [String]
+    ) -> Bool {
+        var count = 0
+        for index in arguments.indices {
+            if arguments[index].hasPrefix("\(flag)=") {
+                return false
+            }
+            guard arguments[index] == flag else {
+                continue
+            }
+            count += 1
+            let next = arguments.index(after: index)
+            guard next == arguments.endIndex || arguments[next].hasPrefix("--") else {
+                return false
+            }
+        }
+        return count == 1
+    }
+
+    private static func containsFlag(
+        _ flag: String,
+        in arguments: [String]
+    ) -> Bool {
+        arguments.contains {
+            $0 == flag || $0.hasPrefix("\(flag)=")
+        }
     }
 }
 

@@ -19,7 +19,6 @@ import ContainerRuntimeClient
 import ContainerXPC
 import Containerization
 import ContainerizationError
-import Darwin
 import Foundation
 import Logging
 import Testing
@@ -27,6 +26,51 @@ import Testing
 @testable import ContainerRuntimeLinuxServer
 
 struct EngineLinuxSandboxRuntimeServiceTests {
+    @Test
+    func sealedReverseVsockEndpointRequiresExactArguments() {
+        let sealed = [
+            "--sandbox-generation", "1",
+            "--port", "12345",
+            EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
+        ]
+        #expect(
+            EngineLinuxSandboxServiceEndpointV1
+                .declaresExclusiveReverseVsockRelay(
+                    arguments: sealed,
+                    port: 12_345,
+                    publishedSockets: []
+                )
+        )
+        #expect(
+            EngineLinuxSandboxServiceEndpointV1.reverseVsockPort(
+                arguments: sealed,
+                publishedSockets: []
+            ) == 12_345
+        )
+        #expect(
+            !EngineLinuxSandboxServiceEndpointV1
+                .declaresExclusiveReverseVsockRelay(
+                    arguments: [
+                        "--port", "12345",
+                        "--listen-unix", "/run/service.sock",
+                        EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
+                    ],
+                    port: 12_345,
+                    publishedSockets: []
+                )
+        )
+        #expect(
+            EngineLinuxSandboxServiceEndpointV1.reverseVsockPort(
+                arguments: [
+                    "--port", "12345",
+                    EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
+                    EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
+                ],
+                publishedSockets: []
+            ) == nil
+        )
+    }
+
     @Test
     func exactBootAndShutdownRequestsAreIdempotentAndObservable() async throws {
         let sandbox = FakeEngineLinuxSandbox()
@@ -100,8 +144,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             await sandbox.configuredArguments == [
                 "/bin/sh",
                 "--port", "12345",
-                "--listen-unix",
-                EngineLinuxSandboxServiceEndpointV1.relayGuestSocketPath,
+                EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
             ]
         )
     }
@@ -149,7 +192,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         defer { fixture.remove() }
         let request = try workloadRequest(root: fixture.root)
         try fixture.replaceCommand(
-            "--listen-unix",
+            EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
             with: "--unexpected-listener"
         )
 
@@ -237,7 +280,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         )
         let handle = try await service.dialService(request)
         try handle.close()
-        #expect(await sandbox.dialedVsockPorts.isEmpty)
+        #expect(await sandbox.listenedVsockPorts == [12_345])
 
         await #expect(throws: ContainerizationError.self) {
             _ = try await service.dialService(
@@ -250,11 +293,42 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 )
             )
         }
-        #expect(await sandbox.dialedVsockPorts.isEmpty)
+        #expect(await sandbox.listenedVsockPorts == [12_345])
     }
 
     @Test
-    func protectedServiceDialRejectsUnsealedRelayEndpoint() async throws {
+    func protectedServiceDialBoundsAReverseVsockAcceptThatNeverConnects() async throws {
+        let sandbox = FakeEngineLinuxSandbox(
+            serviceListenerWaitsForConnection: true
+        )
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        _ = try await service.startWorkload(
+            workloadRequest(root: fixture.root),
+            stdio: []
+        )
+        let request = EngineLinuxSandboxServiceDialRequestV1(
+            sandboxID: "engine-sandbox",
+            sandboxGeneration: 1,
+            workloadID: "workload-1",
+            workloadProcessGeneration: 3,
+            port: 12_345
+        )
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.dialService(request)
+        }
+        #expect(clock.now - start < .seconds(3))
+        #expect(await sandbox.listenedVsockPorts == [12_345])
+        #expect(await sandbox.closedServiceListenerCount() == 1)
+    }
+
+    @Test
+    func protectedServiceDialRejectsUnsealedReverseVsockEndpoint() async throws {
         let sandbox = FakeEngineLinuxSandbox()
         let service = try makeService(sandbox: sandbox)
         _ = try await service.boot(bootRequest())
@@ -276,7 +350,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 )
             )
         }
-        #expect(await sandbox.dialedVsockPorts.isEmpty)
+        #expect(await sandbox.listenedVsockPorts.isEmpty)
     }
 
     @Test
@@ -489,19 +563,23 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var configuredArguments: [String] = []
     private(set) var configuredStdout = false
     private(set) var configuredStderr = false
-    private(set) var dialedVsockPorts: [UInt32] = []
+    private(set) var listenedVsockPorts: [UInt32] = []
+    private var serviceListeners: [FakeEngineLinuxSandboxServiceListener] = []
     private var workloads: [String: LinuxSandboxWorkloadSnapshot] = [:]
     private let terminalOnWait: Bool
     private let failAdd: Bool
+    private let serviceListenerWaitsForConnection: Bool
 
     init(
         state: LinuxSandboxRuntimeState = .absent,
         terminalOnWait: Bool = false,
-        failAdd: Bool = false
+        failAdd: Bool = false,
+        serviceListenerWaitsForConnection: Bool = false
     ) {
         self.state = state
         self.terminalOnWait = terminalOnWait
         self.failAdd = failAdd
+        self.serviceListenerWaitsForConnection = serviceListenerWaitsForConnection
     }
 
     func snapshot() -> LinuxSandboxSnapshot {
@@ -589,16 +667,82 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     }
 
     func dialVsock(port: UInt32) -> FileHandle {
-        dialedVsockPorts.append(port)
         return Pipe().fileHandleForReading
+    }
+
+    func listenVsock(port: UInt32) -> any EngineLinuxSandboxServiceListenerV1 {
+        listenedVsockPorts.append(port)
+        let listener = FakeEngineLinuxSandboxServiceListener(
+            hasInitialConnection: !serviceListenerWaitsForConnection
+        )
+        serviceListeners.append(listener)
+        return listener
+    }
+
+    func closedServiceListenerCount() async -> Int {
+        var result = 0
+        for listener in serviceListeners {
+            if await listener.isClosed() {
+                result += 1
+            }
+        }
+        return result
+    }
+}
+
+private actor FakeEngineLinuxSandboxServiceListener:
+    EngineLinuxSandboxServiceListenerV1
+{
+    private var connection: FileHandle?
+    private var waiter: CheckedContinuation<FileHandle?, Never>?
+    private var closed = false
+
+    init(hasInitialConnection: Bool = true) {
+        connection = hasInitialConnection ? Pipe().fileHandleForReading : nil
+    }
+
+    func nextConnection() async throws -> FileHandle {
+        guard let connection else {
+            guard !closed else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "fake reverse VSOCK listener is closed"
+                )
+            }
+            guard let connection = await withCheckedContinuation({ continuation in
+                waiter = continuation
+            }) else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "fake reverse VSOCK listener finished without a connection"
+                )
+            }
+            return connection
+        }
+        self.connection = nil
+        return connection
+    }
+
+    func close() async {
+        guard !closed else {
+            return
+        }
+        closed = true
+        try? connection?.close()
+        connection = nil
+        let waiter = self.waiter
+        self.waiter = nil
+        waiter?.resume(returning: nil)
+    }
+
+    func isClosed() -> Bool {
+        closed
     }
 }
 
 private struct WorkloadBundleFixture {
     let sandboxRoot: URL
     let root: URL
-    private let relayListener: FileHandle?
-    private let relayDirectory: URL?
 
     init(declareServicePort: Bool = true) throws {
         sandboxRoot = FileManager.default.temporaryDirectory
@@ -625,8 +769,7 @@ private struct WorkloadBundleFixture {
             arguments: declareServicePort
                 ? [
                     "--port", "12345",
-                    "--listen-unix",
-                    EngineLinuxSandboxServiceEndpointV1.relayGuestSocketPath,
+                    EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
                 ]
                 : ["-c", "echo ready"],
             environment: [],
@@ -641,27 +784,7 @@ private struct WorkloadBundleFixture {
             image: image,
             process: process
         )
-        if declareServicePort {
-            let relayDirectory =
-                EngineLinuxSandboxServiceEndpointV1
-                .relayDirectory(sandboxRoot: sandboxRoot)
-            try FileManager.default.createDirectory(
-                at: relayDirectory,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            let relaySocket =
-                try EngineLinuxSandboxServiceEndpointV1
-                .sealedRelaySocket(sandboxRoot: sandboxRoot, port: 12_345)
-            configuration.publishedSockets = [relaySocket]
-            relayListener = try listenUnixSocket(
-                at: URL(fileURLWithPath: relaySocket.hostPath.string)
-            )
-            self.relayDirectory = relayDirectory
-        } else {
-            relayListener = nil
-            relayDirectory = nil
-        }
+        configuration.publishedSockets = []
         let runtime = RuntimeConfiguration(
             path: root,
             initialFilesystem: .tmpfs(destination: "/", options: []),
@@ -676,14 +799,6 @@ private struct WorkloadBundleFixture {
     }
 
     func remove() {
-        if let relayListener {
-            try? relayListener.close()
-        }
-        if relayDirectory != nil {
-            try? EngineLinuxSandboxServiceEndpointV1.removeRelayDirectory(
-                sandboxRoot: sandboxRoot
-            )
-        }
         try? FileManager.default.removeItem(at: sandboxRoot)
     }
 
@@ -699,51 +814,4 @@ private struct WorkloadBundleFixture {
         try Data(value.replacingOccurrences(of: oldValue, with: newValue).utf8)
             .write(to: configurationURL)
     }
-}
-
-private func listenUnixSocket(at socketURL: URL) throws -> FileHandle {
-    let path = Array(socketURL.path.utf8)
-    var address = sockaddr_un()
-    guard
-        !path.isEmpty,
-        path.count < MemoryLayout.size(ofValue: address.sun_path)
-    else {
-        throw POSIXError(.ENAMETOOLONG)
-    }
-    address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
-    address.sun_family = sa_family_t(AF_UNIX)
-    withUnsafeMutableBytes(of: &address.sun_path) { destination in
-        destination.copyBytes(from: path)
-        destination[path.count] = 0
-    }
-    let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
-    guard descriptor >= 0 else {
-        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-    }
-    var listening = false
-    defer {
-        if !listening {
-            Darwin.close(descriptor)
-        }
-    }
-    let bindResult = withUnsafePointer(to: &address) { pointer in
-        pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            Darwin.bind(
-                descriptor,
-                $0,
-                socklen_t(MemoryLayout<sockaddr_un>.size)
-            )
-        }
-    }
-    guard bindResult == 0 else {
-        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-    }
-    guard Darwin.chmod(socketURL.path, 0o600) == 0 else {
-        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-    }
-    guard Darwin.listen(descriptor, SOMAXCONN) == 0 else {
-        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-    }
-    listening = true
-    return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
 }

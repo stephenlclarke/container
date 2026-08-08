@@ -343,14 +343,6 @@ package actor InstalledGELFTCPWorkloadMaterializerV1:
         var rootFilesystem = image.rootFilesystem
         rootFilesystem.options = ["ro"]
         try Self.ensureProtectedDirectory(workloadRoot)
-        try Self.ensureProtectedDirectory(
-            EngineLinuxSandboxServiceEndpointV1.relayBaseDirectory
-        )
-        try Self.ensureProtectedDirectory(
-            EngineLinuxSandboxServiceEndpointV1.relayDirectory(
-                sandboxRoot: sandbox.path
-            )
-        )
 
         let runtime = try Self.runtimeConfiguration(
             workloadRoot: workloadRoot,
@@ -390,8 +382,7 @@ package actor InstalledGELFTCPWorkloadMaterializerV1:
             arguments: [
                 "--sandbox-generation", "\(sandboxGeneration)",
                 "--port", "\(Self.servicePort)",
-                "--listen-unix",
-                EngineLinuxSandboxServiceEndpointV1.relayGuestSocketPath,
+                EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
             ],
             environment: [],
             workingDirectory: "/",
@@ -416,12 +407,6 @@ package actor InstalledGELFTCPWorkloadMaterializerV1:
         configuration.stopSignal = "SIGTERM"
         configuration.stopTimeoutInSeconds = 10
         configuration.creationDate = Date(timeIntervalSince1970: 0)
-        configuration.publishedSockets = [
-            try EngineLinuxSandboxServiceEndpointV1.sealedRelaySocket(
-                sandboxRoot: sandbox.path,
-                port: Self.servicePort
-            )
-        ]
         var resources = ContainerConfiguration.Resources()
         resources.cpus = 1
         resources.memoryInBytes = 256 * 1_024 * 1_024
