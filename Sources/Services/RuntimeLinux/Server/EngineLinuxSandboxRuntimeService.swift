@@ -962,21 +962,38 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let observedConfigurationDigest =
             try EngineLinuxSandboxWorkloadIntegrityV1
             .configurationDigest(runtimeConfiguration)
-        guard
-            observedConfigurationDigest
-                == start.workloadConfigurationDigest,
+        let configurationDigestMatches =
+            observedConfigurationDigest == start.workloadConfigurationDigest
+        let configurationPathMatches =
             runtimeConfiguration.path.resolvingSymlinksInPath()
-                .standardizedFileURL.path
-                == start.workloadRoot.resolvingSymlinksInPath()
-                .standardizedFileURL.path,
-            let containerConfiguration = runtimeConfiguration.containerConfiguration,
-            EngineLinuxSandboxServiceEndpointV1
-                .declaresExclusiveReverseVsockRelay(
-                    arguments: containerConfiguration.initProcess.arguments,
-                    port: request.port,
-                    publishedSockets: containerConfiguration.publishedSockets
-                )
+            .standardizedFileURL.path
+            == start.workloadRoot.resolvingSymlinksInPath()
+            .standardizedFileURL.path
+        let containerConfiguration = runtimeConfiguration.containerConfiguration
+        let declaredReverseVsockPort = containerConfiguration.flatMap {
+            EngineLinuxSandboxServiceEndpointV1.reverseVsockPort(
+                arguments: $0.initProcess.arguments,
+                publishedSockets: $0.publishedSockets
+            )
+        }
+        guard
+            configurationDigestMatches,
+            configurationPathMatches,
+            containerConfiguration != nil,
+            declaredReverseVsockPort == request.port
         else {
+            log.error(
+                "protected service endpoint validation rejected dial",
+                metadata: [
+                    "workloadID": "\(request.workloadID)",
+                    "requestPort": "\(request.port)",
+                    "declaredReverseVsockPort": "\(String(describing: declaredReverseVsockPort))",
+                    "configurationDigestMatches": "\(configurationDigestMatches)",
+                    "configurationPathMatches": "\(configurationPathMatches)",
+                    "hasContainerConfiguration": "\(containerConfiguration != nil)",
+                    "publishedSocketCount": "\(containerConfiguration?.publishedSockets.count ?? 0)",
+                ]
+            )
             throw unattributedState(
                 "protected service workload has no matching sealed reverse VSOCK endpoint"
             )
