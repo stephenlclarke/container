@@ -246,7 +246,7 @@ func TestOpenServiceListenerUsesWildcardVsockContextID(t *testing.T) {
 			receivedPort = port
 			return listener, nil
 		},
-		func(uint32, uint32) (net.Conn, error) {
+		func(context.Context, uint32, uint32) (net.Conn, error) {
 			return nil, errors.New("unexpected reverse VSOCK dial")
 		},
 	)
@@ -276,7 +276,7 @@ func TestOpenServiceListenerWithCreatesAnExclusiveReverseHostVsockListener(t *te
 			directListenerOpened = true
 			return nil, errors.New("direct VSOCK listener should not open")
 		},
-		func(uint32, uint32) (net.Conn, error) {
+		func(context.Context, uint32, uint32) (net.Conn, error) {
 			return nil, errors.New("reverse dial should not run before accept")
 		},
 	)
@@ -300,8 +300,52 @@ func TestOpenServiceListenerWithCreatesAnExclusiveReverseHostVsockListener(t *te
 		"/run/gelf.sock",
 		true,
 		func(uint32, uint32) (net.Listener, error) { return nil, nil },
-		func(uint32, uint32) (net.Conn, error) { return nil, nil },
+		func(context.Context, uint32, uint32) (net.Conn, error) { return nil, nil },
 	); err == nil {
 		t.Fatal("reverse host VSOCK mode accepted a Unix listener path")
+	}
+}
+
+func TestOpenServiceListenerWithReporterReportsReverseHostVsockDialFailure(t *testing.T) {
+	wantFailure := errors.New("sealed host listener unavailable")
+	reports := make(chan error, 1)
+	listener, cleanup, err := openServiceListenerWithReporter(
+		21000,
+		"",
+		true,
+		func(uint32, uint32) (net.Listener, error) {
+			return nil, errors.New("direct VSOCK listener should not open")
+		},
+		func(context.Context, uint32, uint32) (net.Conn, error) {
+			return nil, wantFailure
+		},
+		func(err error) { reports <- err },
+	)
+	if err != nil {
+		t.Fatalf("open reverse host VSOCK listener: %v", err)
+	}
+	defer cleanup()
+
+	done := make(chan error, 1)
+	go func() {
+		_, acceptErr := listener.Accept()
+		done <- acceptErr
+	}()
+	select {
+	case report := <-reports:
+		if !errors.Is(report, wantFailure) {
+			t.Fatalf("reverse dial report = %v, want %v", report, wantFailure)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reverse host VSOCK listener did not report its dial failure")
+	}
+	cleanup()
+	select {
+	case acceptErr := <-done:
+		if !errors.Is(acceptErr, net.ErrClosed) {
+			t.Fatalf("closed reverse host VSOCK accept error = %v", acceptErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("closing reverse host VSOCK listener did not unblock accept")
 	}
 }

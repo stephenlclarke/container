@@ -54,7 +54,7 @@ func run() error {
 
 type serviceListenerOpener func(uint32, string, bool) (net.Listener, func(), error)
 type serviceVsockListenerOpener func(uint32, uint32) (net.Listener, error)
-type serviceVsockDialer func(uint32, uint32) (net.Conn, error)
+type serviceVsockDialer func(context.Context, uint32, uint32) (net.Conn, error)
 
 func runWithContext(
 	program string,
@@ -90,15 +90,22 @@ func openServiceListener(port uint32, unixSocket string, connectHostVsock bool) 
 	openVSockListener := func(contextID uint32, port uint32) (net.Listener, error) {
 		return vsock.ListenContextID(contextID, port, nil)
 	}
-	dialVSock := func(contextID uint32, port uint32) (net.Conn, error) {
-		return vsock.Dial(contextID, port, nil)
+	dialVSock := func(ctx context.Context, contextID uint32, port uint32) (net.Conn, error) {
+		return dialHostVsock(ctx, contextID, port)
 	}
-	return openServiceListenerWith(
+	return openServiceListenerWithReporter(
 		port,
 		unixSocket,
 		connectHostVsock,
 		openVSockListener,
 		dialVSock,
+		func(err error) {
+			fmt.Fprintf(
+				os.Stderr,
+				"container-gelf-service: waiting for sealed host VSOCK listener: %v\\n",
+				err,
+			)
+		},
 	)
 }
 
@@ -109,11 +116,29 @@ func openServiceListenerWith(
 	openVSockListener serviceVsockListenerOpener,
 	dialVSock serviceVsockDialer,
 ) (net.Listener, func(), error) {
+	return openServiceListenerWithReporter(
+		port,
+		unixSocket,
+		connectHostVsock,
+		openVSockListener,
+		dialVSock,
+		nil,
+	)
+}
+
+func openServiceListenerWithReporter(
+	port uint32,
+	unixSocket string,
+	connectHostVsock bool,
+	openVSockListener serviceVsockListenerOpener,
+	dialVSock serviceVsockDialer,
+	reportDialFailure func(error),
+) (net.Listener, func(), error) {
 	if connectHostVsock {
 		if unixSocket != "" {
 			return nil, func() {}, errors.New("host VSOCK and Unix listeners are mutually exclusive")
 		}
-		listener := newReverseVsockListener(port, dialVSock)
+		listener := newReverseVsockListenerWithReporter(port, dialVSock, reportDialFailure)
 		return listener, func() { _ = listener.Close() }, nil
 	}
 	if unixSocket == "" {
