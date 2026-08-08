@@ -180,15 +180,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
             ]
         )
-        #expect(
-            await sandbox.configuredGuestDevices == [
-                LinuxGuestDeviceRequest(
-                    path: EngineLinuxSandboxServiceEndpointV1
-                        .reverseHostVsockDevicePath,
-                    permissions: "rw"
-                )
-            ]
-        )
+        #expect(await sandbox.configuredGuestDevices.isEmpty)
     }
 
     @Test

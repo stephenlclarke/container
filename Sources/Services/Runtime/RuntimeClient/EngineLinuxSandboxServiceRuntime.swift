@@ -29,10 +29,6 @@ public enum EngineLinuxSandboxServiceEndpointV1 {
     /// from the workload to the host listener for its sealed service port.
     public static let reverseHostVsockFlag = "--connect-host-vsock"
 
-    /// The VM-local VSOCK character device that a sealed reverse-VSOCK
-    /// workload needs in its otherwise isolated `/dev` tmpfs.
-    public static let reverseHostVsockDevicePath = "/dev/vsock"
-
     /// Returns the sealed reverse-VSOCK port, if the process declaration has
     /// exactly the Engine-owned shape. A caller must still fence the returned
     /// port to its active workload and sandbox generations.
