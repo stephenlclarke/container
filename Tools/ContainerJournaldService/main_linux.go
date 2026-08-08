@@ -39,6 +39,7 @@ const defaultServicePort = uint(19530)
 const serviceVsockContextID = unix.VMADDR_CID_ANY
 
 type serviceVsockListenerOpener func(uint32, uint32) (net.Listener, error)
+type serviceVsockDialer func(uint32, uint32) (net.Conn, error)
 
 func main() {
 	if err := run(); err != nil {
@@ -55,11 +56,12 @@ func run() error {
 	statePath := flags.String("state", "/var/lib/container-journald-service/state.json", "private durable state path")
 	journalDirectory := flags.String("journal-directory", "", "read a system journal from this directory")
 	unixSocket := flags.String("listen-unix", "", "private workload Unix listener relayed to the host")
+	connectHostVsock := flags.Bool("connect-host-vsock", false, "dial the sealed host VSOCK listener")
 	maximumConnections := flags.Int("max-connections", defaultMaximumConnections, "bounded concurrent connections")
 	if err := flags.Parse(os.Args[1:]); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *generation == 0 || *port == 0 || *port > uint(^uint32(0)) || *maximumConnections <= 0 {
+	if flags.NArg() != 0 || *generation == 0 || *port == 0 || *port > uint(^uint32(0)) || *maximumConnections <= 0 || (*connectHostVsock && *unixSocket != "") {
 		return errors.New("invalid service arguments")
 	}
 	store, err := newFileStateStore(*statePath)
@@ -72,7 +74,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	listener, cleanup, err := openServiceListener(uint32(*port), *unixSocket)
+	listener, cleanup, err := openServiceListener(uint32(*port), *unixSocket, *connectHostVsock)
 	if err != nil {
 		return err
 	}
@@ -83,11 +85,20 @@ func run() error {
 	return serveListener(ctx, listener, newProtocolHandler(backend), *maximumConnections)
 }
 
-func openServiceListener(port uint32, unixSocket string) (net.Listener, func(), error) {
+func openServiceListener(port uint32, unixSocket string, connectHostVsock bool) (net.Listener, func(), error) {
 	openVSockListener := func(contextID uint32, port uint32) (net.Listener, error) {
 		return vsock.ListenContextID(contextID, port, nil)
 	}
-	return openServiceListenerWith(port, unixSocket, openVSockListener)
+	dialVSock := func(contextID uint32, port uint32) (net.Conn, error) {
+		return vsock.Dial(contextID, port, nil)
+	}
+	return openServiceListenerWithOptions(
+		port,
+		unixSocket,
+		connectHostVsock,
+		openVSockListener,
+		dialVSock,
+	)
 }
 
 func openServiceListenerWith(
@@ -95,6 +106,26 @@ func openServiceListenerWith(
 	unixSocket string,
 	openVSockListener serviceVsockListenerOpener,
 ) (net.Listener, func(), error) {
+	return openServiceListenerWithOptions(port, unixSocket, false, openVSockListener, nil)
+}
+
+func openServiceListenerWithOptions(
+	port uint32,
+	unixSocket string,
+	connectHostVsock bool,
+	openVSockListener serviceVsockListenerOpener,
+	dialVSock serviceVsockDialer,
+) (net.Listener, func(), error) {
+	if connectHostVsock {
+		if unixSocket != "" {
+			return nil, func() {}, errors.New("host VSOCK and Unix listeners are mutually exclusive")
+		}
+		if dialVSock == nil {
+			return nil, func() {}, errors.New("missing host VSOCK dialer")
+		}
+		listener := newReverseVsockListener(port, dialVSock)
+		return listener, func() { _ = listener.Close() }, nil
+	}
 	if unixSocket == "" {
 		listener, err := openVSockListener(serviceVsockContextID, port)
 		if err != nil {

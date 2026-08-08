@@ -292,10 +292,7 @@ package actor InstalledJournaldWorkloadMaterializerV1:
 
         let process = ProcessConfiguration(
             executable: "/usr/local/libexec/container-journald-entrypoint",
-            arguments: [
-                "--sandbox-generation", "\(sandboxGeneration)",
-                "--port", "\(Self.servicePort)",
-            ],
+            arguments: Self.processArguments(sandboxGeneration: sandboxGeneration),
             environment: [],
             workingDirectory: "/",
             terminal: false,
@@ -355,6 +352,14 @@ package actor InstalledJournaldWorkloadMaterializerV1:
             workloadRoot: workloadRoot,
             planDigest: assets.planDigest
         )
+    }
+
+    package static func processArguments(sandboxGeneration: UInt64) -> [String] {
+        [
+            "--sandbox-generation", "\(sandboxGeneration)",
+            "--port", "\(Self.servicePort)",
+            EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
+        ]
     }
 
     private func exactImage() async throws -> ClientImage {

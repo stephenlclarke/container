@@ -28,6 +28,20 @@ import Testing
 
 struct EngineLinuxSandboxJournaldServiceTests {
     @Test
+    func workloadUsesSealedReverseVsockTransport() {
+        #expect(
+            InstalledJournaldWorkloadMaterializerV1.processArguments(
+                sandboxGeneration: 73
+            )
+                == [
+                    "--sandbox-generation", "73",
+                    "--port", "19530",
+                    EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
+                ]
+        )
+    }
+
+    @Test
     func readOnlyWorkloadHasProtectedWritableRuntimeMounts() {
         let mounts = InstalledJournaldWorkloadMaterializerV1
             .protectedRuntimeMounts

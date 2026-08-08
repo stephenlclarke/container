@@ -61,7 +61,7 @@ func TestOpenServiceListenerUsesWildcardVsockContextID(t *testing.T) {
 func TestOpenServiceUnixListenerIsPrivateAndCleanupIsExact(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "control.sock")
-	listener, cleanup, err := openServiceListener(uint32(defaultServicePort), path)
+	listener, cleanup, err := openServiceListener(uint32(defaultServicePort), path, false)
 	if err != nil {
 		t.Fatalf("open Unix listener: %v", err)
 	}
@@ -80,7 +80,25 @@ func TestOpenServiceUnixListenerIsPrivateAndCleanupIsExact(t *testing.T) {
 	if err := os.WriteFile(regularPath, []byte("preserve"), 0o600); err != nil {
 		t.Fatalf("write regular path: %v", err)
 	}
-	if _, _, err := openServiceListener(uint32(defaultServicePort), regularPath); err == nil {
+	if _, _, err := openServiceListener(uint32(defaultServicePort), regularPath, false); err == nil {
 		t.Fatal("listener replaced a regular file")
+	}
+}
+
+func TestOpenServiceListenerRejectsReverseVsockWithUnixSocket(t *testing.T) {
+	if _, _, err := openServiceListenerWithOptions(
+		21000,
+		"/run/private.sock",
+		true,
+		func(uint32, uint32) (net.Listener, error) {
+			t.Fatal("direct listener must not be opened for reverse VSOCK")
+			return nil, nil
+		},
+		func(uint32, uint32) (net.Conn, error) {
+			t.Fatal("reverse dialer must not be used with a Unix listener")
+			return nil, nil
+		},
+	); err == nil {
+		t.Fatal("reverse VSOCK accepted a Unix listener")
 	}
 }
