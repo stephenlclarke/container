@@ -19,6 +19,7 @@ import ContainerRuntimeClient
 import ContainerXPC
 import Containerization
 import ContainerizationError
+import Darwin
 import Foundation
 import Logging
 
@@ -92,6 +93,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     private var workloadTerminalMonitors: [String: Task<Void, Never>] = [:]
     private var terminalWorkloadGenerations: [String: UInt64] = [:]
     private var serviceDialsInFlight = 0
+    private static let protectedServiceRelayDialTimeoutMilliseconds: Int32 = 1_000
 
     public init(
         sandbox: any EngineLinuxSandboxInstanceV1,
@@ -776,21 +778,191 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 .standardizedFileURL.path
                 == start.workloadRoot.resolvingSymlinksInPath()
                 .standardizedFileURL.path,
-            let arguments = runtimeConfiguration.containerConfiguration?
-                .initProcess.arguments,
+            let containerConfiguration = runtimeConfiguration.containerConfiguration,
+            let sandboxRoot = Self.sandboxRoot(
+                forWorkloadRoot: start.workloadRoot
+            ),
             EngineLinuxSandboxServiceEndpointV1
-                .declaresExclusiveVsockPort(
-                    arguments: arguments,
-                    port: request.port
+                .declaresExclusiveUnixRelay(
+                    arguments: containerConfiguration.initProcess.arguments,
+                    port: request.port,
+                    sandboxRoot: sandboxRoot,
+                    publishedSockets: containerConfiguration.publishedSockets
                 )
         else {
             throw unattributedState(
-                "protected service workload has no matching sealed AF_VSOCK endpoint"
+                "protected service workload has no matching sealed Unix relay endpoint"
             )
         }
+        let relaySocket =
+            EngineLinuxSandboxServiceEndpointV1
+            .relayHostSocket(
+                sandboxRoot: sandboxRoot,
+                port: request.port
+            )
+        try Self.validatePrivateRelaySocket(
+            relaySocket,
+            sandboxRoot: sandboxRoot
+        )
         serviceDialsInFlight += 1
         defer { serviceDialsInFlight -= 1 }
-        return try await sandbox.dialVsock(port: request.port)
+        return try Self.dialUnixSocket(at: relaySocket)
+    }
+
+    private static func sandboxRoot(forWorkloadRoot workloadRoot: URL) -> URL? {
+        let canonicalWorkloadRoot =
+            workloadRoot
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let workloadsRoot = canonicalWorkloadRoot.deletingLastPathComponent()
+        guard
+            !canonicalWorkloadRoot.lastPathComponent.isEmpty,
+            workloadsRoot.lastPathComponent == "workloads"
+        else {
+            return nil
+        }
+        return
+            workloadsRoot
+            .deletingLastPathComponent()
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+    }
+
+    private static func validatePrivateRelaySocket(
+        _ socketURL: URL,
+        sandboxRoot: URL
+    ) throws {
+        let relayDirectory =
+            EngineLinuxSandboxServiceEndpointV1
+            .relayDirectory(sandboxRoot: sandboxRoot)
+        try validatePrivateDirectory(
+            EngineLinuxSandboxServiceEndpointV1.relayBaseDirectory
+        )
+        try validatePrivateDirectory(relayDirectory)
+
+        var metadata = stat()
+        let result = socketURL.path.withCString { lstat($0, &metadata) }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard
+            metadata.st_mode & S_IFMT == S_IFSOCK,
+            metadata.st_mode & 0o077 == 0
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "sealed service relay is not a protected Unix socket"
+            )
+        }
+    }
+
+    private static func validatePrivateDirectory(_ directory: URL) throws {
+        var metadata = stat()
+        let result = directory.path.withCString { lstat($0, &metadata) }
+        guard result == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard
+            metadata.st_mode & S_IFMT == S_IFDIR,
+            metadata.st_mode & 0o077 == 0
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "sealed service relay directory is not private"
+            )
+        }
+    }
+
+    private static func dialUnixSocket(at socketURL: URL) throws -> FileHandle {
+        let path = Array(socketURL.path.utf8)
+        var address = sockaddr_un()
+        guard
+            !path.isEmpty,
+            path.count < MemoryLayout.size(ofValue: address.sun_path)
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "sealed service relay path exceeds Unix socket limits"
+            )
+        }
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            destination.copyBytes(from: path)
+            destination[path.count] = 0
+        }
+
+        let descriptor = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        guard descriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        var connected = false
+        defer {
+            if !connected {
+                Darwin.close(descriptor)
+            }
+        }
+        let flags = Darwin.fcntl(descriptor, F_GETFL)
+        guard flags != -1 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard Darwin.fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) != -1 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(
+                    descriptor,
+                    $0,
+                    socklen_t(MemoryLayout<sockaddr_un>.size)
+                )
+            }
+        }
+        if result != 0, errno != EINPROGRESS {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        if result != 0 {
+            // A stalled relay must not indefinitely block the runtime actor.
+            var readiness = pollfd(
+                fd: descriptor,
+                events: Int16(POLLOUT),
+                revents: 0
+            )
+            let ready = withUnsafeMutablePointer(to: &readiness) {
+                Darwin.poll(
+                    $0,
+                    1,
+                    protectedServiceRelayDialTimeoutMilliseconds
+                )
+            }
+            guard ready > 0 else {
+                if ready == 0 {
+                    throw POSIXError(.ETIMEDOUT)
+                }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+
+            var socketError: Int32 = 0
+            var socketErrorLength = socklen_t(MemoryLayout.size(ofValue: socketError))
+            guard
+                Darwin.getsockopt(
+                    descriptor,
+                    SOL_SOCKET,
+                    SO_ERROR,
+                    &socketError,
+                    &socketErrorLength
+                ) == 0,
+                socketError == 0
+            else {
+                let error = socketError == 0 ? errno : socketError
+                throw POSIXError(POSIXErrorCode(rawValue: error) ?? .EIO)
+            }
+        }
+        guard Darwin.fcntl(descriptor, F_SETFL, flags) != -1 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        connected = true
+        return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     }
 
     /// Return an endpoint from the helper's anonymous XPC connection.

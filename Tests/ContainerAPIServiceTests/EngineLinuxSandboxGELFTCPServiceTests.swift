@@ -68,7 +68,7 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
         )
 
         let runtime =
-            InstalledGELFTCPWorkloadMaterializerV1
+            try InstalledGELFTCPWorkloadMaterializerV1
             .runtimeConfiguration(
                 workloadRoot: fixture.workloadRoot,
                 sandbox: fixture.configuration,
@@ -94,8 +94,28 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
         )
         #expect(
             configuration.initProcess.arguments
-                == ["--sandbox-generation", "73", "--port", "19532"]
+                == [
+                    "--sandbox-generation", "73",
+                    "--port", "19532",
+                    "--listen-unix",
+                    EngineLinuxSandboxServiceEndpointV1.relayGuestSocketPath,
+                ]
         )
+        let publishedSocket = try #require(configuration.publishedSockets.first)
+        #expect(configuration.publishedSockets.count == 1)
+        #expect(
+            publishedSocket.containerPath.string
+                == EngineLinuxSandboxServiceEndpointV1.relayGuestSocketPath
+        )
+        #expect(
+            publishedSocket.hostPath.string
+                == EngineLinuxSandboxServiceEndpointV1
+                .relayHostSocket(
+                    sandboxRoot: fixture.configuration.path,
+                    port: 19_532
+                ).path
+        )
+        #expect(publishedSocket.permissions?.rawValue == 0o600)
         #expect(configuration.initProcess.environment.isEmpty)
         #expect(configuration.initProcess.workingDirectory == "/")
         #expect(!configuration.initProcess.terminal)
@@ -258,6 +278,11 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
         )
 
         let sandbox = try await materializer.sandboxConfiguration()
+        defer {
+            try? EngineLinuxSandboxServiceEndpointV1.removeRelayDirectory(
+                sandboxRoot: sandbox.path
+            )
+        }
         #expect(sandbox.path == appRoot.appendingPathComponent("engine-linux-sandbox"))
         #expect(sandbox.initialFilesystem.options == ["ro"])
         #expect(sandbox.cpus == 1)
@@ -287,8 +312,43 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
         #expect(rootFilesystem.options == ["ro"])
         #expect(
             configuration.initProcess.arguments == [
-                "--sandbox-generation", "41", "--port", "19532",
+                "--sandbox-generation", "41",
+                "--port", "19532",
+                "--listen-unix",
+                EngineLinuxSandboxServiceEndpointV1.relayGuestSocketPath,
             ])
+        let publishedSocket = try #require(configuration.publishedSockets.first)
+        #expect(configuration.publishedSockets.count == 1)
+        #expect(
+            publishedSocket.hostPath.string
+                == EngineLinuxSandboxServiceEndpointV1
+                .relayHostSocket(
+                    sandboxRoot: sandbox.path,
+                    port: 19_532
+                ).path
+        )
+        #expect(publishedSocket.permissions?.rawValue == 0o600)
+        let relayDirectory =
+            EngineLinuxSandboxServiceEndpointV1
+            .relayDirectory(sandboxRoot: sandbox.path)
+        let relayBaseDirectoryPermissions = try #require(
+            FileManager.default.attributesOfItem(
+                atPath: EngineLinuxSandboxServiceEndpointV1
+                    .relayBaseDirectory.path
+            )[.posixPermissions] as? NSNumber
+        )
+        let relayDirectoryPermissions = try #require(
+            FileManager.default.attributesOfItem(atPath: relayDirectory.path)[
+                .posixPermissions
+            ] as? NSNumber
+        )
+        #expect(
+            relayDirectory.deletingLastPathComponent()
+                == EngineLinuxSandboxServiceEndpointV1.relayBaseDirectory
+        )
+        #expect(publishedSocket.hostPath.string.utf8.count < 100)
+        #expect(relayBaseDirectoryPermissions.uint16Value == 0o700)
+        #expect(relayDirectoryPermissions.uint16Value == 0o700)
         #expect(configurationPermissions.uint16Value == 0o600)
         #expect(await resolver.bootstrapCount == 1)
         #expect(await resolver.workloadImageCount == 1)
@@ -325,7 +385,10 @@ struct EngineLinuxSandboxGELFTCPServiceTests {
         let nextConfiguration = try #require(nextRuntime.containerConfiguration)
         #expect(
             nextConfiguration.initProcess.arguments == [
-                "--sandbox-generation", "42", "--port", "19532",
+                "--sandbox-generation", "42",
+                "--port", "19532",
+                "--listen-unix",
+                EngineLinuxSandboxServiceEndpointV1.relayGuestSocketPath,
             ])
         #expect(await resolver.workloadImageCount == 1)
     }

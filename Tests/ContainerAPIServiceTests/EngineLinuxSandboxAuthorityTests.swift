@@ -333,6 +333,51 @@ struct EngineLinuxSandboxAuthorityTests {
         #expect(replay == stopped)
         #expect(await runtime.workloadStopCount == 1)
     }
+
+    @Test
+    func shutdownRemovesSealedRelayForAbsentAndRunningSandboxes() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let relayDirectory =
+            EngineLinuxSandboxServiceEndpointV1
+            .relayDirectory(sandboxRoot: fixture.sandboxConfiguration.path)
+
+        try FileManager.default.createDirectory(
+            at: relayDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let absent = try await authority.shutdownIfIdle(
+            configuration: fixture.sandboxConfiguration
+        )
+        #expect(absent.state == .absent)
+        #expect(!FileManager.default.fileExists(atPath: relayDirectory.path))
+        #expect(await launcher.stopCount == 0)
+
+        _ = try await authority.ensureReady(
+            configuration: fixture.sandboxConfiguration
+        )
+        try FileManager.default.createDirectory(
+            at: relayDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let stopped = try await authority.shutdownIfIdle(
+            configuration: fixture.sandboxConfiguration
+        )
+        #expect(stopped.state == .absent)
+        #expect(!FileManager.default.fileExists(atPath: relayDirectory.path))
+        #expect(await launcher.stopCount == 1)
+    }
 }
 
 private enum LedgerPersistenceTestError: Error, Equatable {
