@@ -17,13 +17,13 @@
 import ContainerResource
 import Foundation
 
-/// Sealed reverse-VSOCK declaration for one protected service slot.
+/// Sealed VSOCK declaration for one protected service slot.
 ///
-/// The runtime admits a dial only when the recorded workload configuration
-/// declares exactly one matching `--port`, the Engine-owned reverse-VSOCK
-/// marker, and no published sockets. The service dials a listener which the
-/// host opens on the shared VM; no guest path crosses a workload mount
-/// namespace.
+/// The runtime derives the transport from the immutable workload
+/// configuration. A reverse-VSOCK marker makes the workload connect to a
+/// host listener; without that marker, the host dials the established direct
+/// guest-VSOCK service. Both shapes require exactly one matching port and no
+/// published socket or guest Unix listener.
 public enum EngineLinuxSandboxServiceEndpointV1 {
     /// The exact, valueless process flag that authorizes a reverse connection
     /// from the workload to the host listener for its sealed service port.
@@ -63,6 +63,46 @@ public enum EngineLinuxSandboxServiceEndpointV1 {
         publishedSockets: [PublishSocket]
     ) -> Bool {
         reverseVsockPort(
+            arguments: arguments,
+            publishedSockets: publishedSockets
+        ) == port
+    }
+
+    /// Returns the direct guest-VSOCK port for a sealed service that has not
+    /// opted into the reverse-VSOCK transport. The Engine still fences the
+    /// returned port to the active workload and sandbox generations before it
+    /// opens a connection.
+    ///
+    /// This retains the established transport for the journald and installed
+    /// Docker logging-plugin services while ensuring a reverse-VSOCK marker,
+    /// a published socket, or a Unix listener cannot be reinterpreted as a
+    /// direct guest endpoint.
+    public static func guestVsockPort(
+        arguments: [String],
+        publishedSockets: [PublishSocket]
+    ) -> UInt32? {
+        guard
+            publishedSockets.isEmpty,
+            let declaredPorts = values(for: "--port", in: arguments),
+            declaredPorts.count == 1,
+            let port = UInt32(declaredPorts[0]),
+            port > 0,
+            !containsFlag(reverseHostVsockFlag, in: arguments),
+            !containsFlag("--listen-unix", in: arguments)
+        else {
+            return nil
+        }
+        return port
+    }
+
+    /// Returns whether the declaration authorizes only the requested direct
+    /// guest-VSOCK service port.
+    public static func declaresExclusiveGuestVsockService(
+        arguments: [String],
+        port: UInt32,
+        publishedSockets: [PublishSocket]
+    ) -> Bool {
+        guestVsockPort(
             arguments: arguments,
             publishedSockets: publishedSockets
         ) == port

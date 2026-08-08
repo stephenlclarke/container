@@ -69,6 +69,39 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 publishedSockets: []
             ) == nil
         )
+        let guestVsock = [
+            "--sandbox-generation", "1",
+            "--port", "19530",
+        ]
+        #expect(
+            EngineLinuxSandboxServiceEndpointV1
+                .declaresExclusiveGuestVsockService(
+                    arguments: guestVsock,
+                    port: 19_530,
+                    publishedSockets: []
+                )
+        )
+        #expect(
+            EngineLinuxSandboxServiceEndpointV1.guestVsockPort(
+                arguments: guestVsock,
+                publishedSockets: []
+            ) == 19_530
+        )
+        #expect(
+            EngineLinuxSandboxServiceEndpointV1.guestVsockPort(
+                arguments: sealed,
+                publishedSockets: []
+            ) == nil
+        )
+        #expect(
+            EngineLinuxSandboxServiceEndpointV1.guestVsockPort(
+                arguments: [
+                    "--port", "19530",
+                    "--listen-unix", "/run/service.sock",
+                ],
+                publishedSockets: []
+            ) == nil
+        )
     }
 
     @Test
@@ -290,6 +323,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         let handle = try await service.dialService(request)
         try handle.close()
         #expect(await sandbox.listenedVsockPorts == [12_345])
+        #expect(await sandbox.dialedVsockPorts.isEmpty)
 
         await #expect(throws: ContainerizationError.self) {
             _ = try await service.dialService(
@@ -337,11 +371,11 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
-    func protectedServiceDialRejectsUnsealedReverseVsockEndpoint() async throws {
+    func protectedServiceDialRejectsUndeclaredVsockEndpoint() async throws {
         let sandbox = FakeEngineLinuxSandbox()
         let service = try makeService(sandbox: sandbox)
         _ = try await service.boot(bootRequest())
-        let fixture = try WorkloadBundleFixture(declareServicePort: false)
+        let fixture = try WorkloadBundleFixture(endpoint: .none)
         defer { fixture.remove() }
         _ = try await service.startWorkload(
             workloadRequest(root: fixture.root),
@@ -361,6 +395,34 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             )
         }
         #expect(await sandbox.listenedVsockPorts.isEmpty)
+    }
+
+    @Test
+    func protectedServiceDialUsesValidatedGuestVsockEndpoint() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture(endpoint: .guestVsock)
+        defer { fixture.remove() }
+        _ = try await service.startWorkload(
+            workloadRequest(root: fixture.root),
+            stdio: []
+        )
+
+        let handle = try await service.dialService(
+            EngineLinuxSandboxServiceDialRequestV1(
+                sandboxID: "engine-sandbox",
+                sandboxGeneration: 1,
+                workloadID: "workload-1",
+                workloadProcessGeneration: 3,
+                port: 12_345
+            )
+        )
+        try handle.close()
+
+        #expect(await sandbox.dialedVsockPorts == [12_345])
+        #expect(await sandbox.listenedVsockPorts.isEmpty)
+        #expect(await sandbox.configuredGuestDevices.isEmpty)
     }
 
     @Test
@@ -574,6 +636,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var configuredGuestDevices: [LinuxGuestDeviceRequest] = []
     private(set) var configuredStdout = false
     private(set) var configuredStderr = false
+    private(set) var dialedVsockPorts: [UInt32] = []
     private(set) var listenedVsockPorts: [UInt32] = []
     private var serviceListeners: [FakeEngineLinuxSandboxServiceListener] = []
     private var workloads: [String: LinuxSandboxWorkloadSnapshot] = [:]
@@ -679,6 +742,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     }
 
     func dialVsock(port: UInt32) -> FileHandle {
+        dialedVsockPorts.append(port)
         return Pipe().fileHandleForReading
     }
 
@@ -721,9 +785,11 @@ private actor FakeEngineLinuxSandboxServiceListener:
                     message: "fake reverse VSOCK listener is closed"
                 )
             }
-            guard let connection = await withCheckedContinuation({ continuation in
-                waiter = continuation
-            }) else {
+            guard
+                let connection = await withCheckedContinuation({ continuation in
+                    waiter = continuation
+                })
+            else {
                 throw ContainerizationError(
                     .invalidState,
                     message: "fake reverse VSOCK listener finished without a connection"
@@ -753,10 +819,16 @@ private actor FakeEngineLinuxSandboxServiceListener:
 }
 
 private struct WorkloadBundleFixture {
+    enum Endpoint {
+        case reverseVsock
+        case guestVsock
+        case none
+    }
+
     let sandboxRoot: URL
     let root: URL
 
-    init(declareServicePort: Bool = true) throws {
+    init(endpoint: Endpoint = .reverseVsock) throws {
         sandboxRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("engine-sandbox-\(UUID())", isDirectory: true)
         root =
@@ -776,14 +848,21 @@ private struct WorkloadBundleFixture {
                 size: 0
             )
         )
-        let process = ProcessConfiguration(
-            executable: "/bin/sh",
-            arguments: declareServicePort
-                ? [
+        let arguments: [String] =
+            switch endpoint {
+            case .reverseVsock:
+                [
                     "--port", "12345",
                     EngineLinuxSandboxServiceEndpointV1.reverseHostVsockFlag,
                 ]
-                : ["-c", "echo ready"],
+            case .guestVsock:
+                ["--port", "12345"]
+            case .none:
+                ["-c", "echo ready"]
+            }
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: arguments,
             environment: [],
             workingDirectory: "/",
             terminal: false,

@@ -66,9 +66,11 @@ private actor ContainerizationEngineLinuxSandboxServiceListenerV1:
                 message: "sealed reverse VSOCK listener is closed"
             )
         }
-        guard let connection = await withCheckedContinuation({ continuation in
-            waiters.append(continuation)
-        }) else {
+        guard
+            let connection = await withCheckedContinuation({ continuation in
+                waiters.append(continuation)
+            })
+        else {
             throw ContainerizationError(
                 .invalidState,
                 message: "sealed reverse VSOCK listener finished without a connection"
@@ -976,11 +978,18 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 publishedSockets: $0.publishedSockets
             )
         }
+        let declaredGuestVsockPort = containerConfiguration.flatMap {
+            EngineLinuxSandboxServiceEndpointV1.guestVsockPort(
+                arguments: $0.initProcess.arguments,
+                publishedSockets: $0.publishedSockets
+            )
+        }
         guard
             configurationDigestMatches,
             configurationPathMatches,
             containerConfiguration != nil,
             declaredReverseVsockPort == request.port
+                || declaredGuestVsockPort == request.port
         else {
             log.error(
                 "protected service endpoint validation rejected dial",
@@ -988,6 +997,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                     "workloadID": "\(request.workloadID)",
                     "requestPort": "\(request.port)",
                     "declaredReverseVsockPort": "\(String(describing: declaredReverseVsockPort))",
+                    "declaredGuestVsockPort": "\(String(describing: declaredGuestVsockPort))",
                     "configurationDigestMatches": "\(configurationDigestMatches)",
                     "configurationPathMatches": "\(configurationPathMatches)",
                     "hasContainerConfiguration": "\(containerConfiguration != nil)",
@@ -995,11 +1005,14 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 ]
             )
             throw unattributedState(
-                "protected service workload has no matching sealed reverse VSOCK endpoint"
+                "protected service workload has no matching sealed VSOCK endpoint"
             )
         }
         serviceDialsInFlight += 1
         defer { serviceDialsInFlight -= 1 }
+        if declaredGuestVsockPort == request.port {
+            return try await sandbox.dialVsock(port: request.port)
+        }
         let listener = try await serviceListener(for: request)
         do {
             return try await acceptServiceConnection(from: listener.listener)
