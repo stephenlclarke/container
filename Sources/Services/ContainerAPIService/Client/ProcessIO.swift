@@ -310,9 +310,7 @@ final class ProcessInputPump: @unchecked Sendable {
     private let output: OSFile
     private let detachKeyMatcher: DetachKeyMatcher?
     private let onDetach: @Sendable () -> Void
-    private let queue = DispatchQueue(
-        label: "com.apple.container.process-input.\(UUID().uuidString)"
-    )
+    private let queue: DispatchQueue
     private let lock = NSLock()
     private var draining = false
     private var pending = false
@@ -322,7 +320,8 @@ final class ProcessInputPump: @unchecked Sendable {
         input: FileHandle,
         output: FileHandle,
         detachKeyMatcher: DetachKeyMatcher? = nil,
-        onDetach: @escaping @Sendable () -> Void = {}
+        onDetach: @escaping @Sendable () -> Void = {},
+        queue: DispatchQueue? = nil
     ) throws {
         inputHandle = input
         outputHandle = output
@@ -330,6 +329,11 @@ final class ProcessInputPump: @unchecked Sendable {
         self.output = OSFile(handle: output)
         self.detachKeyMatcher = detachKeyMatcher
         self.onDetach = onDetach
+        self.queue =
+            queue
+            ?? DispatchQueue(
+                label: "com.apple.container.process-input.\(UUID().uuidString)"
+            )
         try self.input.makeNonBlocking()
     }
 
@@ -365,6 +369,9 @@ final class ProcessInputPump: @unchecked Sendable {
     }
 
     private func drain() {
+        guard !isFinished else {
+            return
+        }
         let buffer = UnsafeMutableBufferPointer<UInt8>.allocate(
             capacity: Int(getpagesize())
         )
@@ -372,7 +379,7 @@ final class ProcessInputPump: @unchecked Sendable {
             buffer.deallocate()
             completeDrain()
         }
-        while true {
+        while !isFinished {
             let (bytesRead, action) = input.read(buffer)
             if bytesRead > 0 {
                 let view = UnsafeMutableBufferPointer(
@@ -383,6 +390,9 @@ final class ProcessInputPump: @unchecked Sendable {
                 if let detachKeyMatcher {
                     let result = detachKeyMatcher.filter(view)
                     if !result.forwarded.isEmpty {
+                        guard !isFinished else {
+                            return
+                        }
                         var forwarded = result.forwarded
                         let (bytesWritten, _) = forwarded.withUnsafeMutableBufferPointer { output in
                             self.output.write(output)
@@ -399,6 +409,9 @@ final class ProcessInputPump: @unchecked Sendable {
                     continue
                 }
 
+                guard !isFinished else {
+                    return
+                }
                 let (bytesWritten, _) = output.write(view)
                 if bytesWritten != bytesRead {
                     finish(detached: false)
@@ -447,6 +460,16 @@ final class ProcessInputPump: @unchecked Sendable {
             return
         }
         inputHandle.readabilityHandler = nil
+        queue.async { [weak self] in
+            self?.closeOutput(detached: detached)
+        }
+    }
+
+    private var isFinished: Bool {
+        lock.withLock { finished }
+    }
+
+    private func closeOutput(detached: Bool) {
         try? outputHandle.close()
         if detached {
             onDetach()

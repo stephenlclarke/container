@@ -229,6 +229,8 @@ $(STAGING_DIR): semantic-helper journald-service gelf-service
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/helpers)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/journald)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/gelf)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/k8s/resources)"
 
 	@install "$(BUILD_BIN_DIR)/container" "$(join $(STAGING_DIR), bin/container)"
 	@install "$(BUILD_BIN_DIR)/container-apiserver" "$(join $(STAGING_DIR), bin/container-apiserver)"
@@ -255,6 +257,9 @@ $(STAGING_DIR): semantic-helper journald-service gelf-service
 	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
 		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
+	@install "$(BUILD_BIN_DIR)/k8s" "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
+	@install Sources/Plugins/K8s/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/k8s/config.toml)"
+	@install Sources/Plugins/K8s/Resources/kindnet.yaml "$(join $(STAGING_DIR), libexec/container/plugins/k8s/resources/kindnet.yaml)"
 
 	@echo Install update script
 	@install scripts/update-container.sh "$(join $(STAGING_DIR), bin/update-container.sh)"
@@ -284,6 +289,7 @@ installer-pkg: $(STAGING_DIR)
 	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
 		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 
 	@echo Creating application installer
 	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(PKG_PATH)
@@ -315,6 +321,7 @@ homebrew-package: build $(STAGING_DIR)
 	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
 		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
 	@tar -czf "$(HOMEBREW_ARCHIVE)" -C "$(STAGING_DIR)" .

@@ -153,3 +153,7 @@ grep -Fq 'CODESIGN_OPTS="--force --keychain ${DEVELOPER_ID_KEYCHAIN} --sign ${DE
 grep -Fq 'security delete-keychain' "${WORKFLOW}"
 [[ "$(grep -Fc -- '--options runtime' "${WORKFLOW}")" -eq 2 ]]
 [[ "$(grep -Fc -- '--timestamp' "${WORKFLOW}")" -eq 2 ]]
+
+MAKEFILE="Makefile"
+grep -Fq 'Signing container binaries for Homebrew archive' "${MAKEFILE}"
+grep -Fq 'libexec/container/plugins/k8s/bin/k8s' "${MAKEFILE}"

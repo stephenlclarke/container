@@ -1,12 +1,25 @@
-<!-- markdownlint-disable MD033 -->
-<h1>
-  <img
-    alt="Containerization logo"
-    src="./assets/Containerization-Logo.png"
-    width="70"
-    valign="middle">
-  &nbsp;container
-</h1>
+# container
+
+<!-- markdownlint-disable MD013 MD033 -->
+<p>
+  <img align="left" hspace="20" src="assets/container-icon.png" width="147" alt="container project icon: the standard three-row container service panel" />
+  <a href="https://github.com/stephenlclarke/container/actions/workflows/merge-build.yml?query=branch%3Amain"><img alt="CI" src="https://github.com/stephenlclarke/container/actions/workflows/merge-build.yml/badge.svg?branch=main" /></a>
+  <a href="https://github.com/stephenlclarke/container/actions/workflows/codeql.yml?query=branch%3Amain"><img alt="CodeQL" src="https://github.com/stephenlclarke/container/actions/workflows/codeql.yml/badge.svg?branch=main" /></a>
+  <a href="https://github.com/stephenlclarke/container/actions/workflows/docs-release.yml?query=branch%3Amain"><img alt="Documentation" src="https://github.com/stephenlclarke/container/actions/workflows/docs-release.yml/badge.svg?branch=main" /></a>
+  <a href="https://github.com/stephenlclarke/container/actions/workflows/homebrew.yml?query=branch%3Amain"><img alt="Homebrew" src="https://github.com/stephenlclarke/container/actions/workflows/homebrew.yml/badge.svg?branch=main" /></a>
+  <a href="https://github.com/stephenlclarke/container/actions/workflows/prebuilt-binaries.yml?query=branch%3Amain"><img alt="Releases" src="https://github.com/stephenlclarke/container/actions/workflows/prebuilt-binaries.yml/badge.svg?branch=main" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Quality Gate Status" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=alert_status" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Coverage" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=coverage" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Bugs" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=bugs" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Code Smells" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=code_smells" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Security Rating" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=security_rating" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Maintainability Rating" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=sqale_rating" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Duplicated Lines" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=duplicated_lines_density" /></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Lines of Code" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=ncloc" /></a>
+  <img alt="Repo Visitors" src="https://visitor-badge.laobi.icu/badge?page_id=stephenlclarke.container" />
+</p>
+<br clear="left" />
+<br>
 <!-- markdownlint-enable MD033 -->
 
 `container` is a tool that you can use to create and run Linux containers as
@@ -154,7 +167,8 @@ To retain your user data so that it is available should you reinstall later, run
   of `container`.
 - Browse the [full command reference](./docs/command-reference.md).
 - [Build and run](./BUILDING.md) `container` on your own development system.
-- View the project [API documentation](https://apple.github.io/container/documentation/).
+- View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
+- Compare the [Apple upstream API reference](https://apple.github.io/container/documentation/).
 
 ## Contributing
 

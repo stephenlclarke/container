@@ -3094,9 +3094,6 @@ public actor ContainersService {
 
         try Utility.validEntityName(id)
         let state = try self._getContainerState(id: id)
-        guard state.snapshot.status == .stopped || (live && state.snapshot.status == .running) else {
-            throw ContainerizationError(.invalidState, message: "container is not stopped")
-        }
 
         let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
@@ -3119,7 +3116,9 @@ public actor ContainersService {
             }
             rootfs = try Self.exportableRootfsURL(filesystem)
         }
-        if live {
+
+        switch state.snapshot.status {
+        case .running:
             let client = try state.getClient()
             let snapshot = FileManager.default.temporaryDirectory
                 .appendingPathComponent("container-live-export-\(UUID().uuidString).ext4")
@@ -3128,9 +3127,11 @@ public actor ContainersService {
             }
             try await client.snapshotDisk(imagePath: rootfs.path, destinationPath: snapshot.path, noFreeze: noFreeze)
             try EXT4.EXT4Reader(blockDevice: FilePath(snapshot)).export(archive: FilePath(archive))
-            return
+        case .stopped:
+            try EXT4.EXT4Reader(blockDevice: FilePath(rootfs)).export(archive: FilePath(archive))
+        default:
+            throw ContainerizationError(.invalidState, message: "container must be running or stopped")
         }
-        try EXT4.EXT4Reader(blockDevice: FilePath(rootfs)).export(archive: FilePath(archive))
     }
 
     private static func exportableRootfsURL(_ filesystem: Filesystem) throws -> URL {

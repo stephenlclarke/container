@@ -1090,11 +1090,11 @@ public actor RuntimeService {
 
     /// Snapshot the container's root filesystem.
     ///
-    /// The normal path freezes the guest filesystem before copying its backing
-    /// image. `noFreeze` instead makes an APFS copy-on-write clone while the
-    /// guest remains writable; this is deliberately best-effort, is not
-    /// guaranteed to produce a filesystem-consistent image, and is used only
-    /// for Docker-compatible `commit --pause=false` behavior.
+    /// Running containers are frozen while their backing image is copied.
+    /// `noFreeze` instead makes an APFS copy-on-write clone while the guest
+    /// remains writable; this is deliberately best-effort, is not guaranteed
+    /// to produce a filesystem-consistent image, and is used only for
+    /// Docker-compatible `commit --pause=false` behavior.
     ///
     /// - Parameters:
     ///   - message: An XPC message with the following parameters:
@@ -1107,7 +1107,8 @@ public actor RuntimeService {
     public func snapshotDisk(_ message: XPCMessage) async throws -> XPCMessage {
         self.log.info("`snapshotDisk` xpc handler")
         return try await self.lock.withLock { _ in
-            switch await self.state {
+            let state = await self.state
+            switch state {
             case .running, .booted:
                 guard let imagePath = message.string(key: RuntimeKeys.imagePath.rawValue) else {
                     throw ContainerizationError(
@@ -1128,26 +1129,31 @@ public actor RuntimeService {
                 }
 
                 let ctr = try await self.getContainer()
+                let shouldFreeze = state == .running
 
-                // Freeze the filesystem before copying its backing image.
-                try await ctr.container.filesystemOperation(operation: .freeze, path: "/")
+                if shouldFreeze {
+                    try await ctr.container.filesystemOperation(operation: .freeze, path: "/")
+                }
 
                 do {
-                    // Copy the image while the guest filesystem is frozen.
                     try FileManager.default.copyItem(atPath: imagePath, toPath: destinationPath)
-                    try await ctr.container.filesystemOperation(operation: .thaw, path: "/")
                 } catch {
-                    // Ensure we thaw even on error
-                    do {
-                        try await ctr.container.filesystemOperation(operation: .thaw, path: "/")
-                    } catch {
-                        self.log.error(
-                            "failed to thaw filesystem after snapshotDisk error",
-                            metadata: [
-                                "error": "\(error)"
-                            ])
+                    if shouldFreeze {
+                        do {
+                            try await ctr.container.filesystemOperation(operation: .thaw, path: "/")
+                        } catch {
+                            self.log.error(
+                                "failed to thaw filesystem after snapshotDisk error",
+                                metadata: [
+                                    "error": "\(error)"
+                                ])
+                        }
                     }
                     throw error
+                }
+
+                if shouldFreeze {
+                    try await ctr.container.filesystemOperation(operation: .thaw, path: "/")
                 }
 
                 return message.reply()
@@ -1619,7 +1625,12 @@ public actor RuntimeService {
             czConfig.deviceCgroupRules.append(contentsOf: linuxData.deviceCgroupRules + deviceMapping.cgroupRules)
             czConfig.graphics = gpu.enabled ? .virtioDevice : .disabled
         }
-        czConfig.sysctl = try Self.resolvedSysctls(config: config)
+        // Overcommit memory and allow more memory mappings than the kernel default
+        // so workloads inside swap-less guest VMs hit limits less easily.
+        var sysctls = try Self.resolvedSysctls(config: config)
+        sysctls["vm.overcommit_memory"] = "1"
+        sysctls["vm.max_map_count"] = "262144"
+        czConfig.sysctl = sysctls
         czConfig.annotations = config.annotations
         // If the host doesn't support this, we'll throw on container creation.
         czConfig.virtualization = config.virtualization

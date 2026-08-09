@@ -240,6 +240,7 @@ public struct Flags {
             domainname: String? = nil,
             logDriver: String? = nil,
             logOpt: [String] = [],
+            maskedPaths: [String],
             mounts: [String],
             name: String?,
             networks: [String],
@@ -254,6 +255,7 @@ public struct Flags {
             exposedPorts: [String] = [],
             publishSockets: [String],
             readOnly: Bool,
+            readonlyPaths: [String],
             remove: Bool,
             restart: String? = nil,
             restartDelay: String? = nil,
@@ -306,6 +308,7 @@ public struct Flags {
             self.domainname = domainname
             self.logDriver = logDriver
             self.logOpt = logOpt
+            self.maskedPaths = maskedPaths
             self.mounts = mounts
             self.name = name
             self.networks = networks
@@ -320,6 +323,7 @@ public struct Flags {
             self.exposedPorts = exposedPorts
             self.publishSockets = publishSockets
             self.readOnly = readOnly
+            self.readonlyPaths = readonlyPaths
             self.remove = remove
             self.restart = restart
             self.restartDelay = restartDelay
@@ -460,6 +464,16 @@ public struct Flags {
         )
         public var logOpt: [String] = []
 
+        /// EXPERIMENTAL: The flag is subject to change.
+        @Option(
+            name: .customLong("masked-path"),
+            help: .init(
+                "[EXPERIMENTAL] Hide a path inside the container, in addition to the runtime defaults (or NONE to clear prior values and the defaults)",
+                valueName: "path"
+            )
+        )
+        public var maskedPaths: [String] = []
+
         @Option(name: .customLong("mount"), help: "Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)")
         public var mounts: [String] = []
 
@@ -526,6 +540,16 @@ public struct Flags {
 
         @Flag(name: .long, help: "Mount the container's root filesystem as read-only")
         public var readOnly = false
+
+        /// EXPERIMENTAL: The flag is subject to change.
+        @Option(
+            name: .customLong("read-only-path"),
+            help: .init(
+                "[EXPERIMENTAL] Mark a path inside the container read-only, in addition to the runtime defaults (or NONE to clear prior values and the defaults)",
+                valueName: "path"
+            )
+        )
+        public var readonlyPaths: [String] = []
 
         @Flag(name: [.customLong("rm"), .long], help: "Remove the container after it stops")
         public var remove = false

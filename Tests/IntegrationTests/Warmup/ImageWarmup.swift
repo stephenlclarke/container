@@ -18,10 +18,12 @@ import ContainerTestSupport
 import Foundation
 import Testing
 
-/// Pulls each image in ``WarmupImage`` in parallel before concurrent integration
-/// tests run. The Makefile's warmup pass runs this suite first so that
-/// ``ContainerFixture/copyWarmupImage(_:)`` can tag from a pre-populated store
-/// rather than pulling on demand.
+/// Pulls each image in ``WarmupImage`` in parallel before concurrent
+/// integration tests run. The Makefile's warmup pass runs this suite first
+/// so that ``ContainerFixture/copyWarmupImage(_:)`` can tag from a
+/// pre-populated store rather than pulling on demand, and so that
+/// ``ContainerFixture/restoreWarmupImage(_:)`` has a cached tar archive to
+/// reload from after a serial test wipes the image store.
 ///
 /// When `CLITEST_CA_BUNDLE` names a readable PEM bundle, Alpine warmup images
 /// are rebuilt locally with those additional certificates. This keeps HTTPS
@@ -33,6 +35,7 @@ struct ImageWarmup {
         try await ContainerFixture.with { f in
             try f.run(["image", "pull", image.rawValue]).check("failed to pull \(image.rawValue)")
             try installAdditionalCertificates(in: image, fixture: f)
+            try f.cacheWarmupImage(image)
         }
     }
 
@@ -43,7 +46,7 @@ struct ImageWarmup {
         switch image {
         case .alpine318, .alpine320:
             break
-        case .busybox136:
+        case .busybox136, .kindestNodeV1_35_5:
             return
         }
 
