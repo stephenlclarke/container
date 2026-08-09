@@ -25,6 +25,7 @@ SWIFT_TEST_FLAGS ?= --no-parallel
 # ordinary builds; the coverage-* targets opt in via a target-specific value so
 # only those goals compile instrumented binaries.
 COVERAGE_FLAG ?=
+CONTAINER_SERVICE_WORKLOADS_PREBUILT ?= false
 export RELEASE_VERSION ?= $(shell git describe --tags --always)
 export GIT_COMMIT := $(shell git rev-parse HEAD)
 export CONTAINERIZATION_SOURCE ?= $(shell python3 -c 'import json; pin=next((p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization"), {}); location=pin.get("location", "https://github.com/stephenlclarke/containerization.git"); print(location.removeprefix("https://github.com/").removesuffix(".git"))')
@@ -117,8 +118,19 @@ verify-semantic-helper: semantic-helper
 .PHONY: journald-service
 journald-service:
 	@echo Building pinned Linux journald-service workload...
-	@$(JOURNALD_SERVICE_BUILDER_SETUP)
-	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) build --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"
+	@if [ "$(CONTAINER_SERVICE_WORKLOADS_PREBUILT)" = true ]; then \
+		test -f "$(JOURNALD_SERVICE_ARCHIVE)" && test -f "$(JOURNALD_SERVICE_MANIFEST)" || { \
+			echo "Prebuilt Linux journald-service workload is missing" >&2; \
+			exit 1; \
+		}; \
+		echo "Using verified prebuilt Linux journald-service workload"; \
+		$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+			--archive "$(JOURNALD_SERVICE_ARCHIVE)" \
+			--manifest "$(JOURNALD_SERVICE_MANIFEST)"; \
+	else \
+		$(JOURNALD_SERVICE_BUILDER_SETUP); \
+		$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) build --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"; \
+	fi
 
 .PHONY: test-journald-service
 test-journald-service:
@@ -141,8 +153,19 @@ verify-journald-service: journald-service
 .PHONY: gelf-service
 gelf-service:
 	@echo Building pinned Linux GELF TCP service workload...
-	@$(GELF_SERVICE_BUILDER_SETUP)
-	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) build --output-directory "$(GELF_SERVICE_BUILD_DIR)"
+	@if [ "$(CONTAINER_SERVICE_WORKLOADS_PREBUILT)" = true ]; then \
+		test -f "$(GELF_SERVICE_ARCHIVE)" && test -f "$(GELF_SERVICE_MANIFEST)" || { \
+			echo "Prebuilt Linux GELF TCP service workload is missing" >&2; \
+			exit 1; \
+		}; \
+		echo "Using verified prebuilt Linux GELF TCP service workload"; \
+		$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+			--archive "$(GELF_SERVICE_ARCHIVE)" \
+			--manifest "$(GELF_SERVICE_MANIFEST)"; \
+	else \
+		$(GELF_SERVICE_BUILDER_SETUP); \
+		$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) build --output-directory "$(GELF_SERVICE_BUILD_DIR)"; \
+	fi
 
 .PHONY: test-gelf-service
 test-gelf-service:
