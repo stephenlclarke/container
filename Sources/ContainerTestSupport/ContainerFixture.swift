@@ -83,14 +83,16 @@ public final class ContainerFixture: Sendable {
     public static func with<T>(_ body: (ContainerFixture) async throws -> T) async throws -> T {
         let testID = String(UUID().uuidString.prefix(8)).lowercased()
 
+        #if canImport(Testing)
+        let currentTest = Test.current
         let testName =
-            Test.current.map { $0.name.hasSuffix("()") ? String($0.name.dropLast(2)) : $0.name }
+            currentTest.map { $0.name.hasSuffix("()") ? String($0.name.dropLast(2)) : $0.name }
             ?? testID
         // Test.current is a value describing the running test, not an instance of the suite
         // type, so `type(of:)` always yields `Test` itself. Derive the suite from the test's
         // fully-qualified ID instead (e.g. "IntegrationTests.TestCLIStatus/explicitTableFormat()/...")
         // — the same identifier format used in the swift-testing event-stream JSON.
-        let testIdentifier = Test.current.map { "\($0.id)" }
+        let testIdentifier = currentTest.map { "\($0.id)" }
         let suiteName = testIdentifier?.split(separator: "/", maxSplits: 1).first.map(String.init) ?? "unknown"
 
         // Swift Testing doesn't expose a stable per-case identifier or the case's arguments
@@ -98,6 +100,12 @@ public final class ContainerFixture: Sendable {
         // their concurrently-running cases, so fall back to the per-invocation `testID` to keep
         // each case's log file distinct.
         let isParameterized = Test.Case.current?.isParameterized ?? false
+        #else
+        let testName = testID
+        let testIdentifier: String? = nil
+        let suiteName = "unknown"
+        let isParameterized = false
+        #endif
         let logFileName = isParameterized ? "\(testName)-\(testID).log" : "\(testName).log"
 
         // Set up logging before any fixture work (scratch dir creation, etc.) so a "test start"
