@@ -349,13 +349,31 @@ private final class TLSHandshakeObserver: ChannelInboundHandler, @unchecked Send
         context: ChannelHandlerContext,
         error: any Error
     ) {
-        completion.complete(.failure(error))
-        context.fireErrorCaught(error)
+        let mappedError = SyslogTLSHandshakeErrorMapper.map(error)
+        completion.complete(.failure(mappedError))
+        context.fireErrorCaught(mappedError)
     }
 
     func channelInactive(context: ChannelHandlerContext) {
         completion.complete(.failure(SyslogProviderError.transportClosed))
         context.fireChannelInactive()
+    }
+}
+
+enum SyslogTLSHandshakeErrorMapper {
+    /// Normalizes BoringSSL's public trust-verification signal without
+    /// reclassifying transport, protocol, or post-handshake identity failures.
+    static func map(_ error: any Error) -> any Error {
+        guard
+            let tlsError = error as? NIOSSLError,
+            case .handshakeFailed(.sslError(let errorStack)) = tlsError,
+            errorStack.contains(where: {
+                $0.description.contains("CERTIFICATE_VERIFY_FAILED")
+            })
+        else {
+            return error
+        }
+        return SyslogProviderError.tlsTrustVerificationFailed
     }
 }
 

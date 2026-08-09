@@ -341,7 +341,7 @@ struct NIOSyslogTransportLoopbackTests {
 
             // A self-signed peer is rejected during connect, not deferred to
             // the first log write.
-            await #expect(throws: (any Error).self) {
+            await #expect(throws: SyslogProviderError.tlsTrustVerificationFailed) {
                 try await factory.connect(
                     to: endpoint,
                     tls: SyslogTLSConfiguration(
@@ -368,6 +368,14 @@ struct NIOSyslogTransportLoopbackTests {
             )
             try await unverified.close(timeout: .seconds(2))
         }
+    }
+
+    @Test func tlsTrustErrorMapperPreservesNonTrustFailures() {
+        let error = SyslogTLSHandshakeErrorMapper.map(
+            SyslogProviderError.transportClosed
+        )
+
+        #expect(error as? SyslogProviderError == .transportClosed)
     }
 
     @Test func tlsHandshakeTimeoutClosesAStalledLoopbackPeer() async throws {

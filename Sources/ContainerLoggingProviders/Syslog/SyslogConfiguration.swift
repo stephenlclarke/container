@@ -41,6 +41,7 @@ public enum SyslogProviderError: Error, Equatable, Sendable {
     case invalidSessionFence
     case readUnsupported
     case invalidTLSConfiguration(String)
+    case tlsTrustVerificationFailed
     case tlsIdentityVerificationFailed
 }
 
