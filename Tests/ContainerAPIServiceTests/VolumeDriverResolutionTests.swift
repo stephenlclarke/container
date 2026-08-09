@@ -222,7 +222,13 @@ struct VolumeDriverResolutionTests {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test(
+        .enabled(
+            if: dockerCLIIsAvailable(),
+            "requires the Docker CLI interoperability client"
+        ),
+        .timeLimit(.minutes(1))
+    )
     func dockerCLIVolumeCreateRejectsUnavailableDriverBeforeNativeAllocation() async throws {
         try await withTemporaryVolumeService {
             volumes,
@@ -402,4 +408,15 @@ struct VolumeDriverResolutionTests {
 private struct DockerCLIResult {
     let status: Int32
     let output: String
+}
+
+private func dockerCLIIsAvailable() -> Bool {
+    let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+    return path.split(separator: ":").contains { directory in
+        FileManager.default.isExecutableFile(
+            atPath: URL(fileURLWithPath: String(directory))
+                .appendingPathComponent("docker")
+                .path
+        )
+    }
 }

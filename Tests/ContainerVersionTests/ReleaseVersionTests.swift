@@ -96,7 +96,7 @@ struct ReleaseVersionTests {
     }
 
     @Test
-    func engineAPIVersionMatchesResolvedPackage() throws {
+    func engineAPIVersionMatchesResolvedPackageOrPinnedManifestDeclaration() throws {
         let expected = try Self.expectedEngineAPIVersion()
         #expect(ReleaseVersion.containerEngineAPIVersion() == expected)
     }
@@ -117,7 +117,23 @@ struct ReleaseVersionTests {
             }
         )
         let state = try #require(pin["state"] as? [String: Any])
-        return try #require(state["version"] as? String)
+        if let version = state["version"] as? String {
+            return version
+        }
+
+        _ = try #require(state["revision"] as? String)
+        let manifest = try String(contentsOfFile: "Package.swift", encoding: .utf8)
+        let expression = try NSRegularExpression(
+            pattern:
+                #"let\s+containerEngineAPIVersion\s*=\s*Version\(\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*\)"#
+        )
+        let range = NSRange(manifest.startIndex..<manifest.endIndex, in: manifest)
+        let match = try #require(expression.firstMatch(in: manifest, range: range))
+        let components = try (1...3).map { index in
+            let range = try #require(Range(match.range(at: index), in: manifest))
+            return String(manifest[range])
+        }
+        return components.joined(separator: ".")
     }
 
 }

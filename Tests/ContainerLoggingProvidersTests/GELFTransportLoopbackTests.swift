@@ -210,7 +210,7 @@ struct GELFTransportLoopbackTests {
         }
     }
 
-    @Test func productionTCPEOFReconnectsAndResendsSameGoldenFrame() async throws {
+    @Test func productionTCPEOFReconnectsAndDeliversGoldenFrame() async throws {
         try await withGELFEventLoopGroup { group in
             let framePromise = group.next().makePromise(of: Data.self)
             let frameCapture = GELFNULFrameCaptureHandler(promise: framePromise)
@@ -237,9 +237,38 @@ struct GELFTransportLoopbackTests {
                 do {
                     _ = try await gelfTestBoundedValue(router.firstConnectionReady)
                     try await router.closeFirstConnection()
-                    try await Task.sleep(for: .milliseconds(20))
 
-                    try await session.write(gelfRecord(payload: Data("loopback".utf8)))
+                    let reconnectDeadline = ContinuousClock().now + .seconds(2)
+                    var probeSequence: UInt64 = 1
+                    while router.connectionCount < 2,
+                        ContinuousClock().now < reconnectDeadline
+                    {
+                        try await session.write(
+                            gelfRecord(
+                                payload: Data("eof-probe-\(probeSequence)".utf8),
+                                sequence: probeSequence
+                            )
+                        )
+                        probeSequence += 1
+                        await Task.yield()
+                    }
+                    guard router.connectionCount == 2 else {
+                        Issue.record("GELF TCP client did not reconnect after server EOF")
+                        return
+                    }
+
+                    // Depending on when the local TCP stack reports EOF, the
+                    // first post-reconnect record can be Docker's recovery
+                    // settlement frame. Two byte-identical writes prove the
+                    // production transport recovers without making timing an
+                    // assertion; the scripted session test covers the exact
+                    // drop count.
+                    try await session.write(
+                        gelfRecord(payload: Data("loopback".utf8), sequence: probeSequence)
+                    )
+                    try await session.write(
+                        gelfRecord(payload: Data("loopback".utf8), sequence: probeSequence)
+                    )
                     let frame = try await gelfTestBoundedValue(framePromise.futureResult)
                     var golden = gelfLoopbackGoldenJSON
                     golden.append(0)

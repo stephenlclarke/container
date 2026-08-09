@@ -698,7 +698,7 @@ struct ContainerLogsTests {
                 to: DockerHTTPRequest(method: .get, target: "/version")
             )
             #expect(versionResponse.status == 200)
-            let versionObject = try engineJSONObject(versionResponse)
+            let versionObject = try await engineJSONObject(versionResponse)
             #expect(versionObject["Version"] as? String == "test-version")
             #expect(versionObject["ApiVersion"] as? String == "1.53")
             #expect(versionObject["MinAPIVersion"] as? String == "1.44")
@@ -710,7 +710,7 @@ struct ContainerLogsTests {
                 )
             )
             #expect(runningListResponse.status == 200)
-            #expect(try engineJSONArray(runningListResponse).isEmpty)
+            #expect(try await engineJSONArray(runningListResponse).isEmpty)
 
             let listResponse = await client.respond(
                 to: DockerHTTPRequest(
@@ -720,7 +720,7 @@ struct ContainerLogsTests {
                 )
             )
             #expect(listResponse.status == 200)
-            let listObjects = try engineJSONArray(listResponse)
+            let listObjects = try await engineJSONArray(listResponse)
             #expect(listObjects.count == 1)
             let listObject = try #require(listObjects.first)
             #expect(listObject["Id"] as? String == id)
@@ -743,13 +743,13 @@ struct ContainerLogsTests {
                 )
             )
             #expect(waitResponse.status == 200)
-            #expect(try engineJSONObject(waitResponse)["StatusCode"] as? Int == 0)
+            #expect(try await engineJSONObject(waitResponse)["StatusCode"] as? Int == 0)
 
             let infoResponse = await client.respond(
                 to: DockerHTTPRequest(method: .get, target: "/v1.53/info")
             )
             #expect(infoResponse.status == 200)
-            let infoObject = try engineJSONObject(infoResponse)
+            let infoObject = try await engineJSONObject(infoResponse)
             #expect(infoObject["ID"] as? String == "test-authority")
             #expect(infoObject["Containers"] as? Int == 1)
             #expect(infoObject["ContainersRunning"] as? Int == 0)
@@ -767,7 +767,7 @@ struct ContainerLogsTests {
                 )
             )
             #expect(inspectResponse.status == 200)
-            let inspectObject = try engineJSONObject(inspectResponse)
+            let inspectObject = try await engineJSONObject(inspectResponse)
             #expect(inspectObject["Id"] as? String == id)
             #expect(inspectObject["Driver"] as? String == "apple-container")
             #expect(inspectObject["LogPath"] as? String == bundle.containerJSONFileLog.path)
@@ -932,7 +932,7 @@ struct ContainerLogsTests {
             )
             #expect(stoppedResizeResponse.status == 409)
             #expect(
-                try engineJSONObject(stoppedResizeResponse)["message"]
+                try await engineJSONObject(stoppedResizeResponse)["message"]
                     as? String == "container \(id) is not running"
             )
 
@@ -2389,22 +2389,61 @@ struct ContainerLogsTests {
 
     private func engineJSONObject(
         _ response: DockerHTTPResponse
-    ) throws -> [String: Any] {
-        guard case .bytes(let data) = response.body else {
-            throw EngineResponseFixtureError("expected Engine JSON byte response")
-        }
+    ) async throws -> [String: Any] {
+        let data = try await engineJSONData(response)
         let object = try JSONSerialization.jsonObject(with: data)
         return try #require(object as? [String: Any])
     }
 
     private func engineJSONArray(
         _ response: DockerHTTPResponse
-    ) throws -> [[String: Any]] {
-        guard case .bytes(let data) = response.body else {
-            throw EngineResponseFixtureError("expected Engine JSON byte response")
-        }
+    ) async throws -> [[String: Any]] {
+        let data = try await engineJSONData(response)
         let object = try JSONSerialization.jsonObject(with: data)
         return try #require(object as? [[String: Any]])
+    }
+
+    private func engineJSONData(_ response: DockerHTTPResponse) async throws -> Data {
+        switch response.body {
+        case .bytes(let data):
+            return data
+        case .managedStream(let session):
+            var data = Data()
+            do {
+                while let chunk = try await session.nextChunk() {
+                    data.append(chunk)
+                    guard data.count <= 4 * 1024 * 1024 else {
+                        throw EngineResponseFixtureError(
+                            "Engine JSON response exceeded the 4 MiB fixture limit"
+                        )
+                    }
+                }
+            } catch {
+                await session.cancel()
+                throw error
+            }
+            await session.close()
+            return data
+        default:
+            throw EngineResponseFixtureError(
+                "expected Engine JSON response (status: \(response.status), body: \(engineResponseBodyKind(response.body)))"
+            )
+        }
+    }
+
+    private func engineResponseBodyKind(_ body: DockerHTTPBody) -> String {
+        switch body {
+        case .bytes:
+            "bytes"
+        case .managedStream:
+            "managedStream"
+        case .stream:
+            "stream"
+        case .hijack:
+            "hijack"
+        case .webSocket:
+            "webSocket"
+        }
     }
 
     private func service(appRoot: URL, logLabel: String) throws -> ContainersService {
