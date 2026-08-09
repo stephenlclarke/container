@@ -41,7 +41,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
 
         let storedInterface = try #require(configuration.interfaces.first as? NATInterface)
         #expect(configuration.interfaces.count == 1)
-        #expect(storedInterface.ipv4Address.description == "192.168.64.2/24")
+        #expect(try #require(storedInterface.ipv4Address).description == "192.168.64.2/24")
         #expect(storedInterface.ipv4Gateway?.description == "192.168.64.1")
         #expect(storedInterface.mtu == 1280)
     }

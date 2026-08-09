@@ -271,7 +271,6 @@ extension XPCMessage {
 
     public func set(key: String, value: FileHandle) {
         let fd = xpc_fd_create(value.fileDescriptor)
-        try? value.close()
         lock.withLock {
             xpc_dictionary_set_value(self.object, key, fd)
         }
@@ -312,7 +311,6 @@ extension XPCMessage {
                 )
             }
             xpc_array_append_value(fdArray, xpcFd)
-            try? fh.close()
         }
         lock.withLock {
             xpc_dictionary_set_value(self.object, key, fdArray)

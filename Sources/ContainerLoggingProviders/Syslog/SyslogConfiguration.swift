@@ -370,8 +370,10 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
             throw SyslogProviderError.unknownOption(unknown)
         }
 
+        let configuredAddress = options["syslog-address"] ?? ""
+        try validateConfiguredUnixSocketExists(configuredAddress)
         let endpoint = try SyslogEndpoint.parse(
-            options["syslog-address"] ?? "",
+            configuredAddress,
             semanticService: semanticService
         )
         try validateUnixSocketExists(for: endpoint)
@@ -434,6 +436,22 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
     /// Keep the check limited to existence: Moby's configuration path uses
     /// `stat`, while the transport remains responsible for reporting a
     /// connection or socket-type failure during start.
+    private static func validateConfiguredUnixSocketExists(
+        _ address: String
+    ) throws {
+        guard
+            let components = URLComponents(string: address),
+            components.scheme == "unix" || components.scheme == "unixgram",
+            !components.percentEncodedPath.isEmpty,
+            let path = components.percentEncodedPath.removingPercentEncoding
+        else {
+            return
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw SyslogProviderError.unixSocketDoesNotExist(path)
+        }
+    }
+
     private static func validateUnixSocketExists(for endpoint: SyslogEndpoint) throws {
         let path: Data
         switch endpoint {

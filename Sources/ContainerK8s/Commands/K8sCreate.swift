@@ -158,7 +158,7 @@ public struct K8sCreate: AsyncParsableCommand {
         try await K8sHelper.waitForNodeBooted(containerId: name, client: client, log: log)
 
         let snapshot = try await client.get(id: name)
-        guard let vmIP = snapshot.networks.first?.ipv4Address.address.description else {
+        guard let vmIP = snapshot.networks.first?.ipv4Address?.address.description else {
             throw ContainerizationError(.internalError, message: "no VM IP for control plane \(name)")
         }
         var sans = ["127.0.0.1"]

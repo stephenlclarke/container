@@ -27,37 +27,37 @@ import Testing
 struct XPCClientTests {
     @Test(arguments: [false, true])
     func boxedFileHandlesCannotCloseReusedDescriptors(useArray: Bool) throws {
-        let message = XPCMessage(route: "file-handles")
-        var source: FileHandle? = try FileHandle(
+        var message: XPCMessage? = XPCMessage(route: "file-handles")
+        let source = try FileHandle(
             forReadingFrom: URL(fileURLWithPath: "/dev/null")
         )
-        let transferredDescriptor = try #require(source?.fileDescriptor)
+        let sourceDescriptor = source.fileDescriptor
         if useArray {
-            try message.set(
+            try message?.set(
                 key: "file-handles",
-                value: [try #require(source)]
+                value: [source]
             )
         } else {
-            message.set(
+            message?.set(
                 key: "file-handle",
-                value: try #require(source)
+                value: source
             )
         }
+        try source.close()
 
         let replacement = open("/dev/null", O_RDONLY | O_CLOEXEC)
         #expect(replacement >= 0)
-        if replacement != transferredDescriptor {
+        if replacement != sourceDescriptor {
             #expect(
-                dup2(replacement, transferredDescriptor)
-                    == transferredDescriptor
+                dup2(replacement, sourceDescriptor)
+                    == sourceDescriptor
             )
             Darwin.close(replacement)
         }
 
-        try source?.close()
-        source = nil
-        #expect(fcntl(transferredDescriptor, F_GETFD) >= 0)
-        Darwin.close(transferredDescriptor)
+        message = nil
+        #expect(fcntl(sourceDescriptor, F_GETFD) >= 0)
+        Darwin.close(sourceDescriptor)
     }
 
     @Test(arguments: [0, 1, 2])

@@ -117,6 +117,7 @@ struct K8sNodeRowTests {
         #expect(cols[2] == "worker")  // ROLE
         #expect(cols[4] == "\(cpus)")  // CPUS
         #expect(cols[5] == "\(memoryMiB) MB")  // MEMORY
+        #expect(cols[6].isEmpty)  // ADDR: IPv4 is optional
     }
 
     @Test func quietValueIsNodeID() throws {
