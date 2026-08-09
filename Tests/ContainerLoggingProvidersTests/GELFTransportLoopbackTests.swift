@@ -301,7 +301,7 @@ struct GELFTransportLoopbackTests {
                 )
                 Issue.record("expected a refused TCP GELF connection")
             } catch let error as GELFProviderError {
-                guard case let .connectionFailed(actualEndpoint, reason) = error else {
+                guard case .connectionFailed(let actualEndpoint, let reason) = error else {
                     Issue.record("unexpected GELF connection error: \(error)")
                     return
                 }

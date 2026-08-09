@@ -274,10 +274,9 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 else {
                     throw CocoaError(.fileReadInvalidFileName)
                 }
-                let persistence = try
-                    FileContainerLogLifecycleLedgerPersistenceV1(
-                        fileURL: entry
-                    )
+                let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+                    fileURL: entry
+                )
                 guard let data = try await persistence.load() else {
                     throw CocoaError(.fileReadCorruptFile)
                 }
@@ -289,7 +288,8 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                     if let existing = referencesByObjectID[
                         reference.protectedStoreObjectID
                     ], existing != reference {
-                        throw AuthorityRemoteLogDriverPlaneError
+                        throw
+                            AuthorityRemoteLogDriverPlaneError
                             .protectedEffectReferenceConflict(
                                 reference.protectedStoreObjectID
                             )
@@ -604,14 +604,15 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
             !readerRuns.values.contains(where: {
                 $0.request.containerID == containerID
                     && $0.request.providerGeneration
-                    == resolved.providerGenerationAtResolution
+                        == resolved.providerGenerationAtResolution
             }),
             let selection = await providers.registry.selection(
                 providerID: resolved.providerIdentity.id,
                 generation: resolved.providerGenerationAtResolution
             )
         else {
-            throw AuthorityRemoteLogDriverPlaneError
+            throw
+                AuthorityRemoteLogDriverPlaneError
                 .providerGenerationNotTerminal(
                     containerID: containerID,
                     generation: configuration.logging.resolved?
@@ -668,7 +669,8 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                 generation: resolved.providerGenerationAtResolution
             )
         else {
-            throw AuthorityRemoteLogDriverPlaneError
+            throw
+                AuthorityRemoteLogDriverPlaneError
                 .providerGenerationNotTerminal(
                     containerID: containerID,
                     generation: resolved.providerGenerationAtResolution

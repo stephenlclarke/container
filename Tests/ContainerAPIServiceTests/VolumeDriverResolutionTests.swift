@@ -14,7 +14,6 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-@testable import ContainerAPIService
 import ContainerEngineGateway
 import ContainerEngineLogging
 import ContainerEngineProviderSession
@@ -29,6 +28,8 @@ import Logging
 import SystemPackage
 import Testing
 
+@testable import ContainerAPIService
+
 struct VolumeDriverResolutionTests {
     @Test(arguments: ["", "local"])
     func resolvesBuiltinLocalDriver(_ driver: String) throws {
@@ -41,7 +42,7 @@ struct VolumeDriverResolutionTests {
             _ = try VolumesService.resolveDriver(driver)
         }
 
-        guard case let .driverNotSupported(rejectedDriver)? = error else {
+        guard case .driverNotSupported(let rejectedDriver)? = error else {
             Issue.record("expected unavailable volume-driver rejection")
             return
         }
@@ -58,7 +59,7 @@ struct VolumeDriverResolutionTests {
                 )
                 Issue.record("expected unavailable volume-driver rejection")
             } catch let error as VolumeError {
-                guard case let .driverNotSupported(rejectedDriver) = error else {
+                guard case .driverNotSupported(let rejectedDriver) = error else {
                     Issue.record("expected unavailable volume-driver rejection, got \(error)")
                     return
                 }
@@ -114,7 +115,7 @@ struct VolumeDriverResolutionTests {
                 )
             )
             #expect(response.status == 404)
-            guard case let .bytes(body) = response.body else {
+            guard case .bytes(let body) = response.body else {
                 Issue.record("expected a Docker error response body")
                 return
             }
@@ -159,14 +160,15 @@ struct VolumeDriverResolutionTests {
                     ContainerEngineProviderCapability(
                         identifier: "engine.route.VolumeCreate",
                         status: .native
-                    ),
+                    )
                 ]
             )
             let fingerprint = try ContainerEngineProviderFingerprint(
                 declaration: declaration,
                 stateRootUUID: UUID()
             )
-            let providerSocket = volumeRoot
+            let providerSocket =
+                volumeRoot
                 .deletingLastPathComponent()
                 .appendingPathComponent("provider.sock")
                 .path
@@ -200,7 +202,7 @@ struct VolumeDriverResolutionTests {
             await provider.shutdown()
 
             #expect(response.status == 404)
-            guard case let .bytes(body) = response.body else {
+            guard case .bytes(let body) = response.body else {
                 Issue.record("expected a Docker error response body")
                 return
             }
@@ -249,7 +251,7 @@ struct VolumeDriverResolutionTests {
                     ContainerEngineProviderCapability(
                         identifier: "engine.route.VolumeCreate",
                         status: .native
-                    ),
+                    )
                 ]
             )
             let fingerprint = try ContainerEngineProviderFingerprint(
@@ -327,11 +329,12 @@ struct VolumeDriverResolutionTests {
         let standardError = Pipe()
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = [
-            "docker",
-            "--host",
-            "unix://\(socketPath)",
-        ] + arguments
+        process.arguments =
+            [
+                "docker",
+                "--host",
+                "unix://\(socketPath)",
+            ] + arguments
         var environment = ProcessInfo.processInfo.environment
         environment["DOCKER_CONFIG"] = configurationRoot.path
         environment["DOCKER_HOST"] = "unix://\(socketPath)"

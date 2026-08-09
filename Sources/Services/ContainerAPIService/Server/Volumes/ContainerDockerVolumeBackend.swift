@@ -15,20 +15,21 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerEngineLogging
-import ContainerizationError
 import ContainerResource
+import ContainerizationError
 import Foundation
 
 /// Projects the authority-owned volume controller onto the Docker Engine API.
 /// It never opens a Docker-specific catalog or bypasses native driver
 /// resolution, so a rejected driver cannot leave a public-only allocation.
 public struct ContainerDockerVolumeBackend: DockerVolumeBackend, Sendable {
-    typealias CreateVolume = @Sendable (
-        _ name: String,
-        _ driver: String,
-        _ driverOptions: [String: String],
-        _ labels: [String: String]
-    ) async throws -> VolumeConfiguration
+    typealias CreateVolume =
+        @Sendable (
+            _ name: String,
+            _ driver: String,
+            _ driverOptions: [String: String],
+            _ labels: [String: String]
+        ) async throws -> VolumeConfiguration
 
     private let createVolume: CreateVolume
 
@@ -82,7 +83,7 @@ public struct ContainerDockerVolumeBackend: DockerVolumeBackend, Sendable {
         }
         if let error = error as? VolumeError {
             switch error {
-            case let .driverNotSupported(driver):
+            case .driverNotSupported(let driver):
                 return .volumeDriverNotFound(driver)
             case .invalidVolumeName:
                 return .invalidParameter(error.localizedDescription)

@@ -14,11 +14,12 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-@testable import ContainerAPIService
 import ContainerEngineLogging
 import ContainerResource
 import Foundation
 import Testing
+
+@testable import ContainerAPIService
 
 struct ContainerDockerVolumeBackendTests {
     @Test func usesTheNativeAuthorityForBuiltinDriverResolution() async throws {

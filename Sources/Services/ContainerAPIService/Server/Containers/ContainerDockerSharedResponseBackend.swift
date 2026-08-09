@@ -162,11 +162,13 @@ extension ContainerDockerLoggingBackend:
         ]
         return [
             "Platform": ["Name": "container Engine"],
-            "Components": [[
-                "Name": "Engine",
-                "Version": serverVersion,
-                "Details": details,
-            ]],
+            "Components": [
+                [
+                    "Name": "Engine",
+                    "Version": serverVersion,
+                    "Details": details,
+                ]
+            ],
             "Version": serverVersion,
             "ApiVersion": "1.53",
             "MinAPIVersion": "1.44",
@@ -190,7 +192,8 @@ extension ContainerDockerLoggingBackend:
             references[dockerContainerID(snapshot)] = snapshot
             references[dockerContainerName(snapshot)] = snapshot
         }
-        var selected = snapshots
+        var selected =
+            snapshots
             .filter { request.all || isRunning($0) }
             .sorted {
                 if $0.configuration.creationDate != $1.configuration.creationDate {
@@ -318,7 +321,8 @@ extension ContainerDockerLoggingBackend:
                 return nil
             }
             let variants = groupedResources.flatMap(\.variants)
-            let variant = variants.first { $0.platform == .current }
+            let variant =
+                variants.first { $0.platform == .current }
                 ?? variants.first { $0.platform.os == "linux" }
                 ?? variants.first
             return DockerImageGroup(
@@ -408,7 +412,8 @@ extension ContainerDockerLoggingBackend:
     }
 
     fileprivate static func repositoryName(_ reference: String) -> String {
-        let withoutDigest = reference.split(separator: "@", maxSplits: 1)
+        let withoutDigest =
+            reference.split(separator: "@", maxSplits: 1)
             .first.map(String.init) ?? reference
         guard let slash = withoutDigest.lastIndex(of: "/") else {
             return withoutDigest.split(separator: ":", maxSplits: 1)
@@ -467,8 +472,9 @@ extension ContainerDockerLoggingBackend:
             return [:]
         }
         let data = try JSONEncoder().encode(value)
-        guard let object = try JSONSerialization.jsonObject(with: data)
-            as? [String: Any]
+        guard
+            let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any]
         else {
             throw DockerLoggingBackendError.server(
                 "Container image metadata is not a JSON object"
@@ -496,7 +502,7 @@ extension ContainerDockerLoggingBackend:
             "Status": containerListStatus(snapshot, now: now),
             "HostConfig": ["NetworkMode": networkMode(configuration)],
             "NetworkSettings": [
-                "Networks": listNetworks(snapshot),
+                "Networks": listNetworks(snapshot)
             ],
             "Mounts": configuration.mounts.map(mountPointObject),
             "Health": [
@@ -641,8 +647,8 @@ extension ContainerDockerLoggingBackend:
     ) -> [String: Any] {
         let active =
             snapshot.status == .running
-                || snapshot.status == .paused
-                || snapshot.status == .stopping
+            || snapshot.status == .paused
+            || snapshot.status == .stopping
         var result: [String: Any] = [
             "Status": dockerStatus(snapshot),
             "Running": active,
@@ -677,7 +683,7 @@ extension ContainerDockerLoggingBackend:
         let exposed = Set(
             configuration.exposedPorts
                 + configuration.publishedPorts.flatMap { port in
-                    (0 ..< port.count).map {
+                    (0..<port.count).map {
                         "\(port.containerPort + $0)/\(port.proto.rawValue)"
                     }
                 }
@@ -900,8 +906,8 @@ extension ContainerDockerLoggingBackend:
         }
         let mode =
             mount.options.isEmpty
-                ? ""
-                : ":\(mount.options.joined(separator: ","))"
+            ? ""
+            : ":\(mount.options.joined(separator: ","))"
         return "\(mount.source):\(mount.destination)\(mode)"
     }
 
@@ -937,7 +943,7 @@ extension ContainerDockerLoggingBackend:
     ) -> [String: Any] {
         var result = [String: Any]()
         for port in ports {
-            for offset in 0 ..< port.count {
+            for offset in 0..<port.count {
                 let key = "\(port.containerPort + offset)/\(port.proto.rawValue)"
                 result[key] = [
                     [
@@ -1152,7 +1158,7 @@ extension ContainerDockerLoggingBackend:
         let ports = Set(
             configuration.exposedPorts
                 + configuration.publishedPorts.flatMap { port in
-                    (0 ..< port.count).map {
+                    (0..<port.count).map {
                         "\(port.containerPort + $0)/\(port.proto.rawValue)"
                     }
                 }
@@ -1162,10 +1168,11 @@ extension ContainerDockerLoggingBackend:
             guard let number = UInt16(parts[0]) else {
                 return false
             }
-            let matchesProtocol = protocolName.map {
-                parts.count == 2 && parts[1] == Substring($0)
-            } ?? true
-            return lower ... upper ~= number && matchesProtocol
+            let matchesProtocol =
+                protocolName.map {
+                    parts.count == 2 && parts[1] == Substring($0)
+                } ?? true
+            return lower...upper ~= number && matchesProtocol
         }
     }
 
@@ -1196,7 +1203,7 @@ extension ContainerDockerLoggingBackend:
         var result = [[String: Any]]()
         var published = Set<String>()
         for port in configuration.publishedPorts {
-            for offset in 0 ..< port.count {
+            for offset in 0..<port.count {
                 let privatePort = port.containerPort + offset
                 let protocolName = port.proto.rawValue
                 published.insert("\(privatePort)/\(protocolName)")
@@ -1209,8 +1216,7 @@ extension ContainerDockerLoggingBackend:
             }
         }
         for exposed in configuration.exposedPorts.sorted(by: utf8Less)
-            where !published.contains(exposed)
-        {
+        where !published.contains(exposed) {
             let parts = exposed.split(separator: "/", maxSplits: 1)
             guard let privatePort = UInt16(parts[0]) else {
                 continue
@@ -1232,8 +1238,7 @@ extension ContainerDockerLoggingBackend:
             }
         )
         for attachment in snapshot.configuration.networks
-            where result[attachment.network] == nil
-        {
+        where result[attachment.network] == nil {
             result[attachment.network] = [
                 "IPAMConfig": NSNull(),
                 "Links": NSNull(),
@@ -1290,21 +1295,21 @@ extension ContainerDockerLoggingBackend:
             return "Less than a second"
         case 1:
             return "1 second"
-        case 2 ..< 60:
+        case 2..<60:
             return "\(seconds) seconds"
-        case 60 ..< 120:
+        case 60..<120:
             return "About a minute"
-        case 120 ..< 3600:
+        case 120..<3600:
             return "\(seconds / 60) minutes"
-        case 3600 ..< 7200:
+        case 3600..<7200:
             return "About an hour"
-        case 7200 ..< 172_800:
+        case 7200..<172_800:
             return "\(seconds / 3600) hours"
-        case 172_800 ..< 1_209_600:
+        case 172_800..<1_209_600:
             return "\(seconds / 86400) days"
-        case 1_209_600 ..< 5_184_000:
+        case 1_209_600..<5_184_000:
             return "\(seconds / 604_800) weeks"
-        case 5_184_000 ..< 63_072_000:
+        case 5_184_000..<63_072_000:
             return "\(seconds / 2_592_000) months"
         default:
             return "\(seconds / 31_536_000) years"

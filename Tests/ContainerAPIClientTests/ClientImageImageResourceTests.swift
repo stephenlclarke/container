@@ -87,7 +87,7 @@ struct ClientImageImageResourceTests {
                     digest: manifestDigest,
                     size: Int64(manifestData.count),
                     platform: Platform(arch: "amd64", os: "linux")
-                )
+                ),
             ]
         )
         let indexData = try JSONEncoder().encode(index)

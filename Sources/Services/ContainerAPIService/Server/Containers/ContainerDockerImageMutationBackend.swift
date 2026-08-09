@@ -16,10 +16,10 @@
 
 import ContainerAPIClient
 import ContainerEngineLogging
+import ContainerPersistence
 import Containerization
 import ContainerizationError
 import ContainerizationOCI
-import ContainerPersistence
 import Foundation
 
 extension ContainerDockerLoggingBackend: DockerImageMutationBackend {
@@ -60,9 +60,10 @@ extension ContainerDockerLoggingBackend: DockerImageMutationBackend {
         containerSystemConfig: ContainerSystemConfig
     ) async throws -> DockerImagePullResult {
         try validatePublicRegistryAuth(request.registryAuth)
-        let sourceReference = request.tag.map {
-            "\(request.fromImage):\($0)"
-        } ?? request.fromImage
+        let sourceReference =
+            request.tag.map {
+                "\(request.fromImage):\($0)"
+            } ?? request.fromImage
         let normalized = try ClientImage.normalizeReference(
             sourceReference,
             containerSystemConfig: containerSystemConfig
@@ -70,7 +71,8 @@ extension ContainerDockerLoggingBackend: DockerImageMutationBackend {
         let previousDigest = try await ClientImage.list()
             .first { $0.reference == normalized }?
             .digest
-        let platform = try request.platform.map(Platform.init(from:))
+        let platform =
+            try request.platform.map(Platform.init(from:))
             ?? Platform.current
         let image = try await ClientImage.pull(
             reference: sourceReference,
@@ -126,7 +128,8 @@ extension ContainerDockerLoggingBackend: DockerImageMutationBackend {
             )
         }
 
-        let removed = removesByDigest && request.force
+        let removed =
+            removesByDigest && request.force
             ? digestMatches
             : [selected]
         var results = [DockerImageDeleteResult]()

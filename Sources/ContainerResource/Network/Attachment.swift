@@ -89,9 +89,11 @@ public struct Attachment: Codable, Sendable {
         network = try container.decode(String.self, forKey: .network)
         hostname = try container.decode(String.self, forKey: .hostname)
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
-        ipv4Address = try container.decodeIfPresent(CIDRv4.self, forKey: .ipv4Address)
+        ipv4Address =
+            try container.decodeIfPresent(CIDRv4.self, forKey: .ipv4Address)
             ?? container.decodeIfPresent(CIDRv4.self, forKey: .address)
-        ipv4Gateway = try container.decodeIfPresent(IPv4Address.self, forKey: .ipv4Gateway)
+        ipv4Gateway =
+            try container.decodeIfPresent(IPv4Address.self, forKey: .ipv4Gateway)
             ?? container.decodeIfPresent(IPv4Address.self, forKey: .gateway)
         ipv6Address = try container.decodeIfPresent(CIDRv6.self, forKey: .ipv6Address)
         ipv6Gateway = try container.decodeIfPresent(IPv6Address.self, forKey: .ipv6Gateway)

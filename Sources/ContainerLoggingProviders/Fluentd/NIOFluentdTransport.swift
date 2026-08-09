@@ -312,7 +312,7 @@ enum FluentdTLSHandshakeErrorMapper {
     static func map(_ error: any Error) -> any Error {
         guard
             let tlsError = error as? NIOSSLError,
-            case let .handshakeFailed(.sslError(errorStack)) = tlsError,
+            case .handshakeFailed(.sslError(let errorStack)) = tlsError,
             errorStack.contains(where: {
                 $0.description.contains("CERTIFICATE_VERIFY_FAILED")
             })

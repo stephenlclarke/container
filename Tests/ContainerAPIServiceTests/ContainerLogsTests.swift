@@ -1066,20 +1066,26 @@ struct ContainerLogsTests {
             try objects(filters: filters).compactMap { $0["Id"] as? String }
         }
 
-        #expect(try objects(all: false).compactMap { $0["Id"] as? String }
-            == ["paused-five", "running-four"])
-        #expect(try objects(limit: 2).compactMap { $0["Id"] as? String }
-            == ["paused-five", "running-four"])
-        #expect(try ids(["label": ["role=worker"]])
-            == ["exited-two", "created-one"])
-        #expect(try ids(["status": ["exited"], "exited": ["7"]])
-            == ["exited-two"])
+        #expect(
+            try objects(all: false).compactMap { $0["Id"] as? String }
+                == ["paused-five", "running-four"])
+        #expect(
+            try objects(limit: 2).compactMap { $0["Id"] as? String }
+                == ["paused-five", "running-four"])
+        #expect(
+            try ids(["label": ["role=worker"]])
+                == ["exited-two", "created-one"])
+        #expect(
+            try ids(["status": ["exited"], "exited": ["7"]])
+                == ["exited-two"])
         #expect(try ids(["id": ["dead-th"]]) == ["dead-three"])
         #expect(try ids(["name": ["^/running-"]]) == ["running-four"])
-        #expect(try ids(["ancestor": [createdConfiguration.image.reference]])
-            == ["paused-five", "running-four", "dead-three", "exited-two", "created-one"])
-        #expect(try ids(["before": ["dead-three"]])
-            == ["exited-two", "created-one"])
+        #expect(
+            try ids(["ancestor": [createdConfiguration.image.reference]])
+                == ["paused-five", "running-four", "dead-three", "exited-two", "created-one"])
+        #expect(
+            try ids(["before": ["dead-three"]])
+                == ["exited-two", "created-one"])
         #expect(try ids(["since": ["running-four"]]) == ["paused-five"])
         #expect(try ids(["network": ["fixture-net"]]) == ["created-one"])
         #expect(try ids(["volume": ["/cache"]]) == ["created-one"])
@@ -1450,13 +1456,16 @@ struct ContainerLogsTests {
             return objects.compactMap { $0["Id"] as? String }
         }
 
-        #expect(try await listedIDs(["dangling": ["false"]])
-            == [digest, busyboxDigest])
+        #expect(
+            try await listedIDs(["dangling": ["false"]])
+                == [digest, busyboxDigest])
         #expect(try await listedIDs(["dangling": ["true"]]).isEmpty)
-        #expect(try await listedIDs(["before": ["alpine:3.20"]])
-            == [busyboxDigest])
-        #expect(try await listedIDs(["since": ["busybox:latest"]])
-            == [digest])
+        #expect(
+            try await listedIDs(["before": ["alpine:3.20"]])
+                == [busyboxDigest])
+        #expect(
+            try await listedIDs(["since": ["busybox:latest"]])
+                == [digest])
         #expect(try await listedIDs(["label": ["fixture"]]) == [digest])
 
         await #expect(
@@ -1588,7 +1597,7 @@ struct ContainerLogsTests {
             ) == [
                 DockerImageDeleteResult(
                     untagged: "fixture.local/alpine:copy"
-                ),
+                )
             ]
         )
         let capturedDelete = await fixture.capturedDelete()
