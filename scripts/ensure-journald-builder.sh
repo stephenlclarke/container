@@ -24,14 +24,14 @@ set -euo pipefail
 # Environment:
 #   CONTAINER_JOURNALD_BUILDER             Buildx builder name (default: colima)
 #   CONTAINER_JOURNALD_BUILDER_CPUS        Colima CPUs when starting (default: 4)
-#   CONTAINER_JOURNALD_BUILDER_MEMORY_GIB  Colima GiB when starting (default: 8)
+#   CONTAINER_JOURNALD_BUILDER_MEMORY_GIB  Colima GiB when starting (default: 4)
 
 readonly SELF_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_NAME="$(basename "${SELF_PATH}")"
 readonly SCRIPT_NAME
 readonly BUILDER="${CONTAINER_JOURNALD_BUILDER:-colima}"
 readonly BUILDER_CPUS="${CONTAINER_JOURNALD_BUILDER_CPUS:-4}"
-readonly BUILDER_MEMORY_GIB="${CONTAINER_JOURNALD_BUILDER_MEMORY_GIB:-8}"
+readonly BUILDER_MEMORY_GIB="${CONTAINER_JOURNALD_BUILDER_MEMORY_GIB:-4}"
 
 # Print command usage.
 usage() {
