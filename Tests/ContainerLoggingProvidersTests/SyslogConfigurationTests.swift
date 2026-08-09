@@ -156,6 +156,59 @@ struct SyslogConfigurationTests {
         #expect(udp.tls == nil)
     }
 
+    @Test func validatesUnixSocketExistenceDuringConfigurationResolution() throws {
+        let semanticService = try semanticService("unix-socket-existence")
+        let info = SyslogContainerInfo(
+            containerID: "0123456789abcdef",
+            containerName: "/api",
+            hostname: "engine-host"
+        )
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let existingStreamPath = directory.appendingPathComponent("stream.sock").path
+        let existingDatagramPath = directory.appendingPathComponent("datagram.sock").path
+        try Data().write(to: URL(fileURLWithPath: existingStreamPath))
+        try Data().write(to: URL(fileURLWithPath: existingDatagramPath))
+
+        let stream = try SyslogDriverConfiguration.resolve(
+            options: ["syslog-address": "unix://\(existingStreamPath)"],
+            info: info,
+            semanticService: semanticService
+        )
+        #expect(stream.endpoint == .unixStream(path: Data(existingStreamPath.utf8)))
+
+        let datagram = try SyslogDriverConfiguration.resolve(
+            options: ["syslog-address": "unixgram://\(existingDatagramPath)"],
+            info: info,
+            semanticService: semanticService
+        )
+        #expect(datagram.endpoint == .unixDatagram(path: Data(existingDatagramPath.utf8)))
+
+        let missingStreamPath = directory.appendingPathComponent("missing-stream.sock").path
+        #expect(throws: SyslogProviderError.unixSocketDoesNotExist(missingStreamPath)) {
+            try SyslogDriverConfiguration.resolve(
+                options: ["syslog-address": "unix://\(missingStreamPath)"],
+                info: info,
+                semanticService: semanticService
+            )
+        }
+
+        let missingDatagramPath = directory.appendingPathComponent("missing-datagram.sock").path
+        #expect(throws: SyslogProviderError.unixSocketDoesNotExist(missingDatagramPath)) {
+            try SyslogDriverConfiguration.resolve(
+                options: ["syslog-address": "unixgram://\(missingDatagramPath)"],
+                info: info,
+                semanticService: semanticService
+            )
+        }
+    }
+
     @Test func tagFieldsAndRegisteredFunctionsMatchDockerContext() throws {
         let semanticService = try semanticService("tags")
         let info = SyslogContainerInfo(

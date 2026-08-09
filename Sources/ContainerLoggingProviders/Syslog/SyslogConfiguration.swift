@@ -373,6 +373,7 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
             options["syslog-address"] ?? "",
             semanticService: semanticService
         )
+        try validateUnixSocketExists(for: endpoint)
         let facility = try SyslogFacility.parse(options["syslog-facility"] ?? "")
         let format = try SyslogMessageFormat.parse(options["syslog-format"] ?? "")
         let requestedTag = options["tag"] ?? ""
@@ -425,6 +426,30 @@ public struct SyslogDriverConfiguration: Equatable, Sendable {
             tls: tls,
             policy: policy
         )
+    }
+
+    /// Docker validates a configured Unix Syslog path while creating the
+    /// container, before any later transport effect can create a logger.
+    /// Keep the check limited to existence: Moby's configuration path uses
+    /// `stat`, while the transport remains responsible for reporting a
+    /// connection or socket-type failure during start.
+    private static func validateUnixSocketExists(for endpoint: SyslogEndpoint) throws {
+        let path: Data
+        switch endpoint {
+        case .unixStream(let value), .unixDatagram(let value):
+            path = value
+        case .system, .udp, .tcp, .tcpTLS:
+            return
+        }
+
+        guard let path = String(data: path, encoding: .utf8) else {
+            throw SyslogProviderError.malformedAddress(
+                "Unix Syslog address is not valid UTF-8"
+            )
+        }
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw SyslogProviderError.unixSocketDoesNotExist(path)
+        }
     }
 
     public static let knownOptionNames: Set<String> = [
