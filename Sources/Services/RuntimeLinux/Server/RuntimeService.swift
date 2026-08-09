@@ -257,6 +257,7 @@ public actor RuntimeService {
                         macAddress: attachmentConfig.options.macAddress,
                         requestedIPv4Address: attachmentConfig.options.requestedIPv4Address,
                         requestedIPv6Address: attachmentConfig.options.requestedIPv6Address,
+                        retainOnDisconnect: true,
                         on: session
                     )
                     if let mtu = attachmentConfig.options.mtu {
@@ -335,7 +336,7 @@ public actor RuntimeService {
                 czConfig.process.stdin = stdin
                 let hostsEntries = try Self.resolvedHosts(
                     hostname: czConfig.hostname ?? id,
-                    primaryAddress: interfaces.first?.ipv4Address.address.description,
+                    primaryAddress: interfaces.first?.ipv4Address?.address.description,
                     gatewayAddress: interfaces.first?.ipv4Gateway?.description,
                     extraHosts: config.hosts
                 )
@@ -1283,7 +1284,13 @@ public actor RuntimeService {
                     let containerIPAddress: String
                     switch publishedPort.hostAddress {
                     case .v4(_):
-                        containerIPAddress = attachment.ipv4Address.address.description
+                        guard let ipv4Address = attachment.ipv4Address else {
+                            throw ContainerizationError(
+                                .invalidArgument,
+                                message: "IPv4 published port requires an IPv4 network attachment"
+                            )
+                        }
+                        containerIPAddress = ipv4Address.address.description
                     case .v6(_):
                         guard let ipv6Address = attachment.ipv6Address else {
                             throw ContainerizationError(.invalidState, message: "cannot configure IPv6 port forwarding for container with unknown IPv6 address")
@@ -1362,7 +1369,7 @@ public actor RuntimeService {
                 )
                 return attachments.map { attachment in
                     RuntimeDNSAddress(
-                        ipv4: attachment.ipv4Address.address,
+                        ipv4: attachment.ipv4Address?.address,
                         ipv6: attachment.ipv6Address?.address
                     )
                 }

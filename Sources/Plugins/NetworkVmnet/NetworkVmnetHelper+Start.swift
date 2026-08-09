@@ -74,6 +74,9 @@ extension NetworkVmnetHelper {
         @Flag(name: .customLong("disable-ipv6"), help: "Disable IPv6 on the network")
         var disableIPv6 = false
 
+        @Flag(name: .customLong("disable-ipv4"), help: "Disable IPv4 endpoint addressing on the network")
+        var disableIPv4 = false
+
         @Option(name: .long, help: "Variant of the network helper to use.")
         var variant: Variant = {
             guard #available(macOS 26, *) else {
@@ -105,6 +108,7 @@ extension NetworkVmnetHelper {
                 let configuration = try NetworkConfiguration(
                     name: id,
                     mode: mode,
+                    enableIPv4: !disableIPv4,
                     ipv4Subnet: ipv4Subnet,
                     ipv4Gateway: ipv4Gateway,
                     ipv4AllocationRange: ipv4AllocationRange,
@@ -128,6 +132,7 @@ extension NetworkVmnetHelper {
                     routes: [
                         NetworkRoutes.status.rawValue: XPCServer.route(harness.status),
                         NetworkRoutes.allocate.rawValue: harness.allocate,
+                        NetworkRoutes.release.rawValue: XPCServer.route(harness.release),
                         NetworkRoutes.lookup.rawValue: XPCServer.route(harness.lookup),
                     ],
                     log: log

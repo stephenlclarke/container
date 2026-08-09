@@ -87,6 +87,7 @@ struct DefaultNetworkServiceTest {
             macAddress: nil,
             requestedIPv4Address: nil,
             requestedIPv6Address: nil,
+            retainOnDisconnect: false,
             session: XPCServerSession()
         ).attachment
         let second = try await service.allocate(
@@ -95,6 +96,7 @@ struct DefaultNetworkServiceTest {
             macAddress: nil,
             requestedIPv4Address: nil,
             requestedIPv6Address: nil,
+            retainOnDisconnect: false,
             session: XPCServerSession()
         ).attachment
         let shared = try await service.lookupAll(hostname: "web")
@@ -119,11 +121,60 @@ struct DefaultNetworkServiceTest {
         #expect(try response.attachments().map(\.ipv4Address) == shared.map(\.ipv4Address))
         #expect(try legacyResponse.attachments().map(\.ipv4Address) == [first.ipv4Address])
     }
+
+    @Test
+    func retainedAllocationSurvivesRuntimeSessionReleaseUntilContainerRemoval() async throws {
+        let network = RunningTestNetwork(
+            status: NetworkStatus(
+                ipv4Subnet: try CIDRv4("192.0.2.0/29"),
+                ipv4Gateway: try IPv4Address("192.0.2.1"),
+                ipv6Subnet: try CIDRv6("fd00:2026:806::/64"),
+                ipv6Gateway: try IPv6Address("fd00:2026:806::1")
+            )
+        )
+        let service = try await DefaultNetworkService(
+            network: network,
+            log: Logger(label: "DefaultNetworkServiceTest")
+        )
+        let retainedSession = XPCServerSession()
+        let transientSession = XPCServerSession()
+
+        let retained = try await service.allocate(
+            hostname: "retained",
+            aliases: [],
+            macAddress: nil,
+            requestedIPv4Address: nil,
+            requestedIPv6Address: nil,
+            retainOnDisconnect: true,
+            session: retainedSession
+        ).attachment
+        _ = try await service.allocate(
+            hostname: "transient",
+            aliases: [],
+            macAddress: nil,
+            requestedIPv4Address: nil,
+            requestedIPv6Address: nil,
+            retainOnDisconnect: false,
+            session: transientSession
+        )
+
+        await service.releaseSession(retainedSession)
+        await service.releaseSession(transientSession)
+
+        #expect(try await service.lookup(hostname: "retained")?.ipv4Address == retained.ipv4Address)
+        #expect(try await service.lookup(hostname: "transient") == nil)
+
+        try await service.release(hostname: "retained")
+        try await service.release(hostname: "retained")
+
+        #expect(try await service.lookup(hostname: "retained") == nil)
+    }
 }
 
 private actor RunningTestNetwork: Network {
     nonisolated let id = "test-network"
     nonisolated let variant: String? = nil
+    nonisolated let enableIPv4 = true
     let status: NetworkStatus?
 
     init(status: NetworkStatus) {

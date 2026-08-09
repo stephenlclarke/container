@@ -3466,6 +3466,7 @@ public actor ContainersService {
                 instanceId: id
             )
             try? ServiceManager.deregister(fullServiceLabel: label)
+            try await releaseNetworkAttachments(configuration: config)
         }
         try await self.remoteLogDriverPlane?.close(containerID: id)
 
@@ -3560,6 +3561,25 @@ public actor ContainersService {
         self.cancelRestartTasks(id: id)
         self.cancelExecTasks(id: id)
         try await self._cleanUp(id: id)
+    }
+
+    /// Release durable attachment leases only when the container itself is removed.
+    private func releaseNetworkAttachments(configuration: ContainerConfiguration) async throws {
+        guard !configuration.networks.isEmpty else {
+            return
+        }
+        guard let networksService else {
+            throw ContainerizationError(
+                .internalError,
+                message: "cannot release network attachments without the networks service"
+            )
+        }
+        for attachment in configuration.networks {
+            try await networksService.releaseAttachment(
+                network: attachment.network,
+                hostname: attachment.options.hostname
+            )
+        }
     }
 
     private func getContainerCreationOptions(id: String) throws -> ContainerCreateOptions {

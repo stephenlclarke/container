@@ -67,6 +67,8 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
 
     public nonisolated var variant: String? { "reserved" }
 
+    public nonisolated var enableIPv4: Bool { configuration.enableIPv4 }
+
     public var status: NetworkStatus? {
         stateMutex.withLock { $0.status }
     }
@@ -122,6 +124,9 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         }
 
         vmnet_network_configuration_disable_dhcp(vmnetConfiguration)
+        if !configuration.enableIPv4 {
+            vmnet_network_configuration_disable_nat44(vmnetConfiguration)
+        }
         if !configuration.enableIPv6 {
             vmnet_network_configuration_disable_nat66(vmnetConfiguration)
             vmnet_network_configuration_disable_router_advertisement(vmnetConfiguration)

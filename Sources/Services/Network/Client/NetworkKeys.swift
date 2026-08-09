@@ -24,5 +24,6 @@ public enum NetworkKeys: String {
     case network
     case requestedIPv4Address
     case requestedIPv6Address
+    case retainOnDisconnect
     case status
 }

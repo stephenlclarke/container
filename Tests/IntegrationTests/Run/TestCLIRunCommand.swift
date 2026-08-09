@@ -765,7 +765,8 @@ struct TestCLIRunCommand {
             }
 
             let inspect = try f.inspectContainer(c)
-            let ip = inspect.networks[0].ipv4Address.address.description
+            let ipv4Address = try #require(inspect.networks[0].ipv4Address)
+            let ip = ipv4Address.address.description
 
             let output = try f.doExec(c, cmd: ["cat", "/etc/hosts"])
             let lines = output.split(separator: "\n")

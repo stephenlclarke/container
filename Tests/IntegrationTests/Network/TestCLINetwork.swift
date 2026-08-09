@@ -55,7 +55,8 @@ struct TestCLINetwork {
 
             let container = try f.inspectContainer(c)
             #expect(container.networks.count > 0)
-            let ip = container.networks[0].ipv4Address.address
+            let ipv4Address = try #require(container.networks[0].ipv4Address)
+            let ip = ipv4Address.address
             let url = "http://\(ip):\(port)"
 
             // waitForContainerRunning only tells us init is running; the python http
@@ -189,7 +190,7 @@ struct TestCLINetwork {
 
             let container = try f.inspectContainer(c)
             let attachment = try #require(container.networks.first { $0.network == net })
-            #expect(attachment.ipv4Address.address == requestedAddress)
+            #expect(try #require(attachment.ipv4Address).address == requestedAddress)
         }
     }
 
@@ -275,16 +276,18 @@ struct TestCLINetwork {
                 waitUntilRunning: true
             )
 
-            let frontendAddress = try #require(
+            let frontendAttachment = try #require(
                 try f.inspectContainer(frontendService).networks.first {
                     $0.network == frontendNetwork
                 }
-            ).ipv4Address.address.description
-            let backendAddress = try #require(
+            )
+            let frontendAddress = try #require(frontendAttachment.ipv4Address).address.description
+            let backendAttachment = try #require(
                 try f.inspectContainer(backendService).networks.first {
                     $0.network == backendNetwork
                 }
-            ).ipv4Address.address.description
+            )
+            let backendAddress = try #require(backendAttachment.ipv4Address).address.description
 
             let primaryLookup = try f.doExec(client, cmd: ["nslookup", frontendService])
             #expect(primaryLookup.contains(frontendAddress))
@@ -345,7 +348,8 @@ struct TestCLINetwork {
 
                 let container = try f.inspectContainer(server)
                 #expect(container.networks.count > 0)
-                let ip = container.networks[0].ipv4Address.address
+                let ipv4Address = try #require(container.networks[0].ipv4Address)
+                let ip = ipv4Address.address
                 let serverURL = "http://\(ip):\(port)"
 
                 // Internal connection should succeed. `waitForContainerRunning` only

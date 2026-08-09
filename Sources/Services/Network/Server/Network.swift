@@ -28,6 +28,9 @@ public protocol Network: Sendable {
     /// has only a single, default variant.
     nonisolated var variant: String? { get }
 
+    /// Whether workload attachments receive an IPv4 primary address.
+    nonisolated var enableIPv4: Bool { get }
+
     /// The network's runtime status. `nil` before ``start()`` completes.
     var status: NetworkStatus? { get async }
 

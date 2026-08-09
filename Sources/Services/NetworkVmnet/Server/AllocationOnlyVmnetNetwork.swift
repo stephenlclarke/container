@@ -42,6 +42,9 @@ public actor AllocationOnlyVmnetNetwork: Network {
         guard configuration.ipv6Subnet == nil else {
             throw ContainerizationError(.unsupported, message: "IPv6 subnet assignment is not yet implemented")
         }
+        guard configuration.enableIPv4 else {
+            throw ContainerizationError(.unsupported, message: "IPv4-less allocation-only networks are not implemented")
+        }
 
         self.configuration = configuration
         self.log = log
@@ -51,6 +54,8 @@ public actor AllocationOnlyVmnetNetwork: Network {
     public nonisolated var id: String { configuration.id }
 
     public nonisolated var variant: String? { "allocationOnly" }
+
+    public nonisolated var enableIPv4: Bool { configuration.enableIPv4 }
 
     public var status: NetworkStatus? { _status }
 

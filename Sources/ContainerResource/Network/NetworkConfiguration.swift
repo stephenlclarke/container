@@ -32,6 +32,9 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
     /// When the network was created.
     public let creationDate: Date
 
+    /// Whether the network provides IPv4 endpoint connectivity.
+    public let enableIPv4: Bool
+
     /// The preferred CIDR address for the IPv4 subnet, if specified
     public let ipv4Subnet: CIDRv4?
 
@@ -67,6 +70,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
     public init(
         name: String,
         mode: NetworkMode,
+        enableIPv4: Bool = true,
         ipv4Subnet: CIDRv4? = nil,
         ipv4Gateway: IPv4Address? = nil,
         ipv4AllocationRange: CIDRv4? = nil,
@@ -81,6 +85,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         self.name = name
         self.creationDate = Date()
         self.mode = mode
+        self.enableIPv4 = enableIPv4
         self.ipv4Subnet = ipv4Subnet
         self.ipv4Gateway = ipv4Gateway
         self.ipv4AllocationRange = ipv4AllocationRange
@@ -101,6 +106,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         case id
         case creationDate
         case mode
+        case enableIPv4
         case ipv4Subnet
         case ipv4Gateway
         case ipv4AllocationRange
@@ -126,6 +132,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
             ?? container.decode(String.self, forKey: .id)
         creationDate = try container.decodeIfPresent(Date.self, forKey: .creationDate) ?? Date(timeIntervalSince1970: 0)
         mode = try container.decode(NetworkMode.self, forKey: .mode)
+        enableIPv4 = try container.decodeIfPresent(Bool.self, forKey: .enableIPv4) ?? true
         let subnetText =
             try container.decodeIfPresent(String.self, forKey: .ipv4Subnet)
             ?? container.decodeIfPresent(String.self, forKey: .subnet)
@@ -166,6 +173,7 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
         try container.encode(name, forKey: .name)
         try container.encode(creationDate, forKey: .creationDate)
         try container.encode(mode, forKey: .mode)
+        try container.encode(enableIPv4, forKey: .enableIPv4)
         try container.encodeIfPresent(ipv4Subnet, forKey: .ipv4Subnet)
         try container.encodeIfPresent(ipv4Gateway, forKey: .ipv4Gateway)
         try container.encodeIfPresent(ipv4AllocationRange, forKey: .ipv4AllocationRange)
@@ -181,6 +189,15 @@ public struct NetworkConfiguration: Codable, Sendable, Identifiable {
     private func validate() throws {
         guard NetworkResource.nameValid(name) else {
             throw ContainerizationError(.invalidArgument, message: "invalid network name: \(name)")
+        }
+        if !enableIPv4, ipv4Subnet != nil || ipv4Gateway != nil || ipv4AllocationRange != nil || !ipv4ReservedAddresses.isEmpty {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "IPv4 configuration requires IPv4 to be enabled"
+            )
+        }
+        guard enableIPv4 || enableIPv6 else {
+            throw ContainerizationError(.invalidArgument, message: "IPv4 or IPv6 must be enabled")
         }
         if let ipv4Gateway {
             guard let ipv4Subnet else {

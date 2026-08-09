@@ -172,6 +172,7 @@ public actor NetworksService {
             let finalConfiguration = try NetworkConfiguration(
                 name: configuration.name,
                 mode: configuration.mode,
+                enableIPv4: configuration.enableIPv4,
                 ipv4Subnet: configuration.ipv4Subnet,
                 ipv4Gateway: configuration.ipv4Gateway,
                 ipv4AllocationRange: configuration.ipv4AllocationRange,
@@ -326,6 +327,17 @@ public actor NetworksService {
         return serviceState.configuration.plugin
     }
 
+    /// Release a container-owned attachment while its network service is still live.
+    public func releaseAttachment(network id: String, hostname: String) async throws {
+        let client = try await stateLock.withLock { _ in
+            guard let serviceState = await self.serviceStates[id] else {
+                throw ContainerizationError(.notFound, message: "no network for id \(id)")
+            }
+            return serviceState.client
+        }
+        try await client.release(hostname: hostname)
+    }
+
     private static func getClient(configuration: NetworkConfiguration) throws -> ContainerNetworkClient.NetworkClient {
         NetworkClient(id: configuration.id, plugin: configuration.plugin)
     }
@@ -363,6 +375,9 @@ public actor NetworksService {
         }
         if !configuration.enableIPv6 {
             args.append("--disable-ipv6")
+        }
+        if !configuration.enableIPv4 {
+            args.append("--disable-ipv4")
         }
 
         if let ipv4Subnet = configuration.ipv4Subnet {

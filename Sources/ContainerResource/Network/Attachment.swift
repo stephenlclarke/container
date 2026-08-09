@@ -25,9 +25,9 @@ public struct Attachment: Codable, Sendable {
     /// Additional DNS names that resolve to this attachment.
     public let aliases: [String]
     /// The CIDR address describing the interface IPv4 address, with the prefix length of the subnet.
-    public let ipv4Address: CIDRv4
+    public let ipv4Address: CIDRv4?
     /// The IPv4 gateway address.
-    public let ipv4Gateway: IPv4Address
+    public let ipv4Gateway: IPv4Address?
     /// The CIDR address describing the interface IPv6 address, with the prefix length of the subnet.
     /// The address is nil if the IPv6 subnet could not be determined at network creation time.
     public let ipv6Address: CIDRv6?
@@ -45,8 +45,8 @@ public struct Attachment: Codable, Sendable {
         network: String,
         hostname: String,
         aliases: [String] = [],
-        ipv4Address: CIDRv4,
-        ipv4Gateway: IPv4Address,
+        ipv4Address: CIDRv4? = nil,
+        ipv4Gateway: IPv4Address? = nil,
         ipv6Address: CIDRv6?,
         ipv6Gateway: IPv6Address? = nil,
         macAddress: MACAddress?,
@@ -89,16 +89,10 @@ public struct Attachment: Codable, Sendable {
         network = try container.decode(String.self, forKey: .network)
         hostname = try container.decode(String.self, forKey: .hostname)
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
-        if let address = try? container.decode(CIDRv4.self, forKey: .ipv4Address) {
-            ipv4Address = address
-        } else {
-            ipv4Address = try container.decode(CIDRv4.self, forKey: .address)
-        }
-        if let gateway = try? container.decode(IPv4Address.self, forKey: .ipv4Gateway) {
-            ipv4Gateway = gateway
-        } else {
-            ipv4Gateway = try container.decode(IPv4Address.self, forKey: .gateway)
-        }
+        ipv4Address = try container.decodeIfPresent(CIDRv4.self, forKey: .ipv4Address)
+            ?? container.decodeIfPresent(CIDRv4.self, forKey: .address)
+        ipv4Gateway = try container.decodeIfPresent(IPv4Address.self, forKey: .ipv4Gateway)
+            ?? container.decodeIfPresent(IPv4Address.self, forKey: .gateway)
         ipv6Address = try container.decodeIfPresent(CIDRv6.self, forKey: .ipv6Address)
         ipv6Gateway = try container.decodeIfPresent(IPv6Address.self, forKey: .ipv6Gateway)
         macAddress = try container.decodeIfPresent(MACAddress.self, forKey: .macAddress)
@@ -113,8 +107,8 @@ public struct Attachment: Codable, Sendable {
         try container.encode(network, forKey: .network)
         try container.encode(hostname, forKey: .hostname)
         try container.encode(aliases, forKey: .aliases)
-        try container.encode(ipv4Address, forKey: .ipv4Address)
-        try container.encode(ipv4Gateway, forKey: .ipv4Gateway)
+        try container.encodeIfPresent(ipv4Address, forKey: .ipv4Address)
+        try container.encodeIfPresent(ipv4Gateway, forKey: .ipv4Gateway)
         try container.encodeIfPresent(ipv6Address, forKey: .ipv6Address)
         try container.encodeIfPresent(ipv6Gateway, forKey: .ipv6Gateway)
         try container.encodeIfPresent(macAddress, forKey: .macAddress)
