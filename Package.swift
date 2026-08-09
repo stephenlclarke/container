@@ -66,7 +66,8 @@ let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSI
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c"
 let scVersion = "0.40.1"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "77f06d4c44341e04241941072fb69e2b85a6f5c1"
+let containerizationRevision = "7f62f5b940630811573a34f70cdd6f3fa11d014d"
+let containerEngineAPIRevision = "5e6e24d017691596783515285e1ff56d29701235"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -95,7 +96,7 @@ let containerEngineAPIDependency: Package.Dependency = {
     }
     return .package(
         url: "https://github.com/stephenlclarke/container-engine-api.git",
-        exact: containerEngineAPIVersion
+        revision: containerEngineAPIRevision
     )
 }()
 
@@ -141,7 +142,10 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-configuration", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.13.2"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
-        .package(url: "https://github.com/apple/swift-nio-ssl.git", from: "2.37.2"),
+        .package(
+            url: "https://github.com/stephenlclarke/swift-nio-ssl.git",
+            revision: "a9d648535c62e640d1df258a70c9117a8ddea43e"
+        ),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.36.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.3.0"),
