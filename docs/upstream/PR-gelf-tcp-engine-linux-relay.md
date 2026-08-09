@@ -5,7 +5,7 @@
 ## Summary
 
 - Add a sealed Linux/arm64 GELF TCP relay that owns only the outbound guest socket.
-- Preserve `GELFSession` as the one reconnect-delay and frame-replay authority.
+- Preserve `GELFSession` as the one reconnect-delay and failed-frame-disposition authority.
 - Inject the relay only for TCP GELF, retain native UDP delivery, and fail closed when the relay cannot be used.
 - Package and verify the workload archive and manifest, including an isolated real-asset acceptance target that is safe from local Swift output cleanup.
 

@@ -75,7 +75,7 @@ extension RuntimeLinuxHelper {
 
                 nonisolated(unsafe) let anonymousConnection = xpc_connection_create(nil, nil)
                 let runtimeFingerprint = "shared-v1:\(uuid):\(UUID().uuidString)"
-                let service = try EngineLinuxSandboxRuntimeServiceV1(
+                let service = try await EngineLinuxSandboxRuntimeServiceV1(
                     configuration: configuration,
                     runtimeFingerprint: runtimeFingerprint,
                     connection: anonymousConnection,

@@ -112,14 +112,12 @@ struct GELFSessionTests {
         #expect(String(decoding: messages[1].dropLast(), as: UTF8.self).contains("second"))
     }
 
-    @Test func TCPRetriesPinnedCountDelayAndSameFrame() async throws {
+    @Test func tcpDropsFailedAndRecoverySettlementFramesWithoutReplay() async throws {
         let first = RecordingGELFTransport(outcomes: [.failure(.write)])
-        let second = RecordingGELFTransport(outcomes: [.failure(.write)])
-        let third = RecordingGELFTransport()
+        let replacement = RecordingGELFTransport()
         let factory = ScriptedGELFTransportFactory([
             .transport(first),
-            .transport(second),
-            .transport(third),
+            .transport(replacement),
         ])
         let clock = GELFTestClock()
         let configuration = try gelfTestConfiguration(
@@ -135,22 +133,32 @@ struct GELFSessionTests {
             clock: clock
         )
 
-        try await session.write(gelfRecord(payload: Data("retry".utf8)))
+        try await session.write(gelfRecord(payload: Data("dropped".utf8)))
 
-        #expect(await factory.connectCallCount == 3)
-        #expect(clock.sleeps == [.milliseconds(7), .milliseconds(7)])
+        #expect(await factory.connectCallCount == 2)
+        #expect(clock.sleeps == [.milliseconds(7)])
         #expect(await first.closeCallCount == 1)
-        #expect(await second.closeCallCount == 1)
-        let firstFrame = try #require(await first.messages.first)
-        #expect(await second.messages == [firstFrame])
-        #expect(await third.messages == [firstFrame])
+        #expect(await replacement.messages.isEmpty)
+
+        try await session.write(
+            gelfRecord(payload: Data("settlement".utf8), sequence: 2)
+        )
+        #expect(await factory.connectCallCount == 2)
+        #expect(await replacement.messages.isEmpty)
+
+        try await session.write(
+            gelfRecord(payload: Data("next".utf8), sequence: 3)
+        )
+        #expect(await replacement.messages.count == 1)
+        let replacementFrame = try #require(await replacement.messages.first)
+        #expect(String(decoding: replacementFrame.dropLast(), as: UTF8.self).contains("next"))
     }
 
     @Test func systemClockPermitsDockerStyleZeroReconnectDelay() async throws {
         try await SystemGELFClock().sleep(for: .zero)
     }
 
-    @Test func TCPFinalFailureReconnectsAndRetainsReplacementForNextRecord() async throws {
+    @Test func tcpZeroReconnectDropsFailedAndSettlementFramesBeforeLaterDelivery() async throws {
         let first = RecordingGELFTransport(outcomes: [.failure(.write)])
         let replacement = RecordingGELFTransport()
         let factory = ScriptedGELFTransportFactory([
@@ -170,29 +178,31 @@ struct GELFSessionTests {
             clock: clock
         )
 
-        await #expect(throws: GELFProviderError.reconnectAttemptsExhausted(attempts: 1)) {
-            try await session.write(gelfRecord(payload: Data("lost".utf8)))
-        }
+        try await session.write(gelfRecord(payload: Data("lost".utf8)))
         #expect(await factory.connectCallCount == 2)
         #expect(clock.sleeps == [.milliseconds(9)])
         #expect(await replacement.messages.isEmpty)
 
         try await session.write(
-            gelfRecord(payload: Data("next".utf8), sequence: 2)
+            gelfRecord(payload: Data("settlement".utf8), sequence: 2)
         )
         #expect(await factory.connectCallCount == 2)
+        #expect(await replacement.messages.isEmpty)
+
+        try await session.write(
+            gelfRecord(payload: Data("next".utf8), sequence: 3)
+        )
         #expect(await replacement.messages.count == 1)
     }
 
-    @Test func TCPExhaustionReportsAllPinnedReconnectCallsIncludingFinalReplacement() async throws {
+    @Test func tcpReconnectExhaustionBoundsReplacementAttempts() async throws {
         let first = RecordingGELFTransport(outcomes: [.failure(.write)])
-        let second = RecordingGELFTransport(outcomes: [.failure(.write)])
-        let third = RecordingGELFTransport(outcomes: [.failure(.write)])
         let retainedFinalReplacement = RecordingGELFTransport()
         let factory = ScriptedGELFTransportFactory([
             .transport(first),
-            .transport(second),
-            .transport(third),
+            .failure(.connect),
+            .failure(.connect),
+            .failure(.connect),
             .transport(retainedFinalReplacement),
         ])
         let clock = GELFTestClock()
@@ -219,6 +229,11 @@ struct GELFSessionTests {
         #expect(await retainedFinalReplacement.messages.isEmpty)
 
         try await session.write(gelfRecord(payload: Data("next".utf8), sequence: 2))
+        #expect(await factory.connectCallCount == 5)
+        #expect(
+            clock.sleeps
+                == [.milliseconds(7), .milliseconds(7), .milliseconds(7), .milliseconds(7)]
+        )
         #expect(await retainedFinalReplacement.messages.count == 1)
     }
 

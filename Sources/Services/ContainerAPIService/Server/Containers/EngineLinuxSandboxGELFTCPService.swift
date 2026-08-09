@@ -488,8 +488,8 @@ package protocol EngineLinuxSandboxGELFTCPAuthorityV1: Sendable {
 extension EngineLinuxSandboxAuthorityV1: EngineLinuxSandboxGELFTCPAuthorityV1 {}
 
 /// Starts the sealed Linux service exactly once per socket request. The GELF
-/// session owns reconnect policy and replay, so this connector never retries a
-/// remote logging write on its own.
+/// session owns reconnect policy and failed-frame disposition, so this
+/// connector never retries a remote logging write on its own.
 package actor EngineLinuxSandboxGELFTCPConnectorV1 {
     private let authority: any EngineLinuxSandboxGELFTCPAuthorityV1
     private let materializer: any EngineLinuxSandboxGELFTCPWorkloadMaterializingV1

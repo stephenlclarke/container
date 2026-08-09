@@ -41,7 +41,8 @@ public enum GELFSessionState: Equatable, Sendable {
 }
 
 /// One eagerly connected GELF writer. UDP sends each go-gelf datagram once;
-/// TCP serializes records and reproduces go-gelf's reconnect loop.
+/// TCP serializes records and prepares a bounded replacement after a failed
+/// write without replaying that indeterminate record.
 public actor GELFDriverSession: ContainerLogDriverSession {
     private struct ActiveOperation: Sendable {
         let id: UInt64
@@ -54,6 +55,7 @@ public actor GELFDriverSession: ContainerLogDriverSession {
     private let datagramEncoder: GELFDatagramEncoder
     private let clock: any GELFClock
     private var transport: (any GELFTransport)?
+    private var discardNextTCPFrameAfterRecovery = false
     private var state: GELFSessionState = .active
     private var closingTerminalState: GELFSessionState?
     private var activeOperation: ActiveOperation?
@@ -191,61 +193,60 @@ public actor GELFDriverSession: ContainerLogDriverSession {
     }
 
     private func writeTCP(_ frame: Data) async throws {
-        var reconnectsConsumed = 0
-        while true {
+        guard state == .active else {
+            throw GELFProviderError.transportClosed
+        }
+        try Task.checkCancellation()
+
+        if discardNextTCPFrameAfterRecovery {
+            discardNextTCPFrameAfterRecovery = false
+            // Docker's go-gelf writer observes a reset only on a later write.
+            // Its recovered connection omits that first follow-on record as
+            // well as the failed write before returning to ordinary delivery.
+            return
+        }
+
+        if let current = transport {
+            let written: Int
+            do {
+                written = try await current.write(
+                    frame,
+                    timeout: configuration.policy.writeTimeout
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard state == .active else {
+                    throw GELFProviderError.transportClosed
+                }
+                transport = nil
+                try? await current.close(timeout: configuration.policy.closeTimeout)
+                guard state == .active else {
+                    throw GELFProviderError.transportClosed
+                }
+                try await reconnectAfterFailure()
+                // A failed TCP write has indeterminate remote disposition.
+                // Docker drops that record and the first recovery-settlement
+                // frame, then leaves the replacement socket for later records
+                // instead of replaying either indeterminate frame.
+                discardNextTCPFrameAfterRecovery = true
+                return
+            }
             guard state == .active else {
                 throw GELFProviderError.transportClosed
             }
             try Task.checkCancellation()
-
-            if let current = transport {
-                let written: Int
-                do {
-                    written = try await current.write(
-                        frame,
-                        timeout: configuration.policy.writeTimeout
-                    )
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    guard state == .active else {
-                        throw GELFProviderError.transportClosed
-                    }
-                    transport = nil
-                    try? await current.close(timeout: configuration.policy.closeTimeout)
-                    guard state == .active else {
-                        throw GELFProviderError.transportClosed
-                    }
-                    try await reconnectAfterFailure()
-                    if reconnectsConsumed >= configuration.maximumReconnects {
-                        throw reconnectAttemptsExhausted(
-                            reconnectsConsumedBeforeFinalAttempt: reconnectsConsumed
-                        )
-                    }
-                    reconnectsConsumed += 1
-                    continue
-                }
-                guard state == .active else {
-                    throw GELFProviderError.transportClosed
-                }
-                try Task.checkCancellation()
-                guard written == frame.count else {
-                    throw GELFProviderError.partialWrite(
-                        expected: frame.count,
-                        actual: written
-                    )
-                }
-                return
-            }
-
-            try await reconnectAfterFailure()
-            if reconnectsConsumed >= configuration.maximumReconnects {
-                throw reconnectAttemptsExhausted(
-                    reconnectsConsumedBeforeFinalAttempt: reconnectsConsumed
+            guard written == frame.count else {
+                throw GELFProviderError.partialWrite(
+                    expected: frame.count,
+                    actual: written
                 )
             }
-            reconnectsConsumed += 1
+            return
         }
+
+        try await reconnectAfterFailure()
+        try await writeTCP(frame)
     }
 
     private func reconnectAttemptsExhausted(
@@ -259,27 +260,35 @@ public actor GELFDriverSession: ContainerLogDriverSession {
     }
 
     private func reconnectAfterFailure() async throws {
-        try await clock.sleep(for: configuration.reconnectDelay)
-        guard state == .active else {
-            throw GELFProviderError.transportClosed
+        var reconnectsConsumed = 0
+        while true {
+            try await clock.sleep(for: configuration.reconnectDelay)
+            guard state == .active else {
+                throw GELFProviderError.transportClosed
+            }
+            do {
+                let replacement = try await factory.connect(
+                    to: configuration.endpoint,
+                    timeout: configuration.policy.connectTimeout
+                )
+                guard state == .active else {
+                    try? await replacement.close(timeout: configuration.policy.closeTimeout)
+                    throw GELFProviderError.transportClosed
+                }
+                transport = replacement
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                transport = nil
+                if reconnectsConsumed >= configuration.maximumReconnects {
+                    throw reconnectAttemptsExhausted(
+                        reconnectsConsumedBeforeFinalAttempt: reconnectsConsumed
+                    )
+                }
+                reconnectsConsumed += 1
+            }
         }
-        let replacement: any GELFTransport
-        do {
-            replacement = try await factory.connect(
-                to: configuration.endpoint,
-                timeout: configuration.policy.connectTimeout
-            )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            transport = nil
-            return
-        }
-        guard state == .active else {
-            try? await replacement.close(timeout: configuration.policy.closeTimeout)
-            throw GELFProviderError.transportClosed
-        }
-        transport = replacement
     }
 
     private func close(

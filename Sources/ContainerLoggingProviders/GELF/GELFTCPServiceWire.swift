@@ -445,8 +445,8 @@ public enum GELFTCPServiceFrameCodecV1 {
 }
 
 /// A service client creates one VSOCK connection per GELF TCP socket. The
-/// connection deliberately does not replay writes: the GELF session's
-/// go-gelf-compatible retry loop owns retry timing and frame replay.
+/// connection deliberately does not replay writes: the GELF session owns the
+/// bounded replacement timing and Docker-compatible failed-frame disposition.
 public actor GELFTCPServiceWireClientV1: GELFTCPService {
     public typealias Connector = @Sendable () async throws -> FileHandle
 

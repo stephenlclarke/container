@@ -4,7 +4,7 @@
 
 ## Problem
 
-The Docker GELF TCP driver observes peer resets and reconnects from its Linux engine context. Container's native macOS TCP path can write successfully after a peer has reset, which moves the observable failure and reconnect timing away from Docker's `gelf-tcp-max-reconnect` and non-zero `gelf-tcp-reconnect-delay` contract. The retry policy itself must remain owned by the existing `GELFSession`; moving that policy into a relay would create duplicate replay and a second authority for delivery state.
+The Docker GELF TCP driver observes peer resets and reconnects from its Linux engine context. Container's native macOS TCP path can write successfully after a peer has reset, which moves the observable failure and reconnect timing away from Docker's `gelf-tcp-max-reconnect` and non-zero `gelf-tcp-reconnect-delay` contract. The retry policy itself must remain owned by the existing `GELFSession`; moving that policy into a relay would create duplicate recovery/disposition authority.
 
 ## Required behavior
 

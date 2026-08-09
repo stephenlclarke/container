@@ -19,6 +19,7 @@ import ContainerRuntimeClient
 import ContainerXPC
 import Containerization
 import ContainerizationError
+import ContainerizationExtras
 import Foundation
 import Logging
 import Testing
@@ -26,6 +27,25 @@ import Testing
 @testable import ContainerRuntimeLinuxServer
 
 struct EngineLinuxSandboxRuntimeServiceTests {
+    @Test
+    func sealedEgressNetworkInstallsTheReservedVmnetInterface() throws {
+        var configuration = LinuxPod.Configuration()
+        let interface = NATInterface(
+            ipv4Address: try CIDRv4("192.168.64.2/24"),
+            ipv4Gateway: try IPv4Address("192.168.64.1"),
+            mtu: 1280
+        )
+
+        EngineLinuxSandboxRuntimeServiceV1
+            .configureSealedEgressNetwork(&configuration, interface: interface)
+
+        let storedInterface = try #require(configuration.interfaces.first as? NATInterface)
+        #expect(configuration.interfaces.count == 1)
+        #expect(storedInterface.ipv4Address.description == "192.168.64.2/24")
+        #expect(storedInterface.ipv4Gateway?.description == "192.168.64.1")
+        #expect(storedInterface.mtu == 1280)
+    }
+
     @Test
     func sealedReverseVsockEndpointRequiresExactArguments() {
         let sealed = [

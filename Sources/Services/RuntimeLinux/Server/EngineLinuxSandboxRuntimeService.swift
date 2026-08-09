@@ -14,11 +14,14 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerAPIClient
+import ContainerNetworkClient
 import ContainerResource
 import ContainerRuntimeClient
 import ContainerXPC
 import Containerization
 import ContainerizationError
+import ContainerizationExtras
 import Foundation
 import Logging
 
@@ -220,10 +223,19 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let task: Task<ServiceListenerSlot, any Error>
     }
 
+    /// Keeps the default VMNet allocation alive while the shared sandbox is
+    /// available. The network helper releases the address when this XPC
+    /// session closes, so the attachment must outlive individual VM boots.
+    private struct SealedEgressNetworkBinding: Sendable {
+        let client: ContainerNetworkClient.NetworkClient
+        let session: XPCClientSession
+    }
+
     private let connection: xpc_connection_t?
     private let sandbox: any EngineLinuxSandboxInstanceV1
     private let runtimeFingerprint: String
     private let log: Logger
+    private let sealedEgressNetworkBinding: SealedEgressNetworkBinding?
     private var bootReceipt: EngineLinuxSandboxBootReceiptV1?
     private var shutdownReceipt: EngineLinuxSandboxShutdownReceiptV1?
     private var bootInFlight: BootInFlight?
@@ -248,6 +260,22 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         connection: xpc_connection_t? = nil,
         log: Logger
     ) throws {
+        try self.init(
+            sandbox: sandbox,
+            runtimeFingerprint: runtimeFingerprint,
+            connection: connection,
+            sealedEgressNetworkBinding: nil,
+            log: log
+        )
+    }
+
+    private init(
+        sandbox: any EngineLinuxSandboxInstanceV1,
+        runtimeFingerprint: String,
+        connection: xpc_connection_t?,
+        sealedEgressNetworkBinding: SealedEgressNetworkBinding?,
+        log: Logger
+    ) throws {
         guard !runtimeFingerprint.isEmpty,
             runtimeFingerprint.utf8.count <= EngineWorkloadLedgerLimitsV1.maximumDigestBytes
         else {
@@ -260,6 +288,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         self.runtimeFingerprint = runtimeFingerprint
         self.connection = connection
         self.log = log
+        self.sealedEgressNetworkBinding = sealedEgressNetworkBinding
     }
 
     public init(
@@ -267,32 +296,98 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         runtimeFingerprint: String,
         connection: xpc_connection_t,
         log: Logger
-    ) throws {
+    ) async throws {
         try configuration.validate()
-        let vmm = VZVirtualMachineManager(
-            kernel: configuration.kernel,
-            initialFilesystem: configuration.initialFilesystem.asMount,
-            rosetta: configuration.rosetta,
-            logger: log
-        )
-        let sandbox = try LinuxSandbox(
-            configuration.sandboxID,
-            vmm: vmm,
-            logger: log
-        ) { sandboxConfiguration in
-            sandboxConfiguration.cpus = configuration.cpus
-            sandboxConfiguration.memoryInBytes = configuration.memoryInBytes
-            sandboxConfiguration.virtualization = configuration.nestedVirtualization
-            sandboxConfiguration.bootLog = .file(
-                path: configuration.path.appendingPathComponent("boot.log")
+        let egressNetwork = try await Self.reserveSealedEgressNetwork(log: log)
+        do {
+            let vmm = VZVirtualMachineManager(
+                kernel: configuration.kernel,
+                initialFilesystem: configuration.initialFilesystem.asMount,
+                rosetta: configuration.rosetta,
+                logger: log
+            )
+            let sandbox = try LinuxSandbox(
+                configuration.sandboxID,
+                vmm: vmm,
+                logger: log
+            ) { sandboxConfiguration in
+                sandboxConfiguration.cpus = configuration.cpus
+                sandboxConfiguration.memoryInBytes = configuration.memoryInBytes
+                sandboxConfiguration.virtualization = configuration.nestedVirtualization
+                sandboxConfiguration.bootLog = .file(
+                    path: configuration.path.appendingPathComponent("boot.log")
+                )
+                Self.configureSealedEgressNetwork(
+                    &sandboxConfiguration,
+                    interface: egressNetwork.interface
+                )
+            }
+            try self.init(
+                sandbox: sandbox,
+                runtimeFingerprint: runtimeFingerprint,
+                connection: connection,
+                sealedEgressNetworkBinding: egressNetwork.binding,
+                log: log
+            )
+        } catch {
+            egressNetwork.binding?.session.close()
+            throw error
+        }
+    }
+
+    /// Installs the VMNet attachment used by host-network protected services.
+    static func configureSealedEgressNetwork(
+        _ configuration: inout LinuxPod.Configuration,
+        interface: any Interface
+    ) {
+        configuration.interfaces = [interface]
+    }
+
+    private static func reserveSealedEgressNetwork(
+        log: Logger
+    ) async throws -> (interface: any Interface, binding: SealedEgressNetworkBinding?) {
+        guard #available(macOS 26, *) else {
+            return (
+                interface: NATInterface(
+                    ipv4Address: try CIDRv4("192.168.64.2/24"),
+                    ipv4Gateway: try IPv4Address("192.168.64.1"),
+                    mtu: 1280
+                ),
+                binding: nil
             )
         }
-        try self.init(
-            sandbox: sandbox,
-            runtimeFingerprint: runtimeFingerprint,
-            connection: connection,
-            log: log
+
+        let apiClient = ContainerAPIClient.NetworkClient()
+        guard let defaultNetwork = try await apiClient.builtin else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "default VMNet network is not available for sealed service egress"
+            )
+        }
+        let client = ContainerNetworkClient.NetworkClient(
+            id: defaultNetwork.id,
+            plugin: defaultNetwork.configuration.plugin
         )
+        let session = client.connect()
+        do {
+            let (attachment, additionalData) = try await client.allocate(
+                hostname: "engine-linux-sandbox-egress",
+                on: session
+            )
+            let interface = try NonisolatedInterfaceStrategy(log: log).toInterface(
+                attachment: attachment,
+                interfaceIndex: 0,
+                guestInterfaceName: nil,
+                additionalData: additionalData
+            )
+            return (
+                interface: interface,
+                binding: SealedEgressNetworkBinding(client: client, session: session)
+            )
+        } catch {
+            session.close()
+            throw error
+        }
     }
 
     public func boot(
