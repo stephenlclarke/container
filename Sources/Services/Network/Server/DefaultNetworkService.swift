@@ -23,11 +23,12 @@ import Logging
 public actor DefaultNetworkService: NetworkService {
     private let network: any Network
     private let log: Logger
+    private let enableIPv4: Bool
     private var allocator: AttachmentAllocator
     private var macAddresses: [UInt32: MACAddress]
     private var ipv6Addresses: [UInt32: IPv6Address]
     private var ipv6AddressIndexes: [IPv6Address: UInt32]
-    private var allocationsBySession: [XPCServerSession: [(hostname: String, index: UInt32)]]
+    private var allocationsBySession: [XPCServerSession: [String]]
 
     /// Set up a network service for the specified network.
     public init(
@@ -39,9 +40,7 @@ public actor DefaultNetworkService: NetworkService {
         }
 
         let subnet = status.ipv4Subnet
-        let size = Int(subnet.upper.value - subnet.lower.value - 3)
-        let allocationLower = subnet.lower.value + 2
-        let allocationUpper = subnet.upper.value - 2
+        let (allocationLower, allocationUpper, size) = try Self.ipv4AllocationBounds(subnet: subnet)
         let allocator: AttachmentAllocator
         if let allocationRange = status.ipv4AllocationRange {
             let dynamicLower = max(allocationLower, allocationRange.lower.value)
@@ -73,11 +72,27 @@ public actor DefaultNetworkService: NetworkService {
         }
         self.network = network
         self.log = log
+        self.enableIPv4 = network.enableIPv4
         self.allocator = allocator
         self.macAddresses = [:]
         self.ipv6Addresses = [:]
         self.ipv6AddressIndexes = [:]
         self.allocationsBySession = [:]
+    }
+
+    static func ipv4AllocationBounds(subnet: CIDRv4) throws -> (lower: UInt32, upper: UInt32, size: Int) {
+        let subnetLower = UInt64(subnet.lower.value)
+        let subnetUpper = UInt64(subnet.upper.value)
+        guard subnetUpper >= subnetLower + 4 else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "IPv4 subnet '\(subnet)' contains no allocatable host addresses"
+            )
+        }
+
+        let lower = UInt32(subnetLower + 2)
+        let upper = UInt32(subnetUpper - 2)
+        return (lower, upper, Int(upper - lower + 1))
     }
 
     @Sendable
@@ -95,6 +110,7 @@ public actor DefaultNetworkService: NetworkService {
         macAddress: MACAddress?,
         requestedIPv4Address: IPv4Address?,
         requestedIPv6Address: IPv6Address?,
+        retainOnDisconnect: Bool,
         session: XPCServerSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?) {
         log.debug("enter", metadata: ["func": "\(#function)"])
@@ -104,10 +120,13 @@ public actor DefaultNetworkService: NetworkService {
             throw ContainerizationError(.invalidState, message: "network \(network.id) must be running")
         }
 
+        if !enableIPv4, requestedIPv4Address != nil {
+            throw ContainerizationError(.invalidArgument, message: "requested IPv4 address requires IPv4 to be enabled")
+        }
         let requestedIndex = try requestedIPv4Address.map {
             try allocatableIPv4Index($0, subnet: status.ipv4Subnet, gateway: status.ipv4Gateway)
         }
-        let existingIndex = try await allocator.lookup(hostname: hostname)
+        let existingIndex = try await allocator.lookupPrimary(hostname: hostname)
         let effectiveMACAddress: MACAddress
         if let existingIndex {
             guard let existingMACAddress = macAddresses[existingIndex] else {
@@ -159,8 +178,8 @@ public actor DefaultNetworkService: NetworkService {
             metadata: [
                 "hostname": "\(hostname)",
                 "aliases": "\(aliases.joined(separator: ","))",
-                "ipv4Address": "\(attachment.ipv4Address)",
-                "ipv4Gateway": "\(attachment.ipv4Gateway)",
+                "ipv4Address": "\(attachment.ipv4Address?.description ?? "unavailable")",
+                "ipv4Gateway": "\(attachment.ipv4Gateway?.description ?? "unavailable")",
                 "ipv6Address": "\(attachment.ipv6Address?.description ?? "unavailable")",
                 "ipv6Gateway": "\(attachment.ipv6Gateway?.description ?? "unavailable")",
                 "macAddress": "\(attachment.macAddress?.description ?? "unspecified")",
@@ -170,33 +189,49 @@ public actor DefaultNetworkService: NetworkService {
         try network.withAdditionalData {
             additionalData = $0
         }
-        if allocationsBySession[session] == nil {
-            allocationsBySession[session] = []
-            await session.onDisconnect { [weak self] in
-                await self?.releaseSession(session)
+        if !retainOnDisconnect {
+            if allocationsBySession[session] == nil {
+                allocationsBySession[session] = []
+                await session.onDisconnect { [weak self] in
+                    await self?.releaseSession(session)
+                }
             }
+            allocationsBySession[session]!.append(hostname)
         }
-        allocationsBySession[session]!.append((hostname: hostname, index: index))
 
         return (attachment: attachment, additionalData: additionalData)
     }
 
-    private func releaseSession(_ session: XPCServerSession) async {
+    /// Release a retained attachment after its container resource is removed.
+    @Sendable
+    public func release(hostname: String) async throws {
+        guard let index = try await allocator.deallocate(hostname: hostname) else {
+            return
+        }
+        macAddresses.removeValue(forKey: index)
+        if let ipv6Address = ipv6Addresses.removeValue(forKey: index) {
+            ipv6AddressIndexes.removeValue(forKey: ipv6Address)
+        }
+        log.info("released attachment", metadata: ["hostname": "\(hostname)"])
+    }
+
+    func releaseSession(_ session: XPCServerSession) async {
         guard let allocations = allocationsBySession.removeValue(forKey: session) else {
             return
         }
-        for allocation in allocations {
-            _ = try? await allocator.deallocate(hostname: allocation.hostname)
-            macAddresses.removeValue(forKey: allocation.index)
-            if let ipv6Address = ipv6Addresses.removeValue(forKey: allocation.index) {
-                ipv6AddressIndexes.removeValue(forKey: ipv6Address)
-            }
+        for hostname in allocations {
+            try? await release(hostname: hostname)
         }
         log.info("released session", metadata: ["allocations": "\(allocations.count)"])
     }
 
     @Sendable
     public func lookup(hostname: String) async throws -> Attachment? {
+        try await lookupAll(hostname: hostname).first
+    }
+
+    @Sendable
+    public func lookupAll(hostname: String) async throws -> [Attachment] {
         log.debug("enter", metadata: ["func": "\(#function)"])
         defer { log.debug("exit", metadata: ["func": "\(#function)"]) }
 
@@ -204,31 +239,36 @@ public actor DefaultNetworkService: NetworkService {
             throw ContainerizationError(.invalidState, message: "network \(network.id) must be running")
         }
 
-        // Invariant: hostname -> index if and only if index -> MAC address
-        let index = try await allocator.lookup(hostname: hostname)
-        guard let index else {
-            return nil
+        // Invariant: hostname -> indexes if and only if every index has a MAC address.
+        let indexes = try await allocator.lookupAll(hostname: hostname)
+        var attachments: [Attachment] = []
+        attachments.reserveCapacity(indexes.count)
+        for index in indexes {
+            guard let macAddress = macAddresses[index] else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "missing MAC address for network attachment '\(hostname)' at index \(index)"
+                )
+            }
+            attachments.append(
+                try attachment(
+                    status: status,
+                    hostname: hostname,
+                    aliases: [],
+                    index: index,
+                    macAddress: macAddress,
+                    ipv6Address: ipv6Addresses[index]
+                )
+            )
         }
-        guard let macAddress = macAddresses[index] else {
-            return nil
-        }
-
-        let attachment = try attachment(
-            status: status,
-            hostname: hostname,
-            aliases: [],
-            index: index,
-            macAddress: macAddress,
-            ipv6Address: ipv6Addresses[index]
-        )
         log.debug(
-            "lookup attachment",
+            "lookup attachments",
             metadata: [
                 "hostname": "\(hostname)",
-                "address": "\(IPv4Address(index))",
+                "addresses": "\(attachments.map { $0.ipv4Address?.address.description ?? "IPv6-only" }.joined(separator: ","))",
             ])
 
-        return attachment
+        return attachments
     }
 
     private func allocatableIPv4Index(_ address: IPv4Address, subnet: CIDRv4, gateway: IPv4Address) throws -> UInt32 {
@@ -294,8 +334,8 @@ public actor DefaultNetworkService: NetworkService {
             network: network.id,
             hostname: hostname,
             aliases: aliases,
-            ipv4Address: try CIDRv4(IPv4Address(index), prefix: status.ipv4Subnet.prefix),
-            ipv4Gateway: status.ipv4Gateway,
+            ipv4Address: enableIPv4 ? try CIDRv4(IPv4Address(index), prefix: status.ipv4Subnet.prefix) : nil,
+            ipv4Gateway: enableIPv4 ? status.ipv4Gateway : nil,
             ipv6Address: ipv6CIDR,
             ipv6Gateway: status.ipv6Gateway,
             macAddress: macAddress,

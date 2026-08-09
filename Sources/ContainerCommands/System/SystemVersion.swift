@@ -43,9 +43,11 @@ extension Application {
                 distribution: ReleaseVersion.distribution(),
                 source: ReleaseVersion.containerSource(),
                 containerization: "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())",
+                vminitImage: ReleaseVersion.vminitImage(),
                 builderShimRepository: ReleaseVersion.builderShimRepository(),
                 builderShimVersion: ReleaseVersion.builderShimVersion(),
-                builderShimDigest: ReleaseVersion.builderShimDigest()
+                builderShimDigest: ReleaseVersion.builderShimDigest(),
+                runtimeCapabilityManifest: RuntimeCapabilityManifest.current
             )
 
             // Try to get API server version info
@@ -87,9 +89,12 @@ extension Application {
         let distribution: String?
         let source: String?
         let containerization: String?
+        let vminitImage: String?
         let builderShimRepository: String?
         let builderShimVersion: String?
         let builderShimDigest: String?
+        let runtimeCapabilitySchemaVersion: Int?
+        let runtimeCapabilities: [RuntimeCapability]?
 
         var builderShimImage: String? {
             guard let builderShimRepository else {
@@ -112,7 +117,10 @@ extension Application {
                 ("distribution", distribution),
                 ("source", source),
                 ("containerization", containerization),
+                ("vminit", vminitImage),
                 ("builder-shim", builderShimImage),
+                ("runtime-capability-schema", runtimeCapabilitySchemaVersion.map(String.init)),
+                ("runtime-capabilities", runtimeCapabilities?.map(\.rawValue).joined(separator: ", ")),
             ].compactMap { label, value -> (label: String, value: String)? in
                 guard let value else {
                     return nil
@@ -153,9 +161,11 @@ extension Application {
             distribution: String? = nil,
             source: String? = nil,
             containerization: String? = nil,
+            vminitImage: String? = nil,
             builderShimRepository: String? = nil,
             builderShimVersion: String? = nil,
-            builderShimDigest: String? = nil
+            builderShimDigest: String? = nil,
+            runtimeCapabilityManifest: RuntimeCapabilityManifest? = nil
         ) {
             self.version = version
             self.buildType = buildType
@@ -164,9 +174,12 @@ extension Application {
             self.distribution = distribution
             self.source = source
             self.containerization = containerization
+            self.vminitImage = vminitImage
             self.builderShimRepository = builderShimRepository
             self.builderShimVersion = builderShimVersion
             self.builderShimDigest = builderShimDigest
+            self.runtimeCapabilitySchemaVersion = runtimeCapabilityManifest?.schemaVersion
+            self.runtimeCapabilities = runtimeCapabilityManifest?.capabilities
         }
     }
 }

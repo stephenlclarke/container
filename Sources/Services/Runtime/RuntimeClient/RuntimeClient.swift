@@ -25,7 +25,12 @@ import TerminalProgress
 
 /// A client for interacting with a container runtime service instance.
 public struct RuntimeClient: Sendable {
-    static let label = "com.apple.container.runtime"
+    static var label: String {
+        ContainerServiceNamespace.current.runtimeServicePrefix
+    }
+    static let shutdownResponseTimeout: Duration = .seconds(5)
+    private static let minimumStopResponseTimeoutSeconds: Int64 = 10
+    private static let stopResponseGraceSeconds: Int64 = 5
 
     public static func machServiceLabel(runtime: String, id: String) -> String {
         "\(Self.label).\(runtime).\(id)"
@@ -193,6 +198,78 @@ extension RuntimeClient {
         }
     }
 
+    /// Follow raw records from the runtime's retained active logging generation.
+    public func followLogs(
+        request logReadRequest: ContainerLogReadRequest
+    ) async throws -> FileHandle {
+        try await followLogStream(
+            route: .followLogs,
+            request: logReadRequest,
+            description: "logs"
+        )
+    }
+
+    /// Follow structured records from the runtime's retained active logging generation.
+    public func followLogRecords(
+        request logReadRequest: ContainerLogReadRequest
+    ) async throws -> FileHandle {
+        try await followLogStream(
+            route: .followLogRecords,
+            request: logReadRequest,
+            description: "log records"
+        )
+    }
+
+    /// Follow exact, versioned read records from the runtime's retained active
+    /// logging generation. The file contains newline-delimited
+    /// ``ContainerLogReadRecordWireV1`` values.
+    public func followLogReadRecordsV1(
+        request logReadRequest: ContainerLogReadRequest
+    ) async throws -> FileHandle {
+        try await followLogStream(
+            route: .followLogReadRecordsV1,
+            request: logReadRequest,
+            description: "lossless log records"
+        )
+    }
+
+    private func followLogStream(
+        route: RuntimeRoutes,
+        request logReadRequest: ContainerLogReadRequest,
+        description: String
+    ) async throws -> FileHandle {
+        let request = XPCMessage(route: route.rawValue)
+        let encoded = try JSONEncoder().encode(logReadRequest)
+        guard encoded.count <= ContainerLogReadRequest.maximumEncodedTransportBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "log read request exceeds the transport limit"
+            )
+        }
+        request.set(
+            key: RuntimeKeys.logReadRequest.rawValue,
+            value: encoded
+        )
+
+        let response: XPCMessage
+        do {
+            response = try await client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to follow (description) for container \(self.id)",
+                cause: error
+            )
+        }
+        guard let handle = response.fileHandle(key: RuntimeKeys.fd.rawValue) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "runtime returned no (description) stream for container \(self.id)"
+            )
+        }
+        return handle
+    }
+
     public func startProcess(_ id: String) async throws {
         let request = XPCMessage(route: RuntimeRoutes.start.rawValue)
         request.set(key: RuntimeKeys.id.rawValue, value: id)
@@ -214,7 +291,12 @@ extension RuntimeClient {
         request.set(key: RuntimeKeys.stopOptions.rawValue, value: data)
 
         do {
-            try await self.client.send(request)
+            try await self.client.send(
+                request,
+                responseTimeout: Self.stopResponseTimeout(
+                    timeoutInSeconds: options.timeoutInSeconds
+                )
+            )
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -222,6 +304,16 @@ extension RuntimeClient {
                 cause: error
             )
         }
+    }
+
+    static func stopResponseTimeout(timeoutInSeconds: Int32?) -> Duration {
+        let requestedSeconds = max(0, Int64(timeoutInSeconds ?? 0))
+        return .seconds(
+            max(
+                minimumStopResponseTimeoutSeconds,
+                requestedSeconds + stopResponseGraceSeconds
+            )
+        )
     }
 
     public func pause() async throws {
@@ -331,7 +423,10 @@ extension RuntimeClient {
         let request = XPCMessage(route: RuntimeRoutes.shutdown.rawValue)
 
         do {
-            _ = try await self.client.send(request)
+            _ = try await self.client.send(
+                request,
+                responseTimeout: Self.shutdownResponseTimeout
+            )
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -361,6 +456,29 @@ extension RuntimeClient {
         }
     }
 
+    public func copyIn(
+        archive: FileHandle,
+        destination: String,
+        createParents: Bool = true,
+        preserveOwnership: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: RuntimeRoutes.copyIn.rawValue)
+        request.set(key: RuntimeKeys.copyArchive.rawValue, value: archive)
+        request.set(key: RuntimeKeys.destinationPath.rawValue, value: destination)
+        request.set(key: RuntimeKeys.createParents.rawValue, value: createParents)
+        request.set(key: RuntimeKeys.preserveOwnership.rawValue, value: preserveOwnership)
+
+        do {
+            try await self.client.send(request, responseTimeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive into container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
     public func copyOut(source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         let request = XPCMessage(route: RuntimeRoutes.copyOut.rawValue)
         request.set(key: RuntimeKeys.sourcePath.rawValue, value: source)
@@ -375,6 +493,29 @@ extension RuntimeClient {
             throw ContainerizationError(
                 .internalError,
                 message: "failed to copy from container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
+    public func copyOut(
+        source: String,
+        archive: FileHandle,
+        followSymlink: Bool = false,
+        copyContents: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: RuntimeRoutes.copyOut.rawValue)
+        request.set(key: RuntimeKeys.sourcePath.rawValue, value: source)
+        request.set(key: RuntimeKeys.copyArchive.rawValue, value: archive)
+        request.set(key: RuntimeKeys.followSymlink.rawValue, value: followSymlink)
+        request.set(key: RuntimeKeys.copyContents.rawValue, value: copyContents)
+
+        do {
+            try await self.client.send(request, responseTimeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive from container \(self.id)",
                 cause: error
             )
         }

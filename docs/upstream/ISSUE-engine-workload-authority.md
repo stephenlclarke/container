@@ -1,0 +1,96 @@
+# Runtime gap: durable sandbox and workload operation authority
+
+## Problem
+
+Container has durable logging-specific lifecycle state, but it does not expose
+a generic authority for coordinating one shared Linux sandbox with independent
+workload lifecycles. A higher-level controller therefore cannot safely prove
+whether a sandbox boot, process start, namespace attachment, network lease,
+volume attachment, resource update, or cleanup effect completed after its
+caller loses the response.
+
+The missing authority leaves four generic runtime risks:
+
+- a retry can repeat a host or guest side effect;
+- an interrupted start can incorrectly commit its candidate process
+  generation;
+- cleanup can run out of dependency order or lose the lease identity it must
+  compensate;
+- a controller restart can resume mutations before uncertain effects have been
+  reconciled.
+
+## Required runtime behavior
+
+- Persist sandbox and workload operation intent before invoking an external
+  effect.
+- Separate immutable workload identity, operation generation, candidate
+  process generation, committed process generation, sandbox generation, and
+  specialized lease generation.
+- Make identical operation retries replayable and reject conflicting or stale
+  requests.
+- Commit a candidate process generation only after every reserved start effect
+  and the process-start receipt are acknowledged.
+- Compensate failed starts and removals in reverse reservation order.
+- Convert interrupted or inconclusive work to an explicit recovery-required
+  state while retaining the exact effect evidence.
+- Reconcile a lost sandbox boot or shutdown response without repeating a
+  confirmed effect.
+- Bound and validate the persisted snapshot, reject symbolic-link targets, and
+  restrict the file to mode `0600`.
+- Persist an exact effectless stop before runtime mutation and reconcile a lost
+  stop response without stopping a replacement workload generation.
+- Protect the ledger directory with mode `0700`, reject symbolic-link ancestry,
+  and fsync both the atomically replaced file and containing directory.
+
+## Apple-shaped boundary
+
+This is generic Container runtime authority. It contains no Docker or Compose
+syntax, policy, REST route, or compatibility fallback. Specialized network,
+storage, resource, logging, security, and engine-socket controllers retain
+ownership of their own leases; the authority only records and orders their
+typed effect references.
+
+The implementation is being retained locally for a later Apple upstream
+handoff. It must not be published to an Apple repository until the complete
+parity programme is ready for upstream submission.
+
+## Acceptance evidence
+
+- [x] Atomic sandbox boot and shutdown reservations with terminal replay.
+- [x] Durable create/start/pause/resume/stop/remove workload transitions.
+- [x] Candidate/committed process-generation separation.
+- [x] Reverse-order effect compensation and unknown-effect recovery fencing.
+- [x] Restart recovery preserves an active process/sandbox tuple.
+- [x] Protocol-driven sandbox runtime with exact receipt validation.
+- [x] Ready-state replay re-observes the complete live runtime identity.
+- [x] API-service composition owns launch, reconnect, ledger, manager, and
+  workload resolver construction.
+- [x] Bounded, schema-versioned, private file persistence.
+- [x] Focused crash, replay, compensation, lifecycle, and filesystem tests.
+- [x] Full macOS unit gate passes under warnings-as-errors.
+- [x] Exact workload stop and stop-observation routes are generation-fenced,
+  idempotent, and response-loss safe.
+- [x] Interrupted effectless stop resumes from durable recovery state without
+  losing the active process tuple.
+- [x] File and directory durability, modes, and symbolic-link rejection have
+  focused regression coverage.
+
+## Commit tracking
+
+- Implementation:
+  `0075c3557357b02374f90e17ab59973c10f4b032`
+  (`feat(runtime): add durable workload authority`).
+- API-service composition and ready-state recovery fix:
+  `203c88b4d71d25a3ef6036035c54ca8b65f4923c`
+  (`feat(runtime): compose shared sandbox authority`).
+- Exact workload reclamation and persistence hardening:
+  `6e462443dd744bda0b605bf26e093833d7818e77`
+  (`feat(logging): complete provider generation cutover`).
+
+## Follow-on integration
+
+The generic transaction resolver, shared-sandbox materialization path, and
+API-service composition root are now implemented. Production adoption remains
+gated on specialized effect controllers, scoped workload lifecycle routes,
+advanced guest network/IPAM, and the controlled `ContainersService` cutover.
+See `ISSUE-engine-linux-sandbox-api-authority.md` for the exact boundary.

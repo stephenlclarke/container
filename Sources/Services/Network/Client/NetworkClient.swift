@@ -22,7 +22,9 @@ import Foundation
 
 /// A client for interacting with a single network.
 public struct NetworkClient: Sendable {
-    static let label = "com.apple.container.network"
+    static var label: String {
+        ContainerServiceNamespace.current.networkServicePrefix
+    }
 
     public static func machServiceLabel(id: String, plugin: String) -> String {
         "\(Self.label).\(plugin).\(id)"
@@ -66,13 +68,16 @@ extension NetworkClient {
     ///
     /// Use `connect()` to obtain a session, then pass it here. The session
     /// must remain open for the lifetime of the allocation; closing it
-    /// releases the allocation on the network helper automatically.
+    /// releases the allocation on the network helper automatically unless
+    /// `retainOnDisconnect` is true. Retained allocations belong to the
+    /// container authority and must be released explicitly.
     public func allocate(
         hostname: String,
         aliases: [String] = [],
         macAddress: MACAddress? = nil,
         requestedIPv4Address: IPv4Address? = nil,
         requestedIPv6Address: IPv6Address? = nil,
+        retainOnDisconnect: Bool = false,
         on session: XPCClientSession
     ) async throws -> (attachment: Attachment, additionalData: XPCMessage?) {
         let request = XPCMessage(route: NetworkRoutes.allocate.rawValue)
@@ -89,22 +94,58 @@ extension NetworkClient {
         if let requestedIPv6Address {
             request.set(key: NetworkKeys.requestedIPv6Address.rawValue, value: requestedIPv6Address.description)
         }
+        if retainOnDisconnect {
+            request.set(key: NetworkKeys.retainOnDisconnect.rawValue, value: true)
+        }
         let response = try await session.send(request)
         let attachment = try response.attachment()
         let additionalData = response.additionalData()
         return (attachment, additionalData)
     }
 
+    /// Release a retained container-owned attachment.
+    ///
+    /// Session-scoped allocations are released automatically when their
+    /// session closes and do not need this call.
+    public func release(hostname: String) async throws {
+        let request = XPCMessage(route: NetworkRoutes.release.rawValue)
+        request.set(key: NetworkKeys.hostname.rawValue, value: hostname)
+        _ = try await createClient().send(request)
+    }
+
     public func lookup(hostname: String) async throws -> Attachment? {
+        try await lookupAll(hostname: hostname).first
+    }
+
+    /// Look up every matching attachment for a hostname or shared alias.
+    public func lookupAll(hostname: String) async throws -> [Attachment] {
+        let client = createClient()
+        return try await lookupAll(hostname: hostname) { request in
+            try await client.send(request)
+        }
+    }
+
+    /// Look up an attachment over an existing network-helper session.
+    public func lookup(hostname: String, on session: XPCClientSession) async throws -> Attachment? {
+        try await lookupAll(hostname: hostname, on: session).first
+    }
+
+    /// Look up every matching attachment over an existing network-helper session.
+    public func lookupAll(hostname: String, on session: XPCClientSession) async throws -> [Attachment] {
+        try await lookupAll(hostname: hostname) { request in
+            try await session.send(request)
+        }
+    }
+
+    private func lookupAll(
+        hostname: String,
+        send: (XPCMessage) async throws -> XPCMessage
+    ) async throws -> [Attachment] {
         let request = XPCMessage(route: NetworkRoutes.lookup.rawValue)
         request.set(key: NetworkKeys.hostname.rawValue, value: hostname)
 
-        let client = createClient()
-
-        let response = try await client.send(request)
-        return try response.dataNoCopy(key: NetworkKeys.attachment.rawValue).map {
-            try JSONDecoder().decode(Attachment.self, from: $0)
-        }
+        let response = try await send(request)
+        return try response.attachments()
     }
 
     private func createClient() -> XPCClient {
@@ -113,6 +154,17 @@ extension NetworkClient {
 }
 
 extension XPCMessage {
+    /// Decode all lookup results, including the singular response used by older servers.
+    public func attachments() throws -> [Attachment] {
+        if let data = self.dataNoCopy(key: NetworkKeys.attachments.rawValue) {
+            return try JSONDecoder().decode([Attachment].self, from: data)
+        }
+        guard let data = self.dataNoCopy(key: NetworkKeys.attachment.rawValue) else {
+            return []
+        }
+        return [try JSONDecoder().decode(Attachment.self, from: data)]
+    }
+
     public func additionalData() -> XPCMessage? {
         guard let additionalData = xpc_dictionary_get_dictionary(self.underlying, NetworkKeys.additionalData.rawValue) else {
             return nil

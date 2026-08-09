@@ -36,6 +36,10 @@ const char* get_containerization_ref() {
     return CONTAINERIZATION_REF;
 }
 
+const char* get_container_engine_api_version() {
+    return CONTAINER_ENGINE_API_VERSION;
+}
+
 const char* get_swift_containerization_version() {
     return CZ_VERSION;
 }

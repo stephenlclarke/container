@@ -871,16 +871,31 @@ public struct Parser {
         return !value.isEmpty && value.allSatisfy { allowedAccess.contains($0) }
     }
 
-    /// Parses Docker-compatible local logging flags into the runtime log policy.
+    /// Parses logging flags without resolving driver identity or option
+    /// semantics. The Container authority performs that work at create.
+    public static func loggingRequest(
+        driver: String?,
+        options: [String] = []
+    ) throws -> ContainerLogRequest {
+        var optionMap: [String: String] = [:]
+        for (index, option) in options.enumerated() {
+            let (key, value) = try Self.logRequestOption(option, index: index)
+            optionMap[key] = value
+        }
+        return ContainerLogRequest(driver: driver, options: optionMap)
+    }
+
+    /// Parses the pre-v2 local logging policy for source-compatible callers.
+    /// New create paths use ``loggingRequest(driver:options:)`` instead.
     public static func logging(driver: String?, options: [String] = []) throws -> ContainerLogConfiguration {
-        var logging: ContainerLogConfiguration
+        let storage: ContainerLogConfiguration.Storage
         switch driver {
         case nil, "":
-            logging = .default
+            storage = .local
         case "json-file", "local":
-            logging = .default
+            storage = .local
         case "none":
-            logging = ContainerLogConfiguration(storage: .none)
+            storage = .none
         case let driver?:
             throw ContainerizationError(
                 .unsupported,
@@ -889,10 +904,10 @@ public struct Parser {
         }
 
         guard !options.isEmpty else {
-            return logging
+            return ContainerLogConfiguration(storage: storage)
         }
 
-        guard logging.storage == .local else {
+        guard storage == .local else {
             let driverName = driver ?? "local"
             throw ContainerizationError(
                 .unsupported,
@@ -900,13 +915,15 @@ public struct Parser {
             )
         }
 
+        var maxSizeInBytes: UInt64?
+        var maxFileCount: Int?
         for option in options {
             let (key, value) = try Self.logOption(option)
             switch key {
             case "max-size":
-                logging.maxSizeInBytes = try Self.logOptionSizeInBytes(value)
+                maxSizeInBytes = try Self.logOptionSizeInBytes(value)
             case "max-file":
-                logging.maxFileCount = try Self.logOptionFileCount(value)
+                maxFileCount = try Self.logOptionFileCount(value)
             default:
                 throw ContainerizationError(
                     .unsupported,
@@ -915,7 +932,11 @@ public struct Parser {
             }
         }
 
-        return logging
+        return ContainerLogConfiguration(
+            storage: storage,
+            maxSizeInBytes: maxSizeInBytes,
+            maxFileCount: maxFileCount
+        )
     }
 
     private static func logOption(_ option: String) throws -> (key: String, value: String) {
@@ -930,6 +951,21 @@ public struct Parser {
             throw ContainerizationError(.invalidArgument, message: "invalid log option '\(option)' (expected key=value)")
         }
         return (key, value)
+    }
+
+    /// Splits a v2 option without interpreting its driver-specific value. The
+    /// authority owns value validation, including whether an empty value is
+    /// meaningful. Errors identify only the input position so protected values
+    /// cannot be reflected into diagnostics.
+    private static func logRequestOption(_ option: String, index: Int) throws -> (key: String, value: String) {
+        let parts = option.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid log option at position \(index + 1) (expected key=value with a non-empty key)"
+            )
+        }
+        return (String(parts[0]), String(parts[1]))
     }
 
     private static func logOptionSizeInBytes(_ value: String) throws -> UInt64 {
@@ -1524,8 +1560,11 @@ public struct Parser {
         }
         var directives = defaultDirectives
         for part in parts {
-            let keyVal = part.split(separator: "=", maxSplits: 2)
-            var key = String(keyVal[0])
+            let keyVal = part.split(separator: "=", maxSplits: 1)
+            guard let rawKey = keyVal.first else {
+                throw ContainerizationError(.invalidArgument, message: "invalid mount directive '\(part)' in \(mount)")
+            }
+            var key = String(rawKey)
             var skipValue = false
             switch key {
             case "type", "size", "mode", "uid", "gid", "volume-subpath", "image-subpath":
@@ -1980,13 +2019,13 @@ public struct Parser {
             throw ContainerizationError(.invalidArgument, message: "invalid publish container port: \(containerPortText)")
         }
 
-        guard hostPortRangeStart > 1,
+        guard hostPortRangeStart >= 1,
             hostPortRangeStart <= hostPortRangeEnd
         else {
             throw ContainerizationError(.invalidArgument, message: "invalid publish host port range: \(hostPortText)")
         }
 
-        guard containerPortRangeStart > 1,
+        guard containerPortRangeStart >= 1,
             containerPortRangeStart <= containerPortRangeEnd
         else {
             throw ContainerizationError(.invalidArgument, message: "invalid publish container port range: \(containerPortText)")
@@ -2092,6 +2131,7 @@ public struct Parser {
     public struct ParsedNetwork {
         public let name: String
         public let aliases: [String]
+        public let scopedDNSAliases: [String: String]
         public let macAddress: String?
         public let mtu: UInt32?
         public let guestInterfaceName: String?
@@ -2102,6 +2142,7 @@ public struct Parser {
         public init(
             name: String,
             aliases: [String] = [],
+            scopedDNSAliases: [String: String] = [:],
             macAddress: String? = nil,
             mtu: UInt32? = nil,
             guestInterfaceName: String? = nil,
@@ -2111,6 +2152,7 @@ public struct Parser {
         ) {
             self.name = name
             self.aliases = aliases
+            self.scopedDNSAliases = scopedDNSAliases
             self.macAddress = macAddress
             self.mtu = mtu
             self.guestInterfaceName = guestInterfaceName
@@ -2121,8 +2163,8 @@ public struct Parser {
     }
 
     /// Parse network attachment with optional properties
-    /// Format: network_name[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]][,ip=IPv4][,ip6=IPv6]
-    /// Example: "backend,alias=api,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0,ip=198.51.100.8,ip6=2001:db8::8"
+    /// Format: network_name[,alias=NAME][,dns-alias=ALIAS:TARGET][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]][,ip=IPv4][,ip6=IPv6]
+    /// Example: "backend,alias=api,dns-alias=database:db,mac=02:42:ac:11:00:02,mtu=1500,interface=backend0,ip=198.51.100.8,ip6=2001:db8::8"
     public static func network(_ networkSpec: String) throws -> ParsedNetwork {
         guard !networkSpec.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "network specification cannot be empty")
@@ -2140,6 +2182,7 @@ public struct Parser {
         }
 
         var aliases: [String] = []
+        var scopedDNSAliases: [String: String] = [:]
         var macAddress: String?
         var mtu: UInt32?
         var guestInterfaceName: String?
@@ -2174,6 +2217,28 @@ public struct Parser {
                 if !aliases.contains(alias) {
                     aliases.append(alias)
                 }
+            case "dns-alias":
+                let mapping = value.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                guard mapping.count == 2,
+                    let alias = try hostname(String(mapping[0]), option: "network DNS alias"),
+                    let target = try hostname(String(mapping[1]), option: "network DNS alias target")
+                else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "invalid network DNS alias '\(value)': expected ALIAS:TARGET"
+                    )
+                }
+                let canonicalAlias = alias.lowercased()
+                if let existing = scopedDNSAliases[canonicalAlias] {
+                    guard existing.caseInsensitiveCompare(target) == .orderedSame else {
+                        throw ContainerizationError(
+                            .invalidArgument,
+                            message: "network DNS alias '\(alias)' maps to both '\(existing)' and '\(target)'"
+                        )
+                    }
+                    continue
+                }
+                scopedDNSAliases[canonicalAlias] = target
             case "mac":
                 if value.isEmpty {
                     throw ContainerizationError(
@@ -2204,7 +2269,7 @@ public struct Parser {
             default:
                 throw ContainerizationError(
                     .invalidArgument,
-                    message: "unknown network property '\(key)'. Available properties: address, alias, ip, ip6, mac, mtu, interface"
+                    message: "unknown network property '\(key)'. Available properties: address, alias, dns-alias, ip, ip6, mac, mtu, interface"
                 )
             }
         }
@@ -2212,6 +2277,7 @@ public struct Parser {
         return ParsedNetwork(
             name: networkName,
             aliases: aliases,
+            scopedDNSAliases: scopedDNSAliases,
             macAddress: macAddress,
             mtu: mtu,
             guestInterfaceName: guestInterfaceName,

@@ -37,6 +37,8 @@ struct TestCLIVersion {
         let builderShimRepository: String?
         let builderShimVersion: String?
         let builderShimDigest: String?
+        let runtimeCapabilitySchemaVersion: Int?
+        let runtimeCapabilities: [String]?
         let server: VersionInfo?
     }
 
@@ -62,6 +64,7 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.contains("build") }))
             #expect(lines.contains(where: { $0.contains("commit") }))
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
+            #expect(lines.contains(where: { $0.hasPrefix("  vminit: ") }))
             #expect(!lines[0].contains("COMPONENT"))
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
@@ -85,6 +88,19 @@ struct TestCLIVersion {
             #expect(decoded[0].builderShimRepository == "ghcr.io/stephenlclarke/container-builder-shim/builder")
             #expect(decoded[0].builderShimVersion == "current-30784216505-806feb1c9cc1")
             #expect(decoded[0].builderShimDigest == "sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c")
+            #expect(decoded[0].runtimeCapabilitySchemaVersion == 1)
+            #expect(
+                decoded[0].runtimeCapabilities == [
+                    "io.github.stephenlclarke.container.compose.archive-copy.v1",
+                    "io.github.stephenlclarke.container.compose.build-extensions.v1",
+                    "io.github.stephenlclarke.container.compose.create-configuration.v1",
+                    "io.github.stephenlclarke.container.compose.image-filesystem.v1",
+                    "io.github.stephenlclarke.container.compose.lifecycle.v1",
+                    "io.github.stephenlclarke.container.compose.network-scoped-aliases.v1",
+                    "io.github.stephenlclarke.container.compose.observation.v1",
+                    "io.github.stephenlclarke.container.logging-drivers.v1",
+                ]
+            )
             #expect(decoded[0].buildType == expectedBuildType())
         }
     }
@@ -116,6 +132,8 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
+            #expect(lines.contains("  runtime-capability-schema: 1"))
+            #expect(lines.contains(where: { $0.hasPrefix("  runtime-capabilities: ") }))
             #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:6cfb001d6fcf46283526df084351c20fd77e473eabaa9bf55e9327cc1d882f0c"))
         }
     }

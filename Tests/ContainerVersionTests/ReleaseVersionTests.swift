@@ -20,49 +20,120 @@ import Testing
 
 struct ReleaseVersionTests {
     @Test
+    func runtimeCapabilityManifestIsVersionedUniqueAndSorted() throws {
+        let manifest = RuntimeCapabilityManifest.current
+        let identifiers = manifest.capabilities.map(\.rawValue)
+
+        #expect(manifest.schemaVersion == 1)
+        #expect(identifiers.count == 8)
+        #expect(identifiers.contains("io.github.stephenlclarke.container.logging-drivers.v1"))
+        #expect(identifiers == identifiers.sorted())
+        #expect(Set(identifiers).count == identifiers.count)
+        #expect(identifiers.allSatisfy { $0.hasSuffix(".v1") })
+        #expect(
+            try JSONDecoder().decode(
+                RuntimeCapabilityManifest.self,
+                from: JSONEncoder().encode(manifest)
+            ) == manifest
+        )
+    }
+
+    @Test
     func singleLineIncludesForkProvenance() throws {
         let line = ReleaseVersion.singleLine(appName: "container CLI")
-        let containerization = try Self.expectedContainerizationProvenance()
+        let containerization = Self.expectedContainerizationProvenance()
 
         #expect(line.contains("distribution: custom"))
         #expect(line.contains("source: stephenlclarke/container"))
         #expect(line.contains("containerization: \(containerization)"))
+        #expect(line.contains("vminit: \(ReleaseVersion.vminitImage())"))
         #expect(line.contains("builder-shim: \(ReleaseVersion.builderShimImage())"))
     }
 
     @Test
     func provenanceLinesIncludeSourceAndContainerization() throws {
         let lines = ReleaseVersion.provenanceLines(indent: "")
-        let containerization = try Self.expectedContainerizationProvenance()
+        let containerization = Self.expectedContainerizationProvenance()
 
         #expect(lines.contains("distribution: custom"))
         #expect(lines.contains("source: stephenlclarke/container"))
         #expect(lines.contains("containerization: \(containerization)"))
+        #expect(lines.contains("vminit: \(ReleaseVersion.vminitImage())"))
         #expect(lines.contains("container-builder-shim: \(ReleaseVersion.builderShimImage())"))
     }
 
-    private static func expectedContainerizationProvenance() throws -> String {
-        let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
-        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let pins = try #require(object["pins"] as? [[String: Any]])
-        let pin = try #require(pins.first { ($0["identity"] as? String) == "containerization" })
-        let location = try #require(pin["location"] as? String)
-        let state = try #require(pin["state"] as? [String: Any])
-        let revision = try #require(state["revision"] as? String)
-        return "\(githubRepositoryPath(from: location))@\(revision)"
+    @Test
+    func customVminitImageUsesExactContainerizationRevision() {
+        let revision = String(repeating: "a", count: 40)
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "Example/Containerization",
+                containerizationRef: revision.uppercased(),
+                upstreamVersion: "0.40.1"
+            ) == "ghcr.io/example/containerization/vminit:\(revision)"
+        )
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "apple/containerization",
+                containerizationRef: revision,
+                upstreamVersion: "0.40.1"
+            ) == "ghcr.io/apple/containerization/vminit:0.40.1"
+        )
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "example/containerization",
+                containerizationRef: "main",
+                upstreamVersion: "0.40.1"
+            ) == "vminit:latest"
+        )
+        #expect(
+            ReleaseVersion.vminitImage(
+                containerizationSource: "unsafe source",
+                containerizationRef: revision,
+                upstreamVersion: "0.40.1"
+            ) == "vminit:latest"
+        )
     }
 
-    private static func githubRepositoryPath(from location: String) -> String {
-        var repository = location
-        for prefix in ["https://github.com/", "git@github.com:"] {
-            if repository.hasPrefix(prefix) {
-                repository.removeFirst(prefix.count)
-                break
-            }
-        }
-        if repository.hasSuffix(".git") {
-            repository.removeLast(4)
-        }
-        return repository
+    @Test
+    func engineAPIVersionMatchesResolvedPackageOrPinnedManifestDeclaration() throws {
+        let expected = try Self.expectedEngineAPIVersion()
+        #expect(ReleaseVersion.containerEngineAPIVersion() == expected)
     }
+
+    private static func expectedContainerizationProvenance() -> String {
+        "\(ReleaseVersion.containerizationSource())@\(ReleaseVersion.containerizationRef())"
+    }
+
+    private static func expectedEngineAPIVersion() throws -> String {
+        let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
+        let object = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        let pins = try #require(object["pins"] as? [[String: Any]])
+        let pin = try #require(
+            pins.first {
+                ($0["identity"] as? String) == "container-engine-api"
+            }
+        )
+        let state = try #require(pin["state"] as? [String: Any])
+        if let version = state["version"] as? String {
+            return version
+        }
+
+        _ = try #require(state["revision"] as? String)
+        let manifest = try String(contentsOfFile: "Package.swift", encoding: .utf8)
+        let expression = try NSRegularExpression(
+            pattern:
+                #"let\s+containerEngineAPIVersion\s*=\s*Version\(\s*([0-9]+)\s*,\s*([0-9]+)\s*,\s*([0-9]+)\s*\)"#
+        )
+        let range = NSRange(manifest.startIndex..<manifest.endIndex, in: manifest)
+        let match = try #require(expression.firstMatch(in: manifest, range: range))
+        let components = try (1...3).map { index in
+            let range = try #require(Range(match.range(at: index), in: manifest))
+            return String(manifest[range])
+        }
+        return components.joined(separator: ".")
+    }
+
 }

@@ -29,12 +29,17 @@ Options:
 Environment:
     CONTAINER_INIT_IMAGE_NAME
                                Image reference to build and install for the
-                               init image (default: vminit:latest)
+                               init image (default: immutable custom source/ref
+                               when available, otherwise vminit:latest)
     CONTAINERIZATION_INIT_SOURCE_PATH
                                Build the init image from this containerization
                                checkout instead of the SwiftPM resolved path
     CONTAINERIZATION_INIT_FORCE_COPY
                                Force a temporary writable source copy (default: false)
+    CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT
+                               Optional absolute host path for temporary Swift build
+                               artifacts. Keeps build products out of the source
+                               checkout that is shared with the guest builder.
 
 EOF
     exit 0
@@ -79,9 +84,25 @@ done
 CONTAINER_INIT_CLI="${CONTAINER_INIT_CLI:-bin/container}"
 CONTAINER_INIT_MAKE="${CONTAINER_INIT_MAKE:-make}"
 CONTAINER_INIT_SWIFT="${CONTAINER_INIT_SWIFT:-/usr/bin/swift}"
-IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-vminit:latest}"
+default_image_name() {
+	local source="${CONTAINERIZATION_SOURCE:-apple/containerization}"
+	local ref="${CONTAINERIZATION_REF:-}"
+	local normalized_source
+	normalized_source="$(printf '%s' "${source}" | tr '[:upper:]' '[:lower:]')"
+	if [[ "${normalized_source}" != "apple/containerization" &&
+		"${source}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ &&
+		"${ref}" =~ ^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$ ]]; then
+		local normalized_ref
+		normalized_ref="$(printf '%s' "${ref}" | tr '[:upper:]' '[:lower:]')"
+		printf 'ghcr.io/%s/vminit:%s' "${normalized_source}" "${normalized_ref}"
+		return
+	fi
+	printf 'vminit:latest'
+}
+IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-$(default_image_name)}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
+TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT=""
 BOOTSTRAP_RUNTIME_STARTED=false
 
 cleanup() {
@@ -105,18 +126,23 @@ copy_containerization_checkout() {
 	mkdir -p "${CONTAINERIZATION_PATH}"
 	(
 		set -o pipefail
-		tar --exclude='./.build' -C "${source_path}" -cf - . |
+		tar --exclude='./.build' --exclude='./vminitd/.build' -C "${source_path}" -cf - . |
 			tar -C "${CONTAINERIZATION_PATH}" -xf -
 	)
 	chmod -R u+w "${CONTAINERIZATION_PATH}"
+	TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT="${TEMP_CONTAINERIZATION_ROOT}/build-cache"
 }
 
-CONTAINERIZATION_VERSION="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
 CONTAINERIZATION_PATH="${CONTAINERIZATION_INIT_SOURCE_PATH:-}"
-if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspecified" ]] ; then
-	if [[ -z "${CONTAINERIZATION_PATH}" ]]; then
-		CONTAINERIZATION_PATH="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
+CONTAINERIZATION_VERSION="unspecified"
+if [[ -z "${CONTAINERIZATION_PATH}" ]]; then
+	CONTAINERIZATION_DEPENDENCY_JSON="$(${CONTAINER_INIT_SWIFT} package show-dependencies --format json)"
+	CONTAINERIZATION_VERSION="$(printf '%s' "${CONTAINERIZATION_DEPENDENCY_JSON}" | jq -r '.dependencies[] | select(.identity == "containerization") | .version')"
+	if [[ "${CONTAINERIZATION_VERSION}" == "unspecified" ]]; then
+		CONTAINERIZATION_PATH="$(printf '%s' "${CONTAINERIZATION_DEPENDENCY_JSON}" | jq -r '.dependencies[] | select(.identity == "containerization") | .path')"
 	fi
+fi
+if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspecified" ]] ; then
 	if [ ! -d "${CONTAINERIZATION_PATH}" ] ; then
 		echo "containerization directory at ${CONTAINERIZATION_PATH} does not exist"
 		exit 1
@@ -131,7 +157,17 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 		BOOTSTRAP_RUNTIME_STARTED=true
 		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BUILD_START_ARGS[@]}"
 	fi
-	"${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
+	BUILD_SCRATCH_ROOT="${CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT:-${TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT}}"
+	if [[ -n "${BUILD_SCRATCH_ROOT}" ]]; then
+		if [[ "${BUILD_SCRATCH_ROOT}" != /* ]]; then
+			echo "CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT must be an absolute path"
+			exit 1
+		fi
+		mkdir -p "${BUILD_SCRATCH_ROOT}"
+		SCRATCH_ROOT="${BUILD_SCRATCH_ROOT}" "${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
+	else
+		"${CONTAINER_INIT_MAKE}" -C "${CONTAINERIZATION_PATH}" init VMINIT_IMAGE="${IMAGE_NAME}"
+	fi
 	INIT_IMAGE_TAR="$(mktemp -t container-init.XXXXXX.tar)"
 	"${CONTAINERIZATION_PATH}/bin/cctl" images save -o "${INIT_IMAGE_TAR}" "${IMAGE_NAME}"
 

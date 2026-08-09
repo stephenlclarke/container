@@ -106,6 +106,11 @@ final class AttachableInput: ReaderStream, @unchecked Sendable {
 
 /// A process output writer that keeps durable log capture while allowing
 /// additional XPC clients to join and leave a running process's output.
+enum AttachableOutputPersistentFailure: Equatable, Sendable {
+    case write
+    case close
+}
+
 final class AttachableOutput: Writer, @unchecked Sendable {
     private struct State {
         var persistentWriters: [any Writer]
@@ -114,8 +119,13 @@ final class AttachableOutput: Writer, @unchecked Sendable {
     }
 
     private let state: Mutex<State>
+    private let persistentFailureHandler: @Sendable (AttachableOutputPersistentFailure) -> Void
 
-    init(initial: FileHandle? = nil, persistent: (any Writer)? = nil) {
+    init(
+        initial: FileHandle? = nil,
+        persistent: (any Writer)? = nil,
+        persistentFailureHandler: @escaping @Sendable (AttachableOutputPersistentFailure) -> Void = { _ in }
+    ) {
         var clients: [UUID: FileHandle] = [:]
         if let initial {
             clients[UUID()] = initial
@@ -125,6 +135,7 @@ final class AttachableOutput: Writer, @unchecked Sendable {
                 persistentWriters: persistent.map { [$0] } ?? [],
                 clients: clients
             ))
+        self.persistentFailureHandler = persistentFailureHandler
     }
 
     /// Adds one output sink for an attached client.
@@ -146,10 +157,6 @@ final class AttachableOutput: Writer, @unchecked Sendable {
             (state.persistentWriters, state.clients)
         }
 
-        for writer in snapshot.0 {
-            try writer.write(data)
-        }
-
         var failed = [UUID]()
         for (identifier, handle) in snapshot.1 {
             do {
@@ -159,6 +166,18 @@ final class AttachableOutput: Writer, @unchecked Sendable {
             }
         }
         remove(failed)
+
+        // Live attach is a distinct output path. A slow blocking driver still
+        // applies backpressure after this write, but a driver error can never
+        // suppress bytes which the process already produced for attached
+        // clients.
+        for writer in snapshot.0 {
+            do {
+                try writer.write(data)
+            } catch {
+                persistentFailureHandler(.write)
+            }
+        }
     }
 
     func close() throws {
@@ -174,19 +193,17 @@ final class AttachableOutput: Writer, @unchecked Sendable {
             return (writers, clients)
         }
 
-        var firstError: Error?
+        // Publish EOF to attached clients before a driver drain or close can
+        // block runtime cleanup.
+        for handle in snapshot.1 {
+            try? handle.close()
+        }
         for writer in snapshot.0 {
             do {
                 try writer.close()
             } catch {
-                firstError = firstError ?? error
+                persistentFailureHandler(.close)
             }
-        }
-        for handle in snapshot.1 {
-            try? handle.close()
-        }
-        if let firstError {
-            throw firstError
         }
     }
 

@@ -20,6 +20,7 @@ import ContainerBuild
 import ContainerImagesServiceClient
 import ContainerPersistence
 import ContainerPlugin
+import ContainerResource
 import Containerization
 import ContainerizationError
 import ContainerizationOCI
@@ -252,6 +253,14 @@ extension Application {
                                 let _ = try await b.info()
                                 return b
                             } catch {
+                                let builderStatus = try? await client.get(id: builderContainerId).status
+                                if Self.builderExitedBeforeDial(status: builderStatus) {
+                                    throw ContainerizationError(
+                                        .invalidState,
+                                        message: "builder '\(builderContainerId)' exited before accepting connections; inspect its logs with 'container logs \(builderContainerId)'"
+                                    )
+                                }
+
                                 // If we get here, "Dialing builder" is shown for such a short period
                                 // of time that it's invisible to the user.
                                 progress.set(tasks: 0)
@@ -542,6 +551,10 @@ extension Application {
                 }
                 throw NSError(domain: "Build", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(error)"])
             }
+        }
+
+        static func builderExitedBeforeDial(status: RuntimeStatus?) -> Bool {
+            status == .stopped
         }
 
         static func dockerignoreData(dockerfile: String, contextDir: String) throws -> Data? {

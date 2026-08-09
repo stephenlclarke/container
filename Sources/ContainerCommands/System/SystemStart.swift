@@ -16,10 +16,12 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerEngineService
 import ContainerPersistence
 import ContainerPlugin
 import ContainerXPC
 import ContainerizationError
+import ContainerizationOS
 import Foundation
 import MachineAPIClient
 import SystemPackage
@@ -35,25 +37,37 @@ extension Application {
         @Option(
             name: .shortAndLong,
             help: "Path to the root directory for application data",
-            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) })
+            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) }
+        )
         var appRoot = ApplicationRoot.defaultPath
 
         @Option(
             name: .long,
             help: "Path to the root directory for application executables and plugins",
-            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) })
+            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) }
+        )
         var installRoot = InstallRoot.path
 
         @Option(
             name: .long,
             help: "Path to the root directory for log data, using macOS log facility if not set",
-            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) })
+            transform: { FilePath(FileManager.default.currentDirectoryPath).resolve($0, defaultPath: FilePath($0)) }
+        )
         var logRoot: FilePath? = nil
+
+        @Option(
+            name: .long,
+            help: "Load and unpack the initial filesystem from an OCI image archive before any registry pull",
+            completion: .file(),
+            transform: { FilePathOps.absolutePath(FilePath($0)) }
+        )
+        var initImageArchive: FilePath? = nil
 
         @Flag(
             name: .long,
             inversion: .prefixedEnableDisable,
-            help: "Specify whether the default kernel should be installed or not (default: prompt user)")
+            help: "Specify whether the default kernel should be installed or not (default: prompt user)"
+        )
         var kernelInstall: Bool?
 
         @Option(
@@ -73,6 +87,7 @@ extension Application {
         public init() {}
 
         public func run() async throws {
+            let serviceNamespace = try ContainerServiceNamespace.resolve()
             try ConfigurationLoader.copyConfigurationToReadOnly(to: appRoot)
             // Pass appRoot before installRoot: ConfigurationLoader uses first-match-wins
             // precedence, so user-provided config in appRoot overrides the defaults
@@ -83,7 +98,8 @@ extension Application {
                 configurationFiles: [
                     ConfigurationLoader.configurationFile(in: appRoot, of: .appRoot),
                     ConfigurationLoader.configurationFile(in: installRoot, of: .installRoot),
-                ])
+                ]
+            )
 
             // Without the true path to the binary in the plist, `container-apiserver` won't launch properly.
             // Resolve the symlink to get the true binary path before writing the launchd plist.
@@ -109,16 +125,17 @@ extension Application {
             var env = PluginLoader.filterEnvironment()
             env[ApplicationRoot.environmentName] = appRoot.string
             env[InstallRoot.environmentName] = installRoot.string
+            env[ContainerServiceNamespace.environmentName] = serviceNamespace.value
             if let logRoot {
                 env[LogRoot.environmentName] = logRoot.string
             }
             let plist = LaunchPlist(
-                label: "com.apple.container.apiserver",
+                label: serviceNamespace.apiServerIdentifier,
                 arguments: args,
                 environment: env,
                 limitLoadToSessionType: [.Aqua, .Background, .System],
                 runAtLoad: true,
-                machServices: ["com.apple.container.apiserver"]
+                machServices: [serviceNamespace.apiServerIdentifier]
             )
 
             let plistPath = apiServerDataPath.appending(FilePath.Component("apiserver.plist"))
@@ -154,8 +171,20 @@ extension Application {
                 )
             }
 
+            try await startContainerEngineGateway(serviceNamespace: serviceNamespace)
+
             if await !initImageExists(containerSystemConfig: containerSystemConfig) {
-                try? await installInitialFilesystem(initImage: containerSystemConfig.vminit.image)
+                if let initImageArchive {
+                    try await installInitialFilesystemArchive(
+                        initImageArchive,
+                        initImage: containerSystemConfig.vminit.image,
+                        containerSystemConfig: containerSystemConfig
+                    )
+                } else {
+                    try await installInitialFilesystem(
+                        initImage: containerSystemConfig.vminit.image
+                    )
+                }
             }
 
             guard await !kernelExists() else {
@@ -164,7 +193,97 @@ extension Application {
             try await installDefaultKernel(
                 kernelURL: containerSystemConfig.kernel.url,
                 kernelBinaryPath: containerSystemConfig.kernel.binaryPath,
-                kernelDigest: containerSystemConfig.kernel.digest)
+                kernelDigest: containerSystemConfig.kernel.digest
+            )
+        }
+
+        private func startContainerEngineGateway(
+            serviceNamespace: ContainerServiceNamespace
+        ) async throws {
+            let configuration = ContainerEngineServiceConfiguration(
+                appRoot: appRoot,
+                serviceNamespace: serviceNamespace
+            )
+            let executablePath = try CommandLine.executablePath
+                .removingLastComponent()
+                .appending(FilePath.Component("container-engine"))
+                .resolvingSymlinks()
+            let plist = LaunchPlist(
+                label: configuration.launchdLabel,
+                arguments: configuration.arguments(
+                    executablePath: executablePath
+                ),
+                environment: [ContainerServiceNamespace.environmentName: serviceNamespace.value],
+                limitLoadToSessionType: [.Aqua, .Background, .System],
+                runAtLoad: true,
+                keepAlive: true
+            )
+            try configuration.writeLaunchPlist(plist)
+
+            log.info(
+                "Launching Container Engine gateway...",
+                metadata: [
+                    "socket": "\(configuration.publicSocketPath.string)"
+                ]
+            )
+            let wasRegistered = try ServiceManager.isRegistered(
+                fullServiceLabel: configuration.launchdLabel
+            )
+            try ServiceManager.register(
+                plistPath: configuration.plistPath.string
+            )
+            do {
+                try await ContainerEngineHealthProbe
+                    .waitUntilProviderResponsive(
+                        socketPath: configuration.publicSocketPath.string,
+                        timeout: timeout
+                    )
+                return
+            } catch {
+                guard wasRegistered else {
+                    do {
+                        try configuration.deregister()
+                    } catch let cleanupError {
+                        throw ContainerizationError(
+                            .internalError,
+                            message: "failed to get a response from Container Engine gateway: \(error); launchd cleanup also failed: \(cleanupError)"
+                        )
+                    }
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "failed to get a response from Container Engine gateway: \(error)"
+                    )
+                }
+                log.info(
+                    "Restarting stale Container Engine gateway...",
+                    metadata: ["error": "\(error)"]
+                )
+                try configuration.deregister()
+                try ServiceManager.register(
+                    plistPath: configuration.plistPath.string
+                )
+            }
+
+            do {
+                try await ContainerEngineHealthProbe
+                    .waitUntilProviderResponsive(
+                        socketPath: configuration.publicSocketPath.string,
+                        timeout: timeout
+                    )
+            } catch {
+                do {
+                    try configuration.deregister()
+                } catch let cleanupError {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "failed to get a response from restarted Container Engine gateway: \(error); launchd cleanup also failed: \(cleanupError)"
+                    )
+                }
+                throw ContainerizationError(
+                    .internalError,
+                    message: "failed to get a response from restarted Container Engine gateway: \(error)"
+                )
+            }
         }
 
         static func validateAppRoot(requested: FilePath, actual: URL) throws {
@@ -182,15 +301,59 @@ extension Application {
             }
         }
 
+        static func initialFilesystemPullCommand(
+            initImage: String
+        ) throws -> ImagePull {
+            try ImagePull(reference: initImage)
+        }
+
         private func installInitialFilesystem(initImage: String) async throws {
-            var pullCommand = try ImagePull.parse()
-            pullCommand.reference = initImage
+            let pullCommand = try Self.initialFilesystemPullCommand(
+                initImage: initImage
+            )
             log.info("Installing base container filesystem...")
-            do {
-                try await pullCommand.run()
-            } catch {
-                log.error("failed to install base container filesystem", metadata: ["error": "\(error)"])
+            try await pullCommand.run()
+        }
+
+        private func installInitialFilesystemArchive(
+            _ archive: FilePath,
+            initImage: String,
+            containerSystemConfig: ContainerSystemConfig
+        ) async throws {
+            let archiveURL = URL(fileURLWithPath: archive.string)
+            guard FileManager.default.fileExists(atPath: archiveURL.path) else {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "initial filesystem archive does not exist: \(archive.string)"
+                )
             }
+
+            log.info(
+                "Loading initial filesystem archive...",
+                metadata: ["archive": "\(archive)", "image": "\(initImage)"]
+            )
+            let result = try await ClientImage.load(from: archive.string)
+            guard result.rejectedMembers.isEmpty else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "initial filesystem archive contains rejected members"
+                )
+            }
+
+            let image: ClientImage
+            do {
+                image = try await ClientImage.get(
+                    reference: initImage,
+                    containerSystemConfig: containerSystemConfig
+                )
+            } catch {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "initial filesystem archive does not contain configured image \(initImage)",
+                    cause: error
+                )
+            }
+            try await image.unpack(platform: .current)
         }
 
         private func installDefaultKernel(kernelURL: URL, kernelBinaryPath: String, kernelDigest: String) async throws {
@@ -217,7 +380,8 @@ extension Application {
                 tarRemoteURL: kernelURL,
                 kernelFilePath: kernelBinaryPath,
                 expectedDigest: kernelDigest,
-                force: true)
+                force: true
+            )
         }
 
         private func initImageExists(containerSystemConfig: ContainerSystemConfig) async -> Bool {

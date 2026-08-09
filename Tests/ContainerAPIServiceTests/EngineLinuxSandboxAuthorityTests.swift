@@ -1,0 +1,648 @@
+//===----------------------------------------------------------------------===//
+// Copyright © 2026 Apple Inc. and the container project authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//===----------------------------------------------------------------------===//
+
+import ContainerResource
+import ContainerRuntimeClient
+import Containerization
+import ContainerizationError
+import Foundation
+import Testing
+
+@testable import ContainerAPIService
+
+struct EngineLinuxSandboxAuthorityTests {
+    @Test
+    func durableAuthorityReconcilesSandboxAndStartsWorkloadOnce() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let persistence = InMemoryEngineWorkloadLedgerPersistenceV1()
+
+        let first = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: persistence
+        )
+        let ready = try await first.ensureReady(configuration: fixture.sandboxConfiguration)
+        #expect(ready.state == .ready)
+        #expect(await runtime.bootCount == 1)
+
+        // A fresh authority must reconcile the exact helper identity instead
+        // of trusting the durable ready record by itself.
+        let recovered = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: persistence
+        )
+        let observed = try await recovered.ensureReady(configuration: fixture.sandboxConfiguration)
+        #expect(observed == ready)
+        #expect(await runtime.bootCount == 1)
+        #expect(await runtime.bootObservationCount == 1)
+
+        let running = try await recovered.startWorkload(
+            planDigest: "sha256:plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            dynamicEnvironment: ["BUILD_ID": "42"]
+        )
+        #expect(running.state == .running)
+        #expect(running.activeProcessGeneration == 1)
+        #expect(await runtime.workloadStartCount == 1)
+
+        let serviceHandle = try await recovered.dialService(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: try #require(running.activeProcessGeneration),
+            port: 12_345
+        )
+        try serviceHandle.close()
+        #expect(await runtime.serviceDialCount == 1)
+        #expect(await runtime.lastServiceDial?.sandboxGeneration == ready.generation)
+
+        let replay = try await recovered.startWorkload(
+            planDigest: "sha256:plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            dynamicEnvironment: ["BUILD_ID": "42"]
+        )
+        #expect(replay == running)
+        #expect(await runtime.workloadStartCount == 1)
+        #expect(await launcher.launchCount == 2)
+
+        await #expect(throws: EngineWorkloadLedgerError.idempotencyConflict) {
+            _ = try await recovered.startWorkload(
+                planDigest: "sha256:plan",
+                configuration: fixture.sandboxConfiguration,
+                workloadRoot: fixture.workloadRoot,
+                dynamicEnvironment: ["BUILD_ID": "changed"]
+            )
+        }
+        #expect(await runtime.workloadStartCount == 1)
+    }
+
+    @Test
+    func defaultFileLedgerPersistsSharedSandboxLifecycle() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:file-ledger-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+
+        let ledgerURL = fixture.sandboxRoot.appendingPathComponent(
+            EngineLinuxSandboxAuthorityV1.ledgerFilename
+        )
+        let values = try ledgerURL.resourceValues(
+            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+        )
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: ledgerURL.path
+        )
+        #expect(running.state == .running)
+        #expect(values.isRegularFile == true)
+        #expect(values.isSymbolicLink != true)
+        #expect(
+            (attributes[.posixPermissions] as? NSNumber)?.uint16Value
+                == 0o600
+        )
+
+        let reopened = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher
+        )
+        let recovered = try await reopened.ensureReady(
+            configuration: fixture.sandboxConfiguration
+        )
+        #expect(recovered.state == .ready)
+        #expect(recovered.generation == 1)
+        #expect((await reopened.snapshot()).workloads == [running])
+    }
+
+    @Test
+    func diagnosticLedgerPersistencePreservesUnderlyingFailure() async throws {
+        let persistence = FailingLedgerPersistence()
+        let diagnostics = EngineLinuxSandboxLedgerPersistenceDiagnosticsV1(
+            persistence: persistence,
+            ledgerURL: URL(fileURLWithPath: "/tmp/engine-workload-ledger-v1.json")
+        )
+
+        await #expect(throws: LedgerPersistenceTestError.injectedFailure) {
+            _ = try await diagnostics.load()
+        }
+        await #expect(throws: LedgerPersistenceTestError.injectedFailure) {
+            try await diagnostics.save(Data([0x01]))
+        }
+        #expect(await persistence.loadCount == 1)
+        #expect(await persistence.saveCount == 1)
+    }
+
+    @Test
+    func monitoredTerminalWorkloadIsReconciledBeforeRestartAndDial() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+
+        let first = try await authority.startWorkload(
+            planDigest: "sha256:service-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            monitorTerminal: true
+        )
+        let firstGeneration = try #require(first.activeProcessGeneration)
+        await runtime.markWorkloadTerminal()
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await authority.dialService(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: first.containerID,
+                workloadProcessGeneration: firstGeneration + 1,
+                port: 12_345
+            )
+        }
+        #expect(await runtime.serviceDialCount == 0)
+
+        let restarted = try await authority.startWorkload(
+            planDigest: "sha256:service-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            monitorTerminal: true
+        )
+        let restartedGeneration = try #require(restarted.activeProcessGeneration)
+        #expect(restarted.state == .running)
+        #expect(restartedGeneration == firstGeneration + 1)
+        #expect(await runtime.workloadObservationCount == 1)
+        #expect(await runtime.workloadStartCount == 2)
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await authority.dialService(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: restarted.containerID,
+                workloadProcessGeneration: firstGeneration,
+                port: 12_345
+            )
+        }
+        let handle = try await authority.dialService(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: restarted.containerID,
+            workloadProcessGeneration: restartedGeneration,
+            port: 12_345
+        )
+        try handle.close()
+        #expect(await runtime.serviceDialCount == 1)
+        #expect(await runtime.lastServiceDial?.workloadID == restarted.containerID)
+        #expect(
+            await runtime.lastServiceDial?.workloadProcessGeneration
+                == restartedGeneration
+        )
+    }
+
+    @Test
+    func absentRuntimeAllowsDurableConfigurationUpgradeAndWorkloadRematerialization()
+        async throws
+    {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let persistence = InMemoryEngineWorkloadLedgerPersistenceV1()
+        let first = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: persistence
+        )
+        let initial = try await first.startWorkload(
+            planDigest: "sha256:old-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+        #expect(initial.state == .running)
+        await runtime.loseSandbox()
+
+        let upgradedConfiguration = EngineLinuxSandboxRuntimeConfigurationV1(
+            path: fixture.sandboxRoot,
+            sandboxID: "engine-sandbox",
+            initialFilesystem: .tmpfs(destination: "/", options: []),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/tmp/kernel"),
+                platform: .linuxArm
+            ),
+            cpus: 6,
+            memoryInBytes: 4 * 1_024 * 1_024 * 1_024
+        )
+        let recovered = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: persistence
+        )
+        let ready = try await recovered.ensureReady(
+            configuration: upgradedConfiguration
+        )
+        #expect(ready.state == .ready)
+        #expect(ready.generation == 2)
+        #expect(await launcher.launchCount == 3)
+        #expect(await launcher.stopCount == 1)
+        #expect((await recovered.snapshot()).workloads.isEmpty)
+
+        let rematerialized = try await recovered.startWorkload(
+            planDigest: "sha256:new-plan",
+            configuration: upgradedConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+        #expect(rematerialized.state == .running)
+        #expect(rematerialized.activeSandboxGeneration == 2)
+        #expect(await runtime.workloadStartCount == 2)
+    }
+
+    @Test
+    func exactWorkloadReclamationStopsRuntimeBeforeLedgerCommit() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime(failFirstStopResponse: true)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:reclaimable-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+        let processGeneration = try #require(
+            running.activeProcessGeneration
+        )
+
+        let stopped = try await authority.stopWorkload(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: processGeneration
+        )
+        #expect(stopped.state == .stopped)
+        #expect(stopped.activeProcessGeneration == nil)
+        #expect(await runtime.workloadStopCount == 1)
+
+        let replay = try await authority.stopWorkload(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: processGeneration
+        )
+        #expect(replay == stopped)
+        #expect(await runtime.workloadStopCount == 1)
+    }
+
+    @Test
+    func shutdownReleasesAbsentAndRunningSandboxes() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let absent = try await authority.shutdownIfIdle(
+            configuration: fixture.sandboxConfiguration
+        )
+        #expect(absent.state == .absent)
+        #expect(await launcher.stopCount == 0)
+
+        _ = try await authority.ensureReady(
+            configuration: fixture.sandboxConfiguration
+        )
+        let stopped = try await authority.shutdownIfIdle(
+            configuration: fixture.sandboxConfiguration
+        )
+        #expect(stopped.state == .absent)
+        #expect(await launcher.stopCount == 1)
+    }
+}
+
+private enum LedgerPersistenceTestError: Error, Equatable {
+    case injectedFailure
+}
+
+private actor FailingLedgerPersistence: EngineWorkloadLedgerPersistenceV1 {
+    private(set) var loadCount = 0
+    private(set) var saveCount = 0
+
+    func load() throws -> Data? {
+        loadCount += 1
+        throw LedgerPersistenceTestError.injectedFailure
+    }
+
+    func save(_ data: Data) throws {
+        saveCount += 1
+        _ = data
+        throw LedgerPersistenceTestError.injectedFailure
+    }
+}
+
+private actor FakeAuthorityLauncher: EngineLinuxSandboxLaunchingV1 {
+    private let runtime: FakeAuthorityRuntime
+    private(set) var launchCount = 0
+    private(set) var stopCount = 0
+
+    init(runtime: FakeAuthorityRuntime) {
+        self.runtime = runtime
+    }
+
+    func launch(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1
+    ) async throws -> any EngineLinuxSandboxRuntimeClientV1 {
+        try configuration.write()
+        launchCount += 1
+        return runtime
+    }
+
+    func stop(configuration: EngineLinuxSandboxRuntimeConfigurationV1) async throws {
+        stopCount += 1
+        _ = configuration
+    }
+}
+
+private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
+    private enum Failure: Error {
+        case lostStopResponse
+    }
+
+    private let failFirstStopResponse: Bool
+    private var bootReceipt: EngineLinuxSandboxBootReceiptV1?
+    private var workloadReceipt: WorkloadProcessReceiptV1?
+    private var workloadStopReceipt: EngineLinuxSandboxWorkloadStopReceiptV1?
+    private var workloadTerminal = false
+    private var didFailStopResponse = false
+    private(set) var bootCount = 0
+    private(set) var bootObservationCount = 0
+    private(set) var workloadStartCount = 0
+    private(set) var workloadObservationCount = 0
+    private(set) var workloadStopCount = 0
+    private(set) var serviceDialCount = 0
+    private(set) var lastServiceDial: EngineLinuxSandboxServiceDialRequestV1?
+
+    init(failFirstStopResponse: Bool = false) {
+        self.failFirstStopResponse = failFirstStopResponse
+    }
+
+    func boot(
+        _ request: EngineLinuxSandboxBootRequestV1
+    ) async throws -> EngineLinuxSandboxBootReceiptV1 {
+        if let bootReceipt {
+            return bootReceipt
+        }
+        bootCount += 1
+        let receipt = EngineLinuxSandboxBootReceiptV1(
+            sandboxID: request.sandboxID,
+            generation: request.generation,
+            effectID: request.effectID,
+            requestDigest: request.requestDigest,
+            runtimeFingerprint: "runtime-1"
+        )
+        bootReceipt = receipt
+        return receipt
+    }
+
+    func observeBoot(
+        _ request: EngineLinuxSandboxBootRequestV1
+    ) async throws -> EngineLinuxSandboxBootObservationV1 {
+        bootObservationCount += 1
+        guard let bootReceipt,
+            bootReceipt.sandboxID == request.sandboxID,
+            bootReceipt.generation == request.generation,
+            bootReceipt.effectID == request.effectID,
+            bootReceipt.requestDigest == request.requestDigest
+        else { return .absent }
+        return .ready(bootReceipt)
+    }
+
+    func shutdown(
+        _ request: EngineLinuxSandboxShutdownRequestV1
+    ) async throws -> EngineLinuxSandboxShutdownReceiptV1 {
+        bootReceipt = nil
+        return EngineLinuxSandboxShutdownReceiptV1(
+            sandboxID: request.sandboxID,
+            generation: request.generation,
+            effectID: request.effectID,
+            requestDigest: request.requestDigest
+        )
+    }
+
+    func observeShutdown(
+        _ request: EngineLinuxSandboxShutdownRequestV1
+    ) async throws -> EngineLinuxSandboxShutdownObservationV1 {
+        guard bootReceipt == nil else { return .running }
+        return .absent(
+            EngineLinuxSandboxShutdownReceiptV1(
+                sandboxID: request.sandboxID,
+                generation: request.generation,
+                effectID: request.effectID,
+                requestDigest: request.requestDigest
+            )
+        )
+    }
+
+    func startWorkload(
+        _ request: EngineLinuxSandboxWorkloadStartRequestV1,
+        stdio: [FileHandle?]
+    ) async throws -> WorkloadProcessReceiptV1 {
+        if let workloadReceipt,
+            workloadReceipt.containerID == request.context.containerID,
+            workloadReceipt.operationGeneration == request.context.operationGeneration,
+            workloadReceipt.processGeneration == request.context.candidateProcessGeneration,
+            workloadReceipt.sandboxGeneration == request.context.sandboxGeneration,
+            workloadReceipt.requestDigest == request.context.requestDigest,
+            !workloadTerminal
+        {
+            return workloadReceipt
+        }
+        workloadStartCount += 1
+        let receipt = WorkloadProcessReceiptV1(
+            containerID: request.context.containerID,
+            operationGeneration: request.context.operationGeneration,
+            processGeneration: request.context.candidateProcessGeneration,
+            sandboxGeneration: request.context.sandboxGeneration,
+            requestDigest: request.context.requestDigest
+        )
+        workloadReceipt = receipt
+        workloadTerminal = false
+        _ = stdio
+        return receipt
+    }
+
+    func observeWorkloadStart(
+        _ request: EngineLinuxSandboxWorkloadStartRequestV1
+    ) async throws -> WorkloadProcessObservationV1 {
+        workloadObservationCount += 1
+        if workloadTerminal {
+            return .absent
+        }
+        guard let workloadReceipt,
+            workloadReceipt.containerID == request.context.containerID,
+            workloadReceipt.operationGeneration == request.context.operationGeneration,
+            workloadReceipt.processGeneration == request.context.candidateProcessGeneration,
+            workloadReceipt.sandboxGeneration == request.context.sandboxGeneration,
+            workloadReceipt.requestDigest == request.context.requestDigest
+        else { return .absent }
+        return .started(workloadReceipt)
+    }
+
+    func stopWorkload(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopReceiptV1 {
+        if let workloadStopReceipt,
+            workloadStopReceipt.request == request
+        {
+            return workloadStopReceipt
+        }
+        let receipt = EngineLinuxSandboxWorkloadStopReceiptV1(
+            request: request
+        )
+        workloadStopCount += 1
+        workloadStopReceipt = receipt
+        workloadTerminal = true
+        if failFirstStopResponse, !didFailStopResponse {
+            didFailStopResponse = true
+            throw Failure.lostStopResponse
+        }
+        return receipt
+    }
+
+    func observeWorkloadStop(
+        _ request: EngineLinuxSandboxWorkloadStopRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadStopObservationV1 {
+        if let workloadStopReceipt,
+            workloadStopReceipt.request == request
+        {
+            return .stopped(workloadStopReceipt)
+        }
+        return workloadTerminal ? .absent : .running
+    }
+
+    func markWorkloadTerminal() {
+        workloadTerminal = true
+    }
+
+    func loseSandbox() {
+        bootReceipt = nil
+        workloadReceipt = nil
+        workloadStopReceipt = nil
+        workloadTerminal = false
+    }
+
+    func dialService(
+        _ request: EngineLinuxSandboxServiceDialRequestV1
+    ) async throws -> FileHandle {
+        serviceDialCount += 1
+        lastServiceDial = request
+        return Pipe().fileHandleForReading
+    }
+}
+
+private struct EngineSandboxAuthorityFixture {
+    let root: URL
+    let sandboxRoot: URL
+    let workloadRoot: URL
+    let sandboxConfiguration: EngineLinuxSandboxRuntimeConfigurationV1
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engine-authority-\(UUID())")
+        sandboxRoot = root.appendingPathComponent("sandbox")
+        workloadRoot = root.appendingPathComponent("workload")
+        sandboxConfiguration = EngineLinuxSandboxRuntimeConfigurationV1(
+            path: sandboxRoot,
+            sandboxID: "engine-sandbox",
+            initialFilesystem: .tmpfs(destination: "/", options: []),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/tmp/kernel"),
+                platform: .linuxArm
+            ),
+            cpus: 4,
+            memoryInBytes: 4 * 1_024 * 1_024 * 1_024
+        )
+
+        let image = ImageDescription(
+            reference: "docker.io/library/alpine:latest",
+            descriptor: .init(
+                mediaType: "application/vnd.oci.image.manifest.v1+json",
+                digest: "sha256:" + String(repeating: "0", count: 64),
+                size: 0
+            )
+        )
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: ["-c", "echo ready"],
+            environment: [],
+            workingDirectory: "/",
+            terminal: false,
+            user: .id(uid: 0, gid: 0),
+            supplementalGroups: [],
+            rlimits: []
+        )
+        let configuration = ContainerConfiguration(
+            id: "workload-1",
+            image: image,
+            process: process
+        )
+        try RuntimeConfiguration(
+            path: workloadRoot,
+            initialFilesystem: .tmpfs(destination: "/", options: []),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/tmp/kernel"),
+                platform: .linuxArm
+            ),
+            containerConfiguration: configuration,
+            containerRootFilesystem: .tmpfs(destination: "/", options: [])
+        ).writeRuntimeConfiguration()
+    }
+
+    func remove() {
+        try? FileManager.default.removeItem(at: root)
+    }
+}

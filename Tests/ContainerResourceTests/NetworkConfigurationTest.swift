@@ -26,6 +26,7 @@ struct AttachmentConfigurationTest {
         let options = AttachmentOptions(
             hostname: "api",
             aliases: ["web", "api.internal"],
+            scopedDNSAliases: ["database": "db"],
             mtu: 1500,
             guestInterfaceName: "backend0",
             additionalIPAddresses: [try CIDR("198.51.100.8/32")],
@@ -40,6 +41,7 @@ struct AttachmentConfigurationTest {
 
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == ["web", "api.internal"])
+        #expect(decoded.scopedDNSAliases == ["database": "db"])
         #expect(decoded.mtu == 1500)
         #expect(decoded.guestInterfaceName == "backend0")
         #expect(decoded.additionalIPAddresses == [try CIDR("198.51.100.8/32")])
@@ -54,6 +56,7 @@ struct AttachmentConfigurationTest {
 
         #expect(decoded.hostname == "api")
         #expect(decoded.aliases == [])
+        #expect(decoded.scopedDNSAliases == [:])
         #expect(decoded.guestInterfaceName == nil)
         #expect(decoded.additionalIPAddresses == [])
         #expect(decoded.requestedIPv4Address == nil)
@@ -81,6 +84,26 @@ struct AttachmentConfigurationTest {
         #expect(decoded.aliases == ["web"])
         #expect(decoded.ipv6Address == expectedIPv6Address)
         #expect(decoded.ipv6Gateway == expectedIPv6Gateway)
+    }
+
+    @Test func attachmentRoundTripsIPv6OnlyEndpointWithoutIPv4Fields() throws {
+        let attachment = Attachment(
+            network: "ipv6only",
+            hostname: "api",
+            ipv6Address: try CIDRv6("fd00:2026:806::2/64"),
+            ipv6Gateway: try IPv6Address("fd00:2026:806::1"),
+            macAddress: nil
+        )
+
+        let data = try JSONEncoder().encode(attachment)
+        let encoded = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let decoded = try JSONDecoder().decode(Attachment.self, from: data)
+
+        #expect(encoded["ipv4Address"] == nil)
+        #expect(encoded["ipv4Gateway"] == nil)
+        #expect(decoded.ipv4Address == nil)
+        #expect(decoded.ipv4Gateway == nil)
+        #expect(decoded.ipv6Address == (try CIDRv6("fd00:2026:806::2/64")))
     }
 }
 
@@ -149,6 +172,48 @@ struct NetworkConfigurationTest {
             from: JSONEncoder().encode(disabledConfiguration)
         )
         #expect(!decoded.enableIPv6)
+    }
+
+    @Test func networkConfigurationRoundTripsIPv6OnlyFamilySelection() throws {
+        let configuration = try NetworkConfiguration(
+            name: "ipv6-only-network",
+            mode: .nat,
+            enableIPv4: false,
+            ipv6Subnet: try CIDRv6("fd00:2026:806::/64"),
+            plugin: "container-network-vmnet"
+        )
+
+        let decoded = try JSONDecoder().decode(NetworkConfiguration.self, from: JSONEncoder().encode(configuration))
+
+        #expect(!decoded.enableIPv4)
+        #expect(decoded.enableIPv6)
+        #expect(decoded.ipv4Subnet == nil)
+        #expect(decoded.ipv6Subnet == (try CIDRv6("fd00:2026:806::/64")))
+    }
+
+    @Test func networkConfigurationRejectsDisabledIPv4ConfigurationAndBothFamiliesDisabled() throws {
+        #expect {
+            _ = try NetworkConfiguration(
+                name: "invalid-ipv4-disabled-network",
+                mode: .nat,
+                enableIPv4: false,
+                ipv4Subnet: try CIDRv4("192.0.2.0/24"),
+                plugin: "container-network-vmnet"
+            )
+        } throws: { error in
+            (error as? ContainerizationError)?.code == .invalidArgument
+        }
+        #expect {
+            _ = try NetworkConfiguration(
+                name: "no-family-network",
+                mode: .nat,
+                enableIPv4: false,
+                enableIPv6: false,
+                plugin: "container-network-vmnet"
+            )
+        } throws: { error in
+            (error as? ContainerizationError)?.code == .invalidArgument
+        }
     }
 
     @Test func networkConfigurationRejectsIPv6SubnetWhenIPv6IsDisabled() throws {

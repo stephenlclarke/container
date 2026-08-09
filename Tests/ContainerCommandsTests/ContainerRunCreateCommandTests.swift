@@ -15,12 +15,86 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerRuntimeLinuxClient
+import ContainerizationError
 import Foundation
 import Testing
 
 @testable import ContainerCommands
 
 struct ContainerRunCreateCommandTests {
+    @Test
+    func createBuildsPresentDaemonDefaultLoggingRequestWhenFlagsAreOmitted() throws {
+        let command = try Application.ContainerCreate.parse(["alpine", "true"])
+
+        let request = try command.loggingRequest
+
+        #expect(request.driver == nil)
+        #expect(request.options.isEmpty)
+    }
+
+    @Test
+    func runPreservesExplicitEmptyLoggingDriver() throws {
+        let command = try Application.ContainerRun.parse([
+            "--log-driver", "",
+            "alpine", "true",
+        ])
+
+        let request = try command.loggingRequest
+
+        #expect(request.driver == "")
+        #expect(request.options.isEmpty)
+    }
+
+    @Test
+    func createPreservesArbitraryDriverAndCompleteRepeatedOptions() throws {
+        let command = try Application.ContainerCreate.parse([
+            "--log-driver", "acme.example/remote",
+            "--log-opt", "mode=non-blocking",
+            "--log-opt", "endpoint=https://logs.example/path?token=a=b",
+            "--log-opt", "template=",
+            "alpine", "true",
+        ])
+
+        let request = try command.loggingRequest
+
+        #expect(request.driver == "acme.example/remote")
+        #expect(
+            request.options == [
+                "endpoint": "https://logs.example/path?token=a=b",
+                "mode": "non-blocking",
+                "template": "",
+            ]
+        )
+    }
+
+    @Test
+    func runUsesLastRepeatedLoggingOptionValue() throws {
+        let command = try Application.ContainerRun.parse([
+            "--log-driver", "local",
+            "--log-opt", "max-file=2",
+            "--log-opt", "max-file=5",
+            "alpine", "true",
+        ])
+
+        #expect(try command.loggingRequest.options == ["max-file": "5"])
+    }
+
+    @Test
+    func createLoggingParseErrorDoesNotEchoRawOptionMaterial() throws {
+        let marker = "DO_NOT_ECHO_THIS_LOGGING_SECRET"
+        let command = try Application.ContainerCreate.parse([
+            "--log-opt", "=\(marker)",
+            "alpine", "true",
+        ])
+
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try command.loggingRequest
+        }
+
+        #expect(error?.message == "invalid log option at position 1 (expected key=value with a non-empty key)")
+        #expect(!String(describing: error).contains(marker))
+    }
+
     @Test
     func runParsesPrivilegedFlag() throws {
         let command = try Application.ContainerRun.parse(["--privileged", "alpine", "id"])

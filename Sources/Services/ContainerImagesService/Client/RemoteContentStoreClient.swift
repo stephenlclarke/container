@@ -22,7 +22,9 @@ import ContainerizationOCI
 import ContainerXPC
 
 public struct RemoteContentStoreClient: ContentStore {
-    private static let serviceIdentifier = "com.apple.container.core.container-core-images"
+    private static var serviceIdentifier: String {
+        ContainerServiceNamespace.current.imagesServiceIdentifier
+    }
     private static let encoder = JSONEncoder()
 
     private static func newClient() -> XPCClient {

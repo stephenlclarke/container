@@ -131,6 +131,15 @@ struct ParserTest {
     }
 
     @Test
+    func testPublishPortOne() throws {
+        let result = try Parser.publishPorts(["127.0.0.1:1:1/tcp"])
+        #expect(result.count == 1)
+        #expect(result[0].hostPort == UInt16(1))
+        #expect(result[0].containerPort == UInt16(1))
+        #expect(result[0].count == 1)
+    }
+
+    @Test
     func testPublishPortInvalidProtocol() throws {
         #expect {
             _ = try Parser.publishPorts(["8080:8000/sctp"])
@@ -514,6 +523,26 @@ struct ParserTest {
     }
 
     @Test
+    func testMountBindSourceContainingEquals() throws {
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("test-bind-eq-\(UUID().uuidString)=v1")
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: tempDir)
+        }
+
+        let result = try Parser.mount("type=bind,src=\(tempDir.path),dst=/foo")
+
+        switch result {
+        case .filesystem(let fs):
+            #expect(fs.source == tempDir.path)
+            #expect(fs.destination == "/foo")
+            #expect(!fs.isVolume)
+        case .volume, .image:
+            #expect(Bool(false), "Expected filesystem mount, got another mount type")
+        }
+    }
+
+    @Test
     func testMountVolumeValidName() throws {
         let result = try Parser.mount("type=volume,src=myvolume,dst=/data")
 
@@ -670,6 +699,23 @@ struct ParserTest {
                 return false
             }
             return error.description.contains("ownership requires a regular-file")
+        }
+    }
+
+    @Test
+    func testMountEmptyDirectiveSegment() throws {
+        // A comma-segment consisting solely of "=" characters splits to an empty
+        // array under Swift's default omittingEmptySubsequences, so reading the
+        // key without a guard would trap. These must surface a validation error.
+        for input in ["=", "==", "type=bind,=,dst=/foo"] {
+            #expect {
+                _ = try Parser.mount(input)
+            } throws: { error in
+                guard let error = error as? ContainerizationError else {
+                    return false
+                }
+                return error.description.contains("invalid mount directive")
+            }
         }
     }
 
@@ -1031,6 +1077,47 @@ struct ParserTest {
 
         #expect(result.name == "backend")
         #expect(result.aliases == ["api", "web"])
+    }
+
+    @Test
+    func testParseNetworkWithScopedDNSAliases() throws {
+        let result = try Parser.network(
+            "backend,dns-alias=database:db,dns-alias=cache:redis,dns-alias=DATABASE:DB"
+        )
+
+        #expect(
+            result.scopedDNSAliases == [
+                "database": "db",
+                "cache": "redis",
+            ])
+    }
+
+    @Test
+    func testParseNetworkRejectsConflictingScopedDNSAliases() throws {
+        #expect {
+            _ = try Parser.network("backend,dns-alias=database:db,dns-alias=DATABASE:redis")
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("network DNS alias 'DATABASE' maps to both 'db' and 'redis'")
+        }
+    }
+
+    @Test
+    func testParseNetworkRejectsMalformedScopedDNSAliases() throws {
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=database")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=:db")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=database:")
+        }
+        #expect(throws: Error.self) {
+            _ = try Parser.network("backend,dns-alias=bad_alias:db")
+        }
     }
 
     @Test
@@ -1423,6 +1510,78 @@ struct ParserTest {
         #expect(result[0].limit == "RLIMIT_MEMLOCK")
         #expect(result[0].soft == UInt64.max)
         #expect(result[0].hard == UInt64.max)
+    }
+
+    @Test
+    func testTypedLogRequestPreservesDriverAndAllOptions() throws {
+        let request = try Parser.loggingRequest(
+            driver: "syslog",
+            options: [
+                "mode=non-blocking",
+                "syslog-address=tcp+tls://host:6514",
+                "syslog-tls-key=/protected/key.pem",
+            ]
+        )
+
+        #expect(request.driver == "syslog")
+        #expect(
+            request.options == [
+                "mode": "non-blocking",
+                "syslog-address": "tcp+tls://host:6514",
+                "syslog-tls-key": "/protected/key.pem",
+            ]
+        )
+    }
+
+    @Test
+    func testTypedLogRequestPreservesEmptyAndEmbeddedEqualsValues() throws {
+        let request = try Parser.loggingRequest(
+            driver: "acme.example/remote",
+            options: [
+                "template=",
+                "endpoint=https://logs.example/path?token=a=b",
+            ]
+        )
+
+        #expect(
+            request.options == [
+                "endpoint": "https://logs.example/path?token=a=b",
+                "template": "",
+            ]
+        )
+    }
+
+    @Test
+    func testTypedLogRequestPreservesOmittedAndEmptyDriver() throws {
+        let omitted = try Parser.loggingRequest(driver: nil)
+        let empty = try Parser.loggingRequest(driver: "")
+
+        #expect(omitted.driver == nil)
+        #expect(empty.driver == "")
+    }
+
+    @Test
+    func testTypedLogRequestUsesLastRepeatedOption() throws {
+        let request = try Parser.loggingRequest(
+            driver: "local",
+            options: ["max-file=2", "max-file=5"]
+        )
+
+        #expect(request.options == ["max-file": "5"])
+    }
+
+    @Test
+    func testTypedLogRequestMalformedOptionErrorDoesNotEchoRawMaterial() throws {
+        let marker = "DO_NOT_ECHO_THIS_LOGGING_SECRET"
+        let error = #expect(throws: ContainerizationError.self) {
+            _ = try Parser.loggingRequest(
+                driver: "splunk",
+                options: ["mode=blocking", "=\(marker)"]
+            )
+        }
+
+        #expect(error?.message == "invalid log option at position 2 (expected key=value with a non-empty key)")
+        #expect(!String(describing: error).contains(marker))
     }
 
     @Test

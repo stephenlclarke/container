@@ -27,37 +27,37 @@ import Testing
 struct XPCClientTests {
     @Test(arguments: [false, true])
     func boxedFileHandlesCannotCloseReusedDescriptors(useArray: Bool) throws {
-        let message = XPCMessage(route: "file-handles")
-        var source: FileHandle? = try FileHandle(
+        var message: XPCMessage? = XPCMessage(route: "file-handles")
+        let source = try FileHandle(
             forReadingFrom: URL(fileURLWithPath: "/dev/null")
         )
-        let transferredDescriptor = try #require(source?.fileDescriptor)
+        let sourceDescriptor = source.fileDescriptor
         if useArray {
-            try message.set(
+            try message?.set(
                 key: "file-handles",
-                value: [try #require(source)]
+                value: [source]
             )
         } else {
-            message.set(
+            message?.set(
                 key: "file-handle",
-                value: try #require(source)
+                value: source
             )
         }
+        try source.close()
 
         let replacement = open("/dev/null", O_RDONLY | O_CLOEXEC)
         #expect(replacement >= 0)
-        if replacement != transferredDescriptor {
+        if replacement != sourceDescriptor {
             #expect(
-                dup2(replacement, transferredDescriptor)
-                    == transferredDescriptor
+                dup2(replacement, sourceDescriptor)
+                    == sourceDescriptor
             )
             Darwin.close(replacement)
         }
 
-        try source?.close()
-        source = nil
-        #expect(fcntl(transferredDescriptor, F_GETFD) >= 0)
-        Darwin.close(transferredDescriptor)
+        message = nil
+        #expect(fcntl(sourceDescriptor, F_GETFD) >= 0)
+        Darwin.close(sourceDescriptor)
     }
 
     @Test(arguments: [0, 1, 2])
@@ -65,6 +65,11 @@ struct XPCClientTests {
         let message = XPCMessage(route: "file-handles")
         let sourceHandles = try (0..<count).map { _ in
             try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        }
+        defer {
+            for handle in sourceHandles {
+                try? handle.close()
+            }
         }
         try message.set(key: "file-handles", value: sourceHandles)
 
@@ -80,9 +85,74 @@ struct XPCClientTests {
     }
 
     @Test
+    func settingFileHandlePreservesCallerOwnership() throws {
+        let source = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        defer { try? source.close() }
+
+        let message = XPCMessage(route: "file-handle")
+        message.set(key: "file-handle", value: source)
+
+        #expect(isDescriptorOpen(source.fileDescriptor))
+    }
+
+    @Test
+    func settingFileHandlesPreservesCallerOwnership() throws {
+        let sources = try (0..<3).map { _ in
+            try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        }
+        defer {
+            for handle in sources {
+                try? handle.close()
+            }
+        }
+
+        let message = XPCMessage(route: "file-handles")
+        try message.set(key: "file-handles", value: sources)
+
+        #expect(sources.allSatisfy { isDescriptorOpen($0.fileDescriptor) })
+    }
+
+    @Test
+    func receivedFileHandleClosesDuplicatedDescriptorOnDeallocation() throws {
+        let source = try uniqueUnlinkedFileHandle()
+        defer { try? source.close() }
+
+        let message = XPCMessage(route: "file-handle")
+        message.set(key: "file-handle", value: source)
+
+        let probe = try autoreleasepool {
+            let handle = try #require(message.fileHandle(key: "file-handle"))
+            return try DescriptorProbe(handle.fileDescriptor)
+        }
+
+        #expect(probe.originalObjectIsReleased)
+    }
+
+    @Test
+    func receivedFileHandlesCloseEveryDuplicatedDescriptorOnDeallocation() throws {
+        let sources = try (0..<3).map { _ in try uniqueUnlinkedFileHandle() }
+        defer {
+            for handle in sources {
+                try? handle.close()
+            }
+        }
+
+        let message = XPCMessage(route: "file-handles")
+        try message.set(key: "file-handles", value: sources)
+
+        let probes = try autoreleasepool {
+            let handles = try #require(message.fileHandles(key: "file-handles"))
+            return try handles.map { try DescriptorProbe($0.fileDescriptor) }
+        }
+
+        #expect(probes.allSatisfy { $0.originalObjectIsReleased })
+    }
+
+    @Test
     func fileHandlesRejectNonArrayValue() throws {
         let message = XPCMessage(route: "file-handles")
         let sourceHandle = try FileHandle(forReadingFrom: URL(fileURLWithPath: "/dev/null"))
+        defer { try? sourceHandle.close() }
         message.set(key: "file-handles", value: sourceHandle)
 
         #expect(message.fileHandles(key: "file-handles") == nil)
@@ -105,6 +175,21 @@ struct XPCClientTests {
             #expect(error.code == .timeout)
             #expect(error.message.contains("XPC timeout for request to test.container.xpc/hang"))
             #expect(elapsed < .seconds(2))
+        }
+    }
+
+    @Test
+    func responseResultDeliversCancellationBeforeContinuationStorage() async throws {
+        let result = XPCResponseResult()
+        #expect(result.resume(.failure(CancellationError())))
+
+        do {
+            _ = try await withCheckedThrowingContinuation { continuation in
+                #expect(!result.storeContinuation(continuation))
+            }
+            Issue.record("expected the pending cancellation to be delivered")
+        } catch is CancellationError {
+            // Expected.
         }
     }
 
@@ -147,6 +232,60 @@ struct XPCClientTests {
         } catch let error as ContainerizationError {
             #expect(error.code == .timeout)
         }
+
+        let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
+        #expect(response.string(key: "result") == "ok")
+    }
+
+    @Test
+    func lateReplyAfterResponseTimeoutIsIgnored() async throws {
+        let server = AnonymousXPCServer()
+        defer { server.close() }
+
+        let client = server.makeClient()
+        let request = Task {
+            try await client.send(XPCMessage(route: "hang"), responseTimeout: .milliseconds(100))
+        }
+        try await server.waitForPendingRequest(timeout: .seconds(1))
+
+        do {
+            _ = try await request.value
+            Issue.record("expected send to time out")
+        } catch let error as ContainerizationError {
+            #expect(error.code == .timeout)
+        }
+
+        #expect(server.replyToPendingRequests())
+        try await Task.sleep(for: .milliseconds(50))
+
+        let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
+        #expect(response.string(key: "result") == "ok")
+    }
+
+    @Test
+    func callerCancellationReturnsWithinBoundAndIgnoresLateReply() async throws {
+        let server = AnonymousXPCServer()
+        defer { server.close() }
+
+        let client = server.makeClient()
+        let request = Task {
+            try await client.send(XPCMessage(route: "hang"), responseTimeout: .seconds(2))
+        }
+        try await server.waitForPendingRequest(timeout: .seconds(1))
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        request.cancel()
+
+        do {
+            _ = try await request.value
+            Issue.record("expected send to be cancelled")
+        } catch is CancellationError {
+            #expect(start.duration(to: clock.now) < .seconds(1))
+        }
+
+        #expect(server.replyToPendingRequests())
+        try await Task.sleep(for: .milliseconds(50))
 
         let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
         #expect(response.string(key: "result") == "ok")
@@ -206,6 +345,84 @@ struct XPCClientTests {
 
         client.close()
         try await probe.wait(timeout: .seconds(1))
+    }
+
+    @Test
+    func serverRepliesToUnknownRoutes() async throws {
+        let listener = xpc_connection_create(nil, nil)
+        let server = XPCServer(
+            connection: listener,
+            routes: [:],
+            log: Logger(label: "test.container.xpc.unknown-route")
+        )
+        let serverTask = Task {
+            try await server.listen()
+        }
+        defer {
+            serverTask.cancel()
+            xpc_connection_cancel(listener)
+        }
+
+        try await Task.sleep(for: .milliseconds(50))
+        let endpoint = xpc_endpoint_create(listener)
+        let client = XPCClient(connection: xpc_connection_create_from_endpoint(endpoint), label: "test.container.xpc")
+
+        do {
+            _ = try await client.send(XPCMessage(route: "missing"), responseTimeout: .seconds(1))
+            Issue.record("expected an unknown-route error")
+        } catch let error as ContainerizationError {
+            #expect(error.code == .invalidArgument)
+            #expect(error.message == "unknown route: missing")
+        }
+    }
+}
+
+private func isDescriptorOpen(_ descriptor: Int32) -> Bool {
+    errno = 0
+    return fcntl(descriptor, F_GETFD) != -1
+}
+
+private struct DescriptorProbe {
+    let descriptor: Int32
+    let identity: DescriptorIdentity
+
+    init(_ descriptor: Int32) throws {
+        self.descriptor = descriptor
+        self.identity = try #require(descriptorIdentity(descriptor))
+    }
+
+    var originalObjectIsReleased: Bool {
+        descriptorIdentity(descriptor) != identity
+    }
+}
+
+private struct DescriptorIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+}
+
+private func descriptorIdentity(_ descriptor: Int32) -> DescriptorIdentity? {
+    var status = stat()
+    guard fstat(descriptor, &status) == 0 else {
+        return nil
+    }
+    return DescriptorIdentity(device: status.st_dev, inode: status.st_ino)
+}
+
+private func uniqueUnlinkedFileHandle() throws -> FileHandle {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("container-xpc-test-\(UUID().uuidString)")
+    var handle: FileHandle?
+    do {
+        try Data().write(to: url)
+        let openedHandle = try FileHandle(forReadingFrom: url)
+        handle = openedHandle
+        try FileManager.default.removeItem(at: url)
+        return openedHandle
+    } catch {
+        try? handle?.close()
+        try? FileManager.default.removeItem(at: url)
+        throw error
     }
 }
 
@@ -282,6 +499,37 @@ private final class AnonymousXPCServer: @unchecked Sendable {
             connections.removeAll()
             pendingRequests.removeAll()
         }
+    }
+
+    func waitForPendingRequest(timeout: Duration) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if lock.withLock({ !pendingRequests.isEmpty }) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        throw ContainerizationError(.timeout, message: "server did not receive the XPC request")
+    }
+
+    func replyToPendingRequests() -> Bool {
+        let requests = lock.withLock {
+            let requests = pendingRequests
+            pendingRequests.removeAll()
+            return requests
+        }
+        guard let connection = lock.withLock({ connections.last }) else {
+            return false
+        }
+        for request in requests {
+            guard let reply = xpc_dictionary_create_reply(request) else {
+                continue
+            }
+            xpc_dictionary_set_string(reply, "result", "late")
+            xpc_connection_send_message(connection, reply)
+        }
+        return !requests.isEmpty
     }
 
     private func accept(connection: xpc_connection_t) {

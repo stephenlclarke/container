@@ -95,6 +95,45 @@ struct RuntimeConfigurationTests {
     }
 
     @Test
+    func engineLinuxSandboxConfigurationReadWrite() throws {
+        let bundlePath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-engine-sandbox-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: bundlePath) }
+
+        let configuration = EngineLinuxSandboxRuntimeConfigurationV1(
+            path: bundlePath,
+            sandboxID: "engine-sandbox",
+            initialFilesystem: .virtiofs(
+                source: "/path/to/initfs",
+                destination: "/",
+                options: ["ro"]
+            ),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/path/to/kernel"),
+                platform: .linuxArm
+            ),
+            cpus: 6,
+            memoryInBytes: 4.gib(),
+            nestedVirtualization: true,
+            rosetta: true
+        )
+
+        try configuration.write()
+        let decoded = try EngineLinuxSandboxRuntimeConfigurationV1.read(from: bundlePath)
+
+        #expect(decoded.path == bundlePath)
+        #expect(decoded.sandboxID == "engine-sandbox")
+        #expect(decoded.cpus == 6)
+        #expect(decoded.memoryInBytes == 4.gib())
+        #expect(decoded.nestedVirtualization)
+        #expect(decoded.rosetta)
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: configuration.configurationURL.path
+        )
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    }
+
+    @Test
     func testRuntimeConfigurationWithVariant() throws {
         let tempDir = FileManager.default.temporaryDirectory
         let bundlePath = tempDir.appendingPathComponent("test-bundle-\(UUID())")

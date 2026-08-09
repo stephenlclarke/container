@@ -44,6 +44,7 @@ public actor NetworkHarness: Sendable {
             .map { try MACAddress($0) }
         let requestedIPv4Address = try message.requestedIPv4Address()
         let requestedIPv6Address = try message.requestedIPv6Address()
+        let retainOnDisconnect = message.bool(key: NetworkKeys.retainOnDisconnect.rawValue)
 
         let (attachment:attachment, additionalData:additionalData) = try await service.allocate(
             hostname: hostname,
@@ -51,6 +52,7 @@ public actor NetworkHarness: Sendable {
             macAddress: macAddress,
             requestedIPv4Address: requestedIPv4Address,
             requestedIPv6Address: requestedIPv6Address,
+            retainOnDisconnect: retainOnDisconnect,
             session: session
         )
 
@@ -64,14 +66,22 @@ public actor NetworkHarness: Sendable {
     }
 
     @Sendable
+    public func release(_ message: XPCMessage) async throws -> XPCMessage {
+        try await service.release(hostname: message.hostname())
+        return message.reply()
+    }
+
+    @Sendable
     public func lookup(_ message: XPCMessage) async throws -> XPCMessage {
         let hostname = try message.hostname()
         let reply = message.reply()
-        guard let attachment = try await service.lookup(hostname: hostname) else {
+        let attachments = try await service.lookupAll(hostname: hostname)
+        guard let attachment = attachments.first else {
             return reply
         }
 
         try reply.setAttachment(attachment)
+        try reply.setAttachments(attachments)
         return reply
     }
 }
@@ -84,6 +94,11 @@ extension XPCMessage {
     fileprivate func setAttachment(_ attachment: Attachment) throws {
         let data = try JSONEncoder().encode(attachment)
         self.set(key: NetworkKeys.attachment.rawValue, value: data)
+    }
+
+    fileprivate func setAttachments(_ attachments: [Attachment]) throws {
+        let data = try JSONEncoder().encode(attachments)
+        self.set(key: NetworkKeys.attachments.rawValue, value: data)
     }
 
     fileprivate func setStatus(_ status: NetworkStatus) throws {

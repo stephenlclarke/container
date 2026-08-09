@@ -188,21 +188,13 @@ extension Application {
                 let sshChanged =
                     enableSSHForwarding
                     && existingSSHAuthSocketPath != targetSSHSocketLabelValue
-                let dnsChanged = {
-                    if !dnsNameservers.isEmpty {
-                        return existingDNS?.nameservers != dnsNameservers
-                    }
-                    if dnsDomain != nil {
-                        return existingDNS?.domain != dnsDomain
-                    }
-                    if !dnsSearchDomains.isEmpty {
-                        return existingDNS?.searchDomains != dnsSearchDomains
-                    }
-                    if !dnsOptions.isEmpty {
-                        return existingDNS?.options != dnsOptions
-                    }
-                    return false
-                }()
+                let dnsChanged = Self.dnsOverridesChanged(
+                    existingDNS: existingDNS,
+                    dnsNameservers: dnsNameservers,
+                    dnsDomain: dnsDomain,
+                    dnsSearchDomains: dnsSearchDomains,
+                    dnsOptions: dnsOptions
+                )
 
                 switch existingContainer.status {
                 case .running:
@@ -248,11 +240,12 @@ extension Application {
             }
 
             let useRosetta = containerSystemConfig.build.rosetta
-            let shimArguments = [
-                "--debug",
-                "--vsock",
-                useRosetta ? nil : "--enable-qemu",
-            ].compactMap { $0 }
+            let shimArguments = Self.shimArguments(
+                useRosetta: useRosetta,
+                dnsDomain: dnsDomain,
+                dnsSearchDomains: dnsSearchDomains,
+                dnsOptions: dnsOptions
+            )
 
             let image = try await ClientImage.fetch(
                 reference: builderImage,
@@ -371,6 +364,48 @@ extension Application {
                 inheritSSHAuthSocketFromEnvironment: sshSocketMounts.isEmpty
             )
             log.debug("starting BuildKit and BuildKit-shim")
+        }
+
+        static func shimArguments(
+            useRosetta: Bool,
+            dnsDomain: String?,
+            dnsSearchDomains: [String],
+            dnsOptions: [String]
+        ) -> [String] {
+            var arguments = [
+                "--debug",
+                "--vsock",
+                "--dns-nameserver",
+                DNSProxyProtocol.guestAddress,
+            ]
+            if !useRosetta {
+                arguments.append("--enable-qemu")
+            }
+
+            let searchDomains =
+                dnsSearchDomains.isEmpty
+                ? dnsDomain.map { [$0] } ?? []
+                : dnsSearchDomains
+            for searchDomain in searchDomains {
+                arguments.append(contentsOf: ["--dns-search-domain", searchDomain])
+            }
+            for option in dnsOptions {
+                arguments.append(contentsOf: ["--dns-option", option])
+            }
+            return arguments
+        }
+
+        static func dnsOverridesChanged(
+            existingDNS: ContainerConfiguration.DNSConfiguration?,
+            dnsNameservers: [String],
+            dnsDomain: String?,
+            dnsSearchDomains: [String],
+            dnsOptions: [String]
+        ) -> Bool {
+            (!dnsNameservers.isEmpty && existingDNS?.nameservers != dnsNameservers)
+                || (dnsDomain != nil && existingDNS?.domain != dnsDomain)
+                || (!dnsSearchDomains.isEmpty && existingDNS?.searchDomains != dnsSearchDomains)
+                || (!dnsOptions.isEmpty && existingDNS?.options != dnsOptions)
         }
     }
 }

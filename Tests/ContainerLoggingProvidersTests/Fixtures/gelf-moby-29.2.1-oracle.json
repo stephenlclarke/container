@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "provenance": {
+    "goVersion": "go1.25.6",
+    "goPlatform": "darwin/arm64",
+    "mobyTag": "docker-v29.2.1",
+    "mobyCommit": "6bc6209b88a7a834c91f77d848e025c79e0227a1",
+    "mobySourcePath": "daemon/logger/gelf/gelf.go",
+    "mobySourceSHA256": "2280ae369a98e887e9775890cb517fe6c61c59f0d09d986290d5e145e28ded2d",
+    "mobyTimestampExpression": "float64(msg.Timestamp.UnixNano()/int64(time.Millisecond)) / 1000.0",
+    "oracleSourceSHA256": "6bdc0a79c3408890741d99cf9f0a1f23b3426af421f52a4004fdd21934933099"
+  },
+  "compression": {
+    "payloadBase64": "eyJ2ZXJzaW9uIjoiMS4xIiwiaG9zdCI6Imhvc3QiLCJzaG9ydF9tZXNzYWdlIjoiaGVsbG8iLCJ0aW1lc3RhbXAiOjEuMjM0LCJsZXZlbCI6NiwiX3RhZyI6InRhZyJ9",
+    "noneBase64": "eyJ2ZXJzaW9uIjoiMS4xIiwiaG9zdCI6Imhvc3QiLCJzaG9ydF9tZXNzYWdlIjoiaGVsbG8iLCJ0aW1lc3RhbXAiOjEuMjM0LCJsZXZlbCI6NiwiX3RhZyI6InRhZyJ9",
+    "gzipBase64": "H4sIAAAAAAAE/wTAMQrDMAxA0bv8WQTclg66TPAg7IBclUhkKb173o/Lzjzig9K2hjAjC2VGFkLOOGtfltmHoUxzD4Q6lmX19UXb9ni+BLfLHH0Le/WBUn3wvwMAAP//HoQd9mAAAAA=",
+    "zlibBase64": "eAEEwDEKwzAMQNG7/FkE3JYOukzwIOyAXJVIZCm9e96Py8484oPStoYwIwtlRhZCzjhrX5bZh6FMcw+EOpZl9fVF2/Z4vgS3yxx9C3v1gVJ98L8DAAD//9gYHmQ="
+  },
+  "timestamps": [
+    { "seconds": -1, "nanoseconds": 234999999, "jsonNumber": "-0.765" },
+    { "seconds": -1, "nanoseconds": 234000000, "jsonNumber": "-0.766" },
+    { "seconds": -1, "nanoseconds": 999999999, "jsonNumber": "0" },
+    { "seconds": -1, "nanoseconds": 999000000, "jsonNumber": "-0.001" },
+    { "seconds": 0, "nanoseconds": 999999, "jsonNumber": "0" },
+    { "seconds": 0, "nanoseconds": 1234999, "jsonNumber": "0.001" },
+    { "seconds": 9223372036, "nanoseconds": 854775807, "jsonNumber": "9223372036.854" },
+    { "seconds": -9223372037, "nanoseconds": 145224192, "jsonNumber": "-9223372036.854" }
+  ]
+}

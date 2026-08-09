@@ -25,18 +25,40 @@ SWIFT_TEST_FLAGS ?= --no-parallel
 # ordinary builds; the coverage-* targets opt in via a target-specific value so
 # only those goals compile instrumented binaries.
 COVERAGE_FLAG ?=
+CONTAINER_SERVICE_WORKLOADS_PREBUILT ?= false
 export RELEASE_VERSION ?= $(shell git describe --tags --always)
 export GIT_COMMIT := $(shell git rev-parse HEAD)
-export CONTAINERIZATION_SOURCE ?= $(shell python3 -c 'import json; pin=next(p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization"); location=pin.get("location", "https://github.com/stephenlclarke/containerization.git"); print(location.removeprefix("https://github.com/").removesuffix(".git"))')
-export CONTAINERIZATION_REF ?= $(shell python3 -c 'import json; state=next(p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization")["state"]; print(state.get("revision") or state.get("branch") or "main")')
+export CONTAINERIZATION_SOURCE ?= $(shell python3 -c 'import json; pin=next((p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization"), {}); location=pin.get("location", "https://github.com/stephenlclarke/containerization.git"); print(location.removeprefix("https://github.com/").removesuffix(".git"))')
+export CONTAINERIZATION_REF ?= $(shell python3 -c 'import json; pin=next((p for p in json.load(open("Package.resolved"))["pins"] if p["identity"] == "containerization"), {}); state=pin.get("state", {}); print(state.get("revision") or state.get("branch") or "main")')
 
 # Commonly used locations
 SWIFT := "/usr/bin/swift"
+PYTHON3 ?= python3
 # Shared swift build invocation; callers append --build-tests / --product / etc.
 SWIFT_BUILD = $(SWIFT) build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION)
 DEST_DIR ?= /usr/local/
 ROOT_DIR := $(shell git rev-parse --show-toplevel)
-BUILD_BIN_DIR = $(shell $(SWIFT) build -c $(BUILD_CONFIGURATION) --show-bin-path)
+# Keep staging on the exact build graph selected by SWIFT_BUILD.  In
+# particular, callers that select an isolated SwiftPM scratch path must not
+# silently package stale products from the default .build directory.
+BUILD_BIN_DIR = $(shell $(SWIFT_BUILD) --show-bin-path)
+SEMANTIC_HELPER_BUILD_DIR := $(ROOT_DIR)/.build/container-semantic-helper
+SEMANTIC_HELPER_BINARY := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper
+SEMANTIC_HELPER_MANIFEST := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper.manifest.json
+SEMANTIC_HELPER_BUILD_TOOL := Tools/ContainerSemanticHelper/build.py
+JOURNALD_SERVICE_BUILD_DIR := $(ROOT_DIR)/.build/container-journald-service
+JOURNALD_SERVICE_ARCHIVE := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.oci.tar
+JOURNALD_SERVICE_MANIFEST := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.manifest.json
+JOURNALD_SERVICE_BUILD_TOOL := Tools/ContainerJournaldService/build.py
+JOURNALD_SERVICE_BUILDER_SETUP := scripts/ensure-journald-builder.sh
+# SwiftPM owns and may prune $(ROOT_DIR)/.build. Keep sealed service assets
+# outside that scratch tree so an exact-path Swift test cannot invalidate the
+# staged workload it is validating.
+GELF_SERVICE_BUILD_DIR := $(ROOT_DIR)/bin/services/container-gelf-service
+GELF_SERVICE_ARCHIVE := $(GELF_SERVICE_BUILD_DIR)/container-gelf-service.oci.tar
+GELF_SERVICE_MANIFEST := $(GELF_SERVICE_BUILD_DIR)/container-gelf-service.manifest.json
+GELF_SERVICE_BUILD_TOOL := Tools/ContainerGELFService/build.py
+GELF_SERVICE_BUILDER_SETUP := scripts/ensure-gelf-builder.sh
 STAGING_DIR := bin/$(BUILD_CONFIGURATION)/staging/
 PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer-unsigned.pkg
 DSYM_DIR := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM
@@ -77,8 +99,93 @@ include Protobuf.Makefile
 all: container
 all: init-block
 
+.PHONY: semantic-helper
+semantic-helper:
+	@echo Building pinned Docker semantic helper...
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) build --output-directory "$(SEMANTIC_HELPER_BUILD_DIR)"
+
+.PHONY: test-semantic-helper
+test-semantic-helper:
+	@echo Testing pinned Docker semantic helper...
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) test --output-directory "$(SEMANTIC_HELPER_BUILD_DIR)"
+
+.PHONY: verify-semantic-helper
+verify-semantic-helper: semantic-helper
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
+		--binary "$(SEMANTIC_HELPER_BINARY)" \
+		--manifest "$(SEMANTIC_HELPER_MANIFEST)"
+
+.PHONY: journald-service
+journald-service:
+	@echo Building pinned Linux journald-service workload...
+	@if [ "$(CONTAINER_SERVICE_WORKLOADS_PREBUILT)" = true ]; then \
+		test -f "$(JOURNALD_SERVICE_ARCHIVE)" && test -f "$(JOURNALD_SERVICE_MANIFEST)" || { \
+			echo "Prebuilt Linux journald-service workload is missing" >&2; \
+			exit 1; \
+		}; \
+		echo "Using verified prebuilt Linux journald-service workload"; \
+		$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+			--archive "$(JOURNALD_SERVICE_ARCHIVE)" \
+			--manifest "$(JOURNALD_SERVICE_MANIFEST)"; \
+	else \
+		$(JOURNALD_SERVICE_BUILDER_SETUP); \
+		$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) build --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"; \
+	fi
+
+.PHONY: test-journald-service
+test-journald-service:
+	@echo Testing pinned Linux journald-service workload...
+	@$(JOURNALD_SERVICE_BUILDER_SETUP)
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) test --output-directory "$(JOURNALD_SERVICE_BUILD_DIR)"
+
+.PHONY: test-journald-service-integration
+test-journald-service-integration:
+	@echo Testing Swift client against packaged Linux journald-service workload...
+	@$(JOURNALD_SERVICE_BUILDER_SETUP)
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) integration
+
+.PHONY: verify-journald-service
+verify-journald-service: journald-service
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(JOURNALD_SERVICE_ARCHIVE)" \
+		--manifest "$(JOURNALD_SERVICE_MANIFEST)"
+
+.PHONY: gelf-service
+gelf-service:
+	@echo Building pinned Linux GELF TCP service workload...
+	@if [ "$(CONTAINER_SERVICE_WORKLOADS_PREBUILT)" = true ]; then \
+		test -f "$(GELF_SERVICE_ARCHIVE)" && test -f "$(GELF_SERVICE_MANIFEST)" || { \
+			echo "Prebuilt Linux GELF TCP service workload is missing" >&2; \
+			exit 1; \
+		}; \
+		echo "Using verified prebuilt Linux GELF TCP service workload"; \
+		$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+			--archive "$(GELF_SERVICE_ARCHIVE)" \
+			--manifest "$(GELF_SERVICE_MANIFEST)"; \
+	else \
+		$(GELF_SERVICE_BUILDER_SETUP); \
+		$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) build --output-directory "$(GELF_SERVICE_BUILD_DIR)"; \
+	fi
+
+.PHONY: test-gelf-service
+test-gelf-service:
+	@echo Testing pinned Linux GELF TCP service workload...
+	@$(GELF_SERVICE_BUILDER_SETUP)
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) test --output-directory "$(GELF_SERVICE_BUILD_DIR)"
+
+.PHONY: test-gelf-service-asset
+test-gelf-service-asset: gelf-service
+	@echo Testing the installed GELF TCP service asset outside SwiftPM scratch space...
+	@./scripts/test-gelf-service-asset.sh --asset-directory "$(GELF_SERVICE_BUILD_DIR)"
+
+.PHONY: verify-gelf-service
+verify-gelf-service: gelf-service
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(GELF_SERVICE_ARCHIVE)" \
+		--manifest "$(GELF_SERVICE_MANIFEST)"
+
 .PHONY: build
-build:
+build: semantic-helper
 	@echo Building container binaries...
 	@$(SWIFT) --version
 	@$(SWIFT_BUILD)
@@ -89,7 +196,7 @@ build:
 # a distinct target from `build` so `make all test` builds products and tests as
 # two separate steps rather than colliding on a single once-built target.
 # COVERAGE_FLAG instruments the binaries when set by the coverage-* targets.
-build-tests:
+build-tests: test-semantic-helper
 	@echo Building container binaries and tests...
 	@$(SWIFT) --version
 	@$(SWIFT_BUILD) --build-tests $(COVERAGE_FLAG)
@@ -133,7 +240,7 @@ install: installer-pkg
 		$(SUDO) installer -pkg $(PKG_PATH) -target / ; \
 	fi
 
-$(STAGING_DIR):
+$(STAGING_DIR): semantic-helper journald-service gelf-service
 	@echo Installing container binaries from "$(BUILD_BIN_DIR)" into "$(STAGING_DIR)"...
 	@rm -rf "$(STAGING_DIR)"
 	@mkdir -p "$(join $(STAGING_DIR), bin)"
@@ -142,11 +249,15 @@ $(STAGING_DIR):
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/container-core-images/bin)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/helpers)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/journald)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/gelf)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/k8s/resources)"
 
 	@install "$(BUILD_BIN_DIR)/container" "$(join $(STAGING_DIR), bin/container)"
 	@install "$(BUILD_BIN_DIR)/container-apiserver" "$(join $(STAGING_DIR), bin/container-apiserver)"
+	@install "$(BUILD_BIN_DIR)/container-engine" "$(join $(STAGING_DIR), bin/container-engine)"
 	@install "$(BUILD_BIN_DIR)/container-runtime-linux" "$(join $(STAGING_DIR), libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux)"
 	@install Sources/Plugins/RuntimeLinux/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/container-runtime-linux/config.toml)"
 	@install "$(BUILD_BIN_DIR)/container-network-vmnet" "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
@@ -157,6 +268,18 @@ $(STAGING_DIR):
 	@install Sources/Plugins/MachineAPIServer/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/config.toml)"
 	@install Sources/Plugins/MachineAPIServer/Resources/init "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/init)"
 	@install Sources/Plugins/MachineAPIServer/Resources/create-user.sh "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/create-user.sh)"
+	@install "$(SEMANTIC_HELPER_BINARY)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@install -m 0644 "$(SEMANTIC_HELPER_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@install -m 0644 "$(JOURNALD_SERVICE_ARCHIVE)" "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)"
+	@install -m 0644 "$(JOURNALD_SERVICE_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@install -m 0644 "$(GELF_SERVICE_ARCHIVE)" "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)"
+	@install -m 0644 "$(GELF_SERVICE_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
 	@install "$(BUILD_BIN_DIR)/k8s" "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 	@install Sources/Plugins/K8s/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/k8s/config.toml)"
 	@install Sources/Plugins/K8s/Resources/kindnet.yaml "$(join $(STAGING_DIR), libexec/container/plugins/k8s/resources/kindnet.yaml)"
@@ -171,10 +294,24 @@ installer-pkg: $(STAGING_DIR)
 	@echo Signing container binaries...
 	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.cli "$(join $(STAGING_DIR), bin/container)"
 	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.apiserver "$(join $(STAGING_DIR), bin/container-apiserver)"
+	@codesign $(CODESIGN_OPTS) --identifier io.github.stephenlclarke.container.engine "$(join $(STAGING_DIR), bin/container-engine)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/container-core-images/bin/container-core-images)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-runtime-linux.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
+	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.semantic-helper "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) manifest \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--output "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 
 	@echo Creating application installer
@@ -189,10 +326,24 @@ homebrew-package: build $(STAGING_DIR)
 	@echo Signing container binaries for Homebrew archive...
 	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.cli "$(join $(STAGING_DIR), bin/container)"
 	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.apiserver "$(join $(STAGING_DIR), bin/container-apiserver)"
+	@codesign $(CODESIGN_OPTS) --identifier io.github.stephenlclarke.container.engine "$(join $(STAGING_DIR), bin/container-engine)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/container-core-images/bin/container-core-images)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-runtime-linux.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-runtime-linux/bin/container-runtime-linux)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
+	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.semantic-helper "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) manifest \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--output "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) verify \
+		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
+	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
+		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
+		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
@@ -209,12 +360,16 @@ dsym:
 	@cp -a "$(BUILD_BIN_DIR)/container-network-vmnet.dSYM" "$(DSYM_DIR)"
 	@cp -a "$(BUILD_BIN_DIR)/container-core-images.dSYM" "$(DSYM_DIR)"
 	@cp -a "$(BUILD_BIN_DIR)/container-apiserver.dSYM" "$(DSYM_DIR)"
+	@cp -a "$(BUILD_BIN_DIR)/container-engine.dSYM" "$(DSYM_DIR)"
 	@cp -a "$(BUILD_BIN_DIR)/container.dSYM" "$(DSYM_DIR)"
 
 	@echo Packaging the debug symbols...
 	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
 
-.PHONY: test test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+.PHONY: test test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test-build-artifact-directory:
+	@bash Tests/ScriptTests/TestBuildArtifactDirectory.sh
+
 test-homebrew-archive-checksum:
 	@Tests/ScriptTests/TestHomebrewArchiveChecksum.sh
 
@@ -224,7 +379,7 @@ test-install-init:
 test-verify-developer-id-archive:
 	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
 
-test: build-tests test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test: build-tests test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
@@ -246,6 +401,7 @@ TEST_BINARY = $(BUILD_BIN_DIR)/containerPackageTests.xctest/Contents/MacOS/conta
 COV_BINARIES := \
 	$(BUILD_BIN_DIR)/container \
 	$(BUILD_BIN_DIR)/container-apiserver \
+	$(BUILD_BIN_DIR)/container-engine \
 	$(BUILD_BIN_DIR)/container-runtime-linux \
 	$(BUILD_BIN_DIR)/container-network-vmnet \
 	$(BUILD_BIN_DIR)/container-core-images \

@@ -42,6 +42,27 @@ public enum RuntimeRoutes: String {
     /// Open a vsock connection to a port inside the sandbox.
     case dial = "com.apple.container.runtime/dial"
 
+    // MARK: - Shared Engine Linux sandbox
+
+    /// Boot the single Engine-owned Linux sandbox for an exact generation.
+    case engineSandboxBoot = "com.apple.container.runtime/engineSandbox/boot"
+    /// Observe an exact sandbox boot after an interrupted response.
+    case engineSandboxObserveBoot = "com.apple.container.runtime/engineSandbox/observeBoot"
+    /// Stop the Engine-owned Linux sandbox for an exact generation.
+    case engineSandboxShutdown = "com.apple.container.runtime/engineSandbox/shutdown"
+    /// Observe an exact sandbox shutdown after an interrupted response.
+    case engineSandboxObserveShutdown = "com.apple.container.runtime/engineSandbox/observeShutdown"
+    /// Materialize and start one workload in the Engine-owned Linux sandbox.
+    case engineSandboxStartWorkload = "com.apple.container.runtime/engineSandbox/startWorkload"
+    /// Observe an exact workload start after an interrupted response.
+    case engineSandboxObserveWorkloadStart = "com.apple.container.runtime/engineSandbox/observeWorkloadStart"
+    /// Stop one exact workload generation in the Engine-owned Linux sandbox.
+    case engineSandboxStopWorkload = "com.apple.container.runtime/engineSandbox/stopWorkload"
+    /// Observe an exact workload stop after an interrupted response.
+    case engineSandboxObserveWorkloadStop = "com.apple.container.runtime/engineSandbox/observeWorkloadStop"
+    /// Open a generation-fenced connection to a protected sandbox service.
+    case engineSandboxDialService = "com.apple.container.runtime/engineSandbox/dialService"
+
     // MARK: - Process management
 
     /// Register a new process inside the sandbox (used by exec).
@@ -58,6 +79,12 @@ public enum RuntimeRoutes: String {
     case exec = "com.apple.container.runtime/exec"
     /// Attach standard streams to the already-running init process.
     case attach = "com.apple.container.runtime/attach"
+    /// Follow raw records from the retained active logging generation.
+    case followLogs = "com.apple.container.runtime/followLogs"
+    /// Follow structured records from the retained active logging generation.
+    case followLogRecords = "com.apple.container.runtime/followLogRecords"
+    /// Follow exact versioned read records from the active logging generation.
+    case followLogReadRecordsV1 = "com.apple.container.runtime/followLogReadRecordsV1"
 
     // MARK: - File Management
     /// Copy a file or directory into the container.

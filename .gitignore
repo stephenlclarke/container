@@ -13,6 +13,8 @@ api-docs/
 workdir/
 installer/
 .venv/
+__pycache__/
+*.pyc
 .claude/
 .clitests/
 .vscode/

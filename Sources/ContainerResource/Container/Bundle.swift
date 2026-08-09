@@ -16,6 +16,7 @@
 
 import Containerization
 import ContainerizationError
+import Darwin
 import Foundation
 
 public struct Bundle: Sendable {
@@ -130,6 +131,21 @@ extension Bundle {
         try write(filename: Self.containerConfigFilename, value: configuration)
     }
 
+    /// Atomically publishes and fsyncs a configuration transaction before
+    /// returning. Provider-generation migration uses this stronger boundary
+    /// so registry activation cannot outrun durable container ownership.
+    public func setDurably(configuration: ContainerConfiguration) throws {
+        try Self.writeDurably(
+            path.appendingPathComponent(Self.containerConfigFilename),
+            value: configuration
+        )
+    }
+
+    /// Atomically publishes and fsyncs a named bundle resource.
+    public func writeDurably(filename: String, value: Encodable) throws {
+        try Self.writeDurably(path.appendingPathComponent(filename), value: value)
+    }
+
     /// Return the full filepath for a named resource in the Bundle.
     public func filePath(for name: String) -> URL {
         path.appendingPathComponent(name)
@@ -137,7 +153,7 @@ extension Bundle {
 
     public func setContainerRootFs(fs: Filesystem) throws {
         let fsData = try JSONEncoder().encode(fs)
-        try fsData.write(to: self.containerRootfsConfig)
+        try fsData.write(to: self.containerRootfsConfig, options: .atomic)
     }
 
     public func cloneContainerRootFs(cloning fs: Filesystem, readonly: Bool = false) throws {
@@ -160,7 +176,41 @@ extension Bundle {
 
     private static func write(_ path: URL, value: Encodable) throws {
         let data = try JSONEncoder().encode(value)
-        try data.write(to: path)
+        try data.write(to: path, options: .atomic)
+    }
+
+    private static func writeDurably(_ path: URL, value: Encodable) throws {
+        let data = try JSONEncoder().encode(value)
+        try data.write(to: path, options: .atomic)
+
+        let fileDescriptor = Darwin.open(
+            path.path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard fileDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(fileDescriptor) }
+        var status = stat()
+        guard
+            Darwin.fstat(fileDescriptor, &status) == 0,
+            status.st_mode & S_IFMT == S_IFREG,
+            Darwin.fsync(fileDescriptor) == 0
+        else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        let directoryDescriptor = Darwin.open(
+            path.deletingLastPathComponent().path,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_DIRECTORY
+        )
+        guard directoryDescriptor >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        defer { Darwin.close(directoryDescriptor) }
+        guard Darwin.fsync(directoryDescriptor) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 
     public func load<T>(filename: String) throws -> T where T: Decodable {

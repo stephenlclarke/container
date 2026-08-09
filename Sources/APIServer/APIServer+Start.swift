@@ -17,16 +17,37 @@
 import ArgumentParser
 import ContainerAPIClient
 import ContainerAPIService
+import ContainerAWSLogsSDKAdapter
+import ContainerEngineLogging
+import ContainerEngineProviderSession
+import ContainerEngineRuntimeSPI
 import ContainerLog
+import ContainerLoggingProviders
 import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
+import ContainerVersion
 import ContainerXPC
+import ContainerizationError
 import ContainerizationExtras
 import DNSServer
 import Foundation
 import Logging
 import SystemPackage
+
+/// Prevents a missing Engine-Linux service from silently moving TCP GELF back
+/// onto macOS, where reset observation differs from Docker's Linux behavior.
+private struct UnavailableGELFTCPService: GELFTCPService {
+    let reason: String
+
+    func connect(
+        to address: GELFNetworkAddress,
+        timeout: Duration
+    ) async throws -> any GELFTransport {
+        _ = timeout
+        throw GELFProviderError.connectionFailed(endpoint: address, reason: reason)
+    }
+}
 
 extension APIServer {
     struct Start: AsyncParsableCommand {
@@ -66,12 +87,30 @@ extension APIServer {
                 let pluginLoader = try initializePluginLoader(log: log)
 
                 try await initializePlugins(pluginLoader: pluginLoader, log: log, routes: &routes, debug: debug)
-                let containersService = try initializeContainersService(
+                let kernelService = try initializeKernelService(
+                    log: log,
+                    routes: &routes
+                )
+                let containersService = try await initializeContainersService(
                     pluginLoader: pluginLoader,
+                    kernelService: kernelService,
                     containerSystemConfig: containerSystemConfig,
                     log: log,
                     routes: &routes
                 )
+                let volumesService = try await initializeVolumeService(
+                    containersService: containersService,
+                    log: log,
+                    routes: &routes
+                )
+                let engineLoggingProvider = try await initializeEngineLoggingProvider(
+                    appRoot: appRootURL,
+                    containersService: containersService,
+                    volumesService: volumesService,
+                    containerSystemConfig: containerSystemConfig,
+                    log: log
+                )
+                try engineLoggingProvider.start()
                 let networkService = try await initializeNetworksService(
                     pluginLoader: pluginLoader,
                     containersService: containersService,
@@ -81,9 +120,6 @@ extension APIServer {
                 )
                 await containersService.setNetworksService(networkService)
                 initializeHealthCheckService(log: log, routes: &routes)
-                try initializeKernelService(log: log, routes: &routes)
-                let volumesService = try await initializeVolumeService(containersService: containersService, log: log, routes: &routes)
-                try initializeConfigsService(log: log, routes: &routes)
                 try initializeDiskUsageService(
                     containersService: containersService,
                     volumesService: volumesService,
@@ -92,7 +128,7 @@ extension APIServer {
                 )
 
                 let server = XPCServer(
-                    identifier: "com.apple.container.apiserver",
+                    identifier: ContainerServiceNamespace.current.apiServerIdentifier,
                     routes: routes.reduce(
                         into: [String: XPCServer.RouteHandler](),
                         {
@@ -100,6 +136,17 @@ extension APIServer {
                         }), log: log)
 
                 await withTaskGroup(of: Result<Void, Error>.self) { group in
+                    group.addTask {
+                        await withTaskCancellationHandler {
+                            await engineLoggingProvider.wait()
+                        } onCancel: {
+                            Task {
+                                await engineLoggingProvider.shutdown()
+                            }
+                        }
+                        return .success(())
+                    }
+
                     group.addTask {
                         log.info("starting XPC server")
                         do {
@@ -175,6 +222,235 @@ extension APIServer {
                     ])
                 APIServer.exit(withError: error)
             }
+        }
+
+        private func initializeEngineLoggingProvider(
+            appRoot: URL,
+            containersService: ContainersService,
+            volumesService: VolumesService,
+            containerSystemConfig: ContainerSystemConfig,
+            log: Logger
+        ) async throws -> ContainerEngineProviderSessionServer {
+            let stateRoot = appRoot.appendingPathComponent(
+                "engine-provider",
+                isDirectory: true
+            )
+            let stateRootUUID = try ContainerEngineStateRootIdentityStore(
+                path: stateRoot.appendingPathComponent("state-root-id")
+            ).loadOrCreate()
+            let capabilities = try [
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttach",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttachWebsocket",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerResize",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerLogs",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerInspect",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerList",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageInspect",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageList",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageCreate",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageTag",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ImageDelete",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.VolumeCreate",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerCreate",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerStart",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerStop",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerWait",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerDelete",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemInfo",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemVersion",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.object-transfer.v1",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.provider-key-enrollment.v1",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.destination-key-possession.v1",
+                    status: .native
+                ),
+                ContainerEngineProviderCapability(
+                    identifier: "engine.handoff.part.logging.v1",
+                    status: .native
+                ),
+            ]
+            let declaration = try ContainerEngineProviderDeclaration(
+                profile: .enhanced,
+                kind: .containerAuthority,
+                implementationVersion: ReleaseVersion.version(),
+                runtimeRevisions: [
+                    "container": ReleaseVersion.gitCommit()
+                        ?? ReleaseVersion.version(),
+                    "container-engine-api":
+                        ReleaseVersion
+                        .containerEngineAPIVersion(),
+                    "containerization": ReleaseVersion.containerizationRef(),
+                ],
+                stateSchemaVersion: 1,
+                capabilities: capabilities
+            )
+            let fingerprint = try ContainerEngineProviderFingerprint(
+                declaration: declaration,
+                stateRootUUID: stateRootUUID
+            )
+            let codeIdentity = try ProviderHandoffCodeIdentity.current()
+            let enrollmentTime = try Self.currentUnixSeconds()
+            let providerIdentity = try ProviderHandoffProviderKeyStore(
+                account:
+                    "provider-private-keys-v1.\(stateRootUUID.uuidString.lowercased())"
+            ).loadOrCreate(
+                context: ProviderHandoffProviderKeyEnrollmentContextV1(
+                    providerFingerprint: fingerprint.digest,
+                    stateRootUUID: stateRootUUID.uuidString.lowercased(),
+                    owningBundleIdentifier: codeIdentity.signingIdentifier,
+                    codeRequirementDigestSHA256:
+                        codeIdentity.designatedRequirementDigestSHA256,
+                    teamIdentifier: codeIdentity.teamIdentifier,
+                    providerRegistrationDigestSHA256: String(
+                        fingerprint.digest.dropFirst("sha256:".count)
+                    ),
+                    enrolledAtUnixSeconds: enrollmentTime,
+                    notBeforeUnixSeconds: enrollmentTime,
+                    notAfterUnixSeconds: UInt64.max
+                )
+            )
+            let backend = ContainerDockerLoggingBackend(
+                containers: containersService,
+                engineIdentity: stateRootUUID.uuidString,
+                serverVersion: ReleaseVersion.version(),
+                containerSystemConfig: containerSystemConfig
+            )
+            let volumeBackend = ContainerDockerVolumeBackend(volumes: volumesService)
+            let controller = try DockerLoggingAPIController(
+                backend: backend,
+                sharedResponseBackend: backend,
+                volumeBackend: volumeBackend
+            )
+            let objectStore = ProviderHandoffBundleObjectStore(
+                root: stateRoot.appendingPathComponent(
+                    "handoff-objects",
+                    isDirectory: true
+                )
+            )
+            let possessionProofStore = ProviderHandoffPossessionProofStore(
+                root: stateRoot.appendingPathComponent(
+                    "handoff-possession-proofs",
+                    isDirectory: true
+                )
+            )
+            let loggingHandoffResponder =
+                try await containersService
+                .makeLoggingHandoffControlResponder(
+                    stateRoot: stateRoot,
+                    objectStore: objectStore,
+                    possessionProofStore: possessionProofStore,
+                    trustRegistryStore: ProviderHandoffTrustRegistryStore(
+                        account:
+                            "trust-registry-v1.\(stateRootUUID.uuidString.lowercased())"
+                    ),
+                    providerIdentity: providerIdentity
+                )
+            let socketPath =
+                stateRoot
+                .appendingPathComponent("provider.sock")
+                .path
+            let provider = try ContainerEngineProviderSessionServer(
+                responder: controller,
+                handoffControlResponder:
+                    ContainerEngineProviderHandoffControlService(
+                        objectStore: objectStore,
+                        downstream:
+                            ContainerEngineProviderIdentityControlResponder(
+                                identity: providerIdentity,
+                                possessionProofStore:
+                                    possessionProofStore,
+                                downstream: loggingHandoffResponder
+                            )
+                    ),
+                socketPath: socketPath,
+                declaration: declaration,
+                stateRootUUID: stateRootUUID
+            )
+            log.info(
+                "configured enhanced Engine logging provider",
+                metadata: [
+                    "fingerprint": "\(provider.fingerprint.digest)",
+                    "socket": "\(socketPath)",
+                ]
+            )
+            return provider
+        }
+
+        private static func currentUnixSeconds() throws -> UInt64 {
+            let value = Date().timeIntervalSince1970
+            guard
+                value.isFinite,
+                value >= 0,
+                value < Double(UInt64.max)
+            else {
+                throw ValidationError(
+                    "the current time cannot be represented for provider handoff enrollment"
+                )
+            }
+            return UInt64(value.rounded(.down))
         }
 
         private func initializePluginLoader(log: Logger) throws -> PluginLoader {
@@ -263,7 +539,10 @@ extension APIServer {
             routes[XPCRoute.ping] = XPCServer.route(svc.ping)
         }
 
-        private func initializeKernelService(log: Logger, routes: inout [XPCRoute: XPCServer.RouteHandler]) throws {
+        private func initializeKernelService(
+            log: Logger,
+            routes: inout [XPCRoute: XPCServer.RouteHandler]
+        ) throws -> KernelService {
             log.info("initializing kernel service")
 
             // TODO: Remove when we convert KernelService to FilePath
@@ -272,25 +551,75 @@ extension APIServer {
             let harness = KernelHarness(service: svc, log: log)
             routes[XPCRoute.installKernel] = XPCServer.route(harness.install)
             routes[XPCRoute.getDefaultKernel] = XPCServer.route(harness.getDefaultKernel)
+            return svc
         }
 
         private func initializeContainersService(
             pluginLoader: PluginLoader,
+            kernelService: KernelService,
             containerSystemConfig: ContainerSystemConfig,
             log: Logger,
             routes: inout [XPCRoute: XPCServer.RouteHandler]
-        ) throws -> ContainersService {
+        ) async throws -> ContainersService {
             log.info("initializing containers service")
 
             // TODO: Remove when we convert ContainersService to FilePath
             let appRootURL = URL(fileURLWithPath: appRoot.string)
+            let installRootURL = URL(fileURLWithPath: installRoot.string)
+            let providerSandboxAuthority = await initializeProviderSandboxAuthority(
+                appRoot: appRootURL,
+                pluginLoader: pluginLoader,
+                log: log
+            )
+            let journaldService = await initializeJournaldService(
+                appRoot: appRootURL,
+                installRoot: installRootURL,
+                kernelService: kernelService,
+                containerSystemConfig: containerSystemConfig,
+                authority: providerSandboxAuthority,
+                log: log
+            )
+            let gelfTCPService = await initializeGELFTCPService(
+                appRoot: appRootURL,
+                installRoot: installRootURL,
+                kernelService: kernelService,
+                containerSystemConfig: containerSystemConfig,
+                authority: providerSandboxAuthority,
+                log: log
+            )
+            let dockerPluginInstallations = await initializeDockerLoggingPlugins(
+                appRoot: appRootURL,
+                pluginLoader: pluginLoader,
+                kernelService: kernelService,
+                containerSystemConfig: containerSystemConfig,
+                authority: providerSandboxAuthority,
+                log: log
+            )
+            let remoteLogDriverPlane =
+                try await AuthorityRemoteLogDriverPlane
+                .create(
+                    appRoot: appRootURL,
+                    awsLogsClientFactory: AWSCloudWatchLogsClientFactory(),
+                    journaldService: journaldService,
+                    gelfTCPService: gelfTCPService,
+                    dockerPluginInstallations: dockerPluginInstallations,
+                    containerSystemConfig: containerSystemConfig
+                )
+            try await remoteLogDriverPlane.reconcileProtectedEffects(
+                containerRoot: appRootURL.appendingPathComponent(
+                    "containers",
+                    isDirectory: true
+                )
+            )
             let service = try ContainersService(
                 appRoot: appRootURL,
                 pluginLoader: pluginLoader,
                 containerSystemConfig: containerSystemConfig,
                 log: log,
-                debugHelpers: debug
+                debugHelpers: debug,
+                remoteLogDriverPlane: remoteLogDriverPlane
             )
+            try await service.reconcileLoggingProviderUpgrades()
             let harness = ContainersHarness(service: service, log: log)
 
             routes[XPCRoute.containerList] = XPCServer.route(harness.list)
@@ -321,6 +650,216 @@ extension APIServer {
             routes[XPCRoute.containerExport] = XPCServer.route(harness.export)
 
             return service
+        }
+
+        private func initializeJournaldService(
+            appRoot: URL,
+            installRoot: URL,
+            kernelService: KernelService,
+            containerSystemConfig: ContainerSystemConfig,
+            authority: EngineLinuxSandboxAuthorityV1?,
+            log: Logger
+        ) async -> (any JournaldService)? {
+            do {
+                guard let authority else {
+                    throw ContainerizationError(
+                        .notFound,
+                        message:
+                            "container-runtime-linux is unavailable for the journald service"
+                    )
+                }
+                let service = try EngineLinuxSandboxJournaldServiceV1.create(
+                    appRoot: appRoot,
+                    installRoot: installRoot,
+                    kernelService: kernelService,
+                    containerSystemConfig: containerSystemConfig,
+                    authority: authority
+                )
+                log.info(
+                    "verified lazy journald logging service",
+                    metadata: [
+                        "sandbox": "engine-linux-sandbox",
+                        "workload": "container-journald-service",
+                    ]
+                )
+                return service
+            } catch {
+                log.warning(
+                    "journald logging driver is unavailable",
+                    metadata: ["error": "\(error)"]
+                )
+                return nil
+            }
+        }
+
+        private func initializeGELFTCPService(
+            appRoot: URL,
+            installRoot: URL,
+            kernelService: KernelService,
+            containerSystemConfig: ContainerSystemConfig,
+            authority: EngineLinuxSandboxAuthorityV1?,
+            log: Logger
+        ) async -> any GELFTCPService {
+            do {
+                guard let authority else {
+                    throw ContainerizationError(
+                        .notFound,
+                        message:
+                            "container-runtime-linux is unavailable for the GELF TCP service"
+                    )
+                }
+                let service = try EngineLinuxSandboxGELFTCPServiceV1.create(
+                    appRoot: appRoot,
+                    installRoot: installRoot,
+                    kernelService: kernelService,
+                    containerSystemConfig: containerSystemConfig,
+                    authority: authority
+                )
+                log.info(
+                    "verified lazy GELF TCP logging service",
+                    metadata: [
+                        "sandbox": "engine-linux-sandbox",
+                        "workload": "container-gelf-service",
+                    ]
+                )
+                return service
+            } catch {
+                let reason = "Engine-Linux GELF TCP service is unavailable: \(error)"
+                log.warning("\(reason)")
+                return UnavailableGELFTCPService(reason: reason)
+            }
+        }
+
+        private func initializeProviderSandboxAuthority(
+            appRoot: URL,
+            pluginLoader: PluginLoader,
+            log: Logger
+        ) async -> EngineLinuxSandboxAuthorityV1? {
+            do {
+                guard
+                    let runtimePlugin = pluginLoader.findPlugins().first(
+                        where: {
+                            $0.name
+                                == LaunchdEngineLinuxSandboxLauncherV1
+                                .runtimePluginName
+                                && $0.hasType(.runtime)
+                        }
+                    )
+                else {
+                    throw ContainerizationError(
+                        .notFound,
+                        message:
+                            "container-runtime-linux is unavailable for provider services"
+                    )
+                }
+                let launcher = try LaunchdEngineLinuxSandboxLauncherV1(
+                    loader: pluginLoader,
+                    plugin: runtimePlugin,
+                    debug: debug
+                )
+                return try await EngineLinuxSandboxAuthorityV1.open(
+                    root: appRoot.appendingPathComponent(
+                        "engine-linux-sandbox",
+                        isDirectory: true
+                    ),
+                    owningControllerID: "container-apiserver-provider-services",
+                    sandboxID: "engine-linux-sandbox",
+                    launcher: launcher
+                )
+            } catch {
+                log.warning(
+                    "Engine Linux provider sandbox is unavailable",
+                    metadata: ["error": "\(error)"]
+                )
+                return nil
+            }
+        }
+
+        private func initializeDockerLoggingPlugins(
+            appRoot: URL,
+            pluginLoader: PluginLoader,
+            kernelService: KernelService,
+            containerSystemConfig: ContainerSystemConfig,
+            authority: EngineLinuxSandboxAuthorityV1?,
+            log: Logger
+        ) async -> [DockerPluginLogDriverInstallation] {
+            let plugins = pluginLoader.findPlugins()
+                .filter { $0.hasType(.logging) }
+                .sorted { $0.name < $1.name }
+            guard !plugins.isEmpty else { return [] }
+            guard let authority else {
+                log.warning(
+                    "Docker logging plugins are unavailable without the Engine Linux provider sandbox"
+                )
+                return []
+            }
+
+            var installations = [DockerPluginLogDriverInstallation]()
+            let builtInProviders = [
+                SyslogLogDriverContract.descriptor(),
+                FluentdLogDriverContract.descriptor(),
+                GELFLogDriverContract.descriptor(),
+                SplunkLogDriverContract.descriptor(),
+                AWSLogsLogDriverContract.descriptor(),
+                GCPLogsLogDriverContract.descriptor(),
+                JournaldLogDriverContract.descriptor(),
+            ]
+            var collisions = DockerPluginInstallationCollisionRegistry(
+                reservedDescriptors:
+                    BuiltinLogDriverDescriptors.current.descriptors
+                    + builtInProviders
+            )
+            for plugin in plugins {
+                do {
+                    guard let resourceRoot = plugin.resourceURL else {
+                        throw
+                            EngineLinuxSandboxDockerPluginServiceError
+                            .invalidInstalledAsset(
+                                "logging plugin has no protected resource bundle"
+                            )
+                    }
+                    let assets =
+                        try InstalledDockerPluginWorkloadManifestV1
+                        .verify(resourceRoot: resourceRoot)
+                    let manifest = assets.manifest
+                    var candidateCollisions = collisions
+                    try candidateCollisions.register(
+                        driver: manifest.driver,
+                        aliases: manifest.aliases,
+                        providerID: manifest.providerID,
+                        providerGeneration: manifest.providerGeneration,
+                        servicePort: manifest.servicePort
+                    )
+                    let installation =
+                        try EngineLinuxSandboxDockerPluginServiceV1.create(
+                            appRoot: appRoot,
+                            resourceRoot: resourceRoot,
+                            kernelService: kernelService,
+                            containerSystemConfig: containerSystemConfig,
+                            authority: authority
+                        )
+                    installations.append(installation)
+                    collisions = candidateCollisions
+                    log.info(
+                        "verified lazy Docker logging plugin",
+                        metadata: [
+                            "plugin": "\(plugin.name)",
+                            "driver": "\(manifest.driver)",
+                            "providerGeneration":
+                                "\(manifest.providerGeneration)",
+                        ]
+                    )
+                } catch {
+                    log.warning(
+                        "Docker logging plugin is unavailable",
+                        metadata: [
+                            "plugin": "\(plugin.name)",
+                            "error": "\(error)",
+                        ]
+                    )
+                }
+            }
+            return installations
         }
 
         private func initializeNetworksService(
@@ -387,23 +926,6 @@ extension APIServer {
             routes[XPCRoute.volumeDiskUsage] = XPCServer.route(harness.diskUsage)
 
             return service
-        }
-
-        private func initializeConfigsService(
-            log: Logger,
-            routes: inout [XPCRoute: XPCServer.RouteHandler]
-        ) throws {
-            log.info("initializing config service")
-
-            let resourceRoot = appRoot.appending(FilePath.Component("configs"))
-            let service = try ConfigsService(resourceRoot: resourceRoot, log: log)
-            let harness = ConfigsHarness(service: service, log: log)
-
-            routes[XPCRoute.configCreate] = XPCServer.route(harness.create)
-            routes[XPCRoute.configDelete] = XPCServer.route(harness.delete)
-            routes[XPCRoute.configList] = XPCServer.route(harness.list)
-            routes[XPCRoute.configInspect] = XPCServer.route(harness.inspect)
-            routes[XPCRoute.configRead] = XPCServer.route(harness.read)
         }
 
         private func initializeDiskUsageService(

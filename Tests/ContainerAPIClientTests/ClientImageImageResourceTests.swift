@@ -81,7 +81,13 @@ struct ClientImageImageResourceTests {
                     digest: manifestDigest,
                     size: Int64(manifestData.count),
                     platform: platform
-                )
+                ),
+                .init(
+                    mediaType: MediaTypes.imageManifest,
+                    digest: manifestDigest,
+                    size: Int64(manifestData.count),
+                    platform: Platform(arch: "amd64", os: "linux")
+                ),
             ]
         )
         let indexData = try JSONEncoder().encode(index)
@@ -104,8 +110,15 @@ struct ClientImageImageResourceTests {
         let resource = try await image.toImageResource(containerSystemConfig: ContainerSystemConfig())
         let variant = try #require(resource.variants.first)
         let healthCheck = try #require(variant.healthCheck)
+        let selected = try await image.toImageResource(
+            containerSystemConfig: ContainerSystemConfig(),
+            for: platform
+        )
 
         #expect(resource.displayReference == "example:latest")
+        #expect(resource.variants.count == 2)
+        #expect(selected.variants.count == 1)
+        #expect(selected.variants.first?.platform == platform)
         #expect(variant.platform == platform)
         #expect(variant.imageConfigLabels == ["com.docker.compose.bridge": "transformation"])
         #expect(variant.exposedPorts == ["8080/tcp", "8443/udp"])

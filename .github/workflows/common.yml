@@ -24,8 +24,47 @@ on:
         default: false
 
 jobs:
+  linuxServiceWorkloads:
+    name: Build Linux service workloads
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build pinned Linux service workloads
+        env:
+          CONTAINER_GELF_BUILDER: ${{ steps.buildx.outputs.name }}
+          CONTAINER_JOURNALD_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          python3 Tools/ContainerJournaldService/build.py build \
+            --output-directory .build/container-journald-service
+          python3 Tools/ContainerGELFService/build.py build \
+            --output-directory bin/services/container-gelf-service
+
+      - name: Upload pinned Linux service workloads
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-service-workloads
+          path: |
+            .build/container-journald-service
+            bin/services/container-gelf-service
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 1
+
   buildAndTest:
     name: Build and test the project
+    needs: linuxServiceWorkloads
+    if: ${{ always() }}
     timeout-minutes: 90
     runs-on: >-
       ${{ github.repository == 'apple/container'
@@ -34,10 +73,22 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Require Linux service workload build
+        if: ${{ needs.linuxServiceWorkloads.result != 'success' }}
+        run: |
+          echo "Linux service workload build did not succeed" >&2
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Download pinned Linux service workloads
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: linux-service-workloads
+          path: .
 
       - name: Select compatible Swift toolchain
         shell: bash
@@ -88,6 +139,8 @@ jobs:
           fi
 
       - name: Make the container project and docs
+        env:
+          CONTAINER_SERVICE_WORKLOADS_PREBUILT: "true"
         run: |
           make container dsym docs
           tar cfz _site.tgz _site

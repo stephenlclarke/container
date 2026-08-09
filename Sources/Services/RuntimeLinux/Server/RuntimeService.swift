@@ -52,10 +52,12 @@ public actor RuntimeService {
     private var state: State = .created
     private var processes: [String: ProcessInfo] = [:]
     private var socketForwarders: [SocketForwarderResult] = []
-    private var networkSessions: [XPCClientSession] = []
+    private var networkBindings: [NetworkBinding] = []
+    private var dnsProxy: RuntimeDNSProxy?
+    private var dnsProxyTask: Task<Void, Never>?
 
-    private static let sshAuthSocketGuestPath = "/var/host-services/ssh-auth.sock"
-    private static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
+    static let sshAuthSocketGuestPath = "/var/host-services/ssh-auth.sock"
+    static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
 
     class ExitWaiter {
         public var exitStatus: ExitStatus? = nil
@@ -71,15 +73,23 @@ public actor RuntimeService {
         }
 
         public func doExit(exitStatus: ExitStatus) {
-            for cc in continuations {
+            // Exit fires exactly once. A second call (e.g. an onExit callback that
+            // is retried after it threw) must not resume the same continuations
+            // again — resuming a CheckedContinuation twice traps.
+            guard self.exitStatus == nil else {
+                return
+            }
+            self.exitStatus = exitStatus
+
+            let pending = continuations
+            continuations = []
+            for cc in pending {
                 cc.resume(returning: exitStatus)
             }
-
-            self.exitStatus = exitStatus
         }
     }
 
-    private static func sshAuthSocketHostUrl(
+    static func sshAuthSocketHostUrl(
         config: ContainerConfiguration,
         dynamicEnv: [String: String] = [:],
         log: Logger? = nil
@@ -187,10 +197,19 @@ public actor RuntimeService {
             let dynamicEnv = try message.dynamicEnv()
 
             let bundle = ContainerResource.Bundle(path: self.root)
-            try bundle.createLogFile()
-
             let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: self.root)
             var config = try bundle.configuration
+            let loggingPlan = try ContainerLogRuntimePlan(configuration: config)
+            let loggingCapture = try loggingPlan.activate(
+                bundle: bundle,
+                terminal: config.initProcess.terminal
+            )
+            var loggingCaptureNeedsClose = true
+            defer {
+                if loggingCaptureNeedsClose {
+                    loggingCapture.close()
+                }
+            }
 
             var kernel = try bundle.kernel
             // Built-in defaults keyed by arg name. Each is applied only if the user did not already
@@ -212,23 +231,33 @@ public actor RuntimeService {
                 logger: self.log
             )
 
-            let networkBootstrapInfos = try message.networkBootstrapInfos()
+            let upstreamNameservers = config.dns?.nameservers ?? []
+            try RuntimeDNSUpstream.validate(nameservers: upstreamNameservers)
 
-            var sessions: [XPCClientSession] = []
+            let networkConfigurations = Self.effectiveNetworkConfigurations(
+                config: config
+            )
+            let networkBootstrapInfos = Self.effectiveNetworkBootstrapInfos(
+                config: config,
+                requested: try message.networkBootstrapInfos()
+            )
+
+            var bindings: [NetworkBinding] = []
             var attachments: [Attachment] = []
             var interfaces: [Interface] = []
             do {
                 for (index, info) in networkBootstrapInfos.enumerated() {
-                    let attachmentConfig = config.networks[index]
+                    let attachmentConfig = networkConfigurations[index]
                     let client = ContainerNetworkClient.NetworkClient(id: attachmentConfig.network, plugin: info.plugin)
                     let session = client.connect()
-                    sessions.append(session)
+                    bindings.append(NetworkBinding(client: client, session: session))
                     var (attachment, additionalData) = try await client.allocate(
                         hostname: attachmentConfig.options.hostname,
                         aliases: attachmentConfig.options.aliases,
                         macAddress: attachmentConfig.options.macAddress,
                         requestedIPv4Address: attachmentConfig.options.requestedIPv4Address,
                         requestedIPv6Address: attachmentConfig.options.requestedIPv6Address,
+                        retainOnDisconnect: true,
                         on: session
                     )
                     if let mtu = attachmentConfig.options.mtu {
@@ -261,36 +290,31 @@ public actor RuntimeService {
                     interfaces.append(interface)
                 }
             } catch {
-                for session in sessions { session.close() }
+                for binding in bindings { binding.session.close() }
                 throw error
             }
 
-            // Dynamically configure the DNS nameserver from a network if no explicit configuration
-            if let dns = config.dns, dns.nameservers.isEmpty {
-                let defaultNameservers = self.getDefaultNameservers(from: attachments)
-                if !defaultNameservers.isEmpty {
-                    config.dns = ContainerConfiguration.DNSConfiguration(
-                        nameservers: defaultNameservers,
-                        domain: dns.domain,
-                        searchDomains: dns.searchDomains,
-                        options: dns.options
-                    )
-                }
+            if let dns = config.dns {
+                config.dns = ContainerConfiguration.DNSConfiguration(
+                    nameservers: [DNSProxyProtocol.guestAddress],
+                    domain: dns.domain,
+                    searchDomains: dns.searchDomains,
+                    options: dns.options
+                )
             }
 
             let stdio = message.stdio()
-            let containerLogWriter = try Self.containerLogWriter(bundle: bundle, logging: config.logging)
             let stdin = stdio[0].map(AttachableInput.init)
             let stdout = AttachableOutput(
                 initial: stdio[1],
-                persistent: containerLogWriter?.writer(for: .stdout)
+                persistent: loggingCapture.stdout
             )
 
             let stderr: AttachableOutput? =
                 if !config.initProcess.terminal {
                     AttachableOutput(
                         initial: stdio[2],
-                        persistent: containerLogWriter?.writer(for: .stderr)
+                        persistent: loggingCapture.stderr
                     )
                 } else {
                     nil
@@ -312,7 +336,7 @@ public actor RuntimeService {
                 czConfig.process.stdin = stdin
                 let hostsEntries = try Self.resolvedHosts(
                     hostname: czConfig.hostname ?? id,
-                    primaryAddress: interfaces.first?.ipv4Address.address.description,
+                    primaryAddress: interfaces.first?.ipv4Address?.address.description,
                     gatewayAddress: interfaces.first?.ipv4Gateway?.description,
                     extraHosts: config.hosts
                 )
@@ -325,13 +349,22 @@ public actor RuntimeService {
                 config: config,
                 attachments: attachments,
                 bundle: bundle,
-                io: ContainerStdio(input: stdin, stdout: stdout, stderr: stderr)
+                io: ContainerStdio(input: stdin, stdout: stdout, stderr: stderr),
+                logging: loggingCapture
             )
             await self.setContainer(ctrInfo)
-            await self.setNetworkSessions(sessions)
+            await self.setNetworkBindings(bindings)
+            loggingCaptureNeedsClose = false
 
             do {
                 try await container.create()
+                if config.dns != nil {
+                    try await self.startDNSProxy(
+                        container: container,
+                        networkConfigurations: networkConfigurations,
+                        upstreamNameservers: upstreamNameservers
+                    )
+                }
 
                 try await self.initializeWaiters(for: id)
                 try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
@@ -429,6 +462,55 @@ public actor RuntimeService {
             }
             return message.reply()
         }
+    }
+
+    /// Opens a raw stream from the exact active logging generation.
+    @Sendable
+    public func followLogs(_ message: XPCMessage) async throws -> XPCMessage {
+        try openLogStream(message, format: .raw)
+    }
+
+    /// Opens a newline-delimited structured stream from the exact active
+    /// logging generation.
+    @Sendable
+    public func followLogRecords(_ message: XPCMessage) async throws -> XPCMessage {
+        try openLogStream(message, format: .structuredRecords)
+    }
+
+    /// Opens a newline-delimited, lossless read-record stream from the exact
+    /// active logging generation for authority-owned Engine presentation.
+    @Sendable
+    public func followLogReadRecordsV1(
+        _ message: XPCMessage
+    ) async throws -> XPCMessage {
+        try openLogStream(message, format: .structuredReadRecordsV1)
+    }
+
+    private func openLogStream(
+        _ message: XPCMessage,
+        format: ContainerLogReaderStreamFormat
+    ) throws -> XPCMessage {
+        guard state == .running || state == .paused || state == .stopping else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "cannot follow logs: container is not running"
+            )
+        }
+        let request = try message.logReadRequest()
+        guard request.follow else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "active log stream requires follow=true"
+            )
+        }
+        let container = try getContainer()
+        let stream = try container.logging.makeStream(
+            request: request,
+            format: format
+        )
+        let reply = message.reply()
+        reply.set(key: RuntimeKeys.fd.rawValue, value: stream)
+        return reply
     }
 
     /// Get statistics for the container.
@@ -905,12 +987,6 @@ public actor RuntimeService {
         self.log.info("`copyIn` xpc handler")
         switch self.state {
         case .running, .booted:
-            guard let source = message.string(key: RuntimeKeys.sourcePath.rawValue) else {
-                throw ContainerizationError(
-                    .invalidArgument,
-                    message: "no source path supplied for copyIn"
-                )
-            }
             guard let destination = message.string(key: RuntimeKeys.destinationPath.rawValue) else {
                 throw ContainerizationError(
                     .invalidArgument,
@@ -923,14 +999,29 @@ public actor RuntimeService {
             let preserveOwnership = message.bool(key: RuntimeKeys.preserveOwnership.rawValue)
 
             let ctr = try getContainer()
-            try await ctr.container.copyIn(
-                from: URL(fileURLWithPath: source),
-                to: URL(fileURLWithPath: destination),
-                mode: mode,
-                createParents: createParents,
-                followSymlink: followSymlink,
-                preserveOwnership: preserveOwnership
-            )
+            if let archive = message.fileHandle(key: RuntimeKeys.copyArchive.rawValue) {
+                try await ctr.container.copyIn(
+                    archive: archive,
+                    to: URL(fileURLWithPath: destination),
+                    createParents: createParents,
+                    preserveOwnership: preserveOwnership
+                )
+            } else {
+                guard let source = message.string(key: RuntimeKeys.sourcePath.rawValue) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "no source path supplied for copyIn"
+                    )
+                }
+                try await ctr.container.copyIn(
+                    from: URL(fileURLWithPath: source),
+                    to: URL(fileURLWithPath: destination),
+                    mode: mode,
+                    createParents: createParents,
+                    followSymlink: followSymlink,
+                    preserveOwnership: preserveOwnership
+                )
+            }
 
             return message.reply()
         default:
@@ -960,25 +1051,34 @@ public actor RuntimeService {
                     message: "no source path supplied for copyOut"
                 )
             }
-            guard let destination = message.string(key: RuntimeKeys.destinationPath.rawValue) else {
-                throw ContainerizationError(
-                    .invalidArgument,
-                    message: "no destination path supplied for copyOut"
-                )
-            }
-
             let createParents = message.bool(key: RuntimeKeys.createParents.rawValue)
             let followSymlink = message.bool(key: RuntimeKeys.followSymlink.rawValue)
             let preserveOwnership = message.bool(key: RuntimeKeys.preserveOwnership.rawValue)
+            let copyContents = message.bool(key: RuntimeKeys.copyContents.rawValue)
 
             let ctr = try getContainer()
-            try await ctr.container.copyOut(
-                from: URL(fileURLWithPath: source),
-                to: URL(fileURLWithPath: destination),
-                createParents: createParents,
-                followSymlink: followSymlink,
-                preserveOwnership: preserveOwnership
-            )
+            if let archive = message.fileHandle(key: RuntimeKeys.copyArchive.rawValue) {
+                try await ctr.container.copyOut(
+                    from: URL(fileURLWithPath: source),
+                    to: archive,
+                    followSymlink: followSymlink,
+                    copyContents: copyContents
+                )
+            } else {
+                guard let destination = message.string(key: RuntimeKeys.destinationPath.rawValue) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "no destination path supplied for copyOut"
+                    )
+                }
+                try await ctr.container.copyOut(
+                    from: URL(fileURLWithPath: source),
+                    to: URL(fileURLWithPath: destination),
+                    createParents: createParents,
+                    followSymlink: followSymlink,
+                    preserveOwnership: preserveOwnership
+                )
+            }
 
             return message.reply()
         default:
@@ -1184,7 +1284,13 @@ public actor RuntimeService {
                     let containerIPAddress: String
                     switch publishedPort.hostAddress {
                     case .v4(_):
-                        containerIPAddress = attachment.ipv4Address.address.description
+                        guard let ipv4Address = attachment.ipv4Address else {
+                            throw ContainerizationError(
+                                .invalidArgument,
+                                message: "IPv4 published port requires an IPv4 network attachment"
+                            )
+                        }
+                        containerIPAddress = ipv4Address.address.description
                     case .v6(_):
                         guard let ipv6Address = attachment.ipv6Address else {
                             throw ContainerizationError(.invalidState, message: "cannot configure IPv6 port forwarding for container with unknown IPv6 address")
@@ -1241,6 +1347,92 @@ public actor RuntimeService {
         self.socketForwarders = forwarders
     }
 
+    private func startDNSProxy(
+        container: LinuxContainer,
+        networkConfigurations: [AttachmentConfiguration],
+        upstreamNameservers: [String]
+    ) async throws {
+        guard networkBindings.count == networkConfigurations.count else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "network binding count does not match the configured attachments"
+            )
+        }
+
+        var scopedAliases: [String: RuntimeDNSResolver.ScopedAlias] = [:]
+        var lookups: [RuntimeDNSResolver.NetworkLookup] = []
+        for (binding, configuration) in zip(networkBindings, networkConfigurations) {
+            let lookup: RuntimeDNSResolver.NetworkLookup = { hostname in
+                let attachments = try await binding.client.lookupAll(
+                    hostname: hostname,
+                    on: binding.session
+                )
+                return attachments.map { attachment in
+                    RuntimeDNSAddress(
+                        ipv4: attachment.ipv4Address?.address,
+                        ipv6: attachment.ipv6Address?.address
+                    )
+                }
+            }
+            lookups.append(lookup)
+
+            for (alias, target) in configuration.options.scopedDNSAliases {
+                let canonicalAlias = RuntimeDNSResolver.canonicalHostname(alias)
+                let canonicalTarget = RuntimeDNSResolver.canonicalHostname(target)
+                guard !canonicalAlias.isEmpty, !canonicalTarget.isEmpty else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "network scoped DNS aliases require non-empty alias and target hostnames"
+                    )
+                }
+                if let existing = scopedAliases[canonicalAlias] {
+                    guard RuntimeDNSResolver.canonicalHostname(existing.target) == canonicalTarget else {
+                        throw ContainerizationError(
+                            .invalidArgument,
+                            message: "network scoped DNS alias '\(alias)' maps to multiple target hostnames"
+                        )
+                    }
+                    scopedAliases[canonicalAlias] = RuntimeDNSResolver.ScopedAlias(
+                        target: existing.target,
+                        lookups: existing.lookups + [lookup]
+                    )
+                    continue
+                }
+                scopedAliases[canonicalAlias] = RuntimeDNSResolver.ScopedAlias(
+                    target: target,
+                    lookup: lookup
+                )
+            }
+        }
+        let resolver = RuntimeDNSResolver(
+            scopedAliases: scopedAliases,
+            networkLookups: lookups,
+            upstreamNameservers: upstreamNameservers,
+            log: log
+        )
+        let listener = try await container.withVirtualMachineInstance { vm in
+            try vm.listen(DNSProxyProtocol.hostVsockPort)
+        }
+        let proxy = RuntimeDNSProxy(
+            listener: listener,
+            resolver: resolver,
+            eventLoopGroup: eventLoopGroup,
+            log: log
+        )
+        dnsProxy = proxy
+        dnsProxyTask = Task {
+            await proxy.run()
+        }
+    }
+
+    private func stopDNSProxy() async {
+        dnsProxy?.stop()
+        dnsProxyTask?.cancel()
+        await dnsProxyTask?.value
+        dnsProxyTask = nil
+        dnsProxy = nil
+    }
+
     private func stopSocketForwarders() async {
         log.info("closing forwarders")
         for forwarder in self.socketForwarders {
@@ -1274,6 +1466,26 @@ public actor RuntimeService {
 
     static func shouldStartSocketForwarders(config: ContainerConfiguration, hasInterfaces: Bool) -> Bool {
         hasInterfaces && !config.hostNetwork
+    }
+
+    /// Host-mode workloads join the sandbox VM's existing network namespace.
+    /// They must not allocate or configure a private attachment, even if an
+    /// older API service supplied the compatibility default-network request.
+    static func effectiveNetworkBootstrapInfos(
+        config: ContainerConfiguration,
+        requested: [NetworkBootstrapInfo]
+    ) -> [NetworkBootstrapInfo] {
+        config.hostNetwork ? [] : requested
+    }
+
+    /// Host-mode workloads join the sandbox VM's existing network namespace.
+    /// Compatibility attachments must therefore be suppressed consistently for
+    /// allocation and DNS proxy startup, not only for the runtime bootstrap
+    /// request.
+    static func effectiveNetworkConfigurations(
+        config: ContainerConfiguration
+    ) -> [AttachmentConfiguration] {
+        config.hostNetwork ? [] : config.networks
     }
 
     struct LinuxDeviceMetadata: Sendable {
@@ -1506,13 +1718,6 @@ public actor RuntimeService {
         try Self.configureInitialProcess(czConfig: &czConfig, config: config)
     }
 
-    private nonisolated func getDefaultNameservers(from attachments: [Attachment]) -> [String] {
-        for attachment in attachments {
-            return [attachment.ipv4Gateway.description]
-        }
-        return []
-    }
-
     static func configureInitialProcess(
         czConfig: inout LinuxContainer.Configuration,
         config: ContainerConfiguration,
@@ -1633,7 +1838,7 @@ public actor RuntimeService {
     /// 1. If "ALL" in capDrop, start empty; otherwise start from OCI defaults.
     /// 2. If "ALL" in capAdd, replace with all caps (overriding step 1); otherwise add individual caps.
     /// 3. Remove individual capDrop entries (skipping "ALL" sentinel).
-    private static func effectiveCapabilities(capAdd: [String], capDrop: [String]) throws -> Containerization.LinuxCapabilities {
+    static func effectiveCapabilities(capAdd: [String], capDrop: [String]) throws -> Containerization.LinuxCapabilities {
         // Step 1: Determine base set
         var caps: Set<CapabilityName>
         if capDrop.contains("ALL") {
@@ -1671,7 +1876,7 @@ public actor RuntimeService {
 
     /// Converts the OCI block I/O wire model carried in runtime data into the
     /// containerization API wrapper used by `LinuxContainer.Configuration`.
-    private static func toContainerizationBlockIO(_ oci: ContainerizationOCI.LinuxBlockIO) -> Containerization.LinuxBlockIO {
+    static func toContainerizationBlockIO(_ oci: ContainerizationOCI.LinuxBlockIO) -> Containerization.LinuxBlockIO {
         Containerization.LinuxBlockIO(
             weight: oci.weight,
             leafWeight: oci.leafWeight,
@@ -1751,6 +1956,7 @@ public actor RuntimeService {
         let id = container.id
 
         try? containerInfo.io.close()
+        await self.stopDNSProxy()
 
         do {
             try await container.stop()
@@ -1760,8 +1966,8 @@ public actor RuntimeService {
 
         await self.stopSocketForwarders()
 
-        for session in networkSessions { session.close() }
-        networkSessions = []
+        for binding in networkBindings { binding.session.close() }
+        networkBindings = []
 
         let status = exitStatus ?? ExitStatus(exitCode: 255)
         self.releaseWaiters(for: id, status: status)
@@ -1819,22 +2025,48 @@ extension XPCMessage {
         return dynamicEnv
     }
 
+    fileprivate func logReadRequest() throws -> ContainerLogReadRequest {
+        guard let data = self.dataNoCopy(key: RuntimeKeys.logReadRequest.rawValue) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "empty log read request"
+            )
+        }
+        guard data.count <= ContainerLogReadRequest.maximumEncodedTransportBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "log read request exceeds the transport limit"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ContainerLogReadRequest.self, from: data)
+        } catch {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid log read request",
+                cause: error
+            )
+        }
+    }
+
 }
 
 extension ContainerResource.Bundle {
-    func createLogFile() throws {
-        try createLogFile(at: self.containerLog)
-        try createLogFile(at: self.containerLogRecords)
+    func createLegacyLogFiles() throws {
+        try createLegacyLogFileIfAbsent(at: self.containerLog)
+        try createLegacyLogFileIfAbsent(at: self.containerLogRecords)
     }
 
-    private func createLogFile(at path: URL) throws {
-        // Create the log file we'll write stdio to.
-        // O_TRUNC resolves a log delay issue on restarted containers by force-updating internal state
-        let fd = Darwin.open(path.path, O_CREAT | O_RDONLY | O_TRUNC, 0o644)
-        guard fd > 0 else {
-            throw POSIXError(.init(rawValue: errno)!)
+    private func createLegacyLogFileIfAbsent(at path: URL) throws {
+        // Legacy containers retain their raw/sidecar history across restart.
+        // The append-mode legacy writer owns all later mutation.
+        let fd = Darwin.open(path.path, O_CREAT | O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0o644)
+        guard fd >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
         }
-        close(fd)
+        guard Darwin.close(fd) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
     }
 }
 
@@ -2067,8 +2299,8 @@ extension RuntimeService {
         self.container = info
     }
 
-    private func setNetworkSessions(_ sessions: [XPCClientSession]) {
-        self.networkSessions = sessions
+    private func setNetworkBindings(_ bindings: [NetworkBinding]) {
+        self.networkBindings = bindings
     }
 
     private func addNewProcess(_ id: String, _ config: ProcessConfiguration, _ io: [FileHandle?]) throws {
@@ -2085,12 +2317,18 @@ extension RuntimeService {
         let io: [FileHandle?]
     }
 
+    private struct NetworkBinding: Sendable {
+        let client: ContainerNetworkClient.NetworkClient
+        let session: XPCClientSession
+    }
+
     private struct ContainerInfo {
         let container: LinuxContainer
         let config: ContainerConfiguration
         let attachments: [Attachment]
         let bundle: ContainerResource.Bundle
         let io: ContainerStdio
+        let logging: ContainerLogRuntimeCapture
     }
 
     private struct ContainerStdio {

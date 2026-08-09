@@ -63,7 +63,26 @@ extension Application {
         @Argument(parsing: .captureForPassthrough, help: "Container init process arguments")
         var arguments: [String] = []
 
+        var loggingRequest: ContainerLogRequest {
+            get throws {
+                try Parser.loggingRequest(
+                    driver: managementFlags.logDriver,
+                    options: managementFlags.logOpt
+                )
+            }
+        }
+
         public func run() async throws {
+            try await run(loggingRequest: loggingRequest)
+        }
+
+        /// Runs a container with an authority logging request supplied by a
+        /// trusted in-process client instead of exposing protected values in a
+        /// child-process argument vector.
+        public func run(
+            loggingRequest: ContainerLogRequest,
+            emitsCLIOutput: Bool = true
+        ) async throws {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
             var exitCode: Int32 = 127
             let id = Utility.createContainerID(name: self.managementFlags.name)
@@ -75,14 +94,24 @@ extension Application {
                 totalTasks: 6
             )
 
-            let progress = ProgressBar(config: progressConfig)
+            let progress: ProgressBar? =
+                emitsCLIOutput
+                ? ProgressBar(config: progressConfig)
+                : nil
             defer {
-                progress.finish()
+                progress?.finish()
             }
-            progress.start()
+            progress?.start()
 
             guard ManagedContainer.nameValid(id) else {
                 throw ContainerizationError(.invalidArgument, message: "container ID \(id) is not a valid container ID")
+            }
+
+            let progressUpdate: ProgressUpdateHandler
+            if let progress {
+                progressUpdate = progress.handler
+            } else {
+                progressUpdate = { _ in }
             }
 
             // Check if container with id already exists.
@@ -104,12 +133,13 @@ extension Application {
                 resource: resourceFlags,
                 registry: registryFlags,
                 imageFetch: imageFetchFlags,
+                loggingRequest: loggingRequest,
                 containerSystemConfig: containerSystemConfig,
-                progressUpdate: progress.handler,
+                progressUpdate: progressUpdate,
                 log: log
             )
 
-            progress.set(description: "Starting container")
+            progress?.set(description: "Starting container")
 
             let options = try Parser.createOptions(
                 autoRemove: managementFlags.remove,
@@ -120,6 +150,7 @@ extension Application {
             let runtimeData = try LinuxRuntimeData.encoded(from: managementFlags)
             try await client.create(
                 configuration: ck.0,
+                loggingRequest: loggingRequest,
                 options: options,
                 kernel: ck.1,
                 initImage: ck.2,
@@ -143,7 +174,7 @@ extension Application {
                 }
 
                 let process = try await client.bootstrap(id: id, stdio: io.stdio, dynamicEnv: dynamicEnv)
-                progress.finish()
+                progress?.finish()
 
                 if !self.managementFlags.cidfile.isEmpty {
                     let path = self.managementFlags.cidfile
@@ -164,7 +195,9 @@ extension Application {
                 if detach {
                     try await process.start()
                     try io.closeAfterStart()
-                    print(id)
+                    if emitsCLIOutput {
+                        print(id)
+                    }
                     return
                 }
 

@@ -83,6 +83,30 @@ public struct ManagedContainer: ManagedResource {
         self.exitedDate = snapshot.exitedDate
         self.health = snapshot.health
     }
+
+    /// Audience-specific projection for routine native diagnostics. The
+    /// authoritative Codable representation remains unchanged for transport.
+    public var routineInspection: RoutineInspectionProjection {
+        RoutineInspectionProjection(container: self)
+    }
+
+    public struct RoutineInspectionProjection: Encodable, Sendable {
+        public let id: String
+        public let configuration: ContainerConfiguration.RoutineInspectionProjection
+        public let status: ContainerStatus
+        public let exitCode: Int32?
+        public let exitedDate: Date?
+        public let health: HealthStatus?
+
+        fileprivate init(container: ManagedContainer) {
+            self.id = container.id
+            self.configuration = container.configuration.routineInspection
+            self.status = container.status
+            self.exitCode = container.exitCode
+            self.exitedDate = container.exitedDate
+            self.health = container.health
+        }
+    }
 }
 
 extension ManagedContainer {

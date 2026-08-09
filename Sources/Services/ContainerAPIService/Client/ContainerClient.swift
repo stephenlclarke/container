@@ -27,7 +27,9 @@ import Foundation
 /// container lifecycle operations. All methods that operate on a specific
 /// container take an `id` parameter.
 public struct ContainerClient: Sendable {
-    private static let serviceIdentifier = "com.apple.container.apiserver"
+    private static var serviceIdentifier: String {
+        ContainerServiceNamespace.current.apiServerIdentifier
+    }
 
     private let xpcClient: XPCClient
 
@@ -47,6 +49,7 @@ public struct ContainerClient: Sendable {
     /// Create a new container with the given configuration.
     public func create(
         configuration: ContainerConfiguration,
+        loggingRequest: ContainerLogRequest? = nil,
         options: ContainerCreateOptions = .default,
         kernel: Kernel,
         initImage: String? = nil,
@@ -61,6 +64,10 @@ public struct ContainerClient: Sendable {
             request.set(key: .containerConfig, value: data)
             request.set(key: .kernel, value: kdata)
             request.set(key: .containerOptions, value: odata)
+
+            if let loggingData = try Self.encodedLoggingRequest(loggingRequest) {
+                request.set(key: .containerLogRequest, value: loggingData)
+            }
 
             if let initImage {
                 request.set(key: .initImage, value: initImage)
@@ -80,6 +87,24 @@ public struct ContainerClient: Sendable {
                 cause: error
             )
         }
+    }
+
+    /// Encodes the optional authority request independently from the legacy
+    /// configuration field. Keeping this boundary narrow makes omission and
+    /// transport-size behavior directly testable without opening an XPC
+    /// connection.
+    static func encodedLoggingRequest(_ loggingRequest: ContainerLogRequest?) throws -> Data? {
+        guard let loggingRequest else {
+            return nil
+        }
+        let loggingData = try JSONEncoder().encode(loggingRequest)
+        guard loggingData.count <= ContainerLogRequest.maximumEncodedTransportBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "logging request exceeds the encoded byte limit"
+            )
+        }
+        return loggingData
     }
 
     /// List containers matching the given filters.
@@ -369,6 +394,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return fds
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -409,6 +436,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return fd
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -451,6 +480,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return try JSONDecoder().decode([ContainerLogRecord].self, from: data)
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -491,6 +522,8 @@ public struct ContainerClient: Sendable {
                 )
             }
             return fd
+        } catch let error as ContainerizationError where error.code == .unsupported {
+            throw error
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -502,9 +535,21 @@ public struct ContainerClient: Sendable {
 
     /// Get the timestamped log record file for a container.
     public func logRecordFile(id: String) async throws -> FileHandle {
+        try await logRecordFile(id: id, replay: .default)
+    }
+
+    /// Stream a finite newline-delimited record file for a container.
+    ///
+    /// Rotated records are emitted oldest-first before the active file when
+    /// requested, without collecting the complete history in one response.
+    public func logRecordFile(
+        id: String,
+        replay: ContainerLogReplayOptions
+    ) async throws -> FileHandle {
         do {
             let request = XPCMessage(route: .containerLogRecordFile)
             request.set(key: .id, value: id)
+            request.set(key: .logIncludeRotated, value: replay.includeRotated)
 
             let response = try await xpcClient.send(request)
             guard let fd = response.fileHandle(key: .logRecordFile) else {
@@ -521,6 +566,29 @@ public struct ContainerClient: Sendable {
                 cause: error
             )
         }
+    }
+
+    /// Incrementally decode a finite timestamped log-record stream.
+    ///
+    /// The underlying file descriptor is consumed in bounded chunks and each
+    /// newline-delimited record is decoded only when requested by the caller.
+    public func logRecordStream(
+        id: String,
+        replay: ContainerLogReplayOptions = .default
+    ) async throws -> AsyncThrowingStream<ContainerLogRecord, any Error> {
+        let file = try await logRecordFile(id: id, replay: replay)
+        return Self.logRecordStream(file: file)
+    }
+
+    static func logRecordStream(
+        file: FileHandle
+    ) -> AsyncThrowingStream<ContainerLogRecord, any Error> {
+        let reader = ContainerLogRecordFileReader(file: file)
+        return AsyncThrowingStream(
+            unfolding: {
+                try await reader.next()
+            }
+        )
     }
 
     /// Stream lifecycle events emitted by the API server.
@@ -603,6 +671,32 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    /// Stream a tar archive from the host into a container directory.
+    public func copyIn(
+        id: String,
+        archive: FileHandle,
+        destination: String,
+        createParents: Bool = true,
+        preserveOwnership: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: .containerCopyIn)
+        request.set(key: .id, value: id)
+        request.set(key: .copyArchive, value: archive)
+        request.set(key: .destinationPath, value: destination)
+        request.set(key: .createParents, value: createParents)
+        request.set(key: .preserveOwnership, value: preserveOwnership)
+
+        do {
+            try await xpcSend(message: request, timeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive into container \(id)",
+                cause: error
+            )
+        }
+    }
+
     /// Copy a file or directory from the container to the host.
     public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         let request = XPCMessage(route: .containerCopyOut)
@@ -619,6 +713,32 @@ public struct ContainerClient: Sendable {
             throw ContainerizationError(
                 .internalError,
                 message: "failed to copy from container \(id)",
+                cause: error
+            )
+        }
+    }
+
+    /// Stream a container path to the host as an uncompressed tar archive.
+    public func copyOut(
+        id: String,
+        source: String,
+        archive: FileHandle,
+        followSymlink: Bool = false,
+        copyContents: Bool = false
+    ) async throws {
+        let request = XPCMessage(route: .containerCopyOut)
+        request.set(key: .id, value: id)
+        request.set(key: .sourcePath, value: source)
+        request.set(key: .copyArchive, value: archive)
+        request.set(key: .followSymlink, value: followSymlink)
+        request.set(key: .copyContents, value: copyContents)
+
+        do {
+            try await xpcSend(message: request, timeout: .seconds(300))
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stream archive from container \(id)",
                 cause: error
             )
         }
@@ -693,5 +813,86 @@ public struct ContainerClient: Sendable {
                 cause: error
             )
         }
+    }
+}
+
+private actor ContainerLogRecordFileReader {
+    private static let readChunkBytes = 64 * 1_024
+
+    private let file: FileHandle
+    private var buffer = Data()
+    private var ended = false
+
+    init(file: FileHandle) {
+        self.file = file
+    }
+
+    deinit {
+        try? file.close()
+    }
+
+    func next() async throws -> ContainerLogRecord? {
+        guard !ended else {
+            return nil
+        }
+        while true {
+            if let newline = buffer.firstIndex(of: UInt8(ascii: "\n")) {
+                guard
+                    newline
+                        <= ContainerLogReadRecordWireV1
+                        .maximumEncodedRecordBytes
+                else {
+                    throw invalidRecordStream("record exceeds the transport limit")
+                }
+                let encoded = Data(buffer[..<newline])
+                buffer.removeSubrange(...newline)
+                guard !encoded.isEmpty else {
+                    continue
+                }
+                do {
+                    return try JSONDecoder().decode(
+                        ContainerLogRecord.self,
+                        from: encoded
+                    )
+                } catch {
+                    throw invalidRecordStream("record is not valid JSON")
+                }
+            }
+            guard
+                buffer.count
+                    <= ContainerLogReadRecordWireV1.maximumEncodedRecordBytes
+            else {
+                throw invalidRecordStream("record exceeds the transport limit")
+            }
+            let file = self.file
+            let chunk = try await Task.detached(priority: .utility) {
+                try file.read(upToCount: Self.readChunkBytes) ?? Data()
+            }.value
+            if chunk.isEmpty {
+                guard buffer.isEmpty else {
+                    throw invalidRecordStream("stream ended with a partial record")
+                }
+                ended = true
+                try? file.close()
+                return nil
+            }
+            buffer.append(chunk)
+            guard
+                buffer.count
+                    <= ContainerLogReadRecordWireV1.maximumEncodedRecordBytes
+                    + Self.readChunkBytes
+            else {
+                throw invalidRecordStream("record exceeds the transport limit")
+            }
+        }
+    }
+
+    private func invalidRecordStream(_ reason: String) -> ContainerizationError {
+        ended = true
+        try? file.close()
+        return ContainerizationError(
+            .internalError,
+            message: "invalid container log record stream: \(reason)"
+        )
     }
 }

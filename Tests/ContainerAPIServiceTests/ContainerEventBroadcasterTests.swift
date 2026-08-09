@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerEngineLogging
 import ContainerResource
 import ContainerXPC
 import Containerization
@@ -37,6 +38,58 @@ struct ContainerEventBroadcasterTests {
 
         #expect(events.map(\.action) == ["delete", "destroy"])
         #expect(events.allSatisfy { $0.attributes["image"] == "alpine:3.20" })
+    }
+
+    @Test func dockerWaitConditionsDistinguishCurrentExitFromFutureExitAndRemoval() {
+        for status in [RuntimeStatus.unknown, .stopped] {
+            let result = ContainersService.dockerWaitResult(
+                snapshot: stoppedSnapshot(status: status, exitCode: 23),
+                condition: .notRunning
+            )
+            #expect(result == DockerContainerWaitResult(statusCode: 23))
+        }
+        for status in [RuntimeStatus.running, .paused, .stopping] {
+            #expect(
+                ContainersService.dockerWaitResult(
+                    snapshot: stoppedSnapshot(status: status, exitCode: 23),
+                    condition: .notRunning
+                ) == nil
+            )
+        }
+        for condition in [DockerContainerWaitCondition.nextExit, .removed] {
+            #expect(
+                ContainersService.dockerWaitResult(
+                    snapshot: stoppedSnapshot(exitCode: 23),
+                    condition: condition
+                ) == nil
+            )
+        }
+        #expect(
+            ContainersService.dockerWaitCompletes(
+                condition: .notRunning,
+                completion: .exited
+            )
+        )
+        #expect(
+            ContainersService.dockerWaitCompletes(
+                condition: .nextExit,
+                completion: .exited
+            )
+        )
+        #expect(
+            !ContainersService.dockerWaitCompletes(
+                condition: .removed,
+                completion: .exited
+            )
+        )
+        for condition in DockerContainerWaitCondition.allCases {
+            #expect(
+                ContainersService.dockerWaitCompletes(
+                    condition: condition,
+                    completion: .removed
+                )
+            )
+        }
     }
 
     @Test func killEventUsesCanonicalSignalAndIncludesTargetProcess() {

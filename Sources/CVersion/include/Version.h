@@ -38,6 +38,10 @@
 #define CONTAINERIZATION_REF CZ_VERSION
 #endif
 
+#ifndef CONTAINER_ENGINE_API_VERSION
+#define CONTAINER_ENGINE_API_VERSION "unknown"
+#endif
+
 #ifndef BUILDER_SHIM_VERSION
 #define BUILDER_SHIM_VERSION "0.0.0"
 #endif
@@ -59,6 +63,8 @@ const char* get_container_source();
 const char* get_containerization_source();
 
 const char* get_containerization_ref();
+
+const char* get_container_engine_api_version();
 
 const char* get_swift_containerization_version();
 

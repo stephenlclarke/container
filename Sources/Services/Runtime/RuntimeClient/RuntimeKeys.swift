@@ -39,6 +39,8 @@ public enum RuntimeKeys: String {
     case width
     case height
     case processConfig
+    /// Validated request for the retained active logging reader.
+    case logReadRequest
 
     /// Container statistics
     case statistics
@@ -52,6 +54,8 @@ public enum RuntimeKeys: String {
     case createParents
     case followSymlink
     case preserveOwnership
+    case copyArchive
+    case copyContents
     /// Image path for snapshot operations
     case imagePath
     /// Whether a live snapshot should avoid freezing the guest filesystem.
@@ -62,4 +66,7 @@ public enum RuntimeKeys: String {
 
     /// Per-network connection info passed to the runtime so it can allocate directly.
     case networkBootstrapInfos
+
+    /// Codable request or response for the Engine-owned shared sandbox.
+    case engineSandboxPayload
 }

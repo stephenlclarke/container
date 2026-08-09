@@ -455,10 +455,13 @@ public struct Flags {
         @Option(name: .customLong("domainname"), help: "Container NIS domain name")
         public var domainname: String?
 
-        @Option(name: .customLong("log-driver"), help: "Set the container stdio log driver (json-file, local, or none)")
+        @Option(name: .customLong("log-driver"), help: "Set the container stdio log driver")
         public var logDriver: String?
 
-        @Option(name: .customLong("log-opt"), help: "Set a container stdio log driver option (max-size=<size> or max-file=<count>)")
+        @Option(
+            name: .customLong("log-opt"),
+            help: "Set a container stdio log driver option (key=value); repeat for multiple options"
+        )
         public var logOpt: [String] = []
 
         /// EXPERIMENTAL: The flag is subject to change.
@@ -480,7 +483,7 @@ public struct Flags {
         @Option(
             name: [.customLong("network")],
             help:
-                "Attach the container to a network (format: <name>[,alias=NAME][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]][,ip=IPv4][,ip6=IPv6], or none/host)"
+                "Attach the container to a network (format: <name>[,alias=NAME][,dns-alias=ALIAS:TARGET][,mac=XX:XX:XX:XX:XX:XX][,mtu=VALUE][,interface=NAME][,address=IP[/PREFIX]][,ip=IPv4][,ip6=IPv6], or none/host)"
         )
         public var networks: [String] = []
 

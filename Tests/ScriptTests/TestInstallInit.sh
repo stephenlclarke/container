@@ -30,6 +30,9 @@ FAKE_MAKE="${TEST_ROOT}/make"
 
 cat > "${FAKE_SWIFT}" <<EOF
 #!/bin/bash
+if [[ -n "\${INSTALL_INIT_TEST_SWIFT_LOG:-}" ]]; then
+    printf 'swift %s\n' "\$*" >> "\${INSTALL_INIT_TEST_SWIFT_LOG}"
+fi
 printf '%s\n' '{"dependencies":[{"identity":"containerization","version":"unspecified","path":"${CONTAINERIZATION_PATH}"}]}'
 EOF
 
@@ -56,7 +59,13 @@ set -euo pipefail
 test -f "${INSTALL_INIT_TEST_RUNNING}"
 if [[ -n "${INSTALL_INIT_TEST_FORBIDDEN_BUILD_CACHE:-}" ]]; then
     test ! -e "$2/.build"
+    test ! -e "$2/vminitd/.build"
     test -f "$2/Package.swift"
+    test -n "${SCRATCH_ROOT:-}"
+    [[ "${SCRATCH_ROOT}" != "$2"/* ]]
+    if [[ -n "${INSTALL_INIT_TEST_EXPECTED_SCRATCH_ROOT:-}" ]]; then
+        test "${SCRATCH_ROOT}" = "${INSTALL_INIT_TEST_EXPECTED_SCRATCH_ROOT}"
+    fi
 fi
 printf 'make %s\n' "$*" >> "${INSTALL_INIT_TEST_LOG}"
 if [[ "${INSTALL_INIT_TEST_FAILURE:-}" == "make" ]]; then
@@ -88,12 +97,15 @@ chmod +x \
 
 INSTALL_INIT_TEST_LOG="${LOG_PATH}" \
 INSTALL_INIT_TEST_RUNNING="${RUNNING_PATH}" \
+INSTALL_INIT_TEST_SWIFT_LOG="${TEST_ROOT}/swift.log" \
 CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
 CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
 CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
 CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
 CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
     scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+
+test ! -e "${TEST_ROOT}/swift.log"
 
 OPERATIONS=()
 while IFS= read -r operation; do
@@ -164,6 +176,8 @@ READ_ONLY_LOG_PATH="${TEST_ROOT}/read-only.log"
 READ_ONLY_RUNNING_PATH="${TEST_ROOT}/read-only-running"
 mkdir -p "${CONTAINERIZATION_PATH}/.build/ModuleCache"
 touch "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
+mkdir -p "${CONTAINERIZATION_PATH}/vminitd/.build/ModuleCache"
+touch "${CONTAINERIZATION_PATH}/vminitd/.build/ModuleCache/stale.pcm"
 chmod a-w "${CONTAINERIZATION_PATH}/Package.swift"
 chmod a-w \
     "${CONTAINERIZATION_PATH}/.build" \
@@ -172,7 +186,9 @@ chmod a-w \
 INSTALL_INIT_TEST_LOG="${READ_ONLY_LOG_PATH}" \
 INSTALL_INIT_TEST_RUNNING="${READ_ONLY_RUNNING_PATH}" \
 INSTALL_INIT_TEST_FORBIDDEN_BUILD_CACHE=1 \
+INSTALL_INIT_TEST_EXPECTED_SCRATCH_ROOT="${TEST_ROOT}/source-build-cache" \
 CONTAINERIZATION_INIT_FORCE_COPY=true \
+CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT="${TEST_ROOT}/source-build-cache" \
 CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
 CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
 CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
@@ -181,6 +197,7 @@ CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
     scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
 
 test -e "${CONTAINERIZATION_PATH}/.build/ModuleCache/stale.pcm"
+test -e "${CONTAINERIZATION_PATH}/vminitd/.build/ModuleCache/stale.pcm"
 grep -Eq '^make -C .*/containerization init VMINIT_IMAGE=test-init:latest$' "${READ_ONLY_LOG_PATH}"
 chmod -R u+w "${CONTAINERIZATION_PATH}/.build"
 chmod u+w "${CONTAINERIZATION_PATH}/Package.swift"
@@ -200,3 +217,21 @@ fi
 grep -Fq \
     "XDG_CONFIG_HOME=\"${INTEGRATION_SCRATCH_ROOT}/xdg-config\" \"true\" init-block" \
     <<<"${INTEGRATION_DRY_RUN}"
+
+IMMUTABLE_LOG_PATH="${TEST_ROOT}/immutable.log"
+IMMUTABLE_RUNNING_PATH="${TEST_ROOT}/immutable-running"
+IMMUTABLE_REF="0123456789abcdef0123456789abcdef01234567"
+
+INSTALL_INIT_TEST_LOG="${IMMUTABLE_LOG_PATH}" \
+INSTALL_INIT_TEST_RUNNING="${IMMUTABLE_RUNNING_PATH}" \
+CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
+CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
+CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
+CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
+CONTAINERIZATION_SOURCE="StephenLClarke/Containerization" \
+CONTAINERIZATION_REF="${IMMUTABLE_REF}" \
+    scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+
+grep -Fq \
+    "init VMINIT_IMAGE=ghcr.io/stephenlclarke/containerization/vminit:${IMMUTABLE_REF}" \
+    "${IMMUTABLE_LOG_PATH}"

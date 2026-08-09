@@ -20,7 +20,9 @@ import Containerization
 import Foundation
 
 public struct ClientVolume {
-    static let serviceIdentifier = "com.apple.container.apiserver"
+    static var serviceIdentifier: String {
+        ContainerServiceNamespace.current.apiServerIdentifier
+    }
 
     public static func create(
         name: String,

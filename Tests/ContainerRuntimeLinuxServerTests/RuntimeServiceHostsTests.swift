@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerRuntimeClient
 import ContainerRuntimeLinuxClient
 import Containerization
 import ContainerizationExtras
@@ -266,6 +267,50 @@ struct RuntimeServiceHostsTests {
         config.hostNetwork = true
 
         #expect(!RuntimeService.shouldStartSocketForwarders(config: config, hasInterfaces: true))
+    }
+
+    @Test
+    func hostNetworkDropsCompatibilityNetworkBootstrapRequests() {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.hostNetwork = true
+
+        let infos = RuntimeService.effectiveNetworkBootstrapInfos(
+            config: config,
+            requested: [NetworkBootstrapInfo(plugin: "container-network-vmnet")]
+        )
+
+        #expect(infos.isEmpty)
+    }
+
+    @Test
+    func hostNetworkDropsCompatibilityNetworkConfigurations() {
+        var config = runtimeTestConfiguration(id: "demo-api-1")
+        config.hostNetwork = true
+
+        #expect(RuntimeService.effectiveNetworkConfigurations(config: config).isEmpty)
+    }
+
+    @Test
+    func attachedNetworkingRetainsNetworkBootstrapRequests() {
+        let config = runtimeTestConfiguration(id: "demo-api-1")
+
+        let infos = RuntimeService.effectiveNetworkBootstrapInfos(
+            config: config,
+            requested: [NetworkBootstrapInfo(plugin: "container-network-vmnet")]
+        )
+
+        #expect(infos.map(\.plugin) == ["container-network-vmnet"])
+    }
+
+    @Test
+    func attachedNetworkingRetainsNetworkConfigurations() {
+        let config = runtimeTestConfiguration(id: "demo-api-1")
+
+        let configurations = RuntimeService.effectiveNetworkConfigurations(
+            config: config
+        )
+
+        #expect(configurations.map(\.network) == config.networks.map(\.network))
     }
 
     @Test

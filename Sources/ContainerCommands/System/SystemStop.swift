@@ -18,6 +18,7 @@ import ArgumentParser
 import ContainerAPIClient
 import ContainerPlugin
 import ContainerResource
+import ContainerXPC
 import Containerization
 import ContainerizationOS
 import Foundation
@@ -34,29 +35,16 @@ extension Application {
         )
 
         @Option(name: .shortAndLong, help: "Launchd prefix for services")
-        var prefix: String = "com.apple.container."
+        var prefix: String?
 
         @OptionGroup
         public var logOptions: Flags.Logging
 
         public init() {}
 
-        public mutating func validate() throws {
-            guard !prefix.isEmpty, prefix.unicodeScalars.allSatisfy(Self.isValidLaunchdLabelPrefixScalar) else {
-                throw ValidationError("invalid --prefix \"\(prefix)\": must be a launchd label prefix (letters, digits, '.', '-', '_'), e.g. com.apple.container.")
-            }
-        }
-
-        private static func isValidLaunchdLabelPrefixScalar(_ scalar: Unicode.Scalar) -> Bool {
-            switch scalar.value {
-            case 48...57, 65...90, 97...122, 45, 46, 95:
-                return true
-            default:
-                return false
-            }
-        }
-
         public func run() async throws {
+            let serviceNamespace = try ContainerServiceNamespace.resolve()
+            let servicePrefix = try serviceNamespace.servicePrefix(requestedPrefix: prefix)
             let log = Logger(
                 label: "com.apple.container.cli",
                 factory: { label in
@@ -65,7 +53,23 @@ extension Application {
             )
 
             let launchdDomainString = try ServiceManager.getDomainString()
-            let fullLabel = "\(launchdDomainString)/\(prefix)apiserver"
+            let fullLabel = "\(launchdDomainString)/\(servicePrefix)apiserver"
+            let engineConfiguration = ContainerEngineServiceConfiguration(
+                appRoot: ApplicationRoot.path,
+                serviceNamespace: serviceNamespace
+            )
+            let engineFullLabel =
+                "\(launchdDomainString)/\(engineConfiguration.launchdLabel)"
+
+            if try ServiceManager.isRegistered(
+                fullServiceLabel: engineConfiguration.launchdLabel
+            ) {
+                log.info(
+                    "stopping service",
+                    metadata: ["label": "\(engineFullLabel)"]
+                )
+                try engineConfiguration.deregister()
+            }
 
             var running = true
             do {
@@ -85,7 +89,7 @@ extension Application {
                     try await ContainerStop.stopContainers(
                         client: client,
                         containers: containers,
-                        stopOptions: opts,
+                        stopOptions: opts
                     )
                 } catch {
                     log.warning("failed to stop all containers", metadata: ["error": "\(error)"])
@@ -111,14 +115,14 @@ extension Application {
             // Note: The assumption here is that we would have registered the launchd services
             // in the same domain as `launchdDomainString`. This is a fairly sane assumption since
             // if somehow the launchd domain changed, XPC interactions would not be possible.
-            try ServiceManager.enumerate()
-                .filter { $0.hasPrefix(prefix) }
+            let remainingServiceLabels = try ServiceManager.enumerate()
+                .filter { $0.hasPrefix(servicePrefix) }
                 .filter { $0 != fullLabel }
                 .map { "\(launchdDomainString)/\($0)" }
-                .forEach {
-                    log.info("stopping service", metadata: ["label": "\($0)"])
-                    try? ServiceManager.deregister(fullServiceLabel: $0)
-                }
+            for label in remainingServiceLabels {
+                log.info("stopping service", metadata: ["label": "\(label)"])
+                try? ServiceManager.deregister(fullServiceLabel: label)
+            }
         }
     }
 }

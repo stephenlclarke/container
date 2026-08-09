@@ -14,7 +14,10 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerPlugin
+import ContainerXPC
 import ContainerizationError
+import Darwin
 import Foundation
 import SystemPackage
 import Testing
@@ -22,6 +25,120 @@ import Testing
 @testable import ContainerCommands
 
 struct SystemStartTests {
+    @Test func parsesInitialFilesystemArchive() throws {
+        let archive = "/tmp/container-system-start-init-image.tar"
+        let command = try Application.SystemStart.parse([
+            "--init-image-archive", archive,
+        ])
+
+        #expect(command.initImageArchive?.string == archive)
+    }
+
+    @Test func initialFilesystemPullDoesNotParseSystemStartArguments() throws {
+        let reference =
+            "ghcr.io/stephenlclarke/containerization/vminit:"
+            + String(repeating: "a", count: 40)
+
+        let command = try Application.SystemStart.initialFilesystemPullCommand(
+            initImage: reference
+        )
+
+        #expect(command.reference == reference)
+        #expect(command.registry.scheme == "auto")
+        #expect(command.progressFlags.progress == .auto)
+        #expect(command.imageFetchFlags.maxConcurrentDownloads == 3)
+        #expect(command.arch == nil)
+        #expect(command.os == nil)
+        #expect(command.platform == nil)
+    }
+
+    @Test func engineConfigurationUsesPrivateShortPublicSocket() {
+        let configuration = ContainerEngineServiceConfiguration(
+            appRoot: FilePath("/tmp/container-state"),
+            effectiveUserID: 501
+        )
+        #expect(
+            configuration.publicSocketPath.string
+                == "/tmp/container-engine-501/docker.sock"
+        )
+        #expect(configuration.launchdLabel == ContainerEngineServiceConfiguration.defaultLaunchdLabel)
+        #expect(
+            configuration.providerSocketPath.string
+                == "/tmp/container-state/engine-provider/provider.sock"
+        )
+        #expect(
+            configuration.stateDirectory.string
+                == "/tmp/container-state/engine-gateway"
+        )
+        let pathCapacity = withUnsafeBytes(of: sockaddr_un().sun_path) {
+            $0.count
+        }
+        #expect(configuration.publicSocketPath.string.utf8.count < pathCapacity)
+        #expect(
+            configuration.arguments(executablePath: "/usr/local/bin/container-engine")
+                == [
+                    "/usr/local/bin/container-engine",
+                    "--socket", "/tmp/container-engine-501/docker.sock",
+                    "--provider-socket", "/tmp/container-state/engine-provider/provider.sock",
+                    "--state-directory", "/tmp/container-state/engine-gateway",
+                ]
+        )
+    }
+
+    @Test func engineConfigurationScopesCustomPublicSocketAndLaunchdLabel() throws {
+        let serviceNamespace = try ContainerServiceNamespace("io.github.example.candidate")
+        let configuration = ContainerEngineServiceConfiguration(
+            appRoot: FilePath("/tmp/container-state"),
+            serviceNamespace: serviceNamespace,
+            effectiveUserID: 501
+        )
+
+        #expect(configuration.launchdLabel == "io.github.example.candidate.engine")
+        #expect(
+            configuration.publicSocketPath.string
+                == "/tmp/container-engine-501-\(serviceNamespace.socketDirectorySuffix)/docker.sock"
+        )
+    }
+
+    @Test func engineLaunchPlistIsPrivateAndComplete() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "container-engine-config-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let configuration = ContainerEngineServiceConfiguration(
+            appRoot: FilePath(root.path(percentEncoded: false))
+        )
+        let arguments = configuration.arguments(
+            executablePath: "/usr/local/bin/container-engine"
+        )
+        try configuration.writeLaunchPlist(
+            LaunchPlist(
+                label: configuration.launchdLabel,
+                arguments: arguments,
+                runAtLoad: true,
+                keepAlive: true
+            )
+        )
+
+        let attributes = try FileManager.default.attributesOfItem(
+            atPath: configuration.plistPath.string
+        )
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+        let data = try Data(
+            contentsOf: URL(fileURLWithPath: configuration.plistPath.string)
+        )
+        let plist = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil)
+                as? [String: Any]
+        )
+        #expect(
+            plist["Label"] as? String
+                == configuration.launchdLabel
+        )
+        #expect(plist["ProgramArguments"] as? [String] == arguments)
+        #expect(plist["RunAtLoad"] as? Bool == true)
+        #expect(plist["KeepAlive"] as? Bool == true)
+    }
+
     @Test func acceptsMatchingAppRoot() throws {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "container-system-start-\(UUID())")

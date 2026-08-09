@@ -13,6 +13,7 @@ Source of truth: [`Sources/ContainerPersistence/ContainerSystemConfig.swift`](..
 [container]  # default per-container resources
 [dns]        # default DNS domain for DNS resolution on host
 [kernel]     # guest kernel binary path, download URL, and digest
+[logging]    # default logging driver and options for future logging-v2 creates
 [machine]    # default per-machine resources and home mount
 [network]    # default subnets for new networks
 [registry]   # default registry domain
@@ -58,6 +59,38 @@ Guest kernel used when launching container VMs. Defaults change per release as k
 | `url`        | `URL`     | `"https://github.com/kata-containers/kata-containers/releases/download/3.28.0/kata-static-3.28.0-arm64.tar.zst"` | Archive to download when no kernel is installed. Encoded and decoded as a plain string in TOML. |
 | `digest`     | `String`  | `"sha256:f63d54507d1f18635d94475077e4c2330de4d8e05cedf25f7c38f063b0e66a91"`                             | Expected digest for the archive, for example `sha256:<hex>`. Required when configuring a custom `url`. |
 
+## `[logging]`
+
+Authority-owned defaults for logging-v2 container creation. This configuration
+is loaded when the Container service starts. The logging-v2 runtime capability
+is not advertised yet, so these values are accepted and reported now but do not
+replace the legacy local/none create and writer path until the capability is
+enabled.
+
+```toml
+[logging]
+driver = "json-file"
+options = ["max-size", "10m", "max-file", "3"]
+```
+
+| Key       | Type       | Default       | Description |
+|-----------|------------|---------------|-------------|
+| `driver`  | `String`   | `"json-file"` | Default driver identity. Arbitrary provider names are preserved; availability is resolved authoritatively during logging-v2 container creation. |
+| `options` | `[String]` | `[]`          | Adjacent option-name and option-value entries. Empty names and values, `=` characters, dots, and arbitrary strings are preserved without parsing; an odd number of entries or a duplicate name is rejected. |
+
+Configuration-file precedence is evaluated independently for `driver` and
+`options`. For example, a user file that sets only `driver` combines with an
+`options` key from a lower-precedence installation file. The `options` array is
+one configuration key; entries are not merged individually across files.
+
+Logging option values may contain credentials. `container system property list`
+therefore omits values that have not been classified as safe and reports only
+their sorted names and count. It never inserts a placeholder value that could
+be mistaken for authoritative configuration. The diagnostic object has an
+explicit `diagnosticKind` and cannot be loaded as system configuration. The
+source `config.toml` remains authoritative and must be protected with
+appropriate file permissions.
+
 ## `[machine]`
 
 Defaults applied when `container machine create` is invoked without `--cpus`, `--memory`, or `--home-mount`.
@@ -88,7 +121,7 @@ Default subnets used when creating networks without explicit `--subnet` / `--sub
 
 | Key     | Type     | Default                                                | Description                                                                                              |
 |---------|----------|--------------------------------------------------------|----------------------------------------------------------------------------------------------------------|
-| `image` | `String` | `ghcr.io/apple/containerization/vminit:<tag>`     | Reference for the `vminitd` image used to boot container VMs. The tag segment is taken from the project's bundled `containerization` version.  |
+| `image` | `String` | Source-dependent immutable reference | Reference for the `vminitd` image used to boot container VMs. Apple builds select the bundled Containerization version; custom builds with an exact Containerization revision select `ghcr.io/<source>/vminit:<revision>`. |
 
 ## `[plugin.<id>]`
 

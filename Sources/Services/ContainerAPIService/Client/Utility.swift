@@ -45,6 +45,17 @@ public struct Utility {
         return name
     }
 
+    /// Docker Engine exposes a stable 256-bit hexadecimal container identity
+    /// that is distinct from the requested container name. Keep the native
+    /// resource identifier unchanged and mint this protocol identity only for
+    /// Docker-created containers.
+    public static func createDockerContainerID() -> String {
+        [UUID(), UUID()]
+            .map { $0.uuidString.replacingOccurrences(of: "-", with: "") }
+            .joined()
+            .lowercased()
+    }
+
     public static func imageReferenceAliases(
         _ reference: String,
         containerSystemConfig: ContainerSystemConfig
@@ -118,8 +129,9 @@ public struct Utility {
         resource: Flags.Resource,
         registry: Flags.Registry,
         imageFetch: Flags.ImageFetch,
+        loggingRequest: ContainerLogRequest? = nil,
         containerSystemConfig: ContainerSystemConfig,
-        progressUpdate: @escaping ProgressUpdateHandler,
+        progressUpdate: ProgressUpdateHandler?,
         log: Logger
     ) async throws -> (ContainerConfiguration, Kernel, String?) {
         let requestedPlatform = try DefaultPlatform.resolveWithDefaults(
@@ -130,32 +142,38 @@ public struct Utility {
         )
         let scheme = try RequestScheme(registry.scheme)
 
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Fetching image"),
             .setItemsName("blobs"),
         ])
         let taskManager = ProgressTaskCoordinator()
         let fetchTask = await taskManager.startTask()
+        let fetchProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: fetchTask, from: $0)
+        }
         let img = try await ClientImage.fetch(
             reference: image,
             platform: requestedPlatform,
             scheme: scheme,
             containerSystemConfig: containerSystemConfig,
-            progressUpdate: ProgressTaskCoordinator.handler(for: fetchTask, from: progressUpdate),
+            progressUpdate: fetchProgressUpdate,
             maxConcurrentDownloads: imageFetch.maxConcurrentDownloads
         )
 
         // Unpack a fetched image before use
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Unpacking image"),
             .setItemsName("entries"),
         ])
         let unpackTask = await taskManager.startTask()
+        let unpackProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: unpackTask, from: $0)
+        }
         try await img.getCreateSnapshot(
             platform: requestedPlatform,
-            progressUpdate: ProgressTaskCoordinator.handler(for: unpackTask, from: progressUpdate))
+            progressUpdate: unpackProgressUpdate)
 
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Fetching kernel"),
             .setItemsName("binary"),
         ])
@@ -163,26 +181,32 @@ public struct Utility {
         let kernel = try await self.getKernel(management: management)
 
         // Pull and unpack the initial filesystem
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Fetching init image"),
             .setItemsName("blobs"),
         ])
         let fetchInitTask = await taskManager.startTask()
         let initImageRef = management.initImage ?? containerSystemConfig.vminit.image
+        let fetchInitProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: fetchInitTask, from: $0)
+        }
         let initImage = try await ClientImage.fetch(
             reference: initImageRef, platform: .current, scheme: scheme,
             containerSystemConfig: containerSystemConfig,
-            progressUpdate: ProgressTaskCoordinator.handler(for: fetchInitTask, from: progressUpdate),
+            progressUpdate: fetchInitProgressUpdate,
             maxConcurrentDownloads: imageFetch.maxConcurrentDownloads)
 
-        await progressUpdate([
+        await progressUpdate?([
             .setDescription("Unpacking init image"),
             .setItemsName("entries"),
         ])
         let unpackInitTask = await taskManager.startTask()
+        let unpackInitProgressUpdate = progressUpdate.map {
+            ProgressTaskCoordinator.handler(for: unpackInitTask, from: $0)
+        }
         _ = try await initImage.getCreateSnapshot(
             platform: .current,
-            progressUpdate: ProgressTaskCoordinator.handler(for: unpackInitTask, from: progressUpdate))
+            progressUpdate: unpackInitProgressUpdate)
 
         let imageConfig = try await img.config(for: requestedPlatform).config
         let description = img.description
@@ -205,7 +229,11 @@ public struct Utility {
             defaultCPUs: containerSystemConfig.container.cpus,
             defaultMemory: containerSystemConfig.container.memory
         )
-        config.logging = try Parser.logging(driver: management.logDriver, options: management.logOpt)
+        config.logging = try Self.loggingConfiguration(
+            request: loggingRequest,
+            legacyDriver: management.logDriver,
+            legacyOptions: management.logOpt
+        )
         config.healthCheck = try Parser.healthCheck(
             command: management.healthCommand,
             interval: management.healthInterval,
@@ -245,14 +273,17 @@ public struct Utility {
                     reference: parsed.reference,
                     containerSystemConfig: containerSystemConfig
                 )
-                await progressUpdate([
+                await progressUpdate?([
                     .setDescription("Unpacking image mount"),
                     .setItemsName("entries"),
                 ])
                 let mountTask = await taskManager.startTask()
+                let mountProgressUpdate = progressUpdate.map {
+                    ProgressTaskCoordinator.handler(for: mountTask, from: $0)
+                }
                 let snapshot = try await mountedImage.getCreateSnapshot(
                     platform: requestedPlatform,
-                    progressUpdate: ProgressTaskCoordinator.handler(for: mountTask, from: progressUpdate)
+                    progressUpdate: mountProgressUpdate
                 )
                 resolvedMounts.append(try imageMountFilesystem(parsed: parsed, snapshot: snapshot))
             }
@@ -363,6 +394,19 @@ public struct Utility {
         return (config, kernel, management.initImage)
     }
 
+    /// Keeps the legacy configuration field readable for old API callers
+    /// while ensuring a present v2 request remains the sole authority input.
+    static func loggingConfiguration(
+        request: ContainerLogRequest?,
+        legacyDriver: String?,
+        legacyOptions: [String]
+    ) throws -> ContainerLogConfiguration {
+        guard request == nil else {
+            return .default
+        }
+        return try Parser.logging(driver: legacyDriver, options: legacyOptions)
+    }
+
     static func getAttachmentConfigurations(
         containerId: String,
         builtinNetworkId: String?,
@@ -373,6 +417,21 @@ public struct Utility {
         for network in networks {
             if let mac = network.macAddress {
                 try validMACAddress(mac)
+            }
+        }
+        var scopedDNSAliases: [String: String] = [:]
+        for network in networks {
+            for (alias, target) in network.scopedDNSAliases {
+                if let existing = scopedDNSAliases[alias] {
+                    guard existing.caseInsensitiveCompare(target) == .orderedSame else {
+                        throw ContainerizationError(
+                            .invalidArgument,
+                            message: "network DNS alias '\(alias)' maps to both '\(existing)' and '\(target)'"
+                        )
+                    }
+                    continue
+                }
+                scopedDNSAliases[alias] = target
             }
         }
 
@@ -411,6 +470,7 @@ public struct Utility {
                         options: AttachmentOptions(
                             hostname: containerId,
                             aliases: item.element.aliases,
+                            scopedDNSAliases: item.element.scopedDNSAliases,
                             macAddress: macAddress,
                             mtu: mtu,
                             guestInterfaceName: item.element.guestInterfaceName,
@@ -425,6 +485,7 @@ public struct Utility {
                     options: AttachmentOptions(
                         hostname: fqdn ?? containerId,
                         aliases: item.element.aliases,
+                        scopedDNSAliases: item.element.scopedDNSAliases,
                         macAddress: macAddress,
                         mtu: mtu,
                         guestInterfaceName: item.element.guestInterfaceName,
@@ -496,7 +557,7 @@ public struct Utility {
     public static func parseKeyValuePairs(_ pairs: [String]) -> [String: String] {
         var result: [String: String] = Dictionary(minimumCapacity: pairs.count)
         for pair in pairs {
-            let components = pair.split(separator: "=", maxSplits: 1)
+            let components = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
             if components.count == 2 {
                 result[String(components[0])] = String(components[1])
             } else {

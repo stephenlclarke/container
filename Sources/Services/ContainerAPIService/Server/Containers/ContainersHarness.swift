@@ -245,9 +245,37 @@ public struct ContainersHarness: Sendable {
 
         let initImage = message.string(key: .initImage)
         let runtimeData = message.dataNoCopy(key: .runtimeData)
+        let loggingRequest = try Self.loggingRequest(from: message)
 
-        try await service.create(configuration: config, kernel: kernel, options: options, initImage: initImage, runtimeData: runtimeData)
+        try await service.create(
+            configuration: config,
+            loggingRequest: loggingRequest,
+            kernel: kernel,
+            options: options,
+            initImage: initImage,
+            runtimeData: runtimeData
+        )
         return message.reply()
+    }
+
+    static func loggingRequest(from message: XPCMessage) throws -> ContainerLogRequest? {
+        guard let loggingData = message.dataNoCopy(key: .containerLogRequest) else {
+            return nil
+        }
+        guard loggingData.count <= ContainerLogRequestResolver.maximumEncodedRequestBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "logging request exceeds the encoded byte limit"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ContainerLogRequest.self, from: loggingData)
+        } catch {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "logging request is not a valid versioned request"
+            )
+        }
     }
 
     @Sendable
@@ -429,7 +457,10 @@ public struct ContainersHarness: Sendable {
                 message: "id cannot be empty"
             )
         }
-        let file = try await service.logRecordFile(id: id)
+        let file = try await service.logRecordFile(
+            id: id,
+            replay: Self.logReplayOptions(from: message)
+        )
         let reply = message.reply()
         reply.set(key: .logRecordFile, value: file)
         return reply
@@ -477,12 +508,6 @@ public struct ContainersHarness: Sendable {
                 message: "id cannot be empty"
             )
         }
-        guard let sourcePath = message.string(key: .sourcePath) else {
-            throw ContainerizationError(
-                .invalidArgument,
-                message: "source path cannot be empty"
-            )
-        }
         guard let destinationPath = message.string(key: .destinationPath) else {
             throw ContainerizationError(
                 .invalidArgument,
@@ -494,6 +519,23 @@ public struct ContainersHarness: Sendable {
         let followSymlink = message.bool(key: .followSymlink)
         let preserveOwnership = message.bool(key: .preserveOwnership)
 
+        if let archive = message.fileHandle(key: .copyArchive) {
+            try await service.copyIn(
+                id: id,
+                archive: archive,
+                destination: destinationPath,
+                createParents: createParents,
+                preserveOwnership: preserveOwnership
+            )
+            return message.reply()
+        }
+
+        guard let sourcePath = message.string(key: .sourcePath) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "source path cannot be empty"
+            )
+        }
         try await service.copyIn(
             id: id, source: sourcePath, destination: destinationPath, mode: mode, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
         return message.reply()
@@ -513,17 +555,28 @@ public struct ContainersHarness: Sendable {
                 message: "source path cannot be empty"
             )
         }
+        let createParents = message.bool(key: .createParents)
+        let followSymlink = message.bool(key: .followSymlink)
+        let preserveOwnership = message.bool(key: .preserveOwnership)
+        let copyContents = message.bool(key: .copyContents)
+
+        if let archive = message.fileHandle(key: .copyArchive) {
+            try await service.copyOut(
+                id: id,
+                source: sourcePath,
+                archive: archive,
+                followSymlink: followSymlink,
+                copyContents: copyContents
+            )
+            return message.reply()
+        }
+
         guard let destinationPath = message.string(key: .destinationPath) else {
             throw ContainerizationError(
                 .invalidArgument,
                 message: "destination path cannot be empty"
             )
         }
-
-        let createParents = message.bool(key: .createParents)
-        let followSymlink = message.bool(key: .followSymlink)
-        let preserveOwnership = message.bool(key: .preserveOwnership)
-
         try await service.copyOut(
             id: id, source: sourcePath, destination: destinationPath, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
         return message.reply()

@@ -61,11 +61,17 @@ extension Application {
 
         public init() {}
 
-        public init(platform: String? = nil, scheme: String = "auto", reference: String) {
-            self.logOptions = Flags.Logging()
-            self.registry = Flags.Registry(scheme: scheme)
-            self.platform = platform
-            self.reference = reference
+        public init(
+            platform: String? = nil,
+            scheme: String = "auto",
+            reference: String
+        ) throws {
+            var arguments = ["--scheme", scheme]
+            if let platform {
+                arguments.append(contentsOf: ["--platform", platform])
+            }
+            arguments.append(reference)
+            self = try Self.parse(arguments)
         }
 
         public func run() async throws {

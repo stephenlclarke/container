@@ -24,6 +24,33 @@ import Testing
 
 struct UtilityTests {
 
+    @Test("A v2 logging request bypasses the legacy driver projection")
+    func loggingV2UsesLegacyCompatibilityPlaceholder() throws {
+        let request = ContainerLogRequest(
+            driver: "acme.example/remote",
+            options: ["advanced-option": "value"]
+        )
+
+        let configuration = try Utility.loggingConfiguration(
+            request: request,
+            legacyDriver: "acme.example/remote",
+            legacyOptions: ["advanced-option=value"]
+        )
+
+        #expect(configuration == .default)
+    }
+
+    @Test("An absent v2 logging request retains legacy compatibility behavior")
+    func absentLoggingV2RequestUsesLegacyProjection() throws {
+        let configuration = try Utility.loggingConfiguration(
+            request: nil,
+            legacyDriver: "none",
+            legacyOptions: []
+        )
+
+        #expect(configuration.storage == .none)
+    }
+
     @Test("Parse simple key-value pairs")
     func testSimpleKeyValuePairs() {
         let result = Utility.parseKeyValuePairs(["key1=value1", "key2=value2"])
@@ -37,6 +64,14 @@ struct UtilityTests {
         let result = Utility.parseKeyValuePairs(["standalone"])
 
         #expect(result["standalone"] == "")
+    }
+
+    @Test("Parse key with an explicitly empty value")
+    func testKeyWithEmptyValue() {
+        let result = Utility.parseKeyValuePairs(["owner="])
+
+        #expect(result["owner"] == "")
+        #expect(result["owner="] == nil)
     }
 
     @Test("Parse empty input")
@@ -271,6 +306,39 @@ struct UtilityTests {
             #expect(networks[0].aliases == ["api"])
         default:
             Issue.record("expected attachment network selection")
+        }
+    }
+
+    @Test
+    func attachmentConfigurationsPreserveScopedDNSAliases() throws {
+        let configurations = try Utility.getAttachmentConfigurations(
+            containerId: "api",
+            builtinNetworkId: "backend",
+            networks: [try Parser.network("backend,dns-alias=database:db")],
+            dnsDomain: nil
+        )
+
+        #expect(configurations.count == 1)
+        #expect(configurations[0].options.scopedDNSAliases == ["database": "db"])
+    }
+
+    @Test
+    func attachmentConfigurationsRejectCrossNetworkScopedDNSAliasConflicts() throws {
+        #expect {
+            _ = try Utility.getAttachmentConfigurations(
+                containerId: "api",
+                builtinNetworkId: "default",
+                networks: [
+                    try Parser.network("frontend,dns-alias=database:db"),
+                    try Parser.network("backend,dns-alias=database:redis"),
+                ],
+                dnsDomain: nil
+            )
+        } throws: { error in
+            guard let error = error as? ContainerizationError else {
+                return false
+            }
+            return error.description.contains("network DNS alias 'database' maps to both 'db' and 'redis'")
         }
     }
 

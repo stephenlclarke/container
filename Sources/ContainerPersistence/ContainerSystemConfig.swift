@@ -28,6 +28,7 @@ public final class ContainerSystemConfig: Codable, Sendable, Initable {
     public let container: ContainerConfig
     public let dns: DNSConfig
     public let kernel: KernelConfig
+    public let logging: LoggingConfig
     public let machine: MachineConfig
     public let network: NetworkConfig
     public let registry: RegistryConfig
@@ -38,6 +39,7 @@ public final class ContainerSystemConfig: Codable, Sendable, Initable {
         container: ContainerConfig = .init(),
         dns: DNSConfig = .init(),
         kernel: KernelConfig = .init(),
+        logging: LoggingConfig = .init(),
         machine: MachineConfig = MachineConfig.default,
         network: NetworkConfig = .init(),
         registry: RegistryConfig = .init(),
@@ -47,6 +49,7 @@ public final class ContainerSystemConfig: Codable, Sendable, Initable {
         self.container = container
         self.dns = dns
         self.kernel = kernel
+        self.logging = logging
         self.machine = machine
         self.network = network
         self.registry = registry
@@ -58,6 +61,7 @@ public final class ContainerSystemConfig: Codable, Sendable, Initable {
         self.container = .init()
         self.dns = .init()
         self.kernel = .init()
+        self.logging = .init()
         self.machine = MachineConfig.default
         self.network = .init()
         self.registry = .init()
@@ -70,10 +74,43 @@ public final class ContainerSystemConfig: Codable, Sendable, Initable {
         self.container = try container.decodeIfPresent(ContainerConfig.self, forKey: .container) ?? .init()
         self.dns = try container.decodeIfPresent(DNSConfig.self, forKey: .dns) ?? .init()
         self.kernel = try container.decodeIfPresent(KernelConfig.self, forKey: .kernel) ?? .init()
+        self.logging = try container.decodeIfPresent(LoggingConfig.self, forKey: .logging) ?? .init()
         self.machine = try container.decodeIfPresent(MachineConfig.self, forKey: .machine) ?? MachineConfig.default
         self.network = try container.decodeIfPresent(NetworkConfig.self, forKey: .network) ?? .init()
         self.registry = try container.decodeIfPresent(RegistryConfig.self, forKey: .registry) ?? .init()
         self.vminit = try container.decodeIfPresent(VminitConfig.self, forKey: .vminit) ?? .init()
+    }
+
+    /// Audience-specific projection for routine configuration diagnostics.
+    public var routineInspection: ContainerSystemConfigInspection {
+        ContainerSystemConfigInspection(configuration: self)
+    }
+}
+
+/// Redaction-safe system configuration projection. It is deliberately
+/// encode-only so diagnostic output cannot be loaded as authoritative state.
+public struct ContainerSystemConfigInspection: Encodable, Sendable {
+    public let diagnosticKind = "container-system-config-inspection-v1"
+    public let build: BuildConfig
+    public let container: ContainerConfig
+    public let dns: DNSConfig
+    public let kernel: KernelConfig
+    public let logging: LoggingConfigInspection
+    public let machine: MachineConfig
+    public let network: NetworkConfig
+    public let registry: RegistryConfig
+    public let vminit: VminitConfig
+
+    fileprivate init(configuration: ContainerSystemConfig) {
+        self.build = configuration.build
+        self.container = configuration.container
+        self.dns = configuration.dns
+        self.kernel = configuration.kernel
+        self.logging = configuration.logging.routineInspection()
+        self.machine = configuration.machine
+        self.network = configuration.network
+        self.registry = configuration.registry
+        self.vminit = configuration.vminit
     }
 }
 
@@ -136,6 +173,116 @@ final public class ContainerConfig: Codable, Sendable {
     }
 }
 
+/// System-owned defaults used when a container logging request omits a driver
+/// or options. The API authority, not Compose, applies these defaults at create.
+final public class LoggingConfig: Codable, Sendable {
+    public static let defaultDriver = "json-file"
+
+    public let driver: String
+    public let options: [String: String]
+
+    public init(driver: String = defaultDriver, options: [String: String] = [:]) {
+        self.driver = driver
+        self.options = options
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case driver
+        case options
+        case diagnosticKind
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        if let diagnosticKind = try container.decodeIfPresent(String.self, forKey: .diagnosticKind) {
+            throw DecodingError.dataCorruptedError(
+                forKey: .diagnosticKind,
+                in: container,
+                debugDescription: "logging inspection '\(diagnosticKind)' cannot be used as authoritative configuration"
+            )
+        }
+        self.driver = try container.decodeIfPresent(String.self, forKey: .driver) ?? Self.defaultDriver
+
+        // ConfigSnapshotReader cannot enumerate dictionary keys. config.toml
+        // therefore carries arbitrary defaults as adjacent name/value pairs,
+        // while ordinary JSON Codable callers continue to use a map.
+        if let dictionary = try? container.decode([String: String].self, forKey: .options) {
+            self.options = dictionary
+            return
+        }
+
+        let entries = try container.decodeIfPresent([String].self, forKey: .options) ?? []
+        guard entries.count.isMultiple(of: 2) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .options,
+                in: container,
+                debugDescription: "logging options must contain adjacent name and value pairs"
+            )
+        }
+        var options: [String: String] = [:]
+        for index in stride(from: 0, to: entries.count, by: 2) {
+            let name = entries[index]
+            guard options[name] == nil else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .options,
+                    in: container,
+                    debugDescription: "duplicate logging option '\(name)'"
+                )
+            }
+            options[name] = entries[index + 1]
+        }
+        self.options = options
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(driver, forKey: .driver)
+        try container.encode(options, forKey: .options)
+    }
+
+    /// Routine configuration diagnostics expose only values the authority has
+    /// classified as safe and report protected option names separately.
+    public func routineInspection(
+        revealing safeOptionNames: Set<String> = []
+    ) -> LoggingConfigInspection {
+        var safeOptions: [String: String] = [:]
+        var protectedOptionNames: [String] = []
+        for (name, value) in options {
+            if safeOptionNames.contains(name) {
+                safeOptions[name] = value
+            } else {
+                protectedOptionNames.append(name)
+            }
+        }
+        return LoggingConfigInspection(
+            driver: driver,
+            safeOptions: safeOptions,
+            protectedOptionNames: protectedOptionNames.sorted()
+        )
+    }
+}
+
+/// Redaction-safe daemon-default projection. It cannot be decoded back into
+/// authoritative configuration.
+public struct LoggingConfigInspection: Encodable, Equatable, Sendable {
+    public let diagnosticKind = "logging-config-inspection-v1"
+    public let driver: String
+    public let safeOptions: [String: String]
+    public let protectedOptionNames: [String]
+    public let protectedOptionCount: Int
+
+    public init(
+        driver: String,
+        safeOptions: [String: String],
+        protectedOptionNames: [String]
+    ) {
+        self.driver = driver
+        self.safeOptions = safeOptions
+        self.protectedOptionNames = protectedOptionNames.sorted()
+        self.protectedOptionCount = protectedOptionNames.count
+    }
+}
+
 final public class DNSConfig: Codable, Sendable {
     public let domain: String?
 
@@ -151,10 +298,7 @@ final public class DNSConfig: Codable, Sendable {
 
 final public class VminitConfig: Codable, Sendable {
     public static var defaultImage: String {
-        let tag = String(cString: get_swift_containerization_version())
-        return tag == "latest"
-            ? "vminit:latest"
-            : "ghcr.io/apple/containerization/vminit:\(tag)"
+        ReleaseVersion.vminitImage()
     }
 
     public let image: String

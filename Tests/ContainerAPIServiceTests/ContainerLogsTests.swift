@@ -15,18 +15,125 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerAPIClient
+import ContainerEngineLogging
+import ContainerEngineProviderSession
+import ContainerEngineRuntimeSPI
+import ContainerEngineWire
 import ContainerPersistence
 import ContainerResource
 import ContainerXPC
+import ContainerizationError
 import ContainerizationOCI
+import Darwin
 import Foundation
 import Logging
 import Testing
 
 @testable import ContainerAPIService
+@testable import ContainerLoggingStorage
 @testable import ContainerPlugin
 
+private actor DockerImageResourceCacheFixture {
+    private var storedImages: [ClientImage]
+    private var resourceBuilds = 0
+
+    init(images: [ClientImage]) {
+        storedImages = images
+    }
+
+    func images() -> [ClientImage] {
+        storedImages
+    }
+
+    func replaceImages(_ images: [ClientImage]) {
+        storedImages = images
+    }
+
+    func resource(for image: ClientImage) -> ImageResource {
+        resourceBuilds += 1
+        return ImageResource(
+            configuration: ImageResource.ImageConfiguration(
+                description: image.description,
+                creationDate: Date(timeIntervalSince1970: 0)
+            ),
+            variants: []
+        )
+    }
+
+    func buildCount() -> Int {
+        resourceBuilds
+    }
+}
+
+private actor DockerImageMutationFixture {
+    private var pullRequest: DockerImagePullRequest?
+    private var tagName: String?
+    private var tagRequest: DockerImageTagRequest?
+    private var deleteName: String?
+    private var deleteRequest: DockerImageDeleteRequest?
+
+    func pull(_ request: DockerImagePullRequest) -> DockerImagePullResult {
+        pullRequest = request
+        return DockerImagePullResult(
+            displayReference: "alpine:3.20",
+            digest: "sha256:fixture",
+            upToDate: false
+        )
+    }
+
+    func tag(_ name: String, _ request: DockerImageTagRequest) throws {
+        tagName = name
+        tagRequest = request
+        if name == "missing:latest" {
+            throw ContainerizationError(.notFound, message: "fixture")
+        }
+    }
+
+    func delete(
+        _ name: String,
+        _ request: DockerImageDeleteRequest
+    ) -> [DockerImageDeleteResult] {
+        deleteName = name
+        deleteRequest = request
+        return [DockerImageDeleteResult(untagged: name)]
+    }
+
+    func capturedPullRequest() -> DockerImagePullRequest? {
+        pullRequest
+    }
+
+    func capturedTag() -> (String?, DockerImageTagRequest?) {
+        (tagName, tagRequest)
+    }
+
+    func capturedDelete() -> (String?, DockerImageDeleteRequest?) {
+        (deleteName, deleteRequest)
+    }
+}
+
 struct ContainerLogsTests {
+    @Test func configuredUnreadableDriverUsesUnsupportedPublicError() {
+        let error = ContainersService.logReadError(
+            ContainerLogReaderError.configuredDriverDoesNotSupportReading,
+            operation: "open container logs"
+        )
+
+        #expect(error.code == .unsupported)
+        #expect(error.message == "configured logging driver does not support reading")
+    }
+
+    @Test func otherLogReadFailuresRetainOperationContext() {
+        struct FixtureError: Error {}
+
+        let error = ContainersService.logReadError(
+            FixtureError(),
+            operation: "follow container logs"
+        )
+
+        #expect(error.code == .internalError)
+        #expect(error.message == "failed to follow container logs: FixtureError()")
+    }
+
     @Test func decodesAndFiltersTimestampedLogRecords() throws {
         let first = ContainerLogRecord(
             timestamp: date("2026-01-02T00:00:00Z"),
@@ -305,6 +412,1447 @@ struct ContainerLogsTests {
 
         #expect(String(data: stdio, encoding: .utf8) == "oldest\nolder\nnewer\nactive\n")
         #expect(String(data: boot, encoding: .utf8) == "boot\n")
+    }
+
+    @Test func version2LogsReadCanonicalJSONFileStorage() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent("container-v2-log-read-test-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let id = "test-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(
+            path: containerRoot.appendingPathComponent(id)
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.containerLoggingV2,
+            withIntermediateDirectories: true
+        )
+        for directory in [tempURL, containerRoot, bundle.path, bundle.containerLoggingV2] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: directory.path
+            )
+        }
+        var configuration = testConfiguration(id: id)
+        configuration.logging = try version2JSONFileConfiguration()
+        try bundle.set(configuration: configuration)
+        let store = try DockerJSONFileLogStore(
+            directoryURL: bundle.containerJSONFileLogDirectory,
+            activeFileName: ContainerResource.Bundle.jsonFileLogName,
+            configuration: DockerJSONFileLogConfiguration()
+        )
+        try store.write(
+            ContainerLogRecordV2(
+                stream: .stdout,
+                observation: ContainerLogObservation(
+                    wallClock: try ContainerLogTimestamp(
+                        secondsSinceUnixEpoch: 1_767_323_045,
+                        nanoseconds: 123_456_789
+                    ),
+                    monotonicInstant: ContinuousClock().now
+                ),
+                payload: Data("canonical".utf8),
+                partial: nil,
+                sequence: 1,
+                processGeneration: 1
+            )
+        )
+        try store.close()
+        try Data("boot\n".utf8).write(to: bundle.bootlog)
+
+        let service = try service(
+            appRoot: tempURL,
+            logLabel: "container-v2-log-read-test"
+        )
+        let handles = try await service.logs(id: id, options: .default)
+        defer {
+            for handle in handles {
+                try? handle.close()
+            }
+        }
+        let raw = try #require(try handles[0].readToEnd())
+        #expect(raw == Data("canonical\n".utf8))
+
+        let records = try await service.logRecords(id: id)
+        #expect(records.count == 1)
+        #expect(records[0].stream == .stdout)
+        #expect(records[0].data == Data("canonical\n".utf8))
+        #expect(
+            abs(
+                records[0].timestamp.timeIntervalSince1970
+                    - 1_767_323_045.123_456_7
+            ) < 0.000_001
+        )
+
+        let followedRawHandle = try await service.followLogs(
+            id: id,
+            options: .default
+        )
+        defer { try? followedRawHandle.close() }
+        let followedRaw = try #require(try followedRawHandle.readToEnd())
+        #expect(followedRaw == Data("canonical\n".utf8))
+
+        let followedRecordHandle = try await service.followLogRecords(
+            id: id,
+            options: .default
+        )
+        defer { try? followedRecordHandle.close() }
+        let followedRecordData = try #require(
+            try followedRecordHandle.readToEnd()
+        )
+        let followedRecords = try logRecords(from: followedRecordData)
+        #expect(followedRecords.count == 1)
+        #expect(followedRecords[0].stream == records[0].stream)
+        #expect(followedRecords[0].data == records[0].data)
+        #expect(
+            abs(
+                followedRecords[0].timestamp.timeIntervalSince1970
+                    - records[0].timestamp.timeIntervalSince1970
+            ) < 0.001
+        )
+    }
+
+    @Test func engineLoggingBackendUsesAuthoritativeInspectionAndExactReader() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent("container-engine-log-read-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let id = "engine-log-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(
+            path: containerRoot.appendingPathComponent(id)
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.containerLoggingV2,
+            withIntermediateDirectories: true
+        )
+        for directory in [tempURL, containerRoot, bundle.path, bundle.containerLoggingV2] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: directory.path
+            )
+        }
+        var configuration = testConfiguration(id: id)
+        configuration.creationDate = Date(timeIntervalSince1970: 1_767_225_600)
+        configuration.labels = ["compose.project": "fixture"]
+        configuration.logging = try version2JSONFileConfiguration(
+            safeOptions: ["max-file": "1"]
+        )
+        try bundle.set(configuration: configuration)
+
+        let timestamp = try ContainerLogTimestamp(
+            secondsSinceUnixEpoch: 1_767_323_045,
+            nanoseconds: 123_456_789
+        )
+        let store = try DockerJSONFileLogStore(
+            directoryURL: bundle.containerJSONFileLogDirectory,
+            activeFileName: ContainerResource.Bundle.jsonFileLogName,
+            configuration: DockerJSONFileLogConfiguration()
+        )
+        try store.write(
+            ContainerLogRecordV2(
+                stream: .stderr,
+                observation: ContainerLogObservation(
+                    wallClock: timestamp,
+                    monotonicInstant: ContinuousClock().now
+                ),
+                payload: Data("exact-engine-record".utf8),
+                partial: nil,
+                sequence: 1,
+                attributes: ["compose.service": "web"],
+                processGeneration: 1
+            )
+        )
+        try store.close()
+        try bundle.setDurably(
+            lifecycleState: ContainerLifecycleStateV1(
+                startedDate: Date(
+                    timeIntervalSince1970: 1_767_323_045
+                )
+            )
+        )
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-log-read-test"
+        )
+        let backend = ContainerDockerLoggingBackend(
+            containers: containers,
+            engineIdentity: "test-authority",
+            serverVersion: "test-version",
+            imageCountProvider: { 3 }
+        )
+        let info = try await backend.loggingSystemInfo()
+        #expect(info.defaultDriver == "json-file")
+        #expect(info.registeredDrivers.contains("json-file"))
+        #expect(info.registeredDrivers.contains("local"))
+
+        let inspection = try await backend.inspectContainerLogging(
+            containerID: id
+        )
+        #expect(inspection.configuration.driver == "json-file")
+        #expect(inspection.configuration.options == ["max-file": "1"])
+        #expect(inspection.publicLogPath == bundle.containerJSONFileLog.path)
+        #expect(!inspection.terminal)
+
+        let reader = try await backend.openContainerLogs(
+            containerID: id,
+            request: DockerLogReadRequest(
+                stdout: true,
+                stderr: true,
+                follow: false,
+                tail: nil,
+                since: nil,
+                until: nil,
+                timestamps: true,
+                details: true
+            )
+        )
+        let record = try #require(try await reader.nextRecord())
+        #expect(record.source == .standardError)
+        #expect(record.timestamp.secondsSinceUnixEpoch == timestamp.secondsSinceUnixEpoch)
+        #expect(record.timestamp.nanoseconds == timestamp.nanoseconds)
+        #expect(record.line == Data("exact-engine-record\n".utf8))
+        #expect(record.attributes == ["compose.service": "web"])
+        #expect(try await reader.nextRecord() == nil)
+        await reader.close()
+
+        let declaration = try ContainerEngineProviderDeclaration(
+            profile: .enhanced,
+            kind: .containerAuthority,
+            implementationVersion: "test",
+            runtimeRevisions: ["container": "test"],
+            stateSchemaVersion: 1,
+            capabilities: [
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttach",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerAttachWebsocket",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerResize",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerLogs",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerWait",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerInspect",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.ContainerList",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemInfo",
+                    status: .native
+                ),
+                try ContainerEngineProviderCapability(
+                    identifier: "engine.route.SystemVersion",
+                    status: .native
+                ),
+            ]
+        )
+        let controller = try DockerLoggingAPIController(
+            backend: backend,
+            sharedResponseBackend: backend
+        )
+        let providerRoot = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "ce-provider-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: providerRoot,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+        )
+        defer { try? FileManager.default.removeItem(at: providerRoot) }
+        let provider = try ContainerEngineProviderSessionServer(
+            responder: controller,
+            socketPath: providerRoot.appendingPathComponent("provider.sock").path,
+            declaration: declaration,
+            stateRootUUID: try #require(
+                UUID(uuidString: "41A36BAF-17E0-4CA8-882D-F9E31D754EF4")
+            )
+        )
+        try provider.start()
+        do {
+            let client = ContainerEngineProviderSessionClient(
+                socketPath: provider.socketPath,
+                expectedFingerprint: provider.fingerprint
+            )
+            let versionResponse = await client.respond(
+                to: DockerHTTPRequest(method: .get, target: "/version")
+            )
+            #expect(versionResponse.status == 200)
+            let versionObject = try await engineJSONObject(versionResponse)
+            #expect(versionObject["Version"] as? String == "test-version")
+            #expect(versionObject["ApiVersion"] as? String == "1.53")
+            #expect(versionObject["MinAPIVersion"] as? String == "1.44")
+
+            let runningListResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target: "/v1.53/containers/json"
+                )
+            )
+            #expect(runningListResponse.status == 200)
+            #expect(try await engineJSONArray(runningListResponse).isEmpty)
+
+            let listResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target:
+                        "/v1.53/containers/json?all=1&filters=%7B%22label%22%3A%5B%22compose.project%3Dfixture%22%5D%2C%22status%22%3A%5B%22exited%22%5D%7D"
+                )
+            )
+            #expect(listResponse.status == 200)
+            let listObjects = try await engineJSONArray(listResponse)
+            #expect(listObjects.count == 1)
+            let listObject = try #require(listObjects.first)
+            #expect(listObject["Id"] as? String == id)
+            #expect(listObject["Names"] as? [String] == ["/\(id)"])
+            #expect(listObject["Image"] as? String == configuration.image.reference)
+            #expect(listObject["ImageID"] as? String == configuration.image.digest)
+            #expect(listObject["Command"] as? String == "/bin/sh")
+            #expect(listObject["Created"] as? Int == 1_767_225_600)
+            #expect(listObject["State"] as? String == "exited")
+            #expect((listObject["Status"] as? String)?.hasPrefix("Exited (0) ") == true)
+            #expect(
+                listObject["Labels"] as? [String: String]
+                    == ["compose.project": "fixture"]
+            )
+
+            let waitResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target: "/v1.53/containers/\(id)/wait?condition=not-running"
+                )
+            )
+            #expect(waitResponse.status == 200)
+            #expect(try await engineJSONObject(waitResponse)["StatusCode"] as? Int == 0)
+
+            let infoResponse = await client.respond(
+                to: DockerHTTPRequest(method: .get, target: "/v1.53/info")
+            )
+            #expect(infoResponse.status == 200)
+            let infoObject = try await engineJSONObject(infoResponse)
+            #expect(infoObject["ID"] as? String == "test-authority")
+            #expect(infoObject["Containers"] as? Int == 1)
+            #expect(infoObject["ContainersRunning"] as? Int == 0)
+            #expect(infoObject["ContainersPaused"] as? Int == 0)
+            #expect(infoObject["ContainersStopped"] as? Int == 1)
+            #expect(infoObject["Images"] as? Int == 3)
+            #expect(infoObject["LoggingDriver"] as? String == "json-file")
+            let plugins = try #require(infoObject["Plugins"] as? [String: Any])
+            #expect((plugins["Log"] as? [String])?.contains("local") == true)
+
+            let inspectResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target: "/v1.53/containers/\(id)/json"
+                )
+            )
+            #expect(inspectResponse.status == 200)
+            let inspectObject = try await engineJSONObject(inspectResponse)
+            #expect(inspectObject["Id"] as? String == id)
+            #expect(inspectObject["Driver"] as? String == "apple-container")
+            #expect(inspectObject["LogPath"] as? String == bundle.containerJSONFileLog.path)
+            #expect(inspectObject["Path"] as? String == "/bin/sh")
+            #expect(inspectObject["Args"] as? [String] == [])
+            #expect(inspectObject["Image"] as? String == configuration.image.digest)
+            #expect(inspectObject["Name"] as? String == "/\(id)")
+            #expect(inspectObject["Platform"] as? String == "linux")
+            let inspectState = try #require(
+                inspectObject["State"] as? [String: Any]
+            )
+            #expect(inspectState["Status"] as? String == "exited")
+            #expect(inspectState["Running"] as? Bool == false)
+            #expect(inspectState["ExitCode"] as? Int == 0)
+            let inspectConfig = try #require(
+                inspectObject["Config"] as? [String: Any]
+            )
+            #expect(inspectConfig["Tty"] as? Bool == false)
+            #expect(inspectConfig["Hostname"] as? String == id)
+            #expect(inspectConfig["User"] as? String == "0:0")
+            #expect(inspectConfig["Image"] as? String == configuration.image.reference)
+            #expect(inspectConfig["Entrypoint"] as? [String] == ["/bin/sh"])
+            #expect(inspectConfig["Cmd"] as? [String] == [])
+            let inspectHostConfig = try #require(
+                inspectObject["HostConfig"] as? [String: Any]
+            )
+            #expect(inspectHostConfig["NetworkMode"] as? String == "default")
+            #expect(inspectHostConfig["AutoRemove"] as? Bool == false)
+            let restartPolicy = try #require(
+                inspectHostConfig["RestartPolicy"] as? [String: Any]
+            )
+            #expect(restartPolicy["Name"] as? String == "no")
+            #expect(restartPolicy["MaximumRetryCount"] as? Int == 0)
+            let inspectLogConfig = try #require(
+                inspectHostConfig["LogConfig"] as? [String: Any]
+            )
+            #expect(inspectLogConfig["Type"] as? String == "json-file")
+            #expect(
+                inspectLogConfig["Config"] as? [String: String]
+                    == ["max-file": "1"]
+            )
+
+            let response = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .get,
+                    target:
+                        "/v1.53/containers/\(id)/logs?stdout=1&stderr=1&timestamps=1&details=1"
+                )
+            )
+            #expect(response.status == 200)
+            if case .managedStream(let session) = response.body {
+                let chunk = try #require(try await session.nextChunk())
+                #expect(chunk.range(of: Data("exact-engine-record\n".utf8)) != nil)
+                #expect(chunk.range(of: Data("compose.project".utf8)) == nil)
+                #expect(chunk.range(of: Data("compose.service=web".utf8)) != nil)
+                #expect(try await session.nextChunk() == nil)
+            } else {
+                Issue.record("expected managed Engine log stream")
+            }
+
+            let attachResponse = await client.respond(
+                to: try DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/\(id)/attach?logs=1&stream=0&stdin=0&stdout=1&stderr=1",
+                    uniqueHeaders: [
+                        "Connection": "Upgrade",
+                        "Upgrade": "tcp",
+                    ]
+                )
+            )
+            #expect(attachResponse.status == 200)
+            if case .hijack(let session, let terminal) = attachResponse.body {
+                #expect(!terminal)
+                var frames = [DockerStreamFrame]()
+                for try await frame in session.frames {
+                    frames.append(frame)
+                }
+                #expect(
+                    frames
+                        == [
+                            DockerStreamFrame(
+                                channel: .standardError,
+                                data: Data("exact-engine-record\n".utf8)
+                            )
+                        ]
+                )
+                #expect(try await session.wait() == 0)
+            } else {
+                Issue.record("expected Engine attach hijack")
+            }
+
+            let webSocketResponse = await client.respond(
+                to: try DockerHTTPRequest(
+                    method: .get,
+                    target:
+                        "/v1.53/containers/\(id)/attach/ws?logs=1&stream=0&stdin=0&stdout=1&stderr=1",
+                    uniqueHeaders: [
+                        "Connection": "Upgrade",
+                        "Upgrade": "websocket",
+                        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+                        "Sec-WebSocket-Version": "13",
+                    ]
+                )
+            )
+            #expect(webSocketResponse.status == 101)
+            if case .webSocket(let session) = webSocketResponse.body {
+                var frames = [DockerStreamFrame]()
+                for try await frame in session.frames {
+                    frames.append(frame)
+                }
+                #expect(
+                    frames
+                        == [
+                            DockerStreamFrame(
+                                channel: .standardError,
+                                data: Data("exact-engine-record\n".utf8)
+                            )
+                        ]
+                )
+                #expect(try await session.wait() == 0)
+            } else {
+                Issue.record("expected Engine WebSocket attach")
+            }
+
+            await #expect(
+                throws: DockerLoggingBackendError.containerNotFound("missing")
+            ) {
+                try await backend.resizeContainerTerminal(
+                    containerID: "missing",
+                    height: 24,
+                    width: 80
+                )
+            }
+            await #expect(
+                throws: DockerLoggingBackendError.conflict(
+                    "container \(id) is not running"
+                )
+            ) {
+                try await backend.resizeContainerTerminal(
+                    containerID: id,
+                    height: 24,
+                    width: 80
+                )
+            }
+
+            let invalidResizeResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/\(id)/resize?h=4294967296&w=80"
+                )
+            )
+            #expect(invalidResizeResponse.status == 400)
+
+            let stoppedResizeResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/\(id)/resize?h=24&w=80"
+                )
+            )
+            #expect(stoppedResizeResponse.status == 409)
+            #expect(
+                try await engineJSONObject(stoppedResizeResponse)["message"]
+                    as? String == "container \(id) is not running"
+            )
+
+            let missingResizeResponse = await client.respond(
+                to: DockerHTTPRequest(
+                    method: .post,
+                    target:
+                        "/v1.53/containers/missing/resize?h=24&w=80"
+                )
+            )
+            #expect(missingResizeResponse.status == 404)
+
+            await containers.publishEngineResizeEvent(
+                snapshot: try containers.engineAttachmentInspection(
+                    containerID: id
+                ).snapshot,
+                height: UInt32.max,
+                width: UInt32(UInt16.max) + 2
+            )
+
+            let eventSubscription = await containers.events(
+                options: ContainerEventOptions(until: Date())
+            )
+            defer { try? eventSubscription.fileHandle.close() }
+            let eventData = try #require(
+                try eventSubscription.fileHandle.readToEnd()
+            )
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            let events = try String(decoding: eventData, as: UTF8.self)
+                .split(separator: "\n")
+                .map {
+                    try decoder.decode(ContainerEvent.self, from: Data($0.utf8))
+                }
+            #expect(
+                events.map(\.action)
+                    == ["attach", "detach", "attach", "detach", "resize"]
+            )
+            #expect(events.allSatisfy { $0.id == id })
+            #expect(events.last?.attributes["height"] == String(UInt32.max))
+            #expect(
+                events.last?.attributes["width"]
+                    == String(UInt32(UInt16.max) + 2)
+            )
+            await provider.shutdown()
+        } catch {
+            await provider.shutdown()
+            throw error
+        }
+    }
+
+    @Test func dockerContainerListProjectionCoversLifecycleFieldsAndFilters() throws {
+        let now = Date(timeIntervalSince1970: 10_000)
+        var createdConfiguration = testConfiguration(id: "created-one")
+        createdConfiguration.creationDate = Date(timeIntervalSince1970: 100)
+        createdConfiguration.labels = ["role": "worker"]
+        createdConfiguration.initProcess.arguments = ["-c", "echo hello"]
+        createdConfiguration.exposedPorts = ["8080/tcp"]
+        createdConfiguration.mounts = [.tmpfs(destination: "/cache", options: [])]
+        createdConfiguration.networks = [
+            AttachmentConfiguration(
+                network: "fixture-net",
+                options: AttachmentOptions(hostname: "created-one")
+            )
+        ]
+        let created = ContainerSnapshot(
+            configuration: createdConfiguration,
+            status: .stopped,
+            networks: []
+        )
+
+        var exitedConfiguration = testConfiguration(id: "exited-two")
+        exitedConfiguration.creationDate = Date(timeIntervalSince1970: 200)
+        exitedConfiguration.labels = ["role": "worker"]
+        let exited = ContainerSnapshot(
+            configuration: exitedConfiguration,
+            status: .stopped,
+            networks: [],
+            startedDate: Date(timeIntervalSince1970: 250),
+            exitCode: 7,
+            exitedDate: Date(timeIntervalSince1970: 300)
+        )
+
+        var deadConfiguration = testConfiguration(id: "dead-three")
+        deadConfiguration.creationDate = Date(timeIntervalSince1970: 300)
+        let dead = ContainerSnapshot(
+            configuration: deadConfiguration,
+            status: .unknown,
+            networks: []
+        )
+
+        var runningConfiguration = testConfiguration(id: "running-four")
+        runningConfiguration.creationDate = Date(timeIntervalSince1970: 400)
+        let running = ContainerSnapshot(
+            configuration: runningConfiguration,
+            status: .running,
+            networks: [],
+            startedDate: Date(timeIntervalSince1970: 500)
+        )
+
+        var pausedConfiguration = testConfiguration(id: "paused-five")
+        pausedConfiguration.creationDate = Date(timeIntervalSince1970: 500)
+        let paused = ContainerSnapshot(
+            configuration: pausedConfiguration,
+            status: .paused,
+            networks: [],
+            startedDate: Date(timeIntervalSince1970: 600),
+            health: .healthy
+        )
+        let snapshots = [created, exited, dead, running, paused]
+
+        func objects(
+            all: Bool = true,
+            limit: Int? = nil,
+            size: Bool = false,
+            filters: [String: [String]] = [:]
+        ) throws -> [[String: Any]] {
+            try ContainerDockerLoggingBackend.containerListObjects(
+                snapshots: snapshots,
+                request: DockerContainerListRequest(
+                    all: all,
+                    limit: limit,
+                    size: size,
+                    filters: filters
+                ),
+                now: now
+            )
+        }
+
+        func ids(_ filters: [String: [String]]) throws -> [String] {
+            try objects(filters: filters).compactMap { $0["Id"] as? String }
+        }
+
+        #expect(
+            try objects(all: false).compactMap { $0["Id"] as? String }
+                == ["paused-five", "running-four"])
+        #expect(
+            try objects(limit: 2).compactMap { $0["Id"] as? String }
+                == ["paused-five", "running-four"])
+        #expect(
+            try ids(["label": ["role=worker"]])
+                == ["exited-two", "created-one"])
+        #expect(
+            try ids(["status": ["exited"], "exited": ["7"]])
+                == ["exited-two"])
+        #expect(try ids(["id": ["dead-th"]]) == ["dead-three"])
+        #expect(try ids(["name": ["^/running-"]]) == ["running-four"])
+        #expect(
+            try ids(["ancestor": [createdConfiguration.image.reference]])
+                == ["paused-five", "running-four", "dead-three", "exited-two", "created-one"])
+        #expect(
+            try ids(["before": ["dead-three"]])
+                == ["exited-two", "created-one"])
+        #expect(try ids(["since": ["running-four"]]) == ["paused-five"])
+        #expect(try ids(["network": ["fixture-net"]]) == ["created-one"])
+        #expect(try ids(["volume": ["/cache"]]) == ["created-one"])
+        #expect(try ids(["expose": ["8080/tcp"]]) == ["created-one"])
+        #expect(try ids(["health": ["healthy"]]) == ["paused-five"])
+        #expect(try ids(["is-task": ["true"]]).isEmpty)
+        #expect(try ids(["isolation": ["default"]]).count == 5)
+        #expect(throws: DockerLoggingBackendError.self) {
+            try objects(filters: ["unsupported": ["value"]])
+        }
+
+        let createdObject = try #require(
+            objects(size: true).first { $0["Id"] as? String == "created-one" }
+        )
+        #expect(createdObject["State"] as? String == "created")
+        #expect(createdObject["Status"] as? String == "Created")
+        #expect(createdObject["Command"] as? String == "/bin/sh -c 'echo hello'")
+        #expect(createdObject["SizeRw"] as? Int == 0)
+        #expect(createdObject["SizeRootFs"] as? Int == 0)
+        let createdNetworks = try #require(
+            createdObject["NetworkSettings"] as? [String: Any]
+        )
+        #expect(
+            (createdNetworks["Networks"] as? [String: Any])?["fixture-net"] != nil
+        )
+        let pausedObject = try #require(
+            objects().first { $0["Id"] as? String == "paused-five" }
+        )
+        #expect((pausedObject["Status"] as? String)?.hasSuffix("(Paused)") == true)
+        let pausedHealth = try #require(
+            pausedObject["Health"] as? [String: Any]
+        )
+        #expect(pausedHealth["Status"] as? String == "healthy")
+        #expect(pausedHealth["FailingStreak"] as? Int == 0)
+        let deadObject = try #require(
+            objects().first { $0["Id"] as? String == "dead-three" }
+        )
+        #expect(deadObject["Status"] as? String == "Dead")
+    }
+
+    @Test func dockerContainerIdentityUsesCanonicalIDAndNameAliases() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-docker-identity-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        try FileManager.default.createDirectory(
+            at: tempURL,
+            withIntermediateDirectories: true
+        )
+
+        let nativeID = "native-docker-resource"
+        let dockerID = String(repeating: "a", count: 64)
+        let dockerName = "visible-docker-name"
+        let bundle = ContainerResource.Bundle(
+            path: tempURL.appendingPathComponent("containers/\(nativeID)")
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.path,
+            withIntermediateDirectories: true
+        )
+        var configuration = testConfiguration(id: nativeID)
+        configuration.dockerID = dockerID
+        configuration.dockerName = dockerName
+        try bundle.set(configuration: configuration)
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-docker-identity-test"
+        )
+        let backend = ContainerDockerLoggingBackend(containers: containers)
+        let aliases = [nativeID, dockerName, dockerID, String(dockerID.prefix(12))]
+        for alias in aliases {
+            #expect(
+                try await containers.resolveDockerContainerIdentifier(alias)
+                    == nativeID
+            )
+            let inspectData = try await backend.containerInspectBaseJSON(
+                containerID: alias
+            )
+            let inspect = try #require(
+                JSONSerialization.jsonObject(with: inspectData) as? [String: Any]
+            )
+            #expect(inspect["Id"] as? String == dockerID)
+            #expect(inspect["Name"] as? String == "/\(dockerName)")
+        }
+
+        let listedData = try await backend.containerListJSON(
+            request: DockerContainerListRequest(
+                all: true,
+                filters: [
+                    "id": [String(dockerID.prefix(12))],
+                    "name": ["^/visible-docker-name$"],
+                ]
+            )
+        )
+        let listed = try #require(
+            JSONSerialization.jsonObject(with: listedData) as? [[String: Any]]
+        )
+        let listedContainer = try #require(listed.first)
+        #expect(listedContainer["Id"] as? String == dockerID)
+        #expect(listedContainer["Names"] as? [String] == ["/\(dockerName)"])
+
+        let generatedDockerID = Utility.createDockerContainerID()
+        #expect(generatedDockerID.count == 64)
+        #expect(
+            generatedDockerID.range(
+                of: "^[0-9a-f]{64}$",
+                options: .regularExpression
+            ) != nil
+        )
+        #expect(generatedDockerID == generatedDockerID.lowercased())
+    }
+
+    @Test func dockerContainerWaitUsesNativeLifecycleStateAndRemoval() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-docker-wait-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let immediateID = "wait-immediate"
+        let removalID = "wait-removal"
+        let cancellationID = "wait-cancellation"
+        for id in [immediateID, removalID, cancellationID] {
+            _ = try createBundle(appRoot: tempURL, id: id)
+        }
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-docker-wait-test"
+        )
+        let backend = ContainerDockerLoggingBackend(containers: containers)
+        let immediateRegistration = WaitRegistrationProbe()
+
+        #expect(
+            try await backend.waitForContainer(
+                containerID: immediateID,
+                condition: .notRunning,
+                onRegistered: {
+                    immediateRegistration.record()
+                }
+            ) == DockerContainerWaitResult(statusCode: 0)
+        )
+        #expect(immediateRegistration.count == 1)
+
+        let nextExitRegistration = WaitRegistrationProbe()
+        let nextExit = Task {
+            try await backend.waitForContainer(
+                containerID: removalID,
+                condition: .nextExit,
+                onRegistered: {
+                    nextExitRegistration.record()
+                }
+            )
+        }
+        let removed = Task {
+            try await backend.waitForContainer(
+                containerID: removalID,
+                condition: .removed
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(nextExitRegistration.count == 1)
+        try await containers.delete(id: removalID, force: false)
+
+        #expect(try await nextExit.value == DockerContainerWaitResult(statusCode: 0))
+        #expect(try await removed.value == DockerContainerWaitResult(statusCode: 0))
+
+        let cancellation = Task {
+            try await backend.waitForContainer(
+                containerID: cancellationID,
+                condition: .removed
+            )
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        cancellation.cancel()
+        await #expect(throws: CancellationError.self) {
+            try await cancellation.value
+        }
+        try await containers.delete(id: cancellationID, force: false)
+
+        await #expect(
+            throws: DockerLoggingBackendError.containerNotFound("missing")
+        ) {
+            try await backend.waitForContainer(
+                containerID: "missing",
+                condition: .notRunning
+            )
+        }
+    }
+
+    @Test func dockerImageDiscoveryProjectsNativeCatalogAndInspectMetadata() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-image-discovery-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        func resource(
+            reference: String,
+            digest: String,
+            created: Date,
+            labels: [String: String],
+            size: Int64
+        ) -> ImageResource {
+            let descriptor = Descriptor(
+                mediaType: MediaTypes.index,
+                digest: digest,
+                size: 9226
+            )
+            let description = ImageDescription(
+                reference: "docker.io/library/\(reference)",
+                descriptor: descriptor
+            )
+            return ImageResource(
+                configuration: ImageResource.ImageConfiguration(
+                    description: description,
+                    creationDate: created
+                ),
+                variants: [
+                    ImageResource.Variant(
+                        platform: Platform(
+                            arch: "arm64",
+                            os: "linux",
+                            variant: "v8"
+                        ),
+                        digest: "sha256:" + String(repeating: "f", count: 64),
+                        size: size,
+                        config: Image(
+                            created: "2026-04-16T23:53:24.896953537Z",
+                            architecture: "arm64",
+                            os: "linux",
+                            variant: "v8",
+                            config: ImageConfig(
+                                env: ["PATH=/usr/local/bin:/usr/bin:/bin"],
+                                cmd: ["/bin/sh"],
+                                workingDir: "/",
+                                labels: labels
+                            ),
+                            rootfs: Rootfs(
+                                type: "layers",
+                                diffIDs: [
+                                    "sha256:" + String(repeating: "e", count: 64)
+                                ]
+                            ),
+                            history: [History(comment: "fixture image")]
+                        ),
+                        healthCheck: ImageResource.HealthCheck(
+                            test: ["CMD", "/bin/true"]
+                        )
+                    )
+                ],
+                displayReference: reference
+            )
+        }
+
+        let digest = "sha256:" + String(repeating: "d", count: 64)
+        let created = Date(timeIntervalSince1970: 1_776_383_604)
+        let alpine = resource(
+            reference: "alpine:3.20",
+            digest: digest,
+            created: created,
+            labels: ["fixture": "true"],
+            size: 4_103_199
+        )
+        let stable = resource(
+            reference: "alpine:stable",
+            digest: digest,
+            created: created,
+            labels: ["fixture": "true"],
+            size: 4_103_199
+        )
+        let busyboxDigest = "sha256:" + String(repeating: "b", count: 64)
+        let busybox = resource(
+            reference: "busybox:latest",
+            digest: busyboxDigest,
+            created: Date(timeIntervalSince1970: 1_700_000_000),
+            labels: [:],
+            size: 2_000_000
+        )
+
+        let bundle = ContainerResource.Bundle(
+            path: tempURL.appendingPathComponent("containers/image-user")
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.path,
+            withIntermediateDirectories: true
+        )
+        var configuration = testConfiguration(id: "image-user")
+        configuration.image = ImageDescription(
+            reference: alpine.name,
+            descriptor: alpine.configuration.descriptor
+        )
+        try bundle.set(configuration: configuration)
+
+        let backend = ContainerDockerLoggingBackend(
+            containers: try service(
+                appRoot: tempURL,
+                logLabel: "container-engine-image-discovery-test"
+            ),
+            imageResourceProvider: { [alpine, stable, busybox] }
+        )
+        let listData = try await backend.imageListJSON(
+            request: DockerImageListRequest(
+                sharedSize: true,
+                filters: [
+                    "label": ["fixture=true"],
+                    "reference": ["alpine:3.*"],
+                ]
+            )
+        )
+        let list = try #require(
+            try JSONSerialization.jsonObject(with: listData)
+                as? [[String: Any]]
+        )
+        #expect(list.count == 1)
+        let summary = try #require(list.first)
+        #expect(summary["Id"] as? String == digest)
+        #expect(summary["RepoTags"] as? [String] == ["alpine:3.20", "alpine:stable"])
+        #expect(summary["RepoDigests"] as? [String] == ["alpine@\(digest)"])
+        #expect(summary["Containers"] as? Int == 1)
+        #expect(summary["Created"] as? Int == 1_776_383_604)
+        #expect(summary["Size"] as? Int == 4_103_199)
+        #expect(summary["SharedSize"] as? Int == -1)
+        #expect(summary["Labels"] as? [String: String] == ["fixture": "true"])
+
+        let inspectData = try await backend.imageInspectJSON(name: "alpine:3.20")
+        let inspect = try #require(
+            try JSONSerialization.jsonObject(with: inspectData)
+                as? [String: Any]
+        )
+        #expect(inspect["Id"] as? String == digest)
+        #expect(inspect["Architecture"] as? String == "arm64")
+        #expect(inspect["Os"] as? String == "linux")
+        #expect(inspect["Variant"] as? String == "v8")
+        #expect(inspect["Comment"] as? String == "fixture image")
+        #expect(inspect["Size"] as? Int == 4_103_199)
+        let config = try #require(inspect["Config"] as? [String: Any])
+        #expect(config["Cmd"] as? [String] == ["/bin/sh"])
+        #expect(config["Labels"] as? [String: String] == ["fixture": "true"])
+        let healthCheck = try #require(config["Healthcheck"] as? [String: Any])
+        #expect(healthCheck["Test"] as? [String] == ["CMD", "/bin/true"])
+        let rootFS = try #require(inspect["RootFS"] as? [String: Any])
+        #expect(rootFS["Type"] as? String == "layers")
+        #expect((rootFS["Layers"] as? [String])?.count == 1)
+
+        func inspectedID(_ name: String) async throws -> String? {
+            let data = try await backend.imageInspectJSON(name: name)
+            let object = try #require(
+                try JSONSerialization.jsonObject(with: data)
+                    as? [String: Any]
+            )
+            return object["Id"] as? String
+        }
+
+        #expect(try await inspectedID(String(repeating: "d", count: 12)) == digest)
+        #expect(try await inspectedID("busybox") == busyboxDigest)
+
+        func listedIDs(_ filters: [String: [String]]) async throws -> [String] {
+            let data = try await backend.imageListJSON(
+                request: DockerImageListRequest(filters: filters)
+            )
+            let objects = try #require(
+                try JSONSerialization.jsonObject(with: data)
+                    as? [[String: Any]]
+            )
+            return objects.compactMap { $0["Id"] as? String }
+        }
+
+        #expect(
+            try await listedIDs(["dangling": ["false"]])
+                == [digest, busyboxDigest])
+        #expect(try await listedIDs(["dangling": ["true"]]).isEmpty)
+        #expect(
+            try await listedIDs(["before": ["alpine:3.20"]])
+                == [busyboxDigest])
+        #expect(
+            try await listedIDs(["since": ["busybox:latest"]])
+                == [digest])
+        #expect(try await listedIDs(["label": ["fixture"]]) == [digest])
+
+        await #expect(
+            throws: DockerLoggingBackendError.imageNotFound("missing:latest")
+        ) {
+            try await backend.imageInspectJSON(name: "missing:latest")
+        }
+        await #expect(throws: DockerLoggingBackendError.self) {
+            try await backend.imageListJSON(
+                request: DockerImageListRequest(
+                    filters: ["unsupported": ["value"]]
+                )
+            )
+        }
+        await #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                "invalid filter 'dangling=[banana]'"
+            )
+        ) {
+            try await backend.imageListJSON(
+                request: DockerImageListRequest(
+                    filters: ["dangling": ["banana"]]
+                )
+            )
+        }
+        await #expect(
+            throws: DockerLoggingBackendError.imageNotFound("missing:latest")
+        ) {
+            try await backend.imageListJSON(
+                request: DockerImageListRequest(
+                    filters: ["before": ["missing:latest"]]
+                )
+            )
+        }
+    }
+
+    @Test func dockerImageResourceCacheTracksNativeInventoryIdentity() async throws {
+        func image(reference: String, digestSeed: String) -> ClientImage {
+            ClientImage(
+                description: ImageDescription(
+                    reference: reference,
+                    descriptor: Descriptor(
+                        mediaType: MediaTypes.index,
+                        digest: "sha256:" + String(repeating: digestSeed, count: 64),
+                        size: 100
+                    )
+                )
+            )
+        }
+
+        let first = image(
+            reference: "docker.io/library/alpine:3.20",
+            digestSeed: "a"
+        )
+        let second = image(
+            reference: "docker.io/library/busybox:latest",
+            digestSeed: "b"
+        )
+        let third = image(
+            reference: "docker.io/library/debian:bookworm",
+            digestSeed: "c"
+        )
+        let fixture = DockerImageResourceCacheFixture(images: [second, first])
+        let cache = ContainerDockerImageResourceCache(
+            imageProvider: { await fixture.images() },
+            isVisible: { _ in true },
+            resourceProvider: { await fixture.resource(for: $0) }
+        )
+
+        #expect(try await cache.currentResources().count == 2)
+        #expect(try await cache.currentResources().count == 2)
+        #expect(await fixture.buildCount() == 2)
+
+        await fixture.replaceImages([first, second])
+        #expect(try await cache.currentResources().count == 2)
+        #expect(await fixture.buildCount() == 2)
+
+        await fixture.replaceImages([first, second, third])
+        #expect(try await cache.currentResources().count == 3)
+        #expect(await fixture.buildCount() == 5)
+    }
+
+    @Test func dockerImageMutationUsesInjectedNativeAuthorityAndMapsErrors() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-image-mutation-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let fixture = DockerImageMutationFixture()
+        let backend = ContainerDockerLoggingBackend(
+            containers: try service(
+                appRoot: tempURL,
+                logLabel: "container-engine-image-mutation-test"
+            ),
+            imagePullProvider: { await fixture.pull($0) },
+            imageTagProvider: { try await fixture.tag($0, $1) },
+            imageDeleteProvider: { await fixture.delete($0, $1) }
+        )
+        let pullRequest = DockerImagePullRequest(
+            fromImage: "docker.io/library/alpine",
+            tag: "3.20",
+            platform: "linux/arm64/v8",
+            registryAuth: "e30="
+        )
+        #expect(
+            try await backend.pullImage(request: pullRequest)
+                == DockerImagePullResult(
+                    displayReference: "alpine:3.20",
+                    digest: "sha256:fixture",
+                    upToDate: false
+                )
+        )
+        #expect(await fixture.capturedPullRequest() == pullRequest)
+
+        let tagRequest = DockerImageTagRequest(
+            repository: "fixture.local/alpine",
+            tag: "copy"
+        )
+        try await backend.tagImage(name: "alpine:3.20", request: tagRequest)
+        let capturedTag = await fixture.capturedTag()
+        #expect(capturedTag.0 == "alpine:3.20")
+        #expect(capturedTag.1 == tagRequest)
+
+        let deleteRequest = DockerImageDeleteRequest(force: true, prune: false)
+        #expect(
+            try await backend.deleteImage(
+                name: "fixture.local/alpine:copy",
+                request: deleteRequest
+            ) == [
+                DockerImageDeleteResult(
+                    untagged: "fixture.local/alpine:copy"
+                )
+            ]
+        )
+        let capturedDelete = await fixture.capturedDelete()
+        #expect(capturedDelete.0 == "fixture.local/alpine:copy")
+        #expect(capturedDelete.1 == deleteRequest)
+
+        await #expect(
+            throws: DockerLoggingBackendError.imageNotFound("missing:latest")
+        ) {
+            try await backend.tagImage(
+                name: "missing:latest",
+                request: tagRequest
+            )
+        }
+    }
+
+    @Test func dockerImageMutationRejectsCredentialsAndRecognizesDigests() throws {
+        try ContainerDockerLoggingBackend.validatePublicRegistryAuth(nil)
+        try ContainerDockerLoggingBackend.validatePublicRegistryAuth("e30=")
+        let credentials = Data(
+            #"{"username":"fixture","password":"secret"}"#.utf8
+        ).base64EncodedString()
+        #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                "registry authentication is not implemented by the selected provider"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validatePublicRegistryAuth(credentials)
+        }
+        #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                "invalid X-Registry-Auth header"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validatePublicRegistryAuth("not-base64")
+        }
+        #expect(
+            ContainerDockerLoggingBackend.isDigestSelector(
+                "sha256:0123456789abcdef"
+            )
+        )
+        #expect(
+            ContainerDockerLoggingBackend.isDigestSelector("0123456789ab")
+        )
+        #expect(!ContainerDockerLoggingBackend.isDigestSelector("alpine:3.20"))
+    }
+
+    @Test func engineLoggingInspectionHidesJSONFilePathBeforeFirstStart() async throws {
+        let tempURL = try canonicalTemporaryDirectory()
+            .appendingPathComponent(
+                "container-engine-created-log-inspect-test-\(UUID().uuidString)"
+            )
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let id = "engine-created-log-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(
+            path: containerRoot.appendingPathComponent(id)
+        )
+        try FileManager.default.createDirectory(
+            at: bundle.path,
+            withIntermediateDirectories: true
+        )
+        for directory in [tempURL, containerRoot, bundle.path] {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o700))],
+                ofItemAtPath: directory.path
+            )
+        }
+        var configuration = testConfiguration(id: id)
+        configuration.logging = try version2JSONFileConfiguration()
+        try bundle.set(configuration: configuration)
+
+        let containers = try service(
+            appRoot: tempURL,
+            logLabel: "container-engine-created-log-inspect-test"
+        )
+        let inspection = try await containers.engineLoggingInspection(
+            containerID: id
+        )
+
+        #expect(inspection.driver == "json-file")
+        #expect(inspection.publicLogPath == nil)
+    }
+
+    @Test func engineAttachDoesNotStreamUnreadableFiniteHistory() {
+        let plan = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: true,
+                stream: false,
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: false,
+            hasLogReader: false
+        )
+
+        #expect(!plan.input)
+        #expect(!plan.stdout)
+        #expect(!plan.stderr)
+    }
+
+    @Test func engineAttachStreamsUnreadableLiveOutputWithDockerTTYSelection() {
+        let nonTerminal = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: true,
+                stream: true,
+                stdin: true,
+                stdout: true,
+                stderr: true,
+                detachKeys: "ctrl-x"
+            ),
+            terminal: false,
+            hasLogReader: false
+        )
+        let terminalStderr = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: false,
+                stream: true,
+                stdin: false,
+                stdout: false,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: true,
+            hasLogReader: false
+        )
+        let terminalBoth = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: false,
+                stream: true,
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: true,
+            hasLogReader: false
+        )
+        let readable = ContainerDockerRuntimeAttachPlan(
+            request: DockerAttachRequest(
+                includeLogs: true,
+                stream: true,
+                stdin: false,
+                stdout: true,
+                stderr: true,
+                detachKeys: nil
+            ),
+            terminal: false,
+            hasLogReader: true
+        )
+
+        #expect(nonTerminal.input)
+        #expect(nonTerminal.stdout)
+        #expect(nonTerminal.stderr)
+        #expect(!terminalStderr.stdout)
+        #expect(!terminalStderr.stderr)
+        #expect(terminalBoth.stdout)
+        #expect(!terminalBoth.stderr)
+        #expect(!readable.stdout)
+        #expect(!readable.stderr)
+    }
+
+    @Test func engineResizeAcceptsDockerUInt32DomainAndUsesPTYRepresentation() {
+        let maximum = ContainerDockerLoggingBackend.terminalSize(
+            height: UInt32.max,
+            width: UInt32.max
+        )
+        let wrapped = ContainerDockerLoggingBackend.terminalSize(
+            height: UInt32(UInt16.max) + 1,
+            width: UInt32(UInt16.max) + 2
+        )
+
+        #expect(maximum.height == UInt16.max)
+        #expect(maximum.width == UInt16.max)
+        #expect(wrapped.height == 0)
+        #expect(wrapped.width == 1)
+    }
+
+    @Test func engineAttachRejectsPausedAndRestartingBeforeReplay() throws {
+        #expect(
+            throws: DockerLoggingBackendError.conflict(
+                "container paused-container is paused, unpause the container before attach"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validateAttachState(
+                containerID: "paused-container",
+                status: .paused,
+                restarting: false
+            )
+        }
+
+        #expect(
+            throws: DockerLoggingBackendError.conflict(
+                "container restarting-container is restarting, wait until the container is running"
+            )
+        ) {
+            try ContainerDockerLoggingBackend.validateAttachState(
+                containerID: "restarting-container",
+                status: .stopped,
+                restarting: true
+            )
+        }
+
+        for status in [
+            RuntimeStatus.unknown,
+            .stopped,
+            .running,
+            .stopping,
+        ] {
+            try ContainerDockerLoggingBackend.validateAttachState(
+                containerID: "allowed-container",
+                status: status,
+                restarting: false
+            )
+        }
+    }
+
+    @Test func engineActiveWireReaderPreservesExactRecordAndTerminalMode() async throws {
+        let source = try ContainerLogReadRecordV1(
+            stream: .stdout,
+            timestamp: ContainerLogTimestamp(
+                secondsSinceUnixEpoch: 1_767_323_045,
+                nanoseconds: 987_654_321
+            ),
+            data: Data("active-wire\n".utf8),
+            attributes: ["compose.project": "example"],
+            sequence: 41,
+            processGeneration: 7
+        )
+        var encoded = try JSONEncoder().encode(
+            ContainerLogReadRecordWireV1(source)
+        )
+        encoded.append(UInt8(ascii: "\n"))
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(contentsOf: encoded)
+        try pipe.fileHandleForWriting.close()
+
+        let reader = WireDockerLogReadSession(
+            file: pipe.fileHandleForReading,
+            terminal: true
+        )
+        #expect(reader.terminal)
+        let record = try #require(try await reader.nextRecord())
+        #expect(record.source == .standardOutput)
+        #expect(
+            record.timestamp.secondsSinceUnixEpoch
+                == source.timestamp.secondsSinceUnixEpoch
+        )
+        #expect(record.timestamp.nanoseconds == source.timestamp.nanoseconds)
+        #expect(record.line == source.data)
+        #expect(record.attributes == source.attributes)
+        #expect(try await reader.nextRecord() == nil)
     }
 
     @Test func staticLogReplayAppliesTailAfterCombiningRotatedFiles() async throws {
@@ -715,6 +2263,62 @@ struct ContainerLogsTests {
         #expect(data == expectedData)
     }
 
+    @Test func streamsRotatedTimestampedLogRecordFilesOldestFirst() async throws {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("container-log-record-stream-test-\(UUID().uuidString)")
+        defer {
+            try? FileManager.default.removeItem(at: tempURL)
+        }
+
+        let id = "test-container"
+        let containerRoot = tempURL.appendingPathComponent("containers")
+        let bundle = ContainerResource.Bundle(path: containerRoot.appendingPathComponent(id))
+        try FileManager.default.createDirectory(at: bundle.path, withIntermediateDirectories: true)
+        try bundle.set(configuration: testConfiguration(id: id))
+        let oldest = try logRecordData([
+            ContainerLogRecord(
+                timestamp: date("2026-01-01T00:00:00Z"),
+                stream: .stdout,
+                data: Data("oldest\n".utf8)
+            )
+        ])
+        let newer = try logRecordData([
+            ContainerLogRecord(
+                timestamp: date("2026-01-02T00:00:00Z"),
+                stream: .stderr,
+                data: Data("newer\n".utf8)
+            )
+        ])
+        let active = try logRecordData([
+            ContainerLogRecord(
+                timestamp: date("2026-01-03T00:00:00Z"),
+                stream: .stdout,
+                data: Data("active\n".utf8)
+            )
+        ])
+        try oldest.write(
+            to: bundle.containerLogRecords.appendingPathExtension("2")
+        )
+        try newer.write(
+            to: bundle.containerLogRecords.appendingPathExtension("1")
+        )
+        try active.write(to: bundle.containerLogRecords)
+
+        let service = try service(
+            appRoot: tempURL,
+            logLabel: "container-log-record-stream-test"
+        )
+        let file = try await service.logRecordFile(
+            id: id,
+            replay: ContainerLogReplayOptions(includeRotated: true)
+        )
+        defer {
+            try? file.close()
+        }
+
+        #expect(file.readDataToEndOfFile() == oldest + newer + active)
+    }
+
     private func logRecordData(_ records: [ContainerLogRecord]) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -783,6 +2387,65 @@ struct ContainerLogsTests {
         return bundle
     }
 
+    private func engineJSONObject(
+        _ response: DockerHTTPResponse
+    ) async throws -> [String: Any] {
+        let data = try await engineJSONData(response)
+        let object = try JSONSerialization.jsonObject(with: data)
+        return try #require(object as? [String: Any])
+    }
+
+    private func engineJSONArray(
+        _ response: DockerHTTPResponse
+    ) async throws -> [[String: Any]] {
+        let data = try await engineJSONData(response)
+        let object = try JSONSerialization.jsonObject(with: data)
+        return try #require(object as? [[String: Any]])
+    }
+
+    private func engineJSONData(_ response: DockerHTTPResponse) async throws -> Data {
+        switch response.body {
+        case .bytes(let data):
+            return data
+        case .managedStream(let session):
+            var data = Data()
+            do {
+                while let chunk = try await session.nextChunk() {
+                    data.append(chunk)
+                    guard data.count <= 4 * 1024 * 1024 else {
+                        throw EngineResponseFixtureError(
+                            "Engine JSON response exceeded the 4 MiB fixture limit"
+                        )
+                    }
+                }
+            } catch {
+                await session.cancel()
+                throw error
+            }
+            await session.close()
+            return data
+        default:
+            throw EngineResponseFixtureError(
+                "expected Engine JSON response (status: \(response.status), body: \(engineResponseBodyKind(response.body)))"
+            )
+        }
+    }
+
+    private func engineResponseBodyKind(_ body: DockerHTTPBody) -> String {
+        switch body {
+        case .bytes:
+            "bytes"
+        case .managedStream:
+            "managedStream"
+        case .stream:
+            "stream"
+        case .hijack:
+            "hijack"
+        case .webSocket:
+            "webSocket"
+        }
+    }
+
     private func service(appRoot: URL, logLabel: String) throws -> ContainersService {
         try ContainersService(
             appRoot: appRoot,
@@ -818,6 +2481,41 @@ struct ContainerLogsTests {
         return ContainerConfiguration(id: id, image: image, process: process)
     }
 
+    private func version2JSONFileConfiguration(
+        safeOptions: [String: String] = [:]
+    ) throws -> ContainerLogConfiguration {
+        let descriptor = try #require(
+            BuiltinLogDriverDescriptors.current.descriptor(named: "json-file")
+        )
+        return try ContainerLogConfiguration(
+            requested: ContainerLogRequest(
+                driver: "json-file",
+                options: safeOptions
+            ),
+            resolved: ResolvedContainerLogConfiguration(
+                leaseGeneration: 1,
+                driver: "json-file",
+                safeOptions: safeOptions,
+                delivery: LogDeliveryConfiguration(),
+                readPolicy: LogReadPolicy(source: .direct),
+                providerIdentity: descriptor.providerIdentity,
+                providerGenerationAtResolution: descriptor.providerGeneration,
+                contractDigest: descriptor.optionContractDigest
+            )
+        )
+    }
+
+    private func canonicalTemporaryDirectory() throws -> URL {
+        let path = FileManager.default.temporaryDirectory.path
+        let pointer = path.withCString { Darwin.realpath($0, nil) }
+        let canonical = try #require(pointer)
+        defer { free(canonical) }
+        return URL(
+            fileURLWithPath: String(cString: canonical),
+            isDirectory: true
+        )
+    }
+
     private func pluginLoader(appRoot: URL) throws -> PluginLoader {
         let pluginRoot = appRoot.appendingPathComponent("plugins")
         let runtimeURL = pluginRoot.appendingPathComponent("container-runtime-linux")
@@ -841,11 +2539,34 @@ struct ContainerLogsTests {
     }
 }
 
+private struct EngineResponseFixtureError: Error {
+    let message: String
+
+    init(_ message: String) {
+        self.message = message
+    }
+}
+
 private struct FollowReadTimeout: Error, CustomStringConvertible {
     var output: String
 
     var description: String {
         "timed out waiting for followed log output; observed: \(output)"
+    }
+}
+
+private final class WaitRegistrationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var registrations = 0
+
+    var count: Int {
+        lock.withLock { registrations }
+    }
+
+    func record() {
+        lock.withLock {
+            registrations += 1
+        }
     }
 }
 

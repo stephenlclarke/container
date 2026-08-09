@@ -27,7 +27,9 @@ import NIO
 
 extension RuntimeLinuxHelper {
     struct Start: AsyncParsableCommand {
-        static let label = "com.apple.container.runtime.container-runtime-linux"
+        static var label: String {
+            ContainerServiceNamespace.current.serviceIdentifier("runtime.container-runtime-linux")
+        }
 
         static let configuration = CommandConfiguration(
             commandName: "start",
@@ -104,6 +106,11 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.wait.rawValue: XPCServer.route(server.wait),
                         RuntimeRoutes.start.rawValue: XPCServer.route(server.startProcess),
                         RuntimeRoutes.attach.rawValue: XPCServer.route(server.attach),
+                        RuntimeRoutes.followLogs.rawValue: XPCServer.route(server.followLogs),
+                        RuntimeRoutes.followLogRecords.rawValue: XPCServer.route(server.followLogRecords),
+                        RuntimeRoutes.followLogReadRecordsV1.rawValue: XPCServer.route(
+                            server.followLogReadRecordsV1
+                        ),
                         RuntimeRoutes.dial.rawValue: XPCServer.route(server.dial),
                         RuntimeRoutes.shutdown.rawValue: XPCServer.route(server.shutdown),
                         RuntimeRoutes.statistics.rawValue: XPCServer.route(server.statistics),

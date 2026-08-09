@@ -56,24 +56,55 @@ extension Application {
         @Argument(parsing: .captureForPassthrough, help: "Container init process arguments")
         var arguments: [String] = []
 
-        public func run() async throws {
-            let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
-            let progressConfig = try ProgressConfig(
-                showTasks: true,
-                showItems: true,
-                ignoreSmallSize: true,
-                totalTasks: 3
-            )
-            let progress = ProgressBar(config: progressConfig)
-            defer {
-                progress.finish()
+        var loggingRequest: ContainerLogRequest {
+            get throws {
+                try Parser.loggingRequest(
+                    driver: managementFlags.logDriver,
+                    options: managementFlags.logOpt
+                )
             }
-            progress.start()
+        }
+
+        public func run() async throws {
+            try await run(loggingRequest: loggingRequest)
+        }
+
+        /// Creates a container with an authority logging request supplied by a
+        /// trusted in-process client instead of exposing protected values in a
+        /// child-process argument vector.
+        public func run(
+            loggingRequest: ContainerLogRequest,
+            emitsCLIOutput: Bool = true
+        ) async throws {
+            let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
+            let progress: ProgressBar?
+            if emitsCLIOutput {
+                progress = ProgressBar(
+                    config: try ProgressConfig(
+                        showTasks: true,
+                        showItems: true,
+                        ignoreSmallSize: true,
+                        totalTasks: 3
+                    ))
+            } else {
+                progress = nil
+            }
+            defer {
+                progress?.finish()
+            }
+            progress?.start()
 
             let id = Utility.createContainerID(name: self.managementFlags.name)
 
             guard ManagedContainer.nameValid(id) else {
                 throw ContainerizationError(.invalidArgument, message: "container ID \(id) is not a valid container ID")
+            }
+
+            let progressUpdate: ProgressUpdateHandler
+            if let progress {
+                progressUpdate = progress.handler
+            } else {
+                progressUpdate = { _ in }
             }
 
             let ck = try await Utility.containerConfigFromFlags(
@@ -85,8 +116,9 @@ extension Application {
                 resource: resourceFlags,
                 registry: registryFlags,
                 imageFetch: imageFetchFlags,
+                loggingRequest: loggingRequest,
                 containerSystemConfig: containerSystemConfig,
-                progressUpdate: progress.handler,
+                progressUpdate: progressUpdate,
                 log: log
             )
 
@@ -100,6 +132,7 @@ extension Application {
             let runtimeData = try LinuxRuntimeData.encoded(from: managementFlags)
             try await client.create(
                 configuration: ck.0,
+                loggingRequest: loggingRequest,
                 options: options,
                 kernel: ck.1,
                 initImage: ck.2,
@@ -121,9 +154,11 @@ extension Application {
                         .internalError, message: "failed to create cidfile at \(path): \(errno)")
                 }
             }
-            progress.finish()
+            progress?.finish()
 
-            print(id)
+            if emitsCLIOutput {
+                print(id)
+            }
         }
     }
 }

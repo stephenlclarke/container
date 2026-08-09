@@ -22,7 +22,9 @@ import Foundation
 import TerminalProgress
 
 public struct ClientKernel {
-    static let serviceIdentifier = "com.apple.container.apiserver"
+    static var serviceIdentifier: String {
+        ContainerServiceNamespace.current.apiServerIdentifier
+    }
 }
 
 extension ClientKernel {

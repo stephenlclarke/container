@@ -30,6 +30,8 @@ public enum XPCKeys: String {
     case processIdentifier
     /// Container configuration key.
     case containerConfig
+    /// Lossless logging request resolved by the Container authority.
+    case containerLogRequest
     /// Container options key.
     case containerOptions
     /// Opaque runtime-specific data.
@@ -139,13 +141,6 @@ public enum XPCKeys: String {
     case volumeReadonly
     case volumeContainerId
 
-    /// Config
-    case config
-    case configs
-    case configName
-    case configData
-    case configLabels
-
     /// Container statistics
     case statistics
     /// Container process information
@@ -165,6 +160,8 @@ public enum XPCKeys: String {
     case createParents
     case followSymlink
     case preserveOwnership
+    case copyArchive
+    case copyContents
 
     /// Optional tail line limit for container logs.
     case logTail
@@ -226,11 +223,6 @@ public enum XPCRoute: String {
 
     case volumeDiskUsage
 
-    case configCreate
-    case configDelete
-    case configList
-    case configInspect
-    case configRead
     case systemDiskUsage
 
     case ping
