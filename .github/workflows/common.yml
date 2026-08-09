@@ -64,6 +64,7 @@ jobs:
   buildAndTest:
     name: Build and test the project
     needs: linuxServiceWorkloads
+    if: ${{ always() }}
     timeout-minutes: 90
     runs-on: >-
       ${{ github.repository == 'apple/container'
@@ -72,6 +73,12 @@ jobs:
       contents: read
       packages: read
     steps:
+      - name: Require Linux service workload build
+        if: ${{ needs.linuxServiceWorkloads.result != 'success' }}
+        run: |
+          echo "Linux service workload build did not succeed" >&2
+          exit 1
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
