@@ -134,12 +134,9 @@ public struct ContainerDockerLoggingBackend:
     let serverVersion: String
     let imageCountProvider: @Sendable () async throws -> Int
     let imageResourceProvider: @Sendable () async throws -> [ImageResource]
-    let imagePullProvider:
-        @Sendable (DockerImagePullRequest) async throws -> DockerImagePullResult
-    let imageTagProvider:
-        @Sendable (String, DockerImageTagRequest) async throws -> Void
-    let imageDeleteProvider:
-        @Sendable (String, DockerImageDeleteRequest) async throws -> [DockerImageDeleteResult]
+    let imagePullProvider: @Sendable (DockerImagePullRequest) async throws -> DockerImagePullResult
+    let imageTagProvider: @Sendable (String, DockerImageTagRequest) async throws -> Void
+    let imageDeleteProvider: @Sendable (String, DockerImageDeleteRequest) async throws -> [DockerImageDeleteResult]
 
     public init(
         containers: ContainersService,
@@ -161,45 +158,50 @@ public struct ContainerDockerLoggingBackend:
         let imageResourceCache = ContainerDockerImageResourceCache(
             containerSystemConfig: containerSystemConfig
         )
-        let authoritativeImageResources = imageResourceProvider ?? {
-            try await imageResourceCache.currentResources()
-        }
+        let authoritativeImageResources =
+            imageResourceProvider ?? {
+                try await imageResourceCache.currentResources()
+            }
         self.containers = containers
         self.engineIdentity = engineIdentity
         self.serverVersion = serverVersion
         self.imageResourceProvider = authoritativeImageResources
-        self.imagePullProvider = imagePullProvider ?? {
-            try await Self.pullImage(
-                request: $0,
-                containerSystemConfig: containerSystemConfig
-            )
-        }
-        self.imageTagProvider = imageTagProvider ?? {
-            try await Self.tagImage(
-                name: $0,
-                request: $1,
-                containerSystemConfig: containerSystemConfig
-            )
-        }
-        self.imageDeleteProvider = imageDeleteProvider ?? {
-            try await Self.deleteImage(
-                name: $0,
-                request: $1,
-                containerSystemConfig: containerSystemConfig
-            )
-        }
-        self.imageCountProvider = imageCountProvider ?? {
-            var count = 0
-            for image in try await ClientImage.list() {
-                if try !Utility.isInfraImage(
-                    name: image.description.reference,
+        self.imagePullProvider =
+            imagePullProvider ?? {
+                try await Self.pullImage(
+                    request: $0,
                     containerSystemConfig: containerSystemConfig
-                ) {
-                    count += 1
-                }
+                )
             }
-            return count
-        }
+        self.imageTagProvider =
+            imageTagProvider ?? {
+                try await Self.tagImage(
+                    name: $0,
+                    request: $1,
+                    containerSystemConfig: containerSystemConfig
+                )
+            }
+        self.imageDeleteProvider =
+            imageDeleteProvider ?? {
+                try await Self.deleteImage(
+                    name: $0,
+                    request: $1,
+                    containerSystemConfig: containerSystemConfig
+                )
+            }
+        self.imageCountProvider =
+            imageCountProvider ?? {
+                var count = 0
+                for image in try await ClientImage.list() {
+                    if try !Utility.isInfraImage(
+                        name: image.description.reference,
+                        containerSystemConfig: containerSystemConfig
+                    ) {
+                        count += 1
+                    }
+                }
+                return count
+            }
     }
 
     public func loggingSystemInfo() async throws -> DockerLoggingSystemInfo {
@@ -227,6 +229,7 @@ public struct ContainerDockerLoggingBackend:
         requestedName: String?
     ) async throws -> DockerContainerCreateResult {
         do {
+            try Self.validateDockerSyslogUnixSocket(request)
             let containerID = try await containers.createDockerContainer(
                 request: request,
                 requestedName: requestedName
@@ -235,6 +238,30 @@ public struct ContainerDockerLoggingBackend:
         } catch {
             throw Self.map(error, containerID: requestedName)
         }
+    }
+
+    /// Docker stats Unix Syslog endpoints during `POST /containers/create`.
+    /// Keep this validation in the Docker boundary so a rejected create never
+    /// reaches the native authority or leaves a partially persisted container.
+    static func validateDockerSyslogUnixSocket(
+        _ request: DockerContainerCreateRequest,
+        fileExists: (String) -> Bool = FileManager.default.fileExists(atPath:)
+    ) throws {
+        guard
+            let logging = request.hostConfiguration?.logConfiguration,
+            logging.type == "syslog",
+            let address = logging.options?["syslog-address"],
+            let components = URLComponents(string: address),
+            components.scheme == "unix" || components.scheme == "unixgram",
+            !components.percentEncodedPath.isEmpty,
+            let path = components.percentEncodedPath.removingPercentEncoding,
+            !fileExists(path)
+        else {
+            return
+        }
+        throw DockerLoggingBackendError.server(
+            "failed to create task for container: failed to initialize logging driver: stat \(path): no such file or directory"
+        )
     }
 
     public func startContainer(containerID: String) async throws {
@@ -615,7 +642,7 @@ public struct ContainerDockerLoggingBackend:
         if let error = error as? DockerLoggingBackendError {
             return error
         }
-        if case let .connectionFailed(endpoint, reason) = error as? GELFProviderError {
+        if case .connectionFailed(let endpoint, let reason) = error as? GELFProviderError {
             return .server(
                 "failed to create task for container: failed to initialize logging driver: gelf: cannot connect to GELF endpoint: \(endpoint.host):\(endpoint.port) \(reason)"
             )

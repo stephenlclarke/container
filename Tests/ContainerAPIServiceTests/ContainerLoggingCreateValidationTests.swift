@@ -14,14 +14,52 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerEngineLogging
 import ContainerPersistence
 import ContainerResource
 import ContainerizationError
+import Foundation
 import Testing
 
 @testable import ContainerAPIService
 
 struct ContainerLoggingCreateValidationTests {
+    @Test(arguments: ["unix", "unixgram"])
+    func dockerCreateRejectsMissingUnixSyslogSocketBeforeAuthorityPersistence(
+        scheme: String
+    ) throws {
+        let path = "/private/tmp/container-missing-syslog-\(UUID().uuidString).sock"
+        let request = try JSONDecoder().decode(
+            DockerContainerCreateRequest.self,
+            from: Data(
+                """
+                {
+                  "Image": "alpine:3.20",
+                  "HostConfig": {
+                    "LogConfig": {
+                      "Type": "syslog",
+                      "Config": {"syslog-address": "\(scheme)://\(path)"}
+                    }
+                  }
+                }
+                """.utf8
+            )
+        )
+
+        let error = #expect(throws: DockerLoggingBackendError.self) {
+            try ContainerDockerLoggingBackend.validateDockerSyslogUnixSocket(
+                request,
+                fileExists: { _ in false }
+            )
+        }
+        #expect(
+            error
+                == .server(
+                    "failed to create task for container: failed to initialize logging driver: stat \(path): no such file or directory"
+                )
+        )
+    }
+
     @Test func legacyLoggingRemainsAcceptedAtCreateBoundary() throws {
         let expected = ContainerLogConfiguration(
             storage: .none,
