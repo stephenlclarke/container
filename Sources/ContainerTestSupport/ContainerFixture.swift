@@ -104,9 +104,13 @@ public final class ContainerFixture: Sendable {
         let testName = testID
         let testIdentifier: String? = nil
         let suiteName = "unknown"
-        let isParameterized = false
         #endif
+
+        #if canImport(Testing)
         let logFileName = isParameterized ? "\(testName)-\(testID).log" : "\(testName).log"
+        #else
+        let logFileName = "\(testName).log"
+        #endif
 
         // Set up logging before any fixture work (scratch dir creation, etc.) so a "test start"
         // message is the first thing recorded — bookended by "test end" once `body` returns.
