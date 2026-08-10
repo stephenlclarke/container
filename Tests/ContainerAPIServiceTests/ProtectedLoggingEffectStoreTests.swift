@@ -1034,7 +1034,7 @@ struct ProtectedLoggingEffectStoreTests {
             #expect(await completion.isComplete == false)
             try Data().write(to: release)
             #expect(await opening.value)
-            process.waitUntilExit()
+            try await Self.waitForProcessExit(process)
             #expect(process.terminationStatus == 0)
             #expect(await completion.isComplete)
         }
@@ -1222,6 +1222,18 @@ struct ProtectedLoggingEffectStoreTests {
         let deadline = clock.now.advanced(by: .seconds(5))
         while !FileManager.default.fileExists(atPath: url.path) {
             guard clock.now < deadline else {
+                throw ProtectedLoggingEffectStoreError.ioFailure(.lock, ETIMEDOUT)
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    private static func waitForProcessExit(_ process: Process) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while process.isRunning {
+            guard clock.now < deadline else {
+                process.terminate()
                 throw ProtectedLoggingEffectStoreError.ioFailure(.lock, ETIMEDOUT)
             }
             try await Task.sleep(for: .milliseconds(10))
