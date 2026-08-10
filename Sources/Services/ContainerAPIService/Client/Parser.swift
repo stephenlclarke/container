@@ -1502,7 +1502,7 @@ public struct Parser {
         let requestedGroups = try Parser.supplementalGroups(processFlags.groupAdd)
 
         return .init(
-            executable: commandToRun.first!,
+            executable: commandToRun[0],
             arguments: [String](commandToRun.dropFirst()),
             environment: envvars,
             workingDirectory: workingDir,
@@ -1530,11 +1530,31 @@ public struct Parser {
     public static let defaultDirectives = ["type": "virtiofs"]
 
     public static func tmpfsMounts(_ mounts: [String]) throws -> [Filesystem] {
-        let mounts = mounts.dedupe()
         var result: [Filesystem] = []
         result.reserveCapacity(mounts.count)
+        var seenDestinations: Set<String> = []
+
         for tmpfs in mounts {
-            let fs = Filesystem.tmpfs(destination: tmpfs, options: [])
+            let parts = tmpfs.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            let destination = String(parts[0])
+            let options = parts.count == 2 ? String(parts[1]).split(separator: ",").map(String.init) : []
+
+            if destination.isEmpty {
+                throw ContainerizationError(.invalidArgument, message: "mount destination cannot be empty")
+            }
+
+            let filePath = FilePath(destination)
+            guard filePath.isAbsolute else {
+                throw ContainerizationError(.invalidArgument, message: "\(destination) is not an absolute path")
+            }
+
+            let normalizedDest = filePath.lexicallyNormalized().string
+            if seenDestinations.contains(normalizedDest) {
+                continue
+            }
+            seenDestinations.insert(normalizedDest)
+
+            let fs = Filesystem.tmpfs(destination: destination, options: options)
             try validateMount(.filesystem(fs))
             result.append(fs)
         }
