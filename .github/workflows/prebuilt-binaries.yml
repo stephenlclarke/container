@@ -77,12 +77,56 @@ jobs:
 
           printf 'heavy=%s\n' "$heavy" >> "$GITHUB_OUTPUT"
 
-  package:
-    name: Package ${{ github.ref_name }}
+  linux_service_workloads:
+    name: Build Linux service workloads
     needs: changes
     if: >
       github.repository == 'stephenlclarke/container' &&
       needs.changes.outputs.heavy == 'true' &&
+      (github.event_name != 'push' ||
+       !startsWith(github.event.head_commit.message, 'chore(homebrew): refresh prebuilt formula metadata'))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout container
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        id: buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build pinned Linux service workloads
+        env:
+          CONTAINER_GELF_BUILDER: ${{ steps.buildx.outputs.name }}
+          CONTAINER_JOURNALD_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: |
+          python3 Tools/ContainerJournaldService/build.py build \
+            --output-directory .build/container-journald-service
+          python3 Tools/ContainerGELFService/build.py build \
+            --output-directory bin/services/container-gelf-service
+
+      - name: Upload pinned Linux service workloads
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: linux-service-workloads
+          path: |
+            .build/container-journald-service
+            bin/services/container-gelf-service
+          include-hidden-files: true
+          compression-level: 0
+          retention-days: 1
+
+  package:
+    name: Package ${{ github.ref_name }}
+    needs:
+      - changes
+      - linux_service_workloads
+    if: >
+      github.repository == 'stephenlclarke/container' &&
+      needs.changes.outputs.heavy == 'true' &&
+      needs.linux_service_workloads.result == 'success' &&
       (github.event_name != 'push' ||
        !startsWith(github.event.head_commit.message, 'chore(homebrew): refresh prebuilt formula metadata'))
     runs-on: macos-26
@@ -91,6 +135,12 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0
+
+      - name: Download pinned Linux service workloads
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: linux-service-workloads
+          path: .
 
       - name: Select package lane
         id: lane
@@ -276,6 +326,8 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Build package
+        env:
+          CONTAINER_SERVICE_WORKLOADS_PREBUILT: "true"
         run: |
           make package \
             BUILD_CONFIGURATION="${{ steps.lane.outputs.configuration }}" \
