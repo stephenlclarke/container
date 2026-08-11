@@ -159,12 +159,50 @@ extension ContainerFixture {
 
 extension ContainerFixture {
 
+    private static let routineLogInspectionKind = "container-log-configuration-inspection-v1"
+
+    /// Removes the deliberately non-authoritative logging projection before
+    /// legacy integration assertions decode the remaining configuration.
+    ///
+    /// The production `container inspect` contract must remain redaction-safe
+    /// and non-decodable as persisted configuration. These fixtures do not
+    /// assert logging state, so they retain all other inspect fields while
+    /// discarding only the recognized diagnostic projection.
+    package static func inspectDataForConfigurationAssertions(_ data: Data) throws -> Data {
+        guard var outputs = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw CommandError.executionFailed("container inspect output is not an object array")
+        }
+
+        for index in outputs.indices {
+            guard var configuration = outputs[index]["configuration"] as? [String: Any] else {
+                throw CommandError.executionFailed("container inspect output is missing configuration")
+            }
+            guard let logging = configuration["logging"] as? [String: Any] else {
+                continue
+            }
+            guard let diagnosticKind = logging["diagnosticKind"] else {
+                continue
+            }
+            guard diagnosticKind as? String == Self.routineLogInspectionKind else {
+                throw CommandError.executionFailed(
+                    "container inspect output has an unknown logging diagnostic projection"
+                )
+            }
+
+            configuration.removeValue(forKey: "logging")
+            outputs[index]["configuration"] = configuration
+        }
+
+        return try JSONSerialization.data(withJSONObject: outputs, options: [.sortedKeys])
+    }
+
     /// Returns the parsed inspect output for a container.
     public func inspectContainer(_ name: String) throws -> InspectOutput {
         let result = try run(["inspect", name]).check()
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let outputs = try decoder.decode([InspectOutput].self, from: result.outputData)
+        let data = try Self.inspectDataForConfigurationAssertions(result.outputData)
+        let outputs = try decoder.decode([InspectOutput].self, from: data)
         guard let first = outputs.first else {
             throw CommandError.executionFailed("container '\(name)' not found in inspect output")
         }
