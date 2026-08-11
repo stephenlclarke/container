@@ -195,8 +195,11 @@ public struct Application: AsyncLoggableCommand {
         )
     }
 
-    static func pluginLoaderForHelp(healthCheck: @escaping APIServerHealthCheck = defaultAPIServerHealthCheck(timeout:)) async -> PluginLoader? {
-        if let pluginLoader = try? createPluginLoaderFromCurrentRoots(), !pluginLoader.findPlugins().filter(\.config.isCLI).isEmpty {
+    static func pluginLoaderForHelp(
+        currentRootsLoader: () -> PluginLoader? = { try? createPluginLoaderFromCurrentRoots() },
+        healthCheck: @escaping APIServerHealthCheck = defaultAPIServerHealthCheck(timeout:)
+    ) async -> PluginLoader? {
+        if let pluginLoader = currentRootsLoader(), !pluginLoader.findPlugins().filter(\.config.isCLI).isEmpty {
             return pluginLoader
         }
         return try? await createPluginLoader(healthTimeout: .seconds(1), wallTimeout: .seconds(1), healthCheck: healthCheck)
