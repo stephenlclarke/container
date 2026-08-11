@@ -472,6 +472,12 @@ INTEGRATION_PROFILE_ENV ?=
 # `container system start` snapshots XDG's config file into APP_ROOT, so an inherited
 # ~/.config/container/config.toml can otherwise change the builder image under test.
 INTEGRATION_CONFIG_HOME ?= $(SCRATCH_ROOT)/xdg-config
+# A release gate can provide a candidate-specific namespace so Keychain access
+# controls from an older ad-hoc build cannot poison a rebuilt integration run.
+# Keep ordinary unit tests in the default namespace; this value is applied only
+# inside RUN_INTEGRATION.
+INTEGRATION_SERVICE_NAMESPACE ?=
+INTEGRATION_NAMESPACE_ENV := $(if $(strip $(INTEGRATION_SERVICE_NAMESPACE)),CONTAINER_SERVICE_NAMESPACE="$(strip $(INTEGRATION_SERVICE_NAMESPACE))")
 
 PRESERVE_KERNELS ?= false
 # Default scratch root under the project directory so container build can access context
@@ -481,7 +487,8 @@ SCRATCH_ROOT ?= $(ROOT_DIR)/.test-scratch
 
 define RUN_INTEGRATION
 	@echo Ensuring apiserver stopped before the CLI integration tests...
-	@bin/container system stop && sleep 3 && scripts/ensure-container-stopped.sh
+	@$(INTEGRATION_NAMESPACE_ENV) bin/container system stop && sleep 3
+	@if [ -z "$(strip $(INTEGRATION_SERVICE_NAMESPACE))" ]; then scripts/ensure-container-stopped.sh ; fi
 	@rm -f "$(INTEGRATION_CONFIG_HOME)/container/config.toml"
 	@mkdir -p "$(INTEGRATION_CONFIG_HOME)"
 	@if [ -n "$(APP_ROOT)" ]; then \
@@ -494,11 +501,12 @@ define RUN_INTEGRATION
 			find "$(APP_ROOT)" -mindepth 1 -maxdepth 1 -exec rm -rf {} + ; \
 		fi ; \
 	fi
-	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" "$(MAKE)" init-block
+	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_NAMESPACE_ENV) "$(MAKE)" init-block
 	@echo Running the integration tests...
-	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_PROFILE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
+	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_PROFILE_ENV) $(INTEGRATION_NAMESPACE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
 	{ \
 		if [ -n "$(APP_ROOT)" ]; then CONTAINER_APP_ROOT=$(APP_ROOT) && export CONTAINER_APP_ROOT ; fi ; \
+		if [ -n "$(strip $(INTEGRATION_SERVICE_NAMESPACE))" ]; then CONTAINER_SERVICE_NAMESPACE="$(strip $(INTEGRATION_SERVICE_NAMESPACE))" && export CONTAINER_SERVICE_NAMESPACE ; fi ; \
 		CLITEST_LOG_ROOT=$(LOG_ROOT) && export CLITEST_LOG_ROOT ; \
 		CLITEST_SCRATCH_ROOT=$(SCRATCH_ROOT) && export CLITEST_SCRATCH_ROOT ; \
 		CONTAINER_CLI_PATH=$(ROOT_DIR)/bin/container && export CONTAINER_CLI_PATH ; \
@@ -512,7 +520,8 @@ define RUN_INTEGRATION
 		exit_code=$$? ; \
 		$(INTEGRATION_POST_TEST) \
 		echo Ensuring apiserver stopped after the CLI integration tests ; \
-		scripts/ensure-container-stopped.sh ; \
+		bin/container system stop >/dev/null 2>&1 || true ; \
+		if [ -z "$(strip $(INTEGRATION_SERVICE_NAMESPACE))" ]; then scripts/ensure-container-stopped.sh ; fi ; \
 		exit $${exit_code} ; \
 	}
 endef
