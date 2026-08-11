@@ -44,7 +44,7 @@ struct SystemStartTests {
         )
 
         #expect(command.reference == reference)
-        #expect(command.registry.scheme == "auto")
+        #expect(command.registry.scheme == "https")
         #expect(command.progressFlags.progress == .auto)
         #expect(command.imageFetchFlags.maxConcurrentDownloads == 3)
         #expect(command.arch == nil)

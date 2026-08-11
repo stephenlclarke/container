@@ -63,7 +63,7 @@ extension Application {
 
         public init(
             platform: String? = nil,
-            scheme: String = "auto",
+            scheme: String = "https",
             reference: String
         ) throws {
             var arguments = ["--scheme", scheme]
