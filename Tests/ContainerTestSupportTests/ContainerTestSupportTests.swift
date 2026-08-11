@@ -23,6 +23,40 @@ import Testing
 struct ContainerTestSupportTests {
 
     @Test
+    func inspectFixtureDropsOnlyRecognizedLoggingDiagnosticProjection() throws {
+        let input = Data(
+            """
+            [{"configuration":{"id":"example","logging":{"diagnosticKind":"container-log-configuration-inspection-v1","storage":"local"}},"status":{"state":"stopped","networks":[]}}]
+            """.utf8
+        )
+
+        let normalized = try ContainerFixture.inspectDataForConfigurationAssertions(input)
+        let outputs = try #require(
+            JSONSerialization.jsonObject(with: normalized) as? [[String: Any]])
+        let configuration = try #require(outputs.first?["configuration"] as? [String: Any])
+        #expect(configuration["id"] as? String == "example")
+        #expect(configuration["logging"] == nil)
+    }
+
+    @Test
+    func inspectFixtureRejectsUnknownLoggingDiagnosticProjection() throws {
+        let input = Data(
+            """
+            [{"configuration":{"id":"example","logging":{"diagnosticKind":"unexpected-v1"}}}]
+            """.utf8
+        )
+
+        #expect {
+            try ContainerFixture.inspectDataForConfigurationAssertions(input)
+        } throws: { error in
+            guard case .executionFailed(let message) = error as? CommandError else {
+                return false
+            }
+            return message == "container inspect output has an unknown logging diagnostic projection"
+        }
+    }
+
+    @Test
     func additionalCABundleUsesDistinctAlpineReferences() {
         let originalBundle = ProcessInfo.processInfo.environment["CLITEST_CA_BUNDLE"]
         defer { restoreEnvironment("CLITEST_CA_BUNDLE", to: originalBundle) }
