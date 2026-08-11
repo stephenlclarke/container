@@ -251,7 +251,7 @@ struct TestCLINetwork {
                 name: frontendService,
                 args: [
                     "--network", "\(frontendNetwork),alias=API",
-                    "--init-image", "vminit:latest",
+                    "--init-image", try f.getConfiguredVminitImage(),
                 ],
                 autoRemove: false,
                 waitUntilRunning: true
@@ -260,7 +260,7 @@ struct TestCLINetwork {
                 name: backendService,
                 args: [
                     "--network", "\(backendNetwork),alias=api",
-                    "--init-image", "vminit:latest",
+                    "--init-image", try f.getConfiguredVminitImage(),
                 ],
                 autoRemove: false,
                 waitUntilRunning: true
@@ -270,7 +270,7 @@ struct TestCLINetwork {
                 args: [
                     "--network", frontendNetwork,
                     "--network", backendNetwork,
-                    "--init-image", "vminit:latest",
+                    "--init-image", try f.getConfiguredVminitImage(),
                 ],
                 autoRemove: false,
                 waitUntilRunning: true
