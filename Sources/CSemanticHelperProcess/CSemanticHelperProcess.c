@@ -21,6 +21,7 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -37,17 +38,19 @@ static int csh_has_prefix(const char *value, const char *prefix) {
 
 /// Preserve the authority environment needed by Application Default
 /// Credentials while rejecting dynamic-loader injection controls.
-static char **csh_copy_safe_inherited_environment(void) {
-    size_t count = 0;
-    for (char **entry = environ; *entry != NULL; entry++) {
-        if (
-            !csh_has_prefix(*entry, "DYLD_")
-            && !csh_has_prefix(*entry, "LD_")
-        ) {
-            count++;
-        }
+static void csh_free_environment(char **environment) {
+    if (environment == NULL) {
+        return;
     }
-    char **result = calloc(count + 1, sizeof(char *));
+    for (char **entry = environment; *entry != NULL; entry++) {
+        free(*entry);
+    }
+    free(environment);
+}
+
+static char **csh_copy_safe_inherited_environment(void) {
+    size_t capacity = 16;
+    char **result = calloc(capacity, sizeof(char *));
     if (result == NULL) {
         return NULL;
     }
@@ -57,7 +60,26 @@ static char **csh_copy_safe_inherited_environment(void) {
             !csh_has_prefix(*entry, "DYLD_")
             && !csh_has_prefix(*entry, "LD_")
         ) {
-            result[index++] = *entry;
+            if (index + 1 >= capacity) {
+                if (capacity > SIZE_MAX / 2 / sizeof(*result)) {
+                    csh_free_environment(result);
+                    return NULL;
+                }
+                capacity *= 2;
+                char **resized = realloc(result, capacity * sizeof(*result));
+                if (resized == NULL) {
+                    csh_free_environment(result);
+                    return NULL;
+                }
+                result = resized;
+            }
+            result[index] = strdup(*entry);
+            if (result[index] == NULL) {
+                csh_free_environment(result);
+                return NULL;
+            }
+            index++;
+            result[index] = NULL;
         }
     }
     return result;
@@ -186,7 +208,7 @@ int csh_spawn(
         );
     }
 
-    free(inherited_environment);
+    csh_free_environment(inherited_environment);
 
     if (attribute_result == 0) {
         posix_spawnattr_destroy(&attributes);
