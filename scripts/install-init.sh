@@ -40,6 +40,10 @@ Environment:
                                Optional absolute host path for temporary Swift build
                                artifacts. Keeps build products out of the source
                                checkout that is shared with the guest builder.
+    CONTAINER_INIT_BOOTSTRAP_IMAGE_ARCHIVE
+                               Optional OCI archive containing the configured init
+                               image. Loads it during the first isolated start before
+                               any registry pull.
 
 EOF
     exit 0
@@ -98,6 +102,7 @@ default_image_name() {
 	printf 'vminit:latest'
 }
 IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-$(default_image_name)}"
+BOOTSTRAP_IMAGE_ARCHIVE="${CONTAINER_INIT_BOOTSTRAP_IMAGE_ARCHIVE:-}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
 TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT=""
@@ -157,7 +162,15 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 		# the default root leaks integration and release validation into the
 		# developer's persisted state and can make an existing Keychain ACL reject
 		# a newly signed test binary before the isolated restart is reached.
-		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${START_ARGS[@]}"
+		BOOTSTRAP_START_ARGS=("${START_ARGS[@]}")
+		if [[ -n "${BOOTSTRAP_IMAGE_ARCHIVE}" ]]; then
+			if [[ ! -f "${BOOTSTRAP_IMAGE_ARCHIVE}" ]]; then
+				echo "container init bootstrap image archive does not exist: ${BOOTSTRAP_IMAGE_ARCHIVE}" >&2
+				exit 1
+			fi
+			BOOTSTRAP_START_ARGS+=(--init-image-archive "${BOOTSTRAP_IMAGE_ARCHIVE}")
+		fi
+		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BOOTSTRAP_START_ARGS[@]}"
 	fi
 	BUILD_SCRATCH_ROOT="${CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT:-${TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT}}"
 	if [[ -n "${BUILD_SCRATCH_ROOT}" ]]; then
