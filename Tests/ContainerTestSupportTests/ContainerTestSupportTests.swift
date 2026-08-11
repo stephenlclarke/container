@@ -57,6 +57,42 @@ struct ContainerTestSupportTests {
     }
 
     @Test
+    func systemFixtureDropsOnlyRecognizedDiagnosticProjections() throws {
+        let input = Data(
+            """
+            {"diagnosticKind":"container-system-config-inspection-v1","logging":{"diagnosticKind":"logging-config-inspection-v1","driver":"json-file"},"vminit":{"image":"example/vminit:exact"}}
+            """.utf8
+        )
+
+        let normalized = try ContainerFixture.systemConfigurationDataForAssertions(input)
+        let configuration = try #require(
+            JSONSerialization.jsonObject(with: normalized) as? [String: Any])
+        let vminit = try #require(configuration["vminit"] as? [String: Any])
+        #expect(vminit["image"] as? String == "example/vminit:exact")
+        #expect(configuration["diagnosticKind"] == nil)
+        #expect(configuration["logging"] == nil)
+    }
+
+    @Test
+    func systemFixtureRejectsUnknownLoggingDiagnosticProjection() throws {
+        let input = Data(
+            """
+            {"diagnosticKind":"container-system-config-inspection-v1","logging":{"diagnosticKind":"unexpected-v1"}}
+            """.utf8
+        )
+
+        #expect {
+            try ContainerFixture.systemConfigurationDataForAssertions(input)
+        } throws: { error in
+            guard case .executionFailed(let message) = error as? CommandError else {
+                return false
+            }
+            return message
+                == "system property list output has an unknown logging diagnostic projection"
+        }
+    }
+
+    @Test
     func additionalCABundleUsesDistinctAlpineReferences() {
         let originalBundle = ProcessInfo.processInfo.environment["CLITEST_CA_BUNDLE"]
         defer { restoreEnvironment("CLITEST_CA_BUNDLE", to: originalBundle) }

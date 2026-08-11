@@ -152,7 +152,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--cpus", "2"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--cpus", "2"],
                 autoRemove: false,
                 waitUntilRunning: true
             )
@@ -178,7 +178,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--cpus", "0.25"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--cpus", "0.25"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -199,7 +199,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--cpus", "0"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--cpus", "0"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -224,7 +224,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--cpu-shares", "512"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--cpu-shares", "512"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -247,7 +247,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--cpuset-cpus", "0-1"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--cpuset-cpus", "0-1"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -270,7 +270,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--cgroupns", "host"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--cgroupns", "host"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -294,7 +294,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--ipc", "host", "--uts", "host"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--ipc", "host", "--uts", "host"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -321,7 +321,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--pid", "private"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--pid", "private"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -344,7 +344,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--userns", "private"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--userns", "private"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -374,7 +374,7 @@ struct TestCLIRunCommand {
             try await f.doLongRun(
                 name: c,
                 image: image,
-                args: ["--init-image", "vminit:latest", "--cap-drop", "ALL", "--security-opt", "systempaths=unconfined"],
+                args: ["--init-image", try f.getConfiguredVminitImage(), "--cap-drop", "ALL", "--security-opt", "systempaths=unconfined"],
                 autoRemove: false
             )
             f.addCleanup {
@@ -387,11 +387,11 @@ struct TestCLIRunCommand {
             #expect(inspect.configuration.unconfinedSystemPaths)
 
             let defaultMountOptions = try f.run([
-                "run", "--rm", "--cap-drop", "ALL", "--init-image", "vminit:latest", image,
+                "run", "--rm", "--cap-drop", "ALL", "--init-image", try f.getConfiguredVminitImage(), image,
                 "sh", "-c", "awk '$5 == \"/proc/sys\" { print $6 }' /proc/self/mountinfo",
             ]).check().output.trimmingCharacters(in: .whitespacesAndNewlines)
             let unconfinedMountOptions = try f.run([
-                "run", "--rm", "--cap-drop", "ALL", "--security-opt", "systempaths=unconfined", "--init-image", "vminit:latest", image,
+                "run", "--rm", "--cap-drop", "ALL", "--security-opt", "systempaths=unconfined", "--init-image", try f.getConfiguredVminitImage(), image,
                 "sh", "-c", "awk '$5 == \"/proc/sys\" { print $6 }' /proc/self/mountinfo",
             ]).check().output.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -408,7 +408,7 @@ struct TestCLIRunCommand {
                 name: c,
                 image: image,
                 args: [
-                    "--init-image", "vminit:latest", "--cpu-period", "200000", "--cpu-quota", "50000",
+                    "--init-image", try f.getConfiguredVminitImage(), "--cpu-period", "200000", "--cpu-quota", "50000",
                 ],
                 autoRemove: false
             )

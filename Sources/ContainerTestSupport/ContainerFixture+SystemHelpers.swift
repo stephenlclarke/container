@@ -17,16 +17,53 @@
 import ContainerPersistence
 import Foundation
 import SystemPackage
-import TOML
 
 // MARK: - System helpers
 
 extension ContainerFixture {
 
+    private static let routineSystemInspectionKind = "container-system-config-inspection-v1"
+    private static let routineSystemLoggingInspectionKind = "logging-config-inspection-v1"
+
+    /// Removes the deliberately non-authoritative logging projection before
+    /// integration assertions decode the remaining system configuration.
+    ///
+    /// `container system property list` is diagnostics output, not persisted
+    /// configuration. Tests that need unrelated fields such as DNS or vminit
+    /// preserve those fields while accepting only the recognized system and
+    /// logging inspection discriminators.
+    package static func systemConfigurationDataForAssertions(_ data: Data) throws -> Data {
+        guard var configuration = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw CommandError.executionFailed("system property list output is not an object")
+        }
+        guard configuration["diagnosticKind"] as? String == Self.routineSystemInspectionKind else {
+            throw CommandError.executionFailed(
+                "system property list output has an unknown diagnostic projection"
+            )
+        }
+        guard let logging = configuration["logging"] as? [String: Any],
+            logging["diagnosticKind"] as? String == Self.routineSystemLoggingInspectionKind
+        else {
+            throw CommandError.executionFailed(
+                "system property list output has an unknown logging diagnostic projection"
+            )
+        }
+
+        configuration.removeValue(forKey: "diagnosticKind")
+        configuration.removeValue(forKey: "logging")
+        return try JSONSerialization.data(withJSONObject: configuration, options: [.sortedKeys])
+    }
+
     /// Returns the decoded system configuration from `container system property list`.
     public func getSystemConfig() throws -> ContainerSystemConfig {
-        let result = try run(["system", "property", "list", "--format", "toml"]).check()
-        return try TOMLDecoder().decode(ContainerSystemConfig.self, from: Data(result.output.utf8))
+        let result = try run(["system", "property", "list", "--format", "json"]).check()
+        let data = try Self.systemConfigurationDataForAssertions(result.outputData)
+        return try JSONDecoder().decode(ContainerSystemConfig.self, from: data)
+    }
+
+    /// Returns the exact init image configured for this test runtime.
+    public func getConfiguredVminitImage() throws -> String {
+        try getSystemConfig().vminit.image
     }
 
     /// Creates a temporary directory, calls `body` with its URL, then removes it
