@@ -112,7 +112,7 @@ while IFS= read -r operation; do
     OPERATIONS+=("${operation}")
 done < "${LOG_PATH}"
 EXPECTED=(
-    "container --debug system start --timeout 60 --enable-kernel-install"
+    "container --debug system start --timeout 60 --enable-kernel-install --app-root ${TEST_ROOT}/app"
     "make -C ${CONTAINERIZATION_PATH} init VMINIT_IMAGE=test-init:latest"
     "cctl images save -o"
     "container system stop"
@@ -145,7 +145,9 @@ run_failure_case() {
     fi
 
     test ! -e "${failure_running_path}"
-    grep -q '^container --debug system start --timeout 60' "${failure_log_path}"
+    grep -Fq \
+        "container --debug system start --timeout 60 --enable-kernel-install --app-root ${TEST_ROOT}/app" \
+        "${failure_log_path}"
     grep -q '^container system stop$' "${failure_log_path}"
 }
 

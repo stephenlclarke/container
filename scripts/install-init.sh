@@ -47,7 +47,6 @@ EOF
 
 # Parse command line options
 START_ARGS=()
-BUILD_START_ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         -a|--app-root)
@@ -68,7 +67,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --enable-kernel-install|--disable-kernel-install)
             START_ARGS+=("$1")
-            BUILD_START_ARGS+=("$1")
             shift
             ;;
         -h|--help)
@@ -155,7 +153,11 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 	echo "Creating InitImage from ${CONTAINERIZATION_PATH}"
 	if ! "${CONTAINER_INIT_CLI}" system status >/dev/null 2>&1; then
 		BOOTSTRAP_RUNTIME_STARTED=true
-		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BUILD_START_ARGS[@]}"
+		# Bootstrap inside the requested application/log roots too. Starting in
+		# the default root leaks integration and release validation into the
+		# developer's persisted state and can make an existing Keychain ACL reject
+		# a newly signed test binary before the isolated restart is reached.
+		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${START_ARGS[@]}"
 	fi
 	BUILD_SCRATCH_ROOT="${CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT:-${TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT}}"
 	if [[ -n "${BUILD_SCRATCH_ROOT}" ]]; then
