@@ -405,9 +405,11 @@ public actor MachinesService {
                     platform: Self.systemPlatform(from: state.snapshot.configuration.platform)
                 )
             } else {
-                kernel = try await ClientKernel.getDefaultKernel(
-                    for: Self.systemPlatform(from: state.snapshot.configuration.platform)
-                )
+                // Virtualization.framework boots a kernel compiled for the host
+                // architecture. The requested OCI architecture selects the
+                // userspace and enables Rosetta when needed; it must not select
+                // an incompatible default kernel.
+                kernel = try await ClientKernel.getDefaultKernel(for: .current)
             }
 
             var fhs: [FileHandle] = []
