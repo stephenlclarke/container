@@ -99,7 +99,7 @@ struct ApplicationHealthTests {
         let appRoot = try Self.makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: appRoot) }
 
-        let loader = await Application.pluginLoaderForHelp { timeout in
+        let loader = await Application.pluginLoaderForHelp(currentRootsLoader: { nil }) { timeout in
             #expect(timeout == .seconds(1))
             return try Self.makeSystemHealth(appRoot: appRoot)
         }
@@ -109,7 +109,7 @@ struct ApplicationHealthTests {
 
     @Test
     func pluginLoaderForHelpReturnsNilWhenHealthCheckTimesOut() async throws {
-        let loader = await Application.pluginLoaderForHelp { _ in
+        let loader = await Application.pluginLoaderForHelp(currentRootsLoader: { nil }) { _ in
             try await Task.sleep(for: .seconds(2))
             return try Self.makeSystemHealth()
         }
