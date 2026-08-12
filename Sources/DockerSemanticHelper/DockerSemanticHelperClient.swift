@@ -128,13 +128,26 @@ public final class DockerSemanticHelperClient: DockerSemanticServicing,
 
         var pid: pid_t = 0
         var descriptor: Int32 = -1
-        let spawnResult = launchConfiguration.executableURL.path.withCString {
-            csh_spawn(
-                $0,
-                launchConfiguration.inheritEnvironment ? 1 : 0,
-                &pid,
-                &descriptor
+        let inheritedEnvironmentBlock: [UInt8]
+        if launchConfiguration.inheritEnvironment {
+            inheritedEnvironmentBlock = Self.encodeEnvironmentBlock(
+                ProcessInfo.processInfo.environment
             )
+        } else {
+            inheritedEnvironmentBlock = []
+        }
+        let spawnResult = inheritedEnvironmentBlock.withUnsafeBytes {
+            environmentBytes in
+            launchConfiguration.executableURL.path.withCString {
+                csh_spawn(
+                    $0,
+                    launchConfiguration.inheritEnvironment ? 1 : 0,
+                    environmentBytes.bindMemory(to: UInt8.self).baseAddress,
+                    environmentBytes.count,
+                    &pid,
+                    &descriptor
+                )
+            }
         }
         guard spawnResult == 0 else {
             throw DockerSemanticHelperError.spawnFailed(Int32(spawnResult))
@@ -152,6 +165,17 @@ public final class DockerSemanticHelperClient: DockerSemanticServicing,
             fenceGeneration()
             throw error
         }
+    }
+
+    static func encodeEnvironmentBlock(
+        _ environment: [String: String]
+    ) -> [UInt8] {
+        var result = [UInt8]()
+        for (name, value) in environment.sorted(by: { $0.key < $1.key }) {
+            result.append(contentsOf: "\(name)=\(value)".utf8)
+            result.append(0)
+        }
+        return result
     }
 
     deinit {
