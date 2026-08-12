@@ -252,6 +252,9 @@ struct K8sHelper {
             throw ContainerizationError(.internalError, message: "failed to install root kubeconfig on \(nodeID): \(r.output)")
         }
 
+        try await configureCoreDNS(
+            nodeID: nodeID, advertiseAddress: advertiseAddress, client: client, log: log)
+
         log.info("Removing control-plane taint for single-node scheduling", metadata: ["node": "\(nodeID)"])
         _ = try await runProbe(
             client: client, containerId: nodeID,
@@ -268,6 +271,90 @@ struct K8sHelper {
         guard r.code == 0 else {
             throw ContainerizationError(.internalError, message: "apply CNI failed on \(nodeID): \(r.output)")
         }
+    }
+
+    private static func configureCoreDNS(
+        nodeID: String, advertiseAddress: String, client: ContainerClient, log: Logger
+    ) async throws {
+        log.info("Configuring CoreDNS for the single-node resolver", metadata: ["node": "\(nodeID)"])
+
+        var r = try await execCapture(
+            containerId: nodeID, executable: kubectlPath,
+            arguments: [
+                "--kubeconfig", kubeconfigPath,
+                "get", "configmap", "coredns", "-n", "kube-system",
+                "-o", "jsonpath={.data.Corefile}",
+            ], client: client)
+        guard r.code == 0 else {
+            throw ContainerizationError(
+                .internalError, message: "read CoreDNS configuration failed on \(nodeID): \(r.output)")
+        }
+
+        let corefile = try coreDNSCorefile(r.output, bindAddress: advertiseAddress)
+        let configPatch = try jsonString(["data": ["Corefile": corefile]])
+        r = try await execCapture(
+            containerId: nodeID, executable: kubectlPath,
+            arguments: [
+                "--kubeconfig", kubeconfigPath,
+                "patch", "configmap", "coredns", "-n", "kube-system",
+                "--type", "merge", "--patch", configPatch,
+            ], client: client)
+        guard r.code == 0 else {
+            throw ContainerizationError(
+                .internalError, message: "patch CoreDNS configuration failed on \(nodeID): \(r.output)")
+        }
+
+        // The node resolver listens on loopback. Running CoreDNS on the pod network
+        // makes that address resolve back to CoreDNS itself and trips the loop plugin.
+        // Host networking preserves access to the node resolver; binding only the
+        // advertised address keeps CoreDNS from claiming the loopback listener.
+        let deploymentPatch: [String: Any] = [
+            "spec": [
+                "replicas": 1,
+                "template": [
+                    "spec": [
+                        "dnsPolicy": "Default",
+                        "hostNetwork": true,
+                    ]
+                ],
+            ]
+        ]
+        let deploymentPatchJSON = try jsonString(deploymentPatch)
+        r = try await execCapture(
+            containerId: nodeID, executable: kubectlPath,
+            arguments: [
+                "--kubeconfig", kubeconfigPath,
+                "patch", "deployment", "coredns", "-n", "kube-system",
+                "--type", "strategic", "--patch", deploymentPatchJSON,
+            ], client: client)
+        guard r.code == 0 else {
+            throw ContainerizationError(
+                .internalError, message: "patch CoreDNS deployment failed on \(nodeID): \(r.output)")
+        }
+    }
+
+    static func coreDNSCorefile(_ corefile: String, bindAddress: String) throws -> String {
+        var address = in_addr()
+        guard bindAddress.withCString({ inet_pton(AF_INET, $0, &address) }) == 1 else {
+            throw ContainerizationError(.invalidArgument, message: "invalid CoreDNS bind address: \(bindAddress)")
+        }
+
+        let serverBlock = ".:53 {"
+        let bindDirective = "    bind \(bindAddress)"
+        guard corefile.contains(serverBlock) else {
+            throw ContainerizationError(.internalError, message: "CoreDNS configuration is missing the root server block")
+        }
+        guard !corefile.contains(bindDirective) else { return corefile }
+        return corefile.replacingOccurrences(
+            of: serverBlock, with: "\(serverBlock)\n\(bindDirective)", options: [], range: corefile.startIndex..<corefile.endIndex)
+    }
+
+    private static func jsonString(_ object: Any) throws -> String {
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        guard let value = String(data: data, encoding: .utf8) else {
+            throw ContainerizationError(.internalError, message: "failed to encode Kubernetes patch")
+        }
+        return value
     }
 
     private static func loadKindnetManifest(log: Logger) async throws -> String {
