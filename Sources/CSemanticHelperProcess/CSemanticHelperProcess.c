@@ -21,13 +21,12 @@
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
-
-extern char **environ;
 
 enum { CSH_CHILD_DESCRIPTOR = 3 };
 
@@ -37,30 +36,69 @@ static int csh_has_prefix(const char *value, const char *prefix) {
 
 /// Preserve the authority environment needed by Application Default
 /// Credentials while rejecting dynamic-loader injection controls.
-static char **csh_copy_safe_inherited_environment(void) {
-    size_t count = 0;
-    for (char **entry = environ; *entry != NULL; entry++) {
-        if (
-            !csh_has_prefix(*entry, "DYLD_")
-            && !csh_has_prefix(*entry, "LD_")
-        ) {
-            count++;
-        }
+static void csh_free_environment(char **environment) {
+    if (environment == NULL) {
+        return;
     }
-    char **result = calloc(count + 1, sizeof(char *));
+    for (char **entry = environment; *entry != NULL; entry++) {
+        free(*entry);
+    }
+    free(environment);
+}
+
+static int csh_copy_safe_inherited_environment(
+    const uint8_t *environment_block,
+    size_t environment_block_length,
+    char ***environment_out
+) {
+    *environment_out = NULL;
+    if (environment_block_length > 0 && environment_block == NULL) {
+        return EINVAL;
+    }
+    size_t capacity = 16;
+    char **result = calloc(capacity, sizeof(char *));
     if (result == NULL) {
-        return NULL;
+        return ENOMEM;
     }
     size_t index = 0;
-    for (char **entry = environ; *entry != NULL; entry++) {
-        if (
-            !csh_has_prefix(*entry, "DYLD_")
-            && !csh_has_prefix(*entry, "LD_")
-        ) {
-            result[index++] = *entry;
+    size_t offset = 0;
+    while (offset < environment_block_length) {
+        const char *entry = (const char *)(environment_block + offset);
+        size_t remaining = environment_block_length - offset;
+        const char *terminator = memchr(entry, '\0', remaining);
+        if (terminator == NULL || terminator == entry) {
+            csh_free_environment(result);
+            return EINVAL;
         }
+        if (
+            !csh_has_prefix(entry, "DYLD_")
+            && !csh_has_prefix(entry, "LD_")
+        ) {
+            if (index + 1 >= capacity) {
+                if (capacity > SIZE_MAX / 2 / sizeof(*result)) {
+                    csh_free_environment(result);
+                    return ENOMEM;
+                }
+                capacity *= 2;
+                char **resized = realloc(result, capacity * sizeof(*result));
+                if (resized == NULL) {
+                    csh_free_environment(result);
+                    return ENOMEM;
+                }
+                result = resized;
+            }
+            result[index] = strdup(entry);
+            if (result[index] == NULL) {
+                csh_free_environment(result);
+                return ENOMEM;
+            }
+            index++;
+            result[index] = NULL;
+        }
+        offset += (size_t)(terminator - entry) + 1;
     }
-    return result;
+    *environment_out = result;
+    return 0;
 }
 
 static int csh_poll(int fd, short events, int timeout_milliseconds) {
@@ -86,6 +124,8 @@ static int csh_poll(int fd, short events, int timeout_milliseconds) {
 int csh_spawn(
     const char *executable_path,
     int inherit_environment,
+    const uint8_t *inherited_environment_block,
+    size_t inherited_environment_block_length,
     pid_t *child_pid,
     int *parent_fd
 ) {
@@ -162,15 +202,19 @@ int csh_spawn(
     char **inherited_environment = NULL;
     char *const *environment = restricted_environment;
     if (inherit_environment != 0) {
-        inherited_environment = csh_copy_safe_inherited_environment();
-        if (inherited_environment == NULL) {
+        int environment_result = csh_copy_safe_inherited_environment(
+            inherited_environment_block,
+            inherited_environment_block_length,
+            &inherited_environment
+        );
+        if (environment_result != 0) {
             if (attribute_result == 0) {
                 posix_spawnattr_destroy(&attributes);
             }
             posix_spawn_file_actions_destroy(&actions);
             close(sockets[0]);
             close(sockets[1]);
-            return ENOMEM;
+            return environment_result;
         }
         environment = inherited_environment;
     }
@@ -186,7 +230,7 @@ int csh_spawn(
         );
     }
 
-    free(inherited_environment);
+    csh_free_environment(inherited_environment);
 
     if (attribute_result == 0) {
         posix_spawnattr_destroy(&attributes);

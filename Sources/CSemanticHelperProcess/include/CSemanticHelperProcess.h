@@ -26,10 +26,14 @@ extern "C" {
 #endif
 
 /// Starts one helper with one endpoint of an anonymous socketpair inherited as
-/// descriptor 3. The parent endpoint is nonblocking and close-on-exec.
+/// descriptor 3. The parent endpoint is nonblocking and close-on-exec. When
+/// inheritance is enabled, the byte block must be a stable sequence of
+/// NUL-terminated `name=value` entries captured by the caller.
 int csh_spawn(
     const char *executable_path,
     int inherit_environment,
+    const uint8_t *inherited_environment,
+    size_t inherited_environment_length,
     pid_t *child_pid,
     int *parent_fd
 );

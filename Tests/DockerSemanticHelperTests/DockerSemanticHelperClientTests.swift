@@ -21,6 +21,20 @@ import Testing
 
 @Suite("Docker semantic helper client", .serialized)
 struct DockerSemanticHelperClientTests {
+    @Test("environment snapshots have deterministic NUL-delimited encoding")
+    func environmentSnapshotEncoding() {
+        let encoded = DockerSemanticHelperClient.encodeEnvironmentBlock([
+            "Z_LAST": "z",
+            "A_FIRST": "a",
+        ])
+
+        #expect(
+            encoded
+                == Array("A_FIRST=a\0Z_LAST=z\0".utf8)
+        )
+        #expect(DockerSemanticHelperClient.encodeEnvironmentBlock([:]).isEmpty)
+    }
+
     @Test("verified helper performs pinned Go semantics")
     func verifiedHelperPerformsPinnedSemantics() throws {
         let client = try makeClient(generation: 1)

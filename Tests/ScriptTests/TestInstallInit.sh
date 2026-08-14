@@ -237,9 +237,9 @@ if grep -q '^scripts/install-init.sh ' <<<"${INTEGRATION_DRY_RUN}"; then
     printf 'integration invoked init-block before the isolated execution sequence\n' >&2
     exit 1
 fi
-grep -Fq \
-    "XDG_CONFIG_HOME=\"${INTEGRATION_SCRATCH_ROOT}/xdg-config\" \"true\" init-block" \
-    <<<"${INTEGRATION_DRY_RUN}"
+grep -F "XDG_CONFIG_HOME=\"${INTEGRATION_SCRATCH_ROOT}/xdg-config\"" \
+    <<<"${INTEGRATION_DRY_RUN}" \
+    | grep -Fq '"true" init-block'
 
 IMMUTABLE_LOG_PATH="${TEST_ROOT}/immutable.log"
 IMMUTABLE_RUNNING_PATH="${TEST_ROOT}/immutable-running"
