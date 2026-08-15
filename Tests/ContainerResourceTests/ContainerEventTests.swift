@@ -49,4 +49,16 @@ struct ContainerEventTests {
 
         #expect(decoded == options)
     }
+
+    @Test func legacyEventsDecodeWithZeroedOrderingMetadata() throws {
+        let data = Data(
+            #"{"time":0,"type":"container","id":"api","action":"start","attributes":{}}"#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(ContainerEvent.self, from: data)
+
+        #expect(decoded.sequence == 0)
+        #expect(decoded.transitionRevision == 0)
+        #expect(decoded.operationGeneration == 0)
+    }
 }

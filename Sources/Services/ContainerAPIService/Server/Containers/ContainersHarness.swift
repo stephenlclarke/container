@@ -97,6 +97,23 @@ public struct ContainersHarness: Sendable {
     }
 
     @Sendable
+    public func restart(_ message: XPCMessage) async throws -> XPCMessage {
+        let stopOptions = try message.stopOptions()
+        guard let id = message.string(key: .id) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        try await service.restartDockerContainer(
+            id: id,
+            timeoutSeconds: stopOptions.timeoutInSeconds,
+            signal: stopOptions.signal
+        )
+        return message.reply()
+    }
+
+    @Sendable
     public func pause(_ message: XPCMessage) async throws -> XPCMessage {
         let id = message.string(key: .id)
         guard let id else {
@@ -120,6 +137,29 @@ public struct ContainersHarness: Sendable {
         }
         try await service.unpause(id: id)
         return message.reply()
+    }
+
+    @Sendable
+    public func lifecycle(_ message: XPCMessage) async throws -> XPCMessage {
+        guard let id = message.string(key: .id) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let record = try await service.lifecycleRecord(id: id)
+        let reply = message.reply()
+        reply.set(key: .lifecycleRecord, value: try JSONEncoder().encode(record))
+        return reply
+    }
+
+    @Sendable
+    public func lifecycleList(_ message: XPCMessage) async throws -> XPCMessage {
+        let records = await service.lifecycleRecordsForAPI()
+            .sorted { $0.containerID.utf8.lexicographicallyPrecedes($1.containerID.utf8) }
+        let reply = message.reply()
+        reply.set(key: .lifecycleRecords, value: try JSONEncoder().encode(records))
+        return reply
     }
 
     @Sendable

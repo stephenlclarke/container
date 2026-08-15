@@ -109,9 +109,15 @@ struct ContainerEngineAttachmentInspection: Sendable {
 
 struct ContainerEngineInspectBase: Sendable {
     let snapshot: ContainerSnapshot
+    let lifecycle: ContainerResource.ContainerLifecycleRecordV2
     let options: ContainerCreateOptions
     let runtimeData: Data?
     let stateError: String
+}
+
+struct ContainerEngineListSnapshot: Sendable {
+    let snapshots: [ContainerSnapshot]
+    let lifecycleRecords: [String: ContainerResource.ContainerLifecycleRecordV2]
 }
 
 enum ContainerEngineLogReadSource: Sendable {
@@ -124,6 +130,7 @@ enum ContainerEngineLogReadSource: Sendable {
 /// provider session and therefore cannot diverge from native clients.
 public struct ContainerDockerLoggingBackend:
     DockerContainerLifecycleBackend,
+    DockerContainerActionBackend,
     DockerContainerWaitBackend,
     DockerLoggingBackend,
     DockerTerminalResizeBackend,
@@ -288,7 +295,8 @@ public struct ContainerDockerLoggingBackend:
 
     public func stopContainer(
         containerID: String,
-        timeoutSeconds: Int64?
+        timeoutSeconds: Int64?,
+        signal: String?
     ) async throws {
         let resolvedID = try await resolveDockerContainerID(containerID)
         let timeout = timeoutSeconds.flatMap { Int32(exactly: $0) }
@@ -302,12 +310,109 @@ public struct ContainerDockerLoggingBackend:
                 id: resolvedID,
                 options: ContainerStopOptions(
                     timeoutInSeconds: timeout,
-                    signal: nil
+                    signal: signal
                 )
             )
         } catch {
             throw Self.map(error, containerID: containerID)
         }
+    }
+
+    public func restartContainer(
+        containerID: String,
+        timeoutSeconds: Int64?,
+        signal: String?
+    ) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
+        let timeout = timeoutSeconds.flatMap { Int32(exactly: $0) }
+        if timeoutSeconds != nil, timeout == nil {
+            throw DockerLoggingBackendError.invalidParameter(
+                "restart timeout exceeds the runtime range"
+            )
+        }
+        do {
+            try await containers.restartDockerContainer(
+                id: resolvedID,
+                timeoutSeconds: timeout,
+                signal: signal
+            )
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func killContainer(containerID: String, signal: String) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
+        do {
+            try await containers.kill(
+                id: resolvedID,
+                processID: resolvedID,
+                signal: signal
+            )
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func pauseContainer(containerID: String) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
+        do {
+            try await containers.pause(id: resolvedID)
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func unpauseContainer(containerID: String) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
+        do {
+            try await containers.unpause(id: resolvedID)
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func renameContainer(containerID: String, newName: String) async throws {
+        let resolvedID = try await resolveDockerContainerID(containerID)
+        do {
+            try await containers.renameDockerContainer(id: resolvedID, newName: newName)
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    public func updateContainer(
+        containerID: String,
+        request: DockerContainerUpdateRequest
+    ) async throws -> [String] {
+        let resolvedID = try await resolveDockerContainerID(containerID)
+        do {
+            return try await containers.updateDockerContainer(
+                id: resolvedID,
+                memoryBytes: request.memoryBytes,
+                nanoCPUs: request.nanoCPUs,
+                restartPolicy: try Self.restartPolicy(request.restartPolicy)
+            )
+        } catch {
+            throw Self.map(error, containerID: containerID)
+        }
+    }
+
+    private static func restartPolicy(
+        _ request: DockerContainerRestartPolicyRequest?
+    ) throws -> ContainerRestartPolicy? {
+        guard let request, let name = request.name else {
+            return nil
+        }
+        guard let mode = ContainerRestartPolicy.Mode(rawValue: name.isEmpty ? "no" : name) else {
+            throw DockerLoggingBackendError.invalidParameter(
+                "invalid restart policy \(name)"
+            )
+        }
+        return ContainerRestartPolicy(
+            mode: mode,
+            maximumRetryCount: request.maximumRetryCount
+        )
     }
 
     public func deleteContainer(

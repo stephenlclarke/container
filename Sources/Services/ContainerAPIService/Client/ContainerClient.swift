@@ -255,6 +255,25 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    /// Atomically restarts the container through its selected authority.
+    public func restart(
+        id: String,
+        opts: ContainerStopOptions = ContainerStopOptions.default
+    ) async throws {
+        do {
+            let request = XPCMessage(route: .containerRestart)
+            request.set(key: .id, value: id)
+            request.set(key: .stopOptions, value: try JSONEncoder().encode(opts))
+            try await xpcClient.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to restart container",
+                cause: error
+            )
+        }
+    }
+
     /// Pause a running container.
     public func pause(id: String) async throws {
         do {
@@ -285,6 +304,33 @@ public struct ContainerClient: Sendable {
                 cause: error
             )
         }
+    }
+
+    /// Returns the authoritative lifecycle v2 record.
+    public func lifecycle(id: String) async throws -> ContainerLifecycleRecordV2 {
+        let request = XPCMessage(route: .containerLifecycle)
+        request.set(key: .id, value: id)
+        let reply = try await xpcClient.send(request)
+        guard let data = reply.dataNoCopy(key: .lifecycleRecord) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "lifecycle response is missing its record"
+            )
+        }
+        return try JSONDecoder().decode(ContainerLifecycleRecordV2.self, from: data)
+    }
+
+    /// Returns one coherent snapshot of every authoritative lifecycle v2 record.
+    public func lifecycleRecords() async throws -> [ContainerLifecycleRecordV2] {
+        let request = XPCMessage(route: .containerLifecycleList)
+        let reply = try await xpcClient.send(request)
+        guard let data = reply.dataNoCopy(key: .lifecycleRecords) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "lifecycle list response is missing its records"
+            )
+        }
+        return try JSONDecoder().decode([ContainerLifecycleRecordV2].self, from: data)
     }
 
     /// Delete the container along with any resources.

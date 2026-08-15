@@ -32,9 +32,10 @@ actor ContainerEventBroadcaster {
     private var subscribers: [UUID: Subscriber] = [:]
     private var untilTasks: [UUID: Task<Void, Never>] = [:]
     private var history: [ContainerEvent] = []
+    private var nextSequence: UInt64 = 1
     private let historyLimit: Int
 
-    init(historyLimit: Int = 1_024) {
+    init(historyLimit: Int = 256) {
         self.historyLimit = historyLimit
     }
 
@@ -66,7 +67,12 @@ actor ContainerEventBroadcaster {
         try? subscriber.writer.close()
     }
 
-    func publish(_ event: ContainerEvent) {
+    func publish(_ sourceEvent: ContainerEvent) {
+        var event = sourceEvent
+        if event.sequence == 0 {
+            event.sequence = nextSequence
+            nextSequence &+= 1
+        }
         record(event)
         guard !subscribers.isEmpty else {
             return
@@ -106,7 +112,10 @@ actor ContainerEventBroadcaster {
     }
 
     private func replayEvents(options: ContainerEventOptions) -> [ContainerEvent] {
-        history.filter { contains(event: $0, options: options) }
+        guard options.since != nil || options.until != nil else {
+            return []
+        }
+        return history.filter { contains(event: $0, options: options) }
     }
 
     private func contains(event: ContainerEvent, options: ContainerEventOptions) -> Bool {

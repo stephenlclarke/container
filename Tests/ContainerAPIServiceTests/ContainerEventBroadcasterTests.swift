@@ -24,19 +24,27 @@ import Testing
 @testable import ContainerAPIService
 
 struct ContainerEventBroadcasterTests {
-    @Test func terminalLifecycleEventsReportExitBeforeGenericStop() {
+    @Test func naturalExitEmitsOnlyDie() {
         let events = ContainersService.terminalLifecycleEvents(snapshot: stoppedSnapshot(exitCode: 137))
 
-        #expect(events.map(\.action) == ["die", "stop"])
+        #expect(events.map(\.action) == ["die"])
         #expect(events[0].attributes["exitCode"] == "137")
         #expect(events[0].attributes["status"] == "stopped")
-        #expect(events[1].attributes["exitCode"] == nil)
     }
 
-    @Test func removalEventsPreserveGenericDeleteAndAddDockerDestroy() {
+    @Test func explicitStopEmitsDieBeforeStop() {
+        let events = ContainersService.terminalLifecycleEvents(
+            snapshot: stoppedSnapshot(exitCode: 0),
+            explicitCause: .stop
+        )
+
+        #expect(events.map(\.action) == ["die", "stop"])
+    }
+
+    @Test func removalEventsEmitOneDockerDestroy() {
         let events = ContainersService.removalEvents(snapshot: stoppedSnapshot())
 
-        #expect(events.map(\.action) == ["delete", "destroy"])
+        #expect(events.map(\.action) == ["destroy"])
         #expect(events.allSatisfy { $0.attributes["image"] == "alpine:3.20" })
     }
 
@@ -177,7 +185,11 @@ struct ContainerEventBroadcasterTests {
         decoder.dateDecodingStrategy = .iso8601
         let decoded = try decoder.decode(ContainerEvent.self, from: Data(lines[0].utf8))
 
-        #expect(decoded == event)
+        #expect(decoded.sequence == 1)
+        #expect(decoded.type == event.type)
+        #expect(decoded.id == event.id)
+        #expect(decoded.action == event.action)
+        #expect(decoded.attributes == event.attributes)
     }
 
     @Test func replaysBufferedEventsWithinTimeWindow() async throws {
@@ -201,7 +213,8 @@ struct ContainerEventBroadcasterTests {
 
         let events = try decodedEvents(from: subscription.fileHandle)
 
-        #expect(events == [inside])
+        #expect(events.map(\.action) == [inside.action])
+        #expect(events.map(\.sequence) == [2])
     }
 
     @Test func liveStreamFiltersEventsBySince() async throws {
@@ -221,7 +234,7 @@ struct ContainerEventBroadcasterTests {
 
         let events = try decodedEvents(from: subscription.fileHandle)
 
-        #expect(events == [expected])
+        #expect(events.map(\.action) == [expected.action])
     }
 
     @Test func historyLimitDropsOldestEvents() async throws {
@@ -240,7 +253,8 @@ struct ContainerEventBroadcasterTests {
 
         let events = try decodedEvents(from: subscription.fileHandle)
 
-        #expect(events == [expected])
+        #expect(events.map(\.action) == [expected.action])
+        #expect(events.map(\.sequence) == [2])
     }
 
     @Test func harnessDecodesEventOptions() {

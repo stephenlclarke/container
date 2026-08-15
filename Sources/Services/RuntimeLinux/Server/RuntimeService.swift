@@ -540,7 +540,8 @@ public actor RuntimeService {
                 networkTxBytes: stats.networks?.reduce(0) { $0 + $1.transmittedBytes },
                 blockReadBytes: stats.blockIO?.devices.reduce(0) { $0 + $1.readBytes },
                 blockWriteBytes: stats.blockIO?.devices.reduce(0) { $0 + $1.writeBytes },
-                numProcesses: stats.process?.current
+                numProcesses: stats.process?.current,
+                memoryOOMKillCount: stats.memoryEvents?.oomKill
             )
 
             let reply = message.reply()

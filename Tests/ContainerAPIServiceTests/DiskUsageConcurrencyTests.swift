@@ -34,8 +34,8 @@ struct DiskUsageConcurrencyTests {
         let result = await ContainersService.calculateDiskUsage(
             totalCount: 3,
             paths: [
-                .init(path: running, status: .running),
-                .init(path: stopped, status: .stopped),
+                .init(path: running, isActive: true),
+                .init(path: stopped, isActive: false),
             ]
         )
 
@@ -43,6 +43,22 @@ struct DiskUsageConcurrencyTests {
         #expect(result.1 == 1)
         #expect(result.2 == runningSize + stoppedSize)
         #expect(result.3 == stoppedSize)
+    }
+
+    @Test
+    func restartBackoffIsActiveForDiskUsage() {
+        #expect(
+            ContainersService.isActiveForDiskUsage(
+                runtimeStatus: .stopped,
+                lifecycleState: .restarting
+            )
+        )
+        #expect(
+            !ContainersService.isActiveForDiskUsage(
+                runtimeStatus: .stopped,
+                lifecycleState: .exited
+            )
+        )
     }
 
     @Test

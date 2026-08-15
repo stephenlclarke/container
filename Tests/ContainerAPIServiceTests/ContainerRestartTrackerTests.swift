@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import Foundation
 import Testing
 
 @testable import ContainerAPIService
@@ -40,6 +41,60 @@ struct ContainerRestartTrackerTests {
 
         #expect(tracker.restartDelay(policy: policy, exitCode: 1) == ContainerRestartTracker.initialDelayInNanoseconds)
         #expect(tracker.restartDelay(policy: policy, exitCode: 1) == 200_000_000)
+        #expect(tracker.restartDelay(policy: policy, exitCode: 1) == nil)
+    }
+
+    @Test func restoredOnFailureStatePreservesRetryBudgetAndBackoff() {
+        let policy = ContainerRestartPolicy(mode: .onFailure, maximumRetryCount: 2)
+        var firstAuthority = ContainerRestartTracker()
+        #expect(
+            firstAuthority.restartDelay(policy: policy, exitCode: 1)
+                == ContainerRestartTracker.initialDelayInNanoseconds
+        )
+        #expect(firstAuthority.consecutiveFailures == 1)
+        #expect(
+            ContainerRestartTracker.pendingDelay(
+                policy: policy,
+                consecutiveFailureCount: firstAuthority.consecutiveFailures
+            ) == ContainerRestartTracker.initialDelayInNanoseconds
+        )
+
+        var restartedAuthority = ContainerRestartTracker(
+            restoringConsecutiveFailureCount: firstAuthority.consecutiveFailures
+        )
+        #expect(restartedAuthority.restartDelay(policy: policy, exitCode: 1) == 200_000_000)
+        #expect(restartedAuthority.consecutiveFailures == 2)
+        #expect(restartedAuthority.restartDelay(policy: policy, exitCode: 1) == nil)
+    }
+
+    @Test func corruptedMaximumFailureCountCannotOverflow() {
+        var tracker = ContainerRestartTracker(
+            restoringConsecutiveFailureCount: .max
+        )
+
+        #expect(
+            tracker.restartDelay(
+                policy: ContainerRestartPolicy(mode: .always),
+                exitCode: 1
+            ) == ContainerRestartTracker.maximumDelayInNanoseconds
+        )
+        #expect(tracker.consecutiveFailures == .max)
+    }
+
+    @Test func boundedOnFailurePolicyStopsAtSaturatedRetryCount() {
+        let policy = ContainerRestartPolicy(
+            mode: .onFailure,
+            maximumRetryCount: .max
+        )
+        var tracker = ContainerRestartTracker(
+            restoringConsecutiveFailureCount: .max - 1
+        )
+
+        #expect(
+            tracker.restartDelay(policy: policy, exitCode: 1)
+                == ContainerRestartTracker.maximumDelayInNanoseconds
+        )
+        #expect(tracker.consecutiveFailures == .max)
         #expect(tracker.restartDelay(policy: policy, exitCode: 1) == nil)
     }
 
@@ -93,6 +148,36 @@ struct ContainerRestartTrackerTests {
         #expect(tracker.restartDelay(policy: policy, exitCode: 1) == ContainerRestartTracker.initialDelayInNanoseconds)
     }
 
+    @Test func failedExplicitRestartStopRestoresAutomaticRestartEligibility() {
+        var tracker = ContainerRestartTracker()
+
+        tracker.markManuallyStopped()
+        #expect(!tracker.allowsAutomaticRestart)
+
+        tracker.restoreAutomaticRestartEligibility()
+        #expect(tracker.allowsAutomaticRestart)
+    }
+
+    @Test func nonterminatingSignalDoesNotSuppressRestartPolicy() {
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.chld))
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.cont))
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.stop))
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.tstp))
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.ttin))
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.ttou))
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.urg))
+        #expect(!ContainersService.signalTerminatesByDefault(.Linux.winch))
+        #expect(!ContainersService.signalTerminatesByDefault(nil))
+        #expect(ContainersService.signalTerminatesByDefault(.term))
+        #expect(ContainersService.signalTerminatesByDefault(.kill))
+        #expect(ContainersService.signalTerminatesByDefault(.Linux.usr1))
+        #expect(!ContainersService.signalOutcomeConfirmsTermination(.unknown))
+        #expect(!ContainersService.signalOutcomeConfirmsTermination(.running))
+        #expect(!ContainersService.signalOutcomeConfirmsTermination(.paused))
+        #expect(ContainersService.signalOutcomeConfirmsTermination(.stopping))
+        #expect(ContainersService.signalOutcomeConfirmsTermination(.stopped))
+    }
+
     @Test func stableRunResetsFailureBackoff() {
         var tracker = ContainerRestartTracker()
         let policy = ContainerRestartPolicy(mode: .always)
@@ -103,5 +188,40 @@ struct ContainerRestartTrackerTests {
         tracker.markStable()
 
         #expect(tracker.restartDelay(policy: policy, exitCode: 1) == ContainerRestartTracker.initialDelayInNanoseconds)
+    }
+
+    @Test func stableResetAdvancesLifecycleRevisions() throws {
+        var snapshot = ContainerLifecycleSnapshotV2(
+            state: .running,
+            restartConsecutiveFailureCount: 3,
+            transitionRevision: 7,
+            operationGeneration: 8
+        )
+
+        try ContainersService.resetRestartFailureState(&snapshot)
+
+        #expect(snapshot.restartConsecutiveFailureCount == 0)
+        #expect(snapshot.transitionRevision == 8)
+        #expect(snapshot.operationGeneration == 9)
+    }
+
+    @Test func failedTerminationRestoresOnlyTheRemainingStabilityWindow() {
+        let startedDate = Date(timeIntervalSince1970: 100)
+        let duration: UInt64 = 10_000_000_000
+
+        #expect(
+            ContainersService.remainingRestartStabilityDuration(
+                startedDate: startedDate,
+                durationInNanoseconds: duration,
+                now: Date(timeIntervalSince1970: 104)
+            ) == 6_000_000_000
+        )
+        #expect(
+            ContainersService.remainingRestartStabilityDuration(
+                startedDate: startedDate,
+                durationInNanoseconds: duration,
+                now: Date(timeIntervalSince1970: 111)
+            ) == 0
+        )
     }
 }

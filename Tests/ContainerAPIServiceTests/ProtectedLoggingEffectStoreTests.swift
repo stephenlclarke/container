@@ -1018,25 +1018,30 @@ struct ProtectedLoggingEffectStoreTests {
                     process.terminate()
                 }
             }
-            try await Self.waitForFile(sentinel)
-
-            let completion = EffectStoreCompletionFlag()
-            let opening = Task.detached {
-                do {
-                    _ = try Self.makeStore(root: root, seed: 233)
-                    await completion.markComplete()
-                    return true
-                } catch {
-                    return false
+            let releaser = Process()
+            releaser.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            releaser.arguments = [
+                "-c",
+                "import os,sys,time\nwhile not os.path.exists(sys.argv[1]): time.sleep(.01)\ntime.sleep(.1)\nopen(sys.argv[2],'wb').close()",
+                sentinel.path,
+                release.path,
+            ]
+            try releaser.run()
+            defer {
+                if releaser.isRunning {
+                    releaser.terminate()
                 }
             }
-            try await Task.sleep(for: .milliseconds(100))
-            #expect(await completion.isComplete == false)
-            try Data().write(to: release)
-            #expect(await opening.value)
-            try await Self.waitForProcessExit(process)
+
+            try Self.waitForFileSynchronously(sentinel)
+            let duration = try ContinuousClock().measure {
+                _ = try Self.makeStore(root: root, seed: 233)
+            }
+            #expect(duration >= .milliseconds(50))
+            releaser.waitUntilExit()
+            #expect(releaser.terminationStatus == 0)
+            process.waitUntilExit()
             #expect(process.terminationStatus == 0)
-            #expect(await completion.isComplete)
         }
     }
 
@@ -1228,6 +1233,20 @@ struct ProtectedLoggingEffectStoreTests {
         }
     }
 
+    private static func waitForFileSynchronously(_ url: URL) throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while !FileManager.default.fileExists(atPath: url.path) {
+            guard clock.now < deadline else {
+                throw ProtectedLoggingEffectStoreError.ioFailure(
+                    .lock,
+                    ETIMEDOUT
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+    }
+
     private static func waitForProcessExit(_ process: Process) async throws {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(5))
@@ -1271,14 +1290,6 @@ enum ProtectedStoreACLComponent: String, CaseIterable, Sendable {
         case .object: .object
         case .tombstone: .tombstone
         }
-    }
-}
-
-private actor EffectStoreCompletionFlag {
-    private(set) var isComplete = false
-
-    func markComplete() {
-        isComplete = true
     }
 }
 
