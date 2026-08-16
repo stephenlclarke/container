@@ -14,8 +14,11 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerPersistence
 import ContainerResource
+import ContainerRuntimeClient
 import Containerization
+import ContainerizationError
 import Foundation
 import Logging
 import Testing
@@ -24,6 +27,831 @@ import Testing
 @testable import ContainerPlugin
 
 struct ContainerLoadAtBootTests {
+    @Test
+    func prebootstrapMutationUpdatesRuntimeConfigurationOnly() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "created-not-bootstrapped"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        let originalOptions = ContainerCreateOptions(
+            autoRemove: false,
+            restartPolicy: .no
+        )
+        try RuntimeConfiguration(
+            path: bundlePath,
+            initialFilesystem: .virtiofs(
+                source: "/path/to/initfs",
+                destination: "/",
+                options: ["ro"]
+            ),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/path/to/kernel"),
+                platform: .linuxArm
+            ),
+            containerConfiguration: testConfiguration(id: id),
+            options: originalOptions
+        ).writeRuntimeConfiguration()
+
+        var updatedConfiguration = testConfiguration(id: id)
+        updatedConfiguration.dockerName = "renamed"
+        let updatedOptions = ContainerCreateOptions(
+            autoRemove: true,
+            restartPolicy: ContainerRestartPolicy(mode: .always)
+        )
+        try ContainersService.persistContainerConfiguration(
+            updatedConfiguration,
+            options: updatedOptions,
+            at: bundlePath
+        )
+
+        let persisted = try RuntimeConfiguration.readRuntimeConfiguration(
+            from: bundlePath
+        )
+        #expect(persisted.containerConfiguration?.dockerName == "renamed")
+        #expect(persisted.options?.autoRemove == true)
+        #expect(persisted.options?.restartPolicy.mode == .always)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: bundlePath.appendingPathComponent("config.json").path
+            )
+        )
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: bundlePath.appendingPathComponent("options.json").path
+            )
+        )
+    }
+
+    @Test
+    func persistedTransientLifecycleIsDurablyNormalizedAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "interrupted-running"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        var configuration = testConfiguration(id: id)
+        configuration.dockerID = String(repeating: "a", count: 64)
+        try bundle.set(configuration: configuration)
+        let record = ContainerLifecycleRecordV2(
+            containerID: String(repeating: "a", count: 64),
+            canonicalName: id,
+            immutableBundleKey: id,
+            selectedProviderFingerprint: "container-runtime-linux",
+            snapshot: ContainerLifecycleSnapshotV2(
+                state: .running,
+                running: true,
+                pid: 42,
+                processGeneration: 1,
+                transitionRevision: 7,
+                operationGeneration: 8
+            )
+        )
+        try bundle.setDurably(lifecycleRecordV2: record)
+
+        var deregisteredLabels = [String]()
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log,
+            deregisterService: { deregisteredLabels.append($0) }
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(recovered.snapshot.state == .exited)
+        #expect(!recovered.snapshot.running)
+        #expect(recovered.snapshot.pid == 0)
+        #expect(recovered.snapshot.finishedAt != nil)
+        #expect(recovered.snapshot.transitionRevision == 8)
+        #expect(recovered.snapshot.operationGeneration == 9)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+        #expect(deregisteredLabels.count == 1)
+        #expect(deregisteredLabels[0].hasSuffix(".container-runtime-linux.\(id)"))
+    }
+
+    @Test
+    func transientRuntimeStopFailureRetriesBeforeLoadingContainer() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "runtime-still-live"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        let running = ContainerLifecycleRecordV2.migrate(
+            bundleKey: id,
+            canonicalName: id,
+            selectedProviderFingerprint: "container-runtime-linux",
+            legacy: ContainerLifecycleStateV1(startedDate: Date())
+        )
+        var persisted = running
+        persisted.snapshot.state = .running
+        persisted.snapshot.running = true
+        persisted.snapshot.pid = 42
+        try bundle.setDurably(lifecycleRecordV2: persisted)
+
+        var deregistrationAttempts = 0
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log,
+            deregisterService: { _ in
+                deregistrationAttempts += 1
+                if deregistrationAttempts == 1 {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "transient deregistration failure"
+                    )
+                }
+            },
+            waitBeforeDeregistrationRetry: {}
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+
+        #expect(states[id] != nil)
+        #expect(records[id]?.snapshot.state == .exited)
+        #expect(deregistrationAttempts == 2)
+        #expect(try bundle.lifecycleRecordV2?.snapshot.state == .exited)
+        #expect(FileManager.default.fileExists(atPath: bundlePath.path))
+    }
+
+    @Test
+    func persistentRuntimeStopFailurePreventsAuthorityStartup() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "runtime-still-live"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        let running = ContainerLifecycleRecordV2.migrate(
+            bundleKey: id,
+            canonicalName: id,
+            selectedProviderFingerprint: "container-runtime-linux",
+            legacy: ContainerLifecycleStateV1(startedDate: Date())
+        )
+        var persisted = running
+        persisted.snapshot.state = .running
+        persisted.snapshot.running = true
+        persisted.snapshot.pid = 42
+        try bundle.setDurably(lifecycleRecordV2: persisted)
+
+        var deregistrationAttempts = 0
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.loadAtBoot(
+                root: fixture.containers,
+                loader: fixture.loader,
+                log: fixture.log,
+                deregisterService: { _ in
+                    deregistrationAttempts += 1
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "runtime remains registered"
+                    )
+                },
+                waitBeforeDeregistrationRetry: {}
+            )
+        }
+
+        #expect(deregistrationAttempts == 3)
+        #expect(try bundle.lifecycleRecordV2 == persisted)
+        #expect(FileManager.default.fileExists(atPath: bundlePath.path))
+    }
+
+    @Test
+    func terminalLifecycleStillReconcilesSurvivingRuntimeService() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "bootstrapped-before-start-commit"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        let created = ContainerLifecycleRecordV2.migrate(
+            bundleKey: id,
+            canonicalName: id,
+            selectedProviderFingerprint: "container-runtime-linux",
+            legacy: nil
+        )
+        try bundle.setDurably(lifecycleRecordV2: created)
+
+        var deregisteredLabels = [String]()
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log,
+            deregisterService: { deregisteredLabels.append($0) }
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+
+        #expect(records[id] == created)
+        #expect(deregisteredLabels.count == 1)
+        #expect(deregisteredLabels[0].hasSuffix(".container-runtime-linux.\(id)"))
+    }
+
+    @Test
+    func interruptedPolicyUpdateResumesEligibleRestartAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "restart-after-authority-boot"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        let updatedPolicy = ContainerRestartPolicy(mode: .always)
+        try bundle.write(
+            filename: "options.json",
+            value: ContainerCreateOptions(autoRemove: false, restartPolicy: updatedPolicy)
+        )
+        var persisted = ContainerLifecycleRecordV2.migrate(
+            bundleKey: id,
+            canonicalName: id,
+            selectedProviderFingerprint: "container-runtime-linux",
+            legacy: ContainerLifecycleStateV1(startedDate: Date())
+        )
+        persisted.snapshot.state = .running
+        persisted.snapshot.running = true
+        persisted.snapshot.pid = 42
+        persisted.intent.restartPolicy = .no
+        try bundle.setDurably(lifecycleRecordV2: persisted)
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(recovered.intent.restartPolicy == updatedPolicy)
+        #expect(recovered.snapshot.state == .restarting)
+        #expect(recovered.snapshot.restarting)
+        #expect(recovered.snapshot.pid == 0)
+        #expect(recovered.snapshot.restartCount == 1)
+        #expect(recovered.snapshot.restartConsecutiveFailureCount == 1)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+    }
+
+    @Test
+    func interruptedExplicitRestartResumesWithoutAutomaticPolicy() {
+        #expect(
+            ContainersService.shouldResumeRestartAtBoot(
+                previousState: .restarting,
+                policy: .no,
+                exitCode: 0,
+                manualRestartSuppressed: true
+            )
+        )
+        #expect(
+            ContainersService.restartIntentAllowsPendingRestart(
+                lifecycleState: .restarting,
+                manualRestartSuppressed: true,
+                policy: .no,
+                exitCode: 0,
+                restartConsecutiveFailureCount: 0
+            )
+        )
+        #expect(
+            !ContainersService.shouldResumeRestartAtBoot(
+                previousState: .running,
+                policy: ContainerRestartPolicy(mode: .onFailure),
+                exitCode: 1
+            )
+        )
+        #expect(
+            !ContainersService.shouldResumeRestartAtBoot(
+                previousState: .removing,
+                policy: ContainerRestartPolicy(mode: .always),
+                exitCode: 1
+            )
+        )
+        #expect(
+            !ContainersService.shouldResumeRestartAtBoot(
+                previousState: .running,
+                policy: ContainerRestartPolicy(mode: .always),
+                exitCode: 0,
+                manualRestartSuppressed: true
+            )
+        )
+        #expect(
+            !ContainersService.shouldResumeRestartAtBoot(
+                previousState: .restarting,
+                policy: ContainerRestartPolicy(
+                    mode: .onFailure,
+                    maximumRetryCount: 1
+                ),
+                exitCode: 1,
+                restartConsecutiveFailureCount: 2
+            )
+        )
+    }
+
+    @Test
+    func interruptedRenameIsCompletedFromDurableConfigurationAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "rename-interrupted"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        var configuration = testConfiguration(id: id)
+        configuration.dockerName = "renamed"
+        try bundle.set(configuration: configuration)
+        var record = ContainerLifecycleRecordV2.migrate(
+            bundleKey: id,
+            canonicalName: id,
+            selectedProviderFingerprint: configuration.runtimeHandler,
+            legacy: nil
+        )
+        record.snapshot.operationGeneration = 4
+        try bundle.setDurably(lifecycleRecordV2: record)
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(recovered.canonicalName == "renamed")
+        #expect(recovered.snapshot.transitionRevision == 2)
+        #expect(recovered.snapshot.operationGeneration == 5)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+    }
+
+    @Test
+    func stagedCreateOptionsArePreservedDuringLifecycleMigration() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "staged-options"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        let options = ContainerCreateOptions(autoRemove: true)
+        try RuntimeConfiguration(
+            path: bundlePath,
+            initialFilesystem: .virtiofs(
+                source: "/path/to/initfs",
+                destination: "/",
+                options: ["ro"]
+            ),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/path/to/kernel"),
+                platform: .linuxArm
+            ),
+            containerConfiguration: testConfiguration(id: id),
+            options: options
+        ).writeRuntimeConfiguration()
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(recovered.intent.autoRemove)
+        #expect(recovered.snapshot.state == .created)
+        #expect(!recovered.intent.removalRequested)
+        #expect(try ContainerResource.Bundle(path: bundlePath).lifecycleRecordV2 == recovered)
+    }
+
+    @Test
+    func neverStartedAutoRemoveContainerSurvivesAuthorityRestart() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "auto-remove-created"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        try bundle.write(
+            filename: "options.json",
+            value: ContainerCreateOptions(autoRemove: true)
+        )
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2.migrate(
+                bundleKey: id,
+                canonicalName: id,
+                selectedProviderFingerprint: "container-runtime-linux",
+                legacy: nil,
+                intent: ContainerLifecycleIntentV2(autoRemove: true)
+            )
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(recovered.snapshot.state == .created)
+        #expect(!recovered.intent.removalRequested)
+        #expect(FileManager.default.fileExists(atPath: bundlePath.path))
+    }
+
+    @Test
+    func interruptedRemovalRemainsQueuedForBootCleanup() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "interrupted-removal"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        try bundle.write(
+            filename: "options.json",
+            value: ContainerCreateOptions(autoRemove: true)
+        )
+        let removing = ContainerLifecycleRecordV2(
+            containerID: ContainerLifecycleRecordV2.migrate(
+                bundleKey: id,
+                canonicalName: id,
+                selectedProviderFingerprint: "container-runtime-linux",
+                legacy: nil
+            ).containerID,
+            canonicalName: id,
+            immutableBundleKey: id,
+            selectedProviderFingerprint: "container-runtime-linux",
+            intent: ContainerLifecycleIntentV2(
+                autoRemove: true,
+                removalRequested: true
+            ),
+            snapshot: ContainerLifecycleSnapshotV2(
+                state: .removing,
+                removalInProgress: false,
+                transitionRevision: 4,
+                operationGeneration: 5
+            )
+        )
+        try bundle.setDurably(lifecycleRecordV2: removing)
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+
+        #expect(states[id] != nil)
+        let recovered = try #require(records[id])
+        #expect(recovered.snapshot.state == .removing)
+        #expect(recovered.snapshot.removalInProgress)
+        #expect(recovered.snapshot.transitionRevision == 5)
+        #expect(recovered.snapshot.operationGeneration == 6)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+    }
+
+    @Test
+    func autoRemoveExitIsQueuedWhenBootInterruptedBeforeRemovalIntent() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "auto-remove-exited"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        try bundle.write(
+            filename: "options.json",
+            value: ContainerCreateOptions(autoRemove: true)
+        )
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2(
+                containerID: ContainerLifecycleRecordV2.migrate(
+                    bundleKey: id,
+                    canonicalName: id,
+                    selectedProviderFingerprint: "container-runtime-linux",
+                    legacy: nil
+                ).containerID,
+                canonicalName: id,
+                immutableBundleKey: id,
+                selectedProviderFingerprint: "container-runtime-linux",
+                intent: ContainerLifecycleIntentV2(autoRemove: true),
+                snapshot: ContainerLifecycleSnapshotV2(state: .exited)
+            )
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(states[id] != nil)
+        #expect(recovered.intent.removalRequested)
+        #expect(recovered.snapshot.state == .removing)
+        #expect(recovered.snapshot.removalInProgress)
+        #expect(FileManager.default.fileExists(atPath: bundlePath.path))
+    }
+
+    @Test
+    func staleAutoRemoveIntentIsReconciledFromCreationOptionsAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "stale-auto-remove"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        try bundle.write(
+            filename: "options.json",
+            value: ContainerCreateOptions(autoRemove: false)
+        )
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2(
+                containerID: ContainerLifecycleRecordV2.migrate(
+                    bundleKey: id,
+                    canonicalName: id,
+                    selectedProviderFingerprint: "container-runtime-linux",
+                    legacy: nil
+                ).containerID,
+                canonicalName: id,
+                immutableBundleKey: id,
+                selectedProviderFingerprint: "container-runtime-linux",
+                intent: ContainerLifecycleIntentV2(autoRemove: true),
+                snapshot: ContainerLifecycleSnapshotV2(
+                    state: .exited,
+                    transitionRevision: 4,
+                    operationGeneration: 5
+                )
+            )
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(!recovered.intent.autoRemove)
+        #expect(!recovered.intent.removalRequested)
+        #expect(recovered.snapshot.state == .exited)
+        #expect(recovered.snapshot.transitionRevision == 5)
+        #expect(recovered.snapshot.operationGeneration == 6)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+    }
+
+    @Test
+    func terminalLifecycleFlagsAreNormalizedAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "contradictory-terminal-flags"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: testConfiguration(id: id))
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2(
+                containerID: ContainerLifecycleRecordV2.migrate(
+                    bundleKey: id,
+                    canonicalName: id,
+                    selectedProviderFingerprint: "container-runtime-linux",
+                    legacy: nil
+                ).containerID,
+                canonicalName: id,
+                immutableBundleKey: id,
+                selectedProviderFingerprint: "container-runtime-linux",
+                snapshot: ContainerLifecycleSnapshotV2(
+                    state: .exited,
+                    running: true,
+                    paused: true,
+                    restarting: true,
+                    removalInProgress: true,
+                    dead: true,
+                    pid: 42
+                )
+            )
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(!recovered.snapshot.running)
+        #expect(!recovered.snapshot.paused)
+        #expect(!recovered.snapshot.restarting)
+        #expect(!recovered.snapshot.removalInProgress)
+        #expect(!recovered.snapshot.dead)
+        #expect(recovered.snapshot.pid == 0)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+    }
+
+    @Test
+    func malformedLifecycleV2DoesNotTakeTheContainerAPIOffline() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let validID = "valid-lifecycle"
+        let validPath = fixture.containers.appendingPathComponent(validID)
+        try FileManager.default.createDirectory(at: validPath, withIntermediateDirectories: true)
+        try ContainerResource.Bundle(path: validPath).set(configuration: testConfiguration(id: validID))
+
+        let malformedID = "malformed-lifecycle-v2"
+        let malformedPath = fixture.containers.appendingPathComponent(malformedID)
+        try FileManager.default.createDirectory(at: malformedPath, withIntermediateDirectories: true)
+        let malformedBundle = ContainerResource.Bundle(path: malformedPath)
+        try malformedBundle.set(configuration: testConfiguration(id: malformedID))
+        try Data("{".utf8).write(
+            to: malformedBundle.filePath(for: ContainerResource.Bundle.lifecycleRecordV2Filename)
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+
+        #expect(records[validID] != nil)
+        #expect(records[malformedID] == nil)
+        #expect(FileManager.default.fileExists(atPath: malformedPath.path))
+        _ = try ContainersService(
+            appRoot: fixture.root,
+            pluginLoader: fixture.loader,
+            containerSystemConfig: ContainerSystemConfig(),
+            log: fixture.log
+        )
+    }
+
+    @Test
+    func lifecycleRecordBoundToAnotherBundleIsIsolatedAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "local-bundle"
+        let configuration = testConfiguration(id: id)
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        try bundle.set(configuration: configuration)
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2.migrate(
+                bundleKey: "foreign-bundle",
+                canonicalName: id,
+                selectedProviderFingerprint: configuration.runtimeHandler,
+                legacy: nil
+            )
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+
+        #expect(records[id] == nil)
+        #expect(FileManager.default.fileExists(atPath: bundlePath.path))
+        _ = try ContainersService(
+            appRoot: fixture.root,
+            pluginLoader: fixture.loader,
+            containerSystemConfig: ContainerSystemConfig(),
+            log: fixture.log
+        )
+    }
+
+    @Test
+    func lifecycleEventsRetainTheRevisionThatCreatedThem() throws {
+        let configuration = testConfiguration(id: "api")
+        let snapshot = ContainerSnapshot(
+            configuration: configuration,
+            status: .stopped,
+            networks: [],
+            exitCode: 0
+        )
+        let lifecycle = ContainerLifecycleRecordV2(
+            containerID: String(repeating: "b", count: 64),
+            canonicalName: "api",
+            immutableBundleKey: "api",
+            selectedProviderFingerprint: "container-runtime-linux",
+            snapshot: ContainerLifecycleSnapshotV2(
+                state: .exited,
+                transitionRevision: 11,
+                operationGeneration: 12
+            )
+        )
+
+        let events = ContainersService.stampEvents(
+            ContainersService.terminalLifecycleEvents(snapshot: snapshot),
+            with: lifecycle
+        )
+
+        #expect(events.allSatisfy { $0.transitionRevision == 11 })
+        #expect(events.allSatisfy { $0.operationGeneration == 12 })
+    }
+
     @Test
     func dockerLifecycleStateSurvivesAuthorityRestart() throws {
         let fixture = try Fixture(includeRuntime: true)
@@ -114,18 +942,36 @@ struct ContainerLoadAtBootTests {
         let bundlePath = fixture.containers.appendingPathComponent("missing-runtime")
         try FileManager.default.createDirectory(at: bundlePath, withIntermediateDirectories: true)
         let bundle = ContainerResource.Bundle(path: bundlePath)
-        try bundle.set(configuration: testConfiguration(id: "missing-runtime"))
+        var configuration = testConfiguration(id: "missing-runtime")
+        configuration.dockerName = "reserved-missing-runtime"
+        configuration.dockerID = String(repeating: "a", count: 64)
+        try bundle.set(configuration: configuration)
 
+        var deregisteredLabels = [String]()
         let states = try ContainersService.loadAtBoot(
             root: fixture.containers,
             loader: fixture.loader,
-            log: fixture.log
+            log: fixture.log,
+            deregisterService: { deregisteredLabels.append($0) }
         )
 
         #expect(states.isEmpty)
         #expect(FileManager.default.fileExists(atPath: bundlePath.path))
         let recovered: ContainerConfiguration = try bundle.load(filename: "config.json")
         #expect(recovered.id == "missing-runtime")
+        let reservedNames = try ContainersService.quarantinedContainerNamesAtBoot(
+            root: fixture.containers,
+            acceptedContainerIDs: []
+        )
+        #expect(reservedNames.contains("missing-runtime"))
+        #expect(reservedNames.contains("reserved-missing-runtime"))
+        #expect(reservedNames.contains(String(repeating: "a", count: 64)))
+        #expect(deregisteredLabels.count == 1)
+        #expect(
+            deregisteredLabels[0].hasSuffix(
+                ".container-runtime-linux.missing-runtime"
+            )
+        )
     }
 
     private func testConfiguration(id: String) -> ContainerConfiguration {

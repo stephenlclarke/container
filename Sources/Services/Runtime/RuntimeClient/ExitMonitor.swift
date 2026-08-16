@@ -92,7 +92,9 @@ public actor ExitMonitor {
                 self.log?.error("WaitHandler for \(id) threw error \(String(describing: error))")
                 exitStatus = ExitStatus(exitCode: -1)
             }
-            self.finishTracking(id: id, token: token)
+            guard self.finishTracking(id: id, token: token) else {
+                return
+            }
             do {
                 try await onExit(id, exitStatus)
             } catch {
@@ -104,11 +106,12 @@ public actor ExitMonitor {
         self.runningTasks[id] = RunningTask(token: token, task: task)
     }
 
-    private func finishTracking(id: String, token: UUID) {
+    private func finishTracking(id: String, token: UUID) -> Bool {
         guard runningTasks[id]?.token == token else {
-            return
+            return false
         }
         exitCallbacks.removeValue(forKey: id)
         runningTasks.removeValue(forKey: id)
+        return true
     }
 }

@@ -118,4 +118,25 @@ struct ContainerHealthMonitorTests {
         #expect(tracker.record(exitCode: 1, countsFailure: true) == .unhealthy)
         #expect(tracker.record(exitCode: 1, countsFailure: true) == .unhealthy)
     }
+
+    @Test func healthTransitionsRequireMatchingRunningAuthorities() {
+        #expect(
+            ContainersService.healthLifecycleUpdateIsCurrent(
+                runtimeStatus: .running,
+                lifecycleState: .running
+            )
+        )
+        #expect(
+            !ContainersService.healthLifecycleUpdateIsCurrent(
+                runtimeStatus: .running,
+                lifecycleState: .restarting
+            )
+        )
+        #expect(
+            !ContainersService.healthLifecycleUpdateIsCurrent(
+                runtimeStatus: .stopped,
+                lifecycleState: .running
+            )
+        )
+    }
 }

@@ -36,6 +36,8 @@ public struct ContainerStats: Sendable, Codable {
     public var blockWriteBytes: UInt64?
     /// Number of processes in the container
     public var numProcesses: UInt64?
+    /// Cumulative cgroup `oom_kill` counter for this workload.
+    public var memoryOOMKillCount: UInt64?
 
     public init(
         id: String,
@@ -46,7 +48,8 @@ public struct ContainerStats: Sendable, Codable {
         networkTxBytes: UInt64?,
         blockReadBytes: UInt64?,
         blockWriteBytes: UInt64?,
-        numProcesses: UInt64?
+        numProcesses: UInt64?,
+        memoryOOMKillCount: UInt64? = nil
     ) {
         self.id = id
         self.memoryUsageBytes = memoryUsageBytes
@@ -57,5 +60,6 @@ public struct ContainerStats: Sendable, Codable {
         self.blockReadBytes = blockReadBytes
         self.blockWriteBytes = blockWriteBytes
         self.numProcesses = numProcesses
+        self.memoryOOMKillCount = memoryOOMKillCount
     }
 }

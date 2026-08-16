@@ -44,6 +44,8 @@ public enum XPCKeys: String {
     case exitedAt
     /// An event that occurred in a container
     case containerEvent
+    case lifecycleRecord
+    case lifecycleRecords
     /// Error key.
     case error
     /// FD to a container resource key.
@@ -187,12 +189,15 @@ public enum XPCRoute: String {
     case containerWait
     case containerDelete
     case containerStop
+    case containerRestart
     case containerPause
     case containerUnpause
     case containerDial
     case containerResize
     case containerKill
     case containerState
+    case containerLifecycle
+    case containerLifecycleList
     case containerLogs
     case containerFollowLogs
     case containerLogRecordFile

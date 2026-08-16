@@ -113,9 +113,9 @@ struct ManagedContainerTests {
         #expect(!ManagedContainer.nameValid("a b"))
     }
 
-    @Test func nameValidRejectsNamesLongerThan63Characters() {
-        let maxValidName = String(repeating: "a", count: 63)
-        let tooLongName = String(repeating: "a", count: 64)
+    @Test func nameValidAcceptsDockerLengthAndRejectsNamesOver255Bytes() {
+        let maxValidName = String(repeating: "a", count: 255)
+        let tooLongName = String(repeating: "a", count: 256)
         #expect(ManagedContainer.nameValid(maxValidName))
         #expect(!ManagedContainer.nameValid(tooLongName))
     }

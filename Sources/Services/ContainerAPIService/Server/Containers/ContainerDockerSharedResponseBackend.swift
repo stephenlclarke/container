@@ -67,11 +67,12 @@ extension ContainerDockerLoggingBackend:
         request: DockerContainerListRequest
     ) async throws -> Data {
         do {
-            let snapshots = try await containers.list()
+            let authority = await containers.engineListSnapshot()
             return try Self.jsonArrayData(
                 Self.containerListObjects(
-                    snapshots: snapshots,
-                    request: request
+                    snapshots: authority.snapshots,
+                    request: request,
+                    lifecycleRecords: authority.lifecycleRecords
                 )
             )
         } catch {
@@ -113,12 +114,14 @@ extension ContainerDockerLoggingBackend:
 
     public func systemInfoBaseJSON() async throws -> Data {
         do {
-            async let snapshots = containers.list()
+            async let authority = containers.engineListSnapshot()
             async let imageCount = imageCountProvider()
             async let rootPath = containers.engineContainerRootPath()
+            let authoritySnapshot = await authority
             return try Self.jsonData(
                 Self.systemInfoObject(
-                    snapshots: try await snapshots,
+                    snapshots: authoritySnapshot.snapshots,
+                    lifecycleRecords: authoritySnapshot.lifecycleRecords,
                     imageCount: try await imageCount,
                     rootPath: await rootPath,
                     engineIdentity: engineIdentity,
@@ -184,7 +187,8 @@ extension ContainerDockerLoggingBackend:
     static func containerListObjects(
         snapshots: [ContainerSnapshot],
         request: DockerContainerListRequest,
-        now: Date = Date()
+        now: Date = Date(),
+        lifecycleRecords: [String: ContainerResource.ContainerLifecycleRecordV2] = [:]
     ) throws -> [[String: Any]] {
         var references = [String: ContainerSnapshot]()
         for snapshot in snapshots {
@@ -194,7 +198,13 @@ extension ContainerDockerLoggingBackend:
         }
         var selected =
             snapshots
-            .filter { request.all || isRunning($0) }
+            .filter {
+                request.all
+                    || isRunning(
+                        $0,
+                        lifecycle: lifecycleRecords[$0.id]?.snapshot
+                    )
+            }
             .sorted {
                 if $0.configuration.creationDate != $1.configuration.creationDate {
                     return $0.configuration.creationDate > $1.configuration.creationDate
@@ -208,7 +218,8 @@ extension ContainerDockerLoggingBackend:
                         name: name,
                         value: value,
                         snapshot: snapshot,
-                        references: references
+                        references: references,
+                        lifecycle: lifecycleRecords[snapshot.id]?.snapshot
                     )
                 }
             }
@@ -217,7 +228,12 @@ extension ContainerDockerLoggingBackend:
             selected = Array(selected.prefix(limit))
         }
         return selected.map {
-            containerListObject($0, includeSize: request.size, now: now)
+            containerListObject(
+                $0,
+                includeSize: request.size,
+                now: now,
+                lifecycle: lifecycleRecords[$0.id]?.snapshot
+            )
         }
     }
 
@@ -486,7 +502,8 @@ extension ContainerDockerLoggingBackend:
     private static func containerListObject(
         _ snapshot: ContainerSnapshot,
         includeSize: Bool,
-        now: Date
+        now: Date,
+        lifecycle: ContainerResource.ContainerLifecycleSnapshotV2?
     ) -> [String: Any] {
         let configuration = snapshot.configuration
         var result: [String: Any] = [
@@ -498,8 +515,8 @@ extension ContainerDockerLoggingBackend:
             "Created": Int64(configuration.creationDate.timeIntervalSince1970),
             "Ports": portSummaries(configuration),
             "Labels": configuration.labels,
-            "State": dockerStatus(snapshot),
-            "Status": containerListStatus(snapshot, now: now),
+            "State": dockerStatus(snapshot, lifecycle: lifecycle),
+            "Status": containerListStatus(snapshot, now: now, lifecycle: lifecycle),
             "HostConfig": ["NetworkMode": networkMode(configuration)],
             "NetworkSettings": [
                 "Networks": listNetworks(snapshot)
@@ -518,17 +535,26 @@ extension ContainerDockerLoggingBackend:
         return result
     }
 
-    private static func systemInfoObject(
+    static func systemInfoObject(
         snapshots: [ContainerSnapshot],
+        lifecycleRecords: [String: ContainerResource.ContainerLifecycleRecordV2] = [:],
         imageCount: Int,
         rootPath: String,
         engineIdentity: String,
         serverVersion: String
     ) -> [String: Any] {
-        let running = snapshots.count {
-            $0.status == .running || $0.status == .stopping
+        let running = snapshots.count { snapshot in
+            if let state = lifecycleRecords[snapshot.id]?.snapshot.state {
+                return state == .running || state == .restarting
+            }
+            return snapshot.status == .running || snapshot.status == .stopping
         }
-        let paused = snapshots.count { $0.status == .paused }
+        let paused = snapshots.count { snapshot in
+            if let state = lifecycleRecords[snapshot.id]?.snapshot.state {
+                return state == .paused
+            }
+            return snapshot.status == .paused
+        }
         let stopped = snapshots.count - running - paused
         return [
             "ID": engineIdentity,
@@ -612,14 +638,18 @@ extension ContainerDockerLoggingBackend:
             "Created": dockerDate(configuration.creationDate),
             "Path": configuration.initProcess.executable,
             "Args": configuration.initProcess.arguments,
-            "State": stateObject(snapshot, error: base.stateError),
+            "State": stateObject(
+                snapshot,
+                lifecycle: base.lifecycle.snapshot,
+                error: base.stateError
+            ),
             "Image": configuration.image.digest,
             "ResolvConfPath": "",
             "HostnamePath": "",
             "HostsPath": "",
             "LogPath": "",
             "Name": "/\(dockerContainerName(snapshot))",
-            "RestartCount": 0,
+            "RestartCount": base.lifecycle.snapshot.restartCount,
             "Driver": "apple-container",
             "Platform": String(describing: configuration.platform.os),
             "MountLabel": "",
@@ -643,27 +673,24 @@ extension ContainerDockerLoggingBackend:
 
     private static func stateObject(
         _ snapshot: ContainerSnapshot,
+        lifecycle: ContainerLifecycleSnapshotV2,
         error: String
     ) -> [String: Any] {
-        let active =
-            snapshot.status == .running
-            || snapshot.status == .paused
-            || snapshot.status == .stopping
         var result: [String: Any] = [
-            "Status": dockerStatus(snapshot),
-            "Running": active,
-            "Paused": snapshot.status == .paused,
-            "Restarting": false,
-            "OOMKilled": false,
-            "Dead": snapshot.status == .unknown,
-            "Pid": active ? 1 : 0,
+            "Status": lifecycle.state.rawValue,
+            "Running": lifecycle.running,
+            "Paused": lifecycle.paused,
+            "Restarting": lifecycle.restarting,
+            "OOMKilled": lifecycle.oomKilled,
+            "Dead": lifecycle.dead,
+            "Pid": lifecycle.pid,
             // Docker reports a rejected start as a created container with exit code 128,
             // even though no native init process was ever started.
-            "ExitCode": snapshot.exitCode ?? (error.isEmpty ? 0 : 128),
-            "Error": error,
-            "StartedAt": snapshot.startedDate.map(dockerDate)
+            "ExitCode": lifecycle.exitCode == 0 && !error.isEmpty ? 128 : lifecycle.exitCode,
+            "Error": lifecycle.error.isEmpty ? error : lifecycle.error,
+            "StartedAt": lifecycle.startedAt.map(dockerDate)
                 ?? "0001-01-01T00:00:00Z",
-            "FinishedAt": snapshot.exitedDate.map(dockerDate)
+            "FinishedAt": lifecycle.finishedAt.map(dockerDate)
                 ?? "0001-01-01T00:00:00Z",
         ]
         if let health = snapshot.health, health != .none {
@@ -1034,8 +1061,14 @@ extension ContainerDockerLoggingBackend:
         return Int64(min(value.rounded(), Double(Int64.max)))
     }
 
-    private static func isRunning(_ snapshot: ContainerSnapshot) -> Bool {
-        snapshot.status == .running
+    private static func isRunning(
+        _ snapshot: ContainerSnapshot,
+        lifecycle: ContainerResource.ContainerLifecycleSnapshotV2?
+    ) -> Bool {
+        if let lifecycle {
+            return lifecycle.running
+        }
+        return snapshot.status == .running
             || snapshot.status == .paused
             || snapshot.status == .stopping
     }
@@ -1044,7 +1077,8 @@ extension ContainerDockerLoggingBackend:
         name: String,
         value: String,
         snapshot: ContainerSnapshot,
-        references: [String: ContainerSnapshot]
+        references: [String: ContainerSnapshot],
+        lifecycle: ContainerResource.ContainerLifecycleSnapshotV2?
     ) throws -> Bool {
         let configuration = snapshot.configuration
         switch name {
@@ -1064,8 +1098,12 @@ extension ContainerDockerLoggingBackend:
             }
             return parts.count == 1 || actual == String(parts[1])
         case "status":
-            return dockerStatus(snapshot) == value
+            return dockerStatus(snapshot, lifecycle: lifecycle) == value
         case "exited":
+            if let lifecycle {
+                return lifecycle.state == .exited
+                    && String(lifecycle.exitCode) == value
+            }
             return snapshot.exitCode.map(String.init) == value
         case "ancestor":
             return configuration.image.reference == value
@@ -1263,9 +1301,10 @@ extension ContainerDockerLoggingBackend:
 
     private static func containerListStatus(
         _ snapshot: ContainerSnapshot,
-        now: Date
+        now: Date,
+        lifecycle: ContainerResource.ContainerLifecycleSnapshotV2?
     ) -> String {
-        switch dockerStatus(snapshot) {
+        switch dockerStatus(snapshot, lifecycle: lifecycle) {
         case "created":
             return "Created"
         case "running", "paused":
@@ -1273,18 +1312,28 @@ extension ContainerDockerLoggingBackend:
                 from: snapshot.startedDate ?? snapshot.configuration.creationDate,
                 to: now
             )
-            return snapshot.status == .paused ? "Up \(age) (Paused)" : "Up \(age)"
+            return lifecycle?.paused == true || snapshot.status == .paused
+                ? "Up \(age) (Paused)" : "Up \(age)"
         case "exited":
             let age = humanDuration(
                 from: snapshot.exitedDate ?? snapshot.startedDate
                     ?? snapshot.configuration.creationDate,
                 to: now
             )
-            return "Exited (\(snapshot.exitCode ?? 0)) \(age) ago"
+            return "Exited (\(lifecycle?.exitCode ?? snapshot.exitCode ?? 0)) \(age) ago"
+        case "restarting":
+            let age = humanDuration(
+                from: lifecycle?.finishedAt ?? snapshot.exitedDate
+                    ?? snapshot.startedDate ?? snapshot.configuration.creationDate,
+                to: now
+            )
+            return "Restarting (\(lifecycle?.exitCode ?? snapshot.exitCode ?? 0)) \(age) ago"
+        case "removing":
+            return "Removal In Progress"
         case "dead":
             return "Dead"
         default:
-            return dockerStatus(snapshot)
+            return dockerStatus(snapshot, lifecycle: lifecycle)
         }
     }
 
@@ -1316,7 +1365,13 @@ extension ContainerDockerLoggingBackend:
         }
     }
 
-    private static func dockerStatus(_ snapshot: ContainerSnapshot) -> String {
+    private static func dockerStatus(
+        _ snapshot: ContainerSnapshot,
+        lifecycle: ContainerResource.ContainerLifecycleSnapshotV2? = nil
+    ) -> String {
+        if let lifecycle {
+            return lifecycle.state.rawValue
+        }
         switch snapshot.status {
         case .stopped:
             return snapshot.startedDate == nil ? "created" : "exited"

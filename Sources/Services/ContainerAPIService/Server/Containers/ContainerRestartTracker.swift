@@ -34,8 +34,40 @@ struct ContainerRestartTracker {
     private var consecutiveFailureCount: UInt32 = 0
     private var nextDelayInNanoseconds = Self.initialDelayInNanoseconds
 
+    init(restoringConsecutiveFailureCount: UInt32 = 0) {
+        self.consecutiveFailureCount = restoringConsecutiveFailureCount
+        self.nextDelayInNanoseconds = Self.exponentialDelay(
+            forFailureCount: restoringConsecutiveFailureCount == .max
+                ? .max : restoringConsecutiveFailureCount + 1
+        )
+    }
+
     var allowsAutomaticRestart: Bool {
         !manuallyStopped
+    }
+
+    var consecutiveFailures: UInt32 {
+        consecutiveFailureCount
+    }
+
+    static func pendingDelay(
+        policy: ContainerRestartPolicy,
+        consecutiveFailureCount: UInt32
+    ) -> UInt64 {
+        policy.retryDelayInNanoseconds
+            ?? Self.exponentialDelay(
+                forFailureCount: max(1, consecutiveFailureCount)
+            )
+    }
+
+    private static func exponentialDelay(forFailureCount count: UInt32) -> UInt64 {
+        var delay = Self.initialDelayInNanoseconds
+        var remainingDoublings = count > 0 ? count - 1 : 0
+        while remainingDoublings > 0, delay < Self.maximumDelayInNanoseconds {
+            delay = min(delay * 2, Self.maximumDelayInNanoseconds)
+            remainingDoublings -= 1
+        }
+        return delay
     }
 
     mutating func markStarted() {
@@ -44,6 +76,10 @@ struct ContainerRestartTracker {
 
     mutating func markManuallyStopped() {
         manuallyStopped = true
+    }
+
+    mutating func restoreAutomaticRestartEligibility() {
+        manuallyStopped = false
     }
 
     mutating func markStable() {
@@ -69,12 +105,14 @@ struct ContainerRestartTracker {
             return nil
         }
 
-        consecutiveFailureCount += 1
         if policy.mode == .onFailure,
             let maximumRetryCount = policy.maximumRetryCount,
-            consecutiveFailureCount > maximumRetryCount
+            consecutiveFailureCount >= maximumRetryCount
         {
             return nil
+        }
+        if consecutiveFailureCount < .max {
+            consecutiveFailureCount += 1
         }
 
         guard let retryDelayInNanoseconds = policy.retryDelayInNanoseconds else {

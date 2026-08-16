@@ -1126,6 +1126,134 @@ struct ContainerLogsTests {
         #expect(deadObject["Status"] as? String == "Dead")
     }
 
+    @Test func dockerSystemInfoUsesLifecycleV2TransientStates() throws {
+        let restarting = ContainerSnapshot(
+            configuration: testConfiguration(id: "restarting-info"),
+            status: .stopped,
+            networks: [],
+            exitCode: 0,
+            exitedDate: Date()
+        )
+        let paused = ContainerSnapshot(
+            configuration: testConfiguration(id: "paused-info"),
+            status: .stopped,
+            networks: []
+        )
+        let records = [
+            restarting.id: ContainerLifecycleRecordV2(
+                containerID: restarting.id,
+                canonicalName: restarting.id,
+                immutableBundleKey: restarting.id,
+                selectedProviderFingerprint: "runtime",
+                snapshot: ContainerResource.ContainerLifecycleSnapshotV2(
+                    state: ContainerResource.ContainerPublicStateV2.restarting,
+                    running: true,
+                    restarting: true
+                )
+            ),
+            paused.id: ContainerLifecycleRecordV2(
+                containerID: paused.id,
+                canonicalName: paused.id,
+                immutableBundleKey: paused.id,
+                selectedProviderFingerprint: "runtime",
+                snapshot: ContainerResource.ContainerLifecycleSnapshotV2(
+                    state: ContainerResource.ContainerPublicStateV2.paused,
+                    running: true,
+                    paused: true
+                )
+            ),
+        ]
+
+        let info = ContainerDockerLoggingBackend.systemInfoObject(
+            snapshots: [restarting, paused],
+            lifecycleRecords: records,
+            imageCount: 0,
+            rootPath: "/tmp",
+            engineIdentity: "test",
+            serverVersion: "test"
+        )
+
+        #expect(info["ContainersRunning"] as? Int == 1)
+        #expect(info["ContainersPaused"] as? Int == 1)
+        #expect(info["ContainersStopped"] as? Int == 0)
+    }
+
+    @Test func dockerContainerListUsesLifecycleV2TransientStates() throws {
+        var restartingConfiguration = testConfiguration(id: "restarting-one")
+        restartingConfiguration.creationDate = Date(timeIntervalSince1970: 100)
+        let restarting = ContainerSnapshot(
+            configuration: restartingConfiguration,
+            status: .stopped,
+            networks: [],
+            startedDate: Date(timeIntervalSince1970: 110),
+            exitCode: 7,
+            exitedDate: Date(timeIntervalSince1970: 120)
+        )
+        var removingConfiguration = testConfiguration(id: "removing-two")
+        removingConfiguration.creationDate = Date(timeIntervalSince1970: 200)
+        let removing = ContainerSnapshot(
+            configuration: removingConfiguration,
+            status: .stopped,
+            networks: []
+        )
+        let records = [
+            restarting.id: ContainerResource.ContainerLifecycleRecordV2(
+                containerID: restarting.id,
+                canonicalName: restarting.id,
+                immutableBundleKey: restarting.id,
+                selectedProviderFingerprint: "runtime",
+                snapshot: ContainerResource.ContainerLifecycleSnapshotV2(
+                    state: .restarting,
+                    running: true,
+                    restarting: true,
+                    exitCode: 7,
+                    finishedAt: Date(timeIntervalSince1970: 120)
+                )
+            ),
+            removing.id: ContainerResource.ContainerLifecycleRecordV2(
+                containerID: removing.id,
+                canonicalName: removing.id,
+                immutableBundleKey: removing.id,
+                selectedProviderFingerprint: "runtime",
+                snapshot: ContainerResource.ContainerLifecycleSnapshotV2(
+                    state: .removing,
+                    removalInProgress: true
+                )
+            ),
+        ]
+
+        let runningObjects = try ContainerDockerLoggingBackend.containerListObjects(
+            snapshots: [restarting, removing],
+            request: DockerContainerListRequest(all: false),
+            now: Date(timeIntervalSince1970: 130),
+            lifecycleRecords: records
+        )
+        #expect(runningObjects.map { $0["Id"] as? String } == ["restarting-one"])
+        #expect(runningObjects.first?["State"] as? String == "restarting")
+        #expect(runningObjects.first?["Status"] as? String == "Restarting (7) 10 seconds ago")
+
+        let exitedFilterObjects = try ContainerDockerLoggingBackend.containerListObjects(
+            snapshots: [restarting, removing],
+            request: DockerContainerListRequest(
+                all: true,
+                filters: ["exited": ["7", "0"]]
+            ),
+            lifecycleRecords: records
+        )
+        #expect(exitedFilterObjects.isEmpty)
+
+        let removingObjects = try ContainerDockerLoggingBackend.containerListObjects(
+            snapshots: [restarting, removing],
+            request: DockerContainerListRequest(
+                all: true,
+                filters: ["status": ["removing"]]
+            ),
+            lifecycleRecords: records
+        )
+        #expect(removingObjects.map { $0["Id"] as? String } == ["removing-two"])
+        #expect(removingObjects.first?["Status"] as? String == "Removal In Progress")
+    }
+
     @Test func dockerContainerIdentityUsesCanonicalIDAndNameAliases() async throws {
         let tempURL = try canonicalTemporaryDirectory()
             .appendingPathComponent(

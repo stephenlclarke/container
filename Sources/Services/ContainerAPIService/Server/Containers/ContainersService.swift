@@ -93,6 +93,11 @@ public actor ContainersService {
         let client: RuntimeClient
     }
 
+    private struct StartedInitProcess {
+        let snapshot: ContainerSnapshot
+        let lifecycle: ContainerResource.ContainerLifecycleRecordV2
+    }
+
     private static var machServicePrefix: String {
         ContainerServiceNamespace.current.value
     }
@@ -100,6 +105,7 @@ public actor ContainersService {
     private static let logTailReadChunkSize = UInt64(32 * 1024)
     static let loggingProtectedOptionsDirectoryName = "logging-protected-options"
     private static let loggingLeaseGeneration: UInt64 = 1
+    private static let bootServiceDeregistrationAttempts = 3
 
     private let log: Logger
     private let debugHelpers: Bool
@@ -115,14 +121,83 @@ public actor ContainersService {
 
     private let lock: AsyncLock
     private var containers: [String: ContainerState]
+    private var lifecycleRecords: [String: ContainerResource.ContainerLifecycleRecordV2]
+    private let quarantinedContainerNames: Set<String>
+    private var runtimeClientTokens: [String: UUID] = [:]
+    private var explicitExitCauses: [String: ExplicitExitCause] = [:]
     private var healthCheckTasks: [String: Task<Void, Never>] = [:]
     private var restartTasks: [String: Task<Void, Never>] = [:]
     private var restartTaskTokens: [String: UUID] = [:]
     private var restartStabilityTasks: [String: Task<Void, Never>] = [:]
     private var restartStabilityTaskTokens: [String: UUID] = [:]
+    private var exitPersistenceRecoveryTasks: [String: Task<Void, Never>] = [:]
+    private var exitPersistenceRecoveries: [String: ExitPersistenceRecovery] = [:]
     private var execEventTracker = ContainerExecEventTracker()
     private var execExitTasks: [String: [String: Task<Void, Never>]] = [:]
     private var dockerContainerWaiters: [String: [UUID: DockerContainerWaiter]] = [:]
+    private var lifecycleMutationsInFlight: Set<String> = []
+    private var lifecycleMutationWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    enum ExplicitExitCause: Equatable {
+        case stop
+        case kill
+        case restart
+    }
+
+    private enum ExitPersistenceRecoveryAction: Sendable {
+        case none
+        case restart(delayInNanoseconds: UInt64)
+        case remove
+    }
+
+    private struct ExitPersistenceRecovery: Sendable {
+        let token: UUID
+        var expectedOperationGeneration: UInt64
+        let terminalPublicState: ContainerResource.ContainerPublicStateV2
+        let incrementRestartCount: Bool
+        let observedOOMKillCount: UInt64?
+        let manualRestartSuppressed: Bool
+        let terminalError: String?
+        let action: ExitPersistenceRecoveryAction
+        var terminalPersisted = false
+        var removalLifecycle: ContainerResource.ContainerLifecycleRecordV2?
+    }
+
+    /// Serializes lifecycle mutations per container. Composite operations call
+    /// their private implementation methods while holding this slot instead of
+    /// relying on task-local reentrancy, which unstructured child tasks inherit.
+    private func withLifecycleMutation<T>(
+        id: String,
+        operation: () async throws -> T
+    ) async rethrows -> T {
+        await acquireLifecycleMutation(id: id)
+        defer { releaseLifecycleMutation(id: id) }
+        return try await operation()
+    }
+
+    private func acquireLifecycleMutation(id: String) async {
+        guard !lifecycleMutationsInFlight.insert(id).inserted else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            lifecycleMutationWaiters[id, default: []].append(continuation)
+        }
+    }
+
+    private func releaseLifecycleMutation(id: String) {
+        guard var waiters = lifecycleMutationWaiters[id], !waiters.isEmpty else {
+            lifecycleMutationWaiters.removeValue(forKey: id)
+            lifecycleMutationsInFlight.remove(id)
+            return
+        }
+        let next = waiters.removeFirst()
+        if waiters.isEmpty {
+            lifecycleMutationWaiters.removeValue(forKey: id)
+        } else {
+            lifecycleMutationWaiters[id] = waiters
+        }
+        next.resume()
+    }
 
     // FIXME: Find a better mechanism for services running on the APIServer to work with each other
     private weak var networksService: NetworksService?
@@ -140,7 +215,30 @@ public actor ContainersService {
     ) throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
         try FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
-        let containers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
+        let loadedContainers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
+        let lifecycleRecords = Self.loadLifecycleRecords(
+            containers: loadedContainers,
+            root: containerRoot,
+            log: log
+        )
+        var containers = loadedContainers.filter { lifecycleRecords[$0.key] != nil }
+        for (id, record) in lifecycleRecords {
+            guard var state = containers[id] else {
+                continue
+            }
+            let recoveredFailureCount =
+                record.snapshot.restartConsecutiveFailureCount
+                ?? (record.snapshot.state == .restarting
+                    && !record.intent.manualRestartSuppressed ? 1 : 0)
+            state.restart = ContainerRestartTracker(
+                restoringConsecutiveFailureCount: recoveredFailureCount
+            )
+            containers[id] = state
+        }
+        let quarantinedContainerNames = try Self.quarantinedContainerNamesAtBoot(
+            root: containerRoot,
+            acceptedContainerIDs: Set(containers.keys)
+        )
         let retainedProtectedObjectIDs = Self.loggingProtectedObjectIDsAtBoot(
             root: containerRoot,
             log: log
@@ -173,6 +271,8 @@ public actor ContainersService {
         self.runtimePlugins = pluginLoader.findPlugins().filter { $0.hasType(.runtime) }
         self.loggingProtectedOptionsStore = loggingProtectedOptionsStore
         self.containers = containers
+        self.lifecycleRecords = lifecycleRecords
+        self.quarantinedContainerNames = quarantinedContainerNames
     }
 
     /// Completes every ready provider-generation transition before API routes
@@ -517,8 +617,9 @@ public actor ContainersService {
                 root: containerRoot,
                 id: source.containerID
             )
-            try ContainerResource.Bundle(path: path).setDurably(
-                configuration: targetConfiguration
+            try Self.persistContainerConfiguration(
+                targetConfiguration,
+                at: path
             )
             published = true
             state.snapshot.configuration = targetConfiguration
@@ -554,13 +655,103 @@ public actor ContainersService {
 
     public func setNetworksService(_ service: NetworksService) async {
         self.networksService = service
+        await resumeInterruptedRemovals()
+        resumeInterruptedRestarts()
+    }
+
+    private func resumeInterruptedRemovals() async {
+        let containerIDs = lifecycleRecords.compactMap { id, record in
+            record.intent.removalRequested ? id : nil
+        }
+        for id in containerIDs.sorted() {
+            do {
+                try await withLifecycleMutation(id: id) {
+                    try await lock.withLock(
+                        logMetadata: [
+                            "acquirer": "\(#function)",
+                            "id": "\(id)",
+                        ]
+                    ) { context in
+                        try await self.cleanUp(id: id, context: context)
+                    }
+                    lifecycleRecords.removeValue(forKey: id)
+                }
+            } catch {
+                if let lifecycle = lifecycleRecords[id] {
+                    scheduleExitPersistenceRecovery(
+                        id: id,
+                        expectedOperationGeneration: lifecycle.snapshot.operationGeneration,
+                        terminalPublicState: lifecycle.snapshot.state,
+                        incrementRestartCount: false,
+                        observedOOMKillCount: nil,
+                        manualRestartSuppressed: lifecycle.intent.manualRestartSuppressed,
+                        terminalError: lifecycle.snapshot.error,
+                        action: .remove,
+                        terminalPersisted: true,
+                        removalLifecycle: lifecycle
+                    )
+                }
+                log.error(
+                    "failed to resume interrupted container removal; retrying",
+                    metadata: [
+                        "id": "\(id)",
+                        "error": "\(error)",
+                    ]
+                )
+            }
+        }
+    }
+
+    private func resumeInterruptedRestarts() {
+        let pendingRestarts = lifecycleRecords.compactMap { id, record -> (String, UInt64)? in
+            guard record.snapshot.state == .restarting,
+                !record.intent.removalRequested
+            else {
+                return nil
+            }
+            let failureCount =
+                record.snapshot.restartConsecutiveFailureCount
+                ?? (record.intent.manualRestartSuppressed ? 0 : 1)
+            return (
+                id,
+                ContainerRestartTracker.pendingDelay(
+                    policy: record.intent.restartPolicy,
+                    consecutiveFailureCount: failureCount
+                )
+            )
+        }
+        for (id, delay) in pendingRestarts.sorted(by: { $0.0 < $1.0 }) {
+            scheduleRestart(id: id, delayInNanoseconds: delay)
+        }
     }
 
     func events(options: ContainerEventOptions = .default) async -> ContainerEventSubscription {
         await eventBroadcaster.subscribe(options: options)
     }
 
-    static func loadAtBoot(root: URL, loader: PluginLoader, log: Logger) throws -> [String: ContainerState] {
+    static func loadAtBoot(
+        root: URL,
+        loader: PluginLoader,
+        log: Logger,
+        deregisterService: (String) throws -> Void = { label in
+            var status: Int32 = -1
+            try ServiceManager.deregister(
+                fullServiceLabel: label,
+                status: &status
+            )
+            if status != 0,
+                try ServiceManager.isRegistered(fullServiceLabel: label)
+            {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "failed to stop surviving runtime service \(label)"
+                )
+            }
+        },
+        waitBeforeDeregistrationRetry: () -> Void = {
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+    ) throws -> [String: ContainerState] {
         var directories = try FileManager.default.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey]
@@ -572,38 +763,53 @@ public actor ContainersService {
         let runtimePlugins = loader.findPlugins().filter { $0.hasType(.runtime) }
         var results = [String: ContainerState]()
         for dir in directories {
+            let config: ContainerConfiguration
             do {
-                let (config, options) = try Self.getContainerConfiguration(at: dir)
+                (config, _) = try Self.getContainerConfiguration(at: dir)
                 _ = try Self.containerPath(root: root, id: config.id)
-                if options?.autoRemove ?? false {
-                    log.info(
-                        "reap auto-remove container",
-                        metadata: [
-                            "id": "\(config.id)"
-                        ])
+            } catch {
+                log.warning(
+                    "failed to load container; leaving bundle on disk",
+                    metadata: [
+                        "path": "\(dir.path)",
+                        "error": "\(error)",
+                    ])
+                continue
+            }
 
-                    let label = Self.fullLaunchdServiceLabel(
-                        runtimeName: config.runtimeHandler,
-                        instanceId: config.id)
-
-                    var status: Int32 = -1
-                    try? ServiceManager.deregister(fullServiceLabel: label, status: &status)
-                    if status != 0 {
-                        log.warning(
-                            "failed to deregister service",
+            let label = Self.fullLaunchdServiceLabel(
+                runtimeName: config.runtimeHandler,
+                instanceId: config.id
+            )
+            for attempt in 1...Self.bootServiceDeregistrationAttempts {
+                do {
+                    try deregisterService(label)
+                    break
+                } catch {
+                    guard attempt < Self.bootServiceDeregistrationAttempts else {
+                        log.error(
+                            "failed to stop surviving runtime service; refusing authority startup",
                             metadata: [
                                 "id": "\(config.id)",
-                                "service": "\(label)",
-                                "status": "\(status)",
-                            ]
-                        )
+                                "label": "\(label)",
+                                "attempts": "\(attempt)",
+                                "error": "\(error)",
+                            ])
+                        throw error
                     }
-
-                    let bundle = ContainerResource.Bundle(path: dir)
-                    try? bundle.delete()
-                    continue
+                    log.warning(
+                        "failed to stop surviving runtime service; retrying",
+                        metadata: [
+                            "id": "\(config.id)",
+                            "label": "\(label)",
+                            "attempt": "\(attempt)",
+                            "error": "\(error)",
+                        ])
+                    waitBeforeDeregistrationRetry()
                 }
+            }
 
+            do {
                 guard runtimePlugins.first(where: { $0.name == config.runtimeHandler }) != nil else {
                     throw ContainerizationError(
                         .internalError,
@@ -635,6 +841,311 @@ public actor ContainersService {
             }
         }
         return results
+    }
+
+    static func quarantinedContainerNamesAtBoot(
+        root: URL,
+        acceptedContainerIDs: Set<String>
+    ) throws -> Set<String> {
+        let directories = try FileManager.default.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey]
+        ).filter(\.isDirectory)
+        var names = Set<String>()
+        for directory in directories {
+            let bundleKey = directory.lastPathComponent
+            guard !acceptedContainerIDs.contains(bundleKey),
+                let (configuration, _) = try? Self.getContainerConfiguration(
+                    at: directory
+                )
+            else {
+                continue
+            }
+            names.insert(bundleKey)
+            names.insert(configuration.id)
+            if let dockerName = configuration.dockerName {
+                names.insert(dockerName)
+            }
+            if let dockerID = configuration.dockerID {
+                names.insert(dockerID)
+            }
+        }
+        return names
+    }
+
+    static func loadLifecycleRecords(
+        containers: [String: ContainerState],
+        root: URL,
+        log: Logger
+    ) -> [String: ContainerResource.ContainerLifecycleRecordV2] {
+        var records = [String: ContainerResource.ContainerLifecycleRecordV2]()
+        for (bundleKey, state) in containers {
+            do {
+                let bundle = ContainerResource.Bundle(
+                    path: try containerPath(root: root, id: bundleKey)
+                )
+                if var record = try bundle.lifecycleRecordV2 {
+                    var needsPersistence = try Self.reconcileLifecycleRecordIdentity(
+                        &record,
+                        bundleKey: bundleKey,
+                        configuration: state.snapshot.configuration
+                    )
+                    var revisionAdvanced = needsPersistence
+                    if let options = try Self.getContainerConfiguration(
+                        at: bundle.path
+                    ).1 {
+                        let intentChanged =
+                            record.intent.restartPolicy != options.restartPolicy
+                            || record.intent.autoRemove != options.autoRemove
+                        if intentChanged {
+                            try Self.advanceLifecycleRevisions(&record.snapshot)
+                            record.intent.restartPolicy = options.restartPolicy
+                            record.intent.autoRemove = options.autoRemove
+                            needsPersistence = true
+                            revisionAdvanced = true
+                        }
+                    }
+                    var normalizationChanged = Self.normalizeLifecycleStateFlags(
+                        &record.snapshot
+                    )
+                    needsPersistence = normalizationChanged || needsPersistence
+                    if record.intent.removalRequested {
+                        if record.snapshot.state != .removing {
+                            try Self.advanceLifecycleRevisions(&record.snapshot)
+                            record.snapshot.state = .removing
+                            needsPersistence = true
+                            revisionAdvanced = true
+                        }
+                        normalizationChanged =
+                            Self.normalizeLifecycleStateFlags(&record.snapshot)
+                            || normalizationChanged
+                        needsPersistence = normalizationChanged || needsPersistence
+                        if normalizationChanged, !revisionAdvanced {
+                            try Self.advanceLifecycleRevisions(&record.snapshot)
+                        }
+                        if needsPersistence {
+                            try bundle.setDurably(lifecycleRecordV2: record)
+                        }
+                        records[bundleKey] = record
+                        continue
+                    }
+                    if [.running, .paused, .restarting, .removing]
+                        .contains(record.snapshot.state)
+                    {
+                        let recoveredState = record.snapshot.state
+                        try Self.advanceLifecycleRevisions(&record.snapshot)
+                        let recoveredFailureCount =
+                            record.snapshot.restartConsecutiveFailureCount
+                            ?? (recoveredState == .restarting
+                                && !record.intent.manualRestartSuppressed ? 1 : 0)
+                        let resumesRestart = Self.shouldResumeRestartAtBoot(
+                            previousState: recoveredState,
+                            policy: record.intent.restartPolicy,
+                            exitCode: record.snapshot.exitCode,
+                            manualRestartSuppressed: record.intent.manualRestartSuppressed,
+                            restartConsecutiveFailureCount: recoveredFailureCount
+                        )
+                        if resumesRestart,
+                            recoveredState != .restarting
+                        {
+                            record.snapshot.restartCount = try Self.nextLifecycleCounter(
+                                record.snapshot.restartCount,
+                                named: "restart count"
+                            )
+                        }
+                        if resumesRestart,
+                            !record.intent.manualRestartSuppressed,
+                            record.snapshot.restartConsecutiveFailureCount == nil
+                        {
+                            record.snapshot.restartConsecutiveFailureCount = max(
+                                1,
+                                recoveredFailureCount
+                            )
+                        }
+                        record.snapshot.state = resumesRestart ? .restarting : .exited
+                        record.snapshot.pid = 0
+                        record.snapshot.finishedAt =
+                            record.snapshot.finishedAt ?? Date()
+                        record.snapshot.error =
+                            "authority restarted while lifecycle state was \(recoveredState.rawValue)"
+                        _ = Self.normalizeLifecycleStateFlags(&record.snapshot)
+                        needsPersistence = true
+                        revisionAdvanced = true
+                    }
+                    if record.intent.autoRemove,
+                        [.exited, .dead, .removing].contains(record.snapshot.state)
+                    {
+                        try Self.advanceLifecycleRevisions(&record.snapshot)
+                        record.intent.removalRequested = true
+                        record.snapshot.state = .removing
+                        _ = Self.normalizeLifecycleStateFlags(&record.snapshot)
+                        needsPersistence = true
+                        revisionAdvanced = true
+                    }
+                    if normalizationChanged, !revisionAdvanced {
+                        try Self.advanceLifecycleRevisions(&record.snapshot)
+                    }
+                    if needsPersistence {
+                        try bundle.setDurably(lifecycleRecordV2: record)
+                    }
+                    records[bundleKey] = record
+                    continue
+                }
+                let options =
+                    try Self.getContainerConfiguration(
+                        at: bundle.path
+                    ).1 ?? .default
+                var migrated = ContainerResource.ContainerLifecycleRecordV2.migrate(
+                    bundleKey: bundleKey,
+                    canonicalName: state.snapshot.configuration.dockerName ?? bundleKey,
+                    selectedProviderFingerprint: state.snapshot.configuration.runtimeHandler,
+                    legacy: try bundle.lifecycleState,
+                    intent: ContainerResource.ContainerLifecycleIntentV2(
+                        autoRemove: options.autoRemove,
+                        restartPolicy: options.restartPolicy
+                    )
+                )
+                if let dockerID = state.snapshot.configuration.dockerID,
+                    dockerID.count == 64
+                {
+                    migrated.containerID = dockerID
+                }
+                if migrated.intent.autoRemove,
+                    [.exited, .dead, .removing].contains(migrated.snapshot.state)
+                {
+                    try Self.advanceLifecycleRevisions(&migrated.snapshot)
+                    migrated.intent.removalRequested = true
+                    migrated.snapshot.state = .removing
+                    _ = Self.normalizeLifecycleStateFlags(&migrated.snapshot)
+                }
+                try bundle.setDurably(lifecycleRecordV2: migrated)
+                records[bundleKey] = migrated
+            } catch {
+                log.warning(
+                    "failed to load lifecycle record; leaving bundle on disk",
+                    metadata: [
+                        "id": "\(bundleKey)",
+                        "error": "\(error)",
+                    ]
+                )
+            }
+        }
+        return records
+    }
+
+    static func shouldResumeRestartAtBoot(
+        previousState: ContainerResource.ContainerPublicStateV2,
+        policy: ContainerRestartPolicy,
+        exitCode: Int32?,
+        manualRestartSuppressed: Bool = false,
+        restartConsecutiveFailureCount: UInt32 = 0
+    ) -> Bool {
+        switch previousState {
+        case .restarting:
+            return Self.restartIntentAllowsPendingRestart(
+                lifecycleState: previousState,
+                manualRestartSuppressed: manualRestartSuppressed,
+                policy: policy,
+                exitCode: exitCode,
+                restartConsecutiveFailureCount: restartConsecutiveFailureCount
+            )
+        case .running, .paused:
+            return !manualRestartSuppressed
+                && (policy.mode == .always || policy.mode == .unlessStopped)
+        case .created, .exited, .dead, .removing:
+            return false
+        }
+    }
+
+    @discardableResult
+    static func reconcileLifecycleRecordIdentity(
+        _ record: inout ContainerResource.ContainerLifecycleRecordV2,
+        bundleKey: String,
+        configuration: ContainerConfiguration
+    ) throws -> Bool {
+        let expected = Self.makeLifecycleRecord(
+            configuration: configuration,
+            options: .default
+        )
+        guard record.immutableBundleKey == bundleKey,
+            record.containerID == expected.containerID,
+            record.selectedProviderFingerprint
+                == configuration.runtimeHandler
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "lifecycle record identity does not match bundle \(bundleKey)"
+            )
+        }
+        let canonicalName = configuration.dockerName ?? configuration.id
+        guard record.canonicalName != canonicalName else {
+            return false
+        }
+        record.canonicalName = canonicalName
+        try Self.advanceLifecycleRevisions(&record.snapshot)
+        return true
+    }
+
+    @discardableResult
+    static func normalizeLifecycleStateFlags(
+        _ snapshot: inout ContainerResource.ContainerLifecycleSnapshotV2
+    ) -> Bool {
+        let running =
+            snapshot.state == .running
+            || snapshot.state == .paused
+            || snapshot.state == .restarting
+        let paused = snapshot.state == .paused
+        let restarting = snapshot.state == .restarting
+        let removalInProgress = snapshot.state == .removing
+        let dead = snapshot.state == .dead
+        let pid = running ? snapshot.pid : 0
+        let changed =
+            snapshot.running != running
+            || snapshot.paused != paused
+            || snapshot.restarting != restarting
+            || snapshot.removalInProgress != removalInProgress
+            || snapshot.dead != dead
+            || snapshot.pid != pid
+        snapshot.running = running
+        snapshot.paused = paused
+        snapshot.restarting = restarting
+        snapshot.removalInProgress = removalInProgress
+        snapshot.dead = dead
+        snapshot.pid = pid
+        return changed
+    }
+
+    static func advanceLifecycleRevisions(
+        _ snapshot: inout ContainerResource.ContainerLifecycleSnapshotV2
+    ) throws {
+        let transitionRevision = try Self.nextLifecycleCounter(
+            snapshot.transitionRevision,
+            named: "transition revision"
+        )
+        let operationGeneration = try Self.nextLifecycleCounter(
+            snapshot.operationGeneration,
+            named: "operation generation"
+        )
+        snapshot.transitionRevision = transitionRevision
+        snapshot.operationGeneration = operationGeneration
+    }
+
+    static func resetRestartFailureState(
+        _ snapshot: inout ContainerResource.ContainerLifecycleSnapshotV2
+    ) throws {
+        try Self.advanceLifecycleRevisions(&snapshot)
+        snapshot.restartConsecutiveFailureCount = 0
+    }
+
+    static func nextLifecycleCounter(_ value: UInt64, named name: String) throws -> UInt64 {
+        let (next, overflow) = value.addingReportingOverflow(1)
+        guard !overflow else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "lifecycle \(name) counter overflow"
+            )
+        }
+        return next
     }
 
     static func loggingProtectedObjectIDsAtBoot(root: URL, log: Logger) -> Set<String>? {
@@ -775,8 +1286,15 @@ public actor ContainersService {
     /// - Returns: Tuple of (total count, active count, total size, reclaimable size)
     public func calculateDiskUsage() async -> (Int, Int, UInt64, UInt64) {
         let containers = await lock.withLock(logMetadata: ["acquirer": "\(#function)"]) { _ in
-            await self.containers.map {
-                ContainerDiskUsageEntry(id: $0.key, status: $0.value.snapshot.status)
+            let lifecycleRecords = await self.lifecycleRecords
+            return await self.containers.map {
+                ContainerDiskUsageEntry(
+                    id: $0.key,
+                    isActive: Self.isActiveForDiskUsage(
+                        runtimeStatus: $0.value.snapshot.status,
+                        lifecycleState: lifecycleRecords[$0.key]?.snapshot.state
+                    )
+                )
             }
         }
 
@@ -788,19 +1306,29 @@ public actor ContainersService {
                 )
                 return nil
             }
-            return ContainerDiskUsagePath(path: bundlePath, status: container.status)
+            return ContainerDiskUsagePath(path: bundlePath, isActive: container.isActive)
         }
         return await Self.calculateDiskUsage(totalCount: containers.count, paths: paths)
     }
 
     struct ContainerDiskUsageEntry: Sendable {
         let id: String
-        let status: RuntimeStatus
+        let isActive: Bool
     }
 
     struct ContainerDiskUsagePath: Sendable {
         let path: URL
-        let status: RuntimeStatus
+        let isActive: Bool
+    }
+
+    static func isActiveForDiskUsage(
+        runtimeStatus: RuntimeStatus,
+        lifecycleState: ContainerResource.ContainerPublicStateV2?
+    ) -> Bool {
+        if let lifecycleState {
+            return [.running, .paused, .restarting].contains(lifecycleState)
+        }
+        return [.running, .paused, .stopping].contains(runtimeStatus)
     }
 
     nonisolated static func calculateDiskUsage(
@@ -816,7 +1344,7 @@ public actor ContainersService {
                 let containerSize = FileManager.default.allocatedSize(of: path.path)
                 totalSize += containerSize
 
-                if path.status == .running {
+                if path.isActive {
                     activeCount += 1
                 } else {
                     reclaimableSize += containerSize
@@ -885,6 +1413,22 @@ public actor ContainersService {
                 )
             }
 
+            let path = try Self.containerPath(root: self.containerRoot, id: configuration.id)
+            guard !FileManager.default.fileExists(atPath: path.path) else {
+                throw ContainerizationError(
+                    .exists,
+                    message: "container bundle already exists: \(configuration.id)"
+                )
+            }
+
+            let dockerName = configuration.dockerName ?? configuration.id
+            guard !(await self.hasContainer(named: dockerName, excluding: configuration.id)) else {
+                throw ContainerizationError(
+                    .exists,
+                    message: "container name already exists: \(dockerName)"
+                )
+            }
+
             let existingAttachments = await self.containers.values.map(\.snapshot.configuration.networks)
             let conflictingHostnames = Self.conflictingNetworkNames(
                 existingAttachments: existingAttachments,
@@ -912,15 +1456,8 @@ public actor ContainersService {
             // NOTE: We could potentially leave this validation to the runtime service(s), as
             // it's possible there could be an implementation that can get away with a lower
             // amount and be perfectly safe.
-            let minimumMemory: UInt64 = 200.mib()
-            guard configuration.resources.memoryInBytes >= minimumMemory else {
-                throw ContainerizationError(
-                    .invalidArgument,
-                    message: "minimum memory amount allowed is 200 MiB (got \(configuration.resources.memoryInBytes) bytes)"
-                )
-            }
+            try Self.validateBootableMemory(configuration.resources.memoryInBytes)
 
-            let path = try Self.containerPath(root: self.containerRoot, id: configuration.id)
             let systemPlatform = kernel.platform
 
             // Fetch init image (custom or default)
@@ -976,6 +1513,17 @@ public actor ContainersService {
                     networks: [],
                     startedDate: nil
                 )
+                let lifecycleRecord = Self.makeLifecycleRecord(
+                    configuration: authoritativeConfiguration,
+                    options: options
+                )
+                try ContainerResource.Bundle(path: path).setDurably(
+                    lifecycleRecordV2: lifecycleRecord
+                )
+                await self.setLifecycleRecord(
+                    lifecycleRecord,
+                    id: configuration.id
+                )
                 await self.setContainerState(configuration.id, ContainerState(snapshot: snapshot), context: context)
                 return snapshot
             } catch {
@@ -997,6 +1545,7 @@ public actor ContainersService {
                         bundleRemoved = true
                     }
                     if bundleRemoved {
+                        await self.removeLifecycleRecord(id: configuration.id)
                         await self.rollbackSealedLogging(sealedLogging)
                     }
                 }
@@ -1178,12 +1727,14 @@ public actor ContainersService {
 
     /// Bootstrap the init process of the container.
     public func bootstrap(id: String, stdio: [FileHandle?], dynamicEnv: [String: String]) async throws {
-        _ = try await bootstrap(
-            id: id,
-            stdio: stdio,
-            dynamicEnv: dynamicEnv,
-            onlyIfNeverStarted: false
-        )
+        try await withLifecycleMutation(id: id) {
+            _ = try await self.bootstrap(
+                id: id,
+                stdio: stdio,
+                dynamicEnv: dynamicEnv,
+                onlyIfNeverStarted: false
+            )
+        }
     }
 
     /// Bootstrap a newly created container with attach-owned stdio.
@@ -1197,12 +1748,14 @@ public actor ContainersService {
         stdio: [FileHandle?],
         dynamicEnv: [String: String]
     ) async throws -> Bool {
-        try await bootstrap(
-            id: id,
-            stdio: stdio,
-            dynamicEnv: dynamicEnv,
-            onlyIfNeverStarted: true
-        )
+        try await withLifecycleMutation(id: id) {
+            try await self.bootstrap(
+                id: id,
+                stdio: stdio,
+                dynamicEnv: dynamicEnv,
+                onlyIfNeverStarted: true
+            )
+        }
     }
 
     private func bootstrap(
@@ -1226,6 +1779,19 @@ public actor ContainersService {
                     "func": "\(#function)",
                     "id": "\(id)",
                 ]
+            )
+        }
+
+        let lifecycle = try lifecycleRecord(id: id)
+        guard
+            Self.lifecycleMayBootstrap(
+                removalRequested: lifecycle.intent.removalRequested,
+                removalInProgress: lifecycle.snapshot.removalInProgress
+            )
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "container \(id) requires removal recovery"
             )
         }
 
@@ -1301,12 +1867,21 @@ public actor ContainersService {
                     containerID: id
                 )
 
-                try await self.exitMonitor.registerProcess(
-                    id: id,
-                    onExit: self.handleContainerExit
-                )
+                let runtimeClientToken = UUID()
+                try await self.exitMonitor.registerProcess(id: id) {
+                    [weak self] callbackID, status in
+                    guard let self else {
+                        return
+                    }
+                    try await self.handleContainerExit(
+                        id: callbackID,
+                        code: status,
+                        runtimeClientToken: runtimeClientToken
+                    )
+                }
 
                 state.client = runtimeClient
+                await self.setRuntimeClientToken(runtimeClientToken, id: id)
                 await self.setContainerState(id, state, context: context)
                 return true
             } catch {
@@ -1316,6 +1891,7 @@ public actor ContainersService {
                 )
 
                 await self.exitMonitor.stopTracking(id: id)
+                await self.clearRuntimeClientToken(id: id)
                 try? ServiceManager.deregister(fullServiceLabel: label)
                 try? await self.remoteLogDriverPlane?.abortBootstrap(
                     containerID: id
@@ -1452,7 +2028,7 @@ public actor ContainersService {
             return
         }
 
-        await eventBroadcaster.publish(
+        await publishEvent(
             execEventTracker.create(
                 snapshot: state.snapshot,
                 processID: processID,
@@ -1465,6 +2041,12 @@ public actor ContainersService {
     /// createProcess, or the init process of the container which requires
     /// id == processID.
     public func startProcess(id: String, processID: String) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.startProcessImpl(id: id, processID: processID)
+        }
+    }
+
+    private func startProcessImpl(id: String, processID: String) async throws {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -1486,8 +2068,8 @@ public actor ContainersService {
 
         let restartPolicy = try getContainerCreationOptions(id: id).restartPolicy
         let execConfiguration = execEventTracker.configuration(containerID: id, processID: processID)
-        let (startedSnapshot, startedExecProcess) = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)", "processId": "\(processID)"]) {
-            context -> (ContainerSnapshot?, StartedExecProcess?) in
+        let (startedInitProcess, startedExecProcess) = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)", "processId": "\(processID)"]) {
+            context -> (StartedInitProcess?, StartedExecProcess?) in
             var state = try await self.getContainerState(id: id, context: context)
 
             let isInit = Self.isInitProcess(id: id, processID: processID)
@@ -1496,6 +2078,17 @@ public actor ContainersService {
             }
 
             let client = try state.getClient()
+            let oomKillCountBaseline: UInt64?
+            if isInit {
+                do {
+                    oomKillCountBaseline = try await client.statistics().memoryOOMKillCount
+                } catch {
+                    oomKillCountBaseline = nil
+                }
+            } else {
+                oomKillCountBaseline = nil
+            }
+            let preStartState = state
             try await client.startProcess(processID)
 
             guard isInit else {
@@ -1532,6 +2125,9 @@ public actor ContainersService {
                 try await self.exitMonitor.track(id: id, waitingOn: waitFunc)
 
                 let sandboxSnapshot = try await client.state()
+                let initPID = Self.reportedInitPID(
+                    try await client.processes().processIdentifiers
+                )
                 let startedDate = Date()
                 state.snapshot.status = .running
                 state.snapshot.networks = sandboxSnapshot.networks
@@ -1554,6 +2150,16 @@ public actor ContainersService {
                     )
                 )
                 state.restart.markStarted()
+                let lifecycle = try await self.commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: .running,
+                    pid: initPID,
+                    incrementProcessGeneration: true,
+                    resetOOMObservation: true,
+                    observedOOMKillCount: oomKillCountBaseline,
+                    intent: { $0.manualRestartSuppressed = false }
+                )
                 await self.setContainerState(id, state, context: context)
                 await self.scheduleRestartStabilityReset(
                     id: id,
@@ -1565,12 +2171,29 @@ public actor ContainersService {
                     healthCheck: state.snapshot.configuration.healthCheck,
                     client: client
                 )
-                return (state.snapshot, nil)
+                return (
+                    StartedInitProcess(
+                        snapshot: state.snapshot,
+                        lifecycle: lifecycle
+                    ),
+                    nil
+                )
             } catch {
                 await self.stopHealthCheckMonitor(id: id)
+                await self.clearRuntimeClientToken(id: id)
                 await self.exitMonitor.stopTracking(id: id)
                 try? await client.stop(options: ContainerStopOptions.default)
+                try? await client.shutdown()
+                let label = Self.fullLaunchdServiceLabel(
+                    runtimeName: state.snapshot.configuration.runtimeHandler,
+                    instanceId: id
+                )
+                try? ServiceManager.deregister(fullServiceLabel: label)
                 try? await self.remoteLogDriverPlane?.close(containerID: id)
+                let recoveredState = Self.recoveredContainerStateAfterFailedStart(
+                    preStartState
+                )
+                await self.setContainerState(id, recoveredState, context: context)
                 throw error
             }
         }
@@ -1580,7 +2203,7 @@ public actor ContainersService {
                 snapshot: startedExecProcess.snapshot,
                 processID: startedExecProcess.processID
             ) {
-                await eventBroadcaster.publish(event)
+                await publishEvent(event)
             }
             scheduleExecExit(
                 id: id,
@@ -1589,13 +2212,37 @@ public actor ContainersService {
             )
         }
 
-        if let startedSnapshot {
-            await publishContainerEvent(action: "start", snapshot: startedSnapshot)
+        if let startedInitProcess {
+            await publishEvent(
+                Self.stampEvents(
+                    [
+                        Self.containerEvent(
+                            action: "start",
+                            snapshot: startedInitProcess.snapshot
+                        )
+                    ],
+                    with: startedInitProcess.lifecycle
+                )[0]
+            )
         }
+    }
+
+    static func reportedInitPID(_ processIdentifiers: [Int32]) -> Int32 {
+        // A short-lived init can exit after start succeeds but before the
+        // process snapshot is read. The exit monitor is already registered,
+        // so retain a zero PID briefly and let that monitor commit the real
+        // terminal status instead of cancelling it as a failed start.
+        processIdentifiers.filter { $0 > 0 }.min() ?? 0
     }
 
     /// Send a signal to the container.
     public func kill(id: String, processID: String, signal: String) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.killImpl(id: id, processID: processID, signal: signal)
+        }
+    }
+
+    private func killImpl(id: String, processID: String, signal: String) async throws {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -1616,16 +2263,76 @@ public actor ContainersService {
             )
         }
 
-        let state: ContainerState
-        if processID == id {
-            state = try await self.markContainerManuallyStopped(id: id)
-        } else {
-            state = try self._getContainerState(id: id)
-        }
+        let state = try self._getContainerState(id: id)
         let client = try state.getClient()
-        try await client.kill(processID, signal: signal)
         let parsedSignal = try? Signal(signal)
-        await eventBroadcaster.publish(
+        let recordsGuaranteedExplicitExit =
+            processID == id && parsedSignal == .kill
+        let canObserveExplicitExit =
+            processID == id && Self.signalTerminatesByDefault(parsedSignal)
+        var durableState: ContainerResource.ContainerPublicStateV2?
+        if recordsGuaranteedExplicitExit {
+            durableState = try lifecyclePublicState(id: id)
+            explicitExitCauses[id] = .kill
+            do {
+                try await commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: durableState ?? .running,
+                    intent: { $0.manualRestartSuppressed = true }
+                )
+            } catch {
+                explicitExitCauses.removeValue(forKey: id)
+                throw error
+            }
+        }
+        var interruptedKillReply = false
+        do {
+            try await client.kill(processID, signal: signal)
+        } catch let error as ContainerizationError
+            where canObserveExplicitExit && error.code == .interrupted
+        {
+            // The runtime can terminate before replying. For an init-process
+            // signal whose default action terminates, that interruption is an
+            // observed terminal outcome rather than a failed signal request.
+            interruptedKillReply = true
+        } catch {
+            if recordsGuaranteedExplicitExit, let durableState {
+                try await rollbackManualTerminationIntent(
+                    id: id,
+                    fallbackState: state,
+                    publicState: durableState,
+                    error: error
+                )
+            }
+            throw error
+        }
+        var observedSignalTermination = interruptedKillReply
+        if canObserveExplicitExit, !recordsGuaranteedExplicitExit,
+            !observedSignalTermination
+        {
+            observedSignalTermination =
+                (try? await client.state().status)
+                .map(Self.signalOutcomeConfirmsTermination) ?? false
+        }
+        if canObserveExplicitExit, !recordsGuaranteedExplicitExit,
+            observedSignalTermination
+        {
+            let observedDurableState = try lifecyclePublicState(id: id)
+            explicitExitCauses[id] = .kill
+            do {
+                try await commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: observedDurableState,
+                    intent: { $0.manualRestartSuppressed = true }
+                )
+            } catch {
+                explicitExitCauses.removeValue(forKey: id)
+                throw error
+            }
+        }
+        await publishEvent(
             Self.killEvent(
                 snapshot: state.snapshot,
                 processID: processID,
@@ -1638,13 +2345,45 @@ public actor ContainersService {
         // container's init process, follow up with the same API-server cleanup
         // that `stop` performs.
         if processID == id, parsedSignal == .kill {
-            try await handleContainerExit(id: id, code: ExitStatus(exitCode: 128 + Signal.kill.rawValue))
+            try await handleContainerExitImpl(
+                id: id,
+                code: ExitStatus(exitCode: 128 + Signal.kill.rawValue)
+            )
         }
+    }
+
+    /// Signals whose Linux default action only ignores, continues, stops, or
+    /// otherwise observes a process must not suppress a later natural exit.
+    static func signalTerminatesByDefault(_ signal: Signal?) -> Bool {
+        guard let signal else {
+            return false
+        }
+        let nonterminatingSignals: Set<Int32> = [
+            Signal.Linux.chld.rawValue,
+            Signal.Linux.cont.rawValue,
+            Signal.Linux.stop.rawValue,
+            Signal.Linux.tstp.rawValue,
+            Signal.Linux.ttin.rawValue,
+            Signal.Linux.ttou.rawValue,
+            Signal.Linux.urg.rawValue,
+            Signal.Linux.winch.rawValue,
+        ]
+        return !nonterminatingSignals.contains(signal.rawValue)
+    }
+
+    static func signalOutcomeConfirmsTermination(_ status: RuntimeStatus) -> Bool {
+        status == .stopping || status == .stopped
     }
 
     /// Stop all containers inside the sandbox, aborting any processes currently
     /// executing inside the container, before stopping the underlying sandbox.
     public func stop(id: String, options: ContainerStopOptions) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.stopImpl(id: id, options: options)
+        }
+    }
+
+    private func stopImpl(id: String, options: ContainerStopOptions) async throws {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -1663,6 +2402,25 @@ public actor ContainersService {
         }
 
         let currentState = try self._getContainerState(id: id)
+        if currentState.snapshot.status == .stopped {
+            guard
+                Self.shouldCancelPendingRestart(
+                    runtimeStatus: currentState.snapshot.status,
+                    lifecycleState: lifecycleRecords[id]?.snapshot.state,
+                    restartScheduled: restartTasks[id] != nil
+                )
+            else {
+                return
+            }
+            try await commitLifecycle(
+                id: id,
+                from: currentState,
+                publicState: .exited,
+                intent: { $0.manualRestartSuppressed = true }
+            )
+            _ = try await self.markContainerManuallyStopped(id: id)
+            return
+        }
         guard Self.shouldSendRuntimeStop(for: currentState.snapshot.status) else {
             return
         }
@@ -1673,40 +2431,104 @@ public actor ContainersService {
             )
         }
 
-        let state = try await self.markContainerManuallyStopped(id: id)
-
         // Stop should be idempotent.
         let client: RuntimeClient
         do {
-            client = try state.getClient()
+            client = try currentState.getClient()
         } catch {
             return
         }
 
-        var resolvedOptions = options
-        if resolvedOptions.signal == nil, let stopSignal = state.snapshot.configuration.stopSignal {
-            resolvedOptions.signal = stopSignal
-        }
-        if resolvedOptions.timeoutInSeconds == nil {
-            resolvedOptions.timeoutInSeconds = state.snapshot.configuration.stopTimeoutInSeconds
-        }
+        let resolvedOptions = Self.resolvedStopOptions(
+            options,
+            configuredSignal: currentState.snapshot.configuration.stopSignal,
+            configuredTimeoutInSeconds: currentState.snapshot.configuration.stopTimeoutInSeconds
+        )
 
+        let durableState = try lifecyclePublicState(id: id)
+        explicitExitCauses[id] = .stop
+        do {
+            try await commitLifecycle(
+                id: id,
+                from: currentState,
+                publicState: durableState,
+                intent: { $0.manualRestartSuppressed = true }
+            )
+        } catch {
+            explicitExitCauses.removeValue(forKey: id)
+            throw error
+        }
+        do {
+            _ = try await self.markContainerManuallyStopped(id: id)
+        } catch {
+            try await rollbackManualTerminationIntent(
+                id: id,
+                fallbackState: currentState,
+                publicState: durableState,
+                error: error
+            )
+            throw error
+        }
         do {
             try await client.stop(options: resolvedOptions)
         } catch let err as ContainerizationError {
             if err.code != .interrupted {
+                try await rollbackManualTerminationIntent(
+                    id: id,
+                    fallbackState: currentState,
+                    publicState: durableState,
+                    error: err
+                )
                 throw err
             }
+        } catch {
+            try await rollbackManualTerminationIntent(
+                id: id,
+                fallbackState: currentState,
+                publicState: durableState,
+                error: error
+            )
+            throw error
         }
-        try await handleContainerExit(id: id)
+        try await handleContainerExitImpl(id: id)
     }
 
     static func shouldSendRuntimeStop(for status: RuntimeStatus) -> Bool {
         status != .stopped
     }
 
+    static func resolvedStopOptions(
+        _ requested: ContainerStopOptions,
+        configuredSignal: String?,
+        configuredTimeoutInSeconds: Int32?
+    ) -> ContainerStopOptions {
+        var resolved = requested
+        if resolved.signal == nil {
+            resolved.signal = configuredSignal
+        }
+        if resolved.timeoutInSeconds == nil {
+            resolved.timeoutInSeconds = configuredTimeoutInSeconds
+        }
+        return resolved
+    }
+
+    static func shouldCancelPendingRestart(
+        runtimeStatus: RuntimeStatus,
+        lifecycleState: ContainerResource.ContainerPublicStateV2?,
+        restartScheduled: Bool
+    ) -> Bool {
+        runtimeStatus == .stopped
+            && (lifecycleState == .restarting || restartScheduled)
+    }
+
     /// Pause a running container.
     public func pause(id: String) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.pauseImpl(id: id)
+        }
+    }
+
+    private func pauseImpl(id: String) async throws {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -1736,8 +2558,39 @@ public actor ContainersService {
             let client = try state.getClient()
             try await client.pause()
 
-            await self.stopHealthCheckMonitor(id: id)
             state.snapshot.status = .paused
+            do {
+                try await self.commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: .paused
+                )
+            } catch {
+                let persistenceError = error
+                do {
+                    try await client.resume()
+                } catch {
+                    let recoveryError = error
+                    await self.stopHealthCheckMonitor(id: id)
+                    state.snapshot.status = .unknown
+                    state.snapshot.health = nil
+                    _ = try? await self.commitLifecycle(
+                        id: id,
+                        from: state,
+                        publicState: .dead,
+                        error:
+                            "pause persistence failed: \(persistenceError); runtime resume recovery failed: \(recoveryError)"
+                    )
+                    await self.setContainerState(id, state, context: context)
+                    throw ContainerizationError(
+                        .internalError,
+                        message:
+                            "pause persistence failed: \(persistenceError); runtime resume recovery failed: \(recoveryError)"
+                    )
+                }
+                throw persistenceError
+            }
+            await self.stopHealthCheckMonitor(id: id)
             await self.setContainerState(id, state, context: context)
             return state.snapshot
         }
@@ -1747,6 +2600,12 @@ public actor ContainersService {
 
     /// Resume a paused container.
     public func unpause(id: String) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.unpauseImpl(id: id)
+        }
+    }
+
+    private func unpauseImpl(id: String) async throws {
         log.debug(
             "ContainersService: enter",
             metadata: [
@@ -1778,6 +2637,36 @@ public actor ContainersService {
 
             state.snapshot.status = .running
             state.snapshot.health = state.snapshot.configuration.healthCheck == nil ? nil : .starting
+            do {
+                try await self.commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: .running
+                )
+            } catch {
+                let persistenceError = error
+                do {
+                    try await client.pause()
+                } catch {
+                    let recoveryError = error
+                    state.snapshot.status = .unknown
+                    state.snapshot.health = nil
+                    _ = try? await self.commitLifecycle(
+                        id: id,
+                        from: state,
+                        publicState: .dead,
+                        error:
+                            "unpause persistence failed: \(persistenceError); runtime pause recovery failed: \(recoveryError)"
+                    )
+                    await self.setContainerState(id, state, context: context)
+                    throw ContainerizationError(
+                        .internalError,
+                        message:
+                            "unpause persistence failed: \(persistenceError); runtime pause recovery failed: \(recoveryError)"
+                    )
+                }
+                throw persistenceError
+            }
             await self.setContainerState(id, state, context: context)
             await self.startHealthCheckMonitor(
                 id: id,
@@ -2966,6 +3855,12 @@ public actor ContainersService {
 
     /// Delete a container and its resources.
     public func delete(id: String, force: Bool) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.deleteImpl(id: id, force: force)
+        }
+    }
+
+    private func deleteImpl(id: String, force: Bool) async throws {
         log.info(
             "ContainersService: enter",
             metadata: [
@@ -2999,7 +3894,27 @@ public actor ContainersService {
                 signal: "SIGKILL"
             )
             let client = try state.getClient()
-            try await client.stop(options: opts)
+            let previousLifecycleState = try lifecyclePublicState(id: id)
+            let removalLifecycle = try await commitLifecycle(
+                id: id,
+                from: state,
+                publicState: .removing,
+                intent: { $0.removalRequested = true }
+            )
+            do {
+                try await client.stop(options: opts)
+            } catch let error as ContainerizationError where error.code == .interrupted {
+                // The runtime service can disappear before replying after a
+                // successful forced stop. Continue with removal cleanup.
+            } catch {
+                try await rollbackRemovalIntent(
+                    id: id,
+                    fallbackState: state,
+                    publicState: previousLifecycleState,
+                    error: error
+                )
+                throw error
+            }
             events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
                 var stoppedSnapshot = state.snapshot
                 stoppedSnapshot.status = .stopped
@@ -3023,7 +3938,15 @@ public actor ContainersService {
                         "id": "\(id)",
                     ]
                 )
-                try await self.cleanUp(id: id, context: context)
+                do {
+                    try await self.cleanUp(id: id, context: context)
+                } catch {
+                    try await self.recordCleanupFailure(
+                        id: id,
+                        from: stoppedState,
+                        underlyingError: error
+                    )
+                }
                 self.log.info(
                     "ContainersService: successful cleanup",
                     metadata: [
@@ -3031,8 +3954,18 @@ public actor ContainersService {
                         "id": "\(id)",
                     ]
                 )
-                return Self.terminalLifecycleEvents(snapshot: stoppedSnapshot)
-                    + Self.removalEvents(snapshot: stoppedSnapshot)
+                return Self.stampEvents(
+                    [
+                        Self.killEvent(
+                            snapshot: stoppedSnapshot,
+                            processID: id,
+                            signal: Signal.kill.rawValue,
+                            requestedSignal: "SIGKILL"
+                        )
+                    ] + Self.terminalLifecycleEvents(snapshot: stoppedSnapshot)
+                        + Self.removalEvents(snapshot: stoppedSnapshot),
+                    with: removalLifecycle
+                )
             }
         case .stopping:
             throw ContainerizationError(
@@ -3051,13 +3984,33 @@ public actor ContainersService {
                 default:
                     break
                 }
-                try await self.cleanUp(id: id, context: context)
-                return Self.removalEvents(snapshot: current.snapshot)
+                let removalLifecycle = try await self.commitLifecycle(
+                    id: id,
+                    from: current,
+                    publicState: .removing,
+                    intent: { $0.removalRequested = true }
+                )
+                do {
+                    try await self.cleanUp(id: id, context: context)
+                } catch {
+                    try await self.recordCleanupFailure(
+                        id: id,
+                        from: current,
+                        underlyingError: error
+                    )
+                }
+                return Self.stampEvents(
+                    Self.removalEvents(snapshot: current.snapshot),
+                    with: removalLifecycle
+                )
             }
         }
 
         for event in events {
-            await eventBroadcaster.publish(event)
+            await publishEvent(event)
+        }
+        if containers[id] == nil {
+            lifecycleRecords.removeValue(forKey: id)
         }
     }
 
@@ -3146,12 +4099,31 @@ public actor ContainersService {
         }
     }
 
-    private func handleContainerExit(id: String, code: ExitStatus? = nil) async throws {
+    private func handleContainerExit(
+        id: String,
+        code: ExitStatus? = nil,
+        runtimeClientToken: UUID? = nil
+    ) async throws {
+        try await withLifecycleMutation(id: id) {
+            guard
+                runtimeClientToken == nil
+                    || self.runtimeClientTokens[id] == runtimeClientToken
+            else {
+                return
+            }
+            try await self.handleContainerExitImpl(id: id, code: code)
+        }
+    }
+
+    private func handleContainerExitImpl(id: String, code: ExitStatus? = nil) async throws {
         let events = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { [self] context in
             try await handleContainerExit(id: id, code: code, context: context)
         }
         for event in events {
-            await eventBroadcaster.publish(event)
+            await publishEvent(event)
+        }
+        if containers[id] == nil {
+            lifecycleRecords.removeValue(forKey: id)
         }
     }
 
@@ -3176,6 +4148,7 @@ public actor ContainersService {
             return []
         }
 
+        self.runtimeClientTokens.removeValue(forKey: id)
         await self.exitMonitor.stopTracking(id: id)
         self.stopHealthCheckMonitor(id: id)
 
@@ -3185,10 +4158,16 @@ public actor ContainersService {
         let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
         let config = try bundle.configuration
+        let options = try getContainerCreationOptions(id: id)
         let label = Self.fullLaunchdServiceLabel(
             runtimeName: config.runtimeHandler,
             instanceId: id
         )
+
+        var observedOOMKillCount: UInt64?
+        if let client = state.client {
+            observedOOMKillCount = try? await client.statistics().memoryOOMKillCount
+        }
 
         // Try to shutdown the client gracefully, but if the runtime service
         // is already dead (e.g., killed externally), we should still continue
@@ -3242,31 +4221,148 @@ public actor ContainersService {
         }
         state.client = nil
 
-        if let startedDate = state.snapshot.startedDate {
-            try bundle.setDurably(
-                lifecycleState: ContainerLifecycleStateV1(
-                    startedDate: startedDate,
-                    exitCode: state.snapshot.exitCode,
-                    exitedDate: state.snapshot.exitedDate
-                )
-            )
-        }
-
-        let options = try getContainerCreationOptions(id: id)
-        let terminalEvents = Self.terminalLifecycleEvents(snapshot: state.snapshot)
-        let restartDelay = state.restart.restartDelay(
-            policy: options.restartPolicy,
-            exitCode: code?.exitCode
-        )
         await self.setContainerState(id, state, context: context)
         self.completeDockerContainerWaiters(
             id: id,
             snapshot: state.snapshot,
             completion: .exited
         )
+
+        if let startedDate = state.snapshot.startedDate {
+            do {
+                try bundle.setDurably(
+                    lifecycleState: ContainerLifecycleStateV1(
+                        startedDate: startedDate,
+                        exitCode: state.snapshot.exitCode,
+                        exitedDate: state.snapshot.exitedDate
+                    )
+                )
+            } catch {
+                self.log.error(
+                    "failed to persist legacy container exit state",
+                    metadata: ["id": "\(id)", "error": "\(error)"]
+                )
+            }
+        }
+
+        let explicitExitCause = explicitExitCauses.removeValue(forKey: id)
+        if explicitExitCause == .kill {
+            state.restart.markManuallyStopped()
+        }
+        let restartDelay = state.restart.restartDelay(
+            policy: options.restartPolicy,
+            exitCode: code?.exitCode
+        )
+        // restartDelay mutates the retry count/backoff; publish that state even
+        // if the following disk write fails.
+        await self.setContainerState(id, state, context: context)
+        let willRestart = restartDelay != nil
+        let explicitRestart = explicitExitCause == .restart
+        let lifecycle: ContainerResource.ContainerLifecycleRecordV2
+        var recoveredFromPersistenceFailure = false
+        do {
+            lifecycle = try await commitLifecycle(
+                id: id,
+                from: state,
+                publicState: explicitRestart || willRestart ? .restarting : .exited,
+                incrementRestartCount: willRestart,
+                restartConsecutiveFailureCount: state.restart.consecutiveFailures,
+                observedOOMKillCount: observedOOMKillCount ?? nil,
+                intent: { intent in
+                    intent.manualRestartSuppressed = explicitExitCause != nil
+                }
+            )
+        } catch {
+            guard let existingLifecycle = lifecycleRecords[id] else {
+                throw error
+            }
+            lifecycle = Self.recoveredLifecycleAfterExitPersistenceFailure(
+                existingLifecycle,
+                exitCode: state.snapshot.exitCode,
+                startedAt: state.snapshot.startedDate,
+                finishedAt: state.snapshot.exitedDate,
+                health: state.snapshot.health?.rawValue,
+                restartConsecutiveFailureCount: state.restart.consecutiveFailures,
+                observedOOMKillCount: observedOOMKillCount,
+                manualRestartSuppressed: explicitExitCause != nil,
+                persistenceError: String(describing: error)
+            )
+            lifecycleRecords[id] = lifecycle
+            recoveredFromPersistenceFailure = true
+            self.log.error(
+                "failed to persist lifecycle v2 exit state; retained stopped state in memory",
+                metadata: ["id": "\(id)", "error": "\(error)"]
+            )
+            if !explicitRestart {
+                let recoveryAction: ExitPersistenceRecoveryAction
+                if options.autoRemove {
+                    recoveryAction = .remove
+                } else if let restartDelay {
+                    recoveryAction = .restart(
+                        delayInNanoseconds: restartDelay
+                    )
+                } else {
+                    recoveryAction = .none
+                }
+                scheduleExitPersistenceRecovery(
+                    id: id,
+                    expectedOperationGeneration: lifecycle.snapshot.operationGeneration,
+                    terminalPublicState: willRestart ? .restarting : .exited,
+                    incrementRestartCount: willRestart,
+                    observedOOMKillCount: observedOOMKillCount,
+                    manualRestartSuppressed: explicitExitCause != nil,
+                    action: recoveryAction
+                )
+            }
+        }
+        var terminalEvents =
+            lifecycle.snapshot.oomKilled
+            ? [Self.containerEvent(action: "oom", snapshot: state.snapshot)] : []
+        terminalEvents += Self.terminalLifecycleEvents(
+            snapshot: state.snapshot,
+            explicitCause: explicitExitCause
+        )
+        terminalEvents = Self.stampEvents(terminalEvents, with: lifecycle)
+        guard !recoveredFromPersistenceFailure else {
+            return terminalEvents
+        }
         if options.autoRemove {
-            try await self.cleanUp(id: id, context: context)
-            return terminalEvents + Self.removalEvents(snapshot: state.snapshot)
+            let removalLifecycle: ContainerResource.ContainerLifecycleRecordV2
+            do {
+                removalLifecycle = try await commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: .removing,
+                    intent: { $0.removalRequested = true }
+                )
+                try await self.cleanUp(id: id, context: context)
+            } catch {
+                let removalError = error
+                let recoveryLifecycle = lifecycleRecords[id] ?? lifecycle
+                scheduleExitPersistenceRecovery(
+                    id: id,
+                    expectedOperationGeneration: recoveryLifecycle.snapshot.operationGeneration,
+                    terminalPublicState: lifecycle.snapshot.state,
+                    incrementRestartCount: false,
+                    observedOOMKillCount: observedOOMKillCount,
+                    manualRestartSuppressed: explicitExitCause != nil,
+                    terminalError: lifecycle.snapshot.error,
+                    action: .remove,
+                    terminalPersisted: true,
+                    removalLifecycle: recoveryLifecycle.snapshot.removalInProgress
+                        ? recoveryLifecycle : nil
+                )
+                log.error(
+                    "failed to complete automatic removal; retrying",
+                    metadata: ["id": "\(id)", "error": "\(removalError)"]
+                )
+                return terminalEvents
+            }
+            return terminalEvents
+                + Self.stampEvents(
+                    Self.removalEvents(snapshot: state.snapshot),
+                    with: removalLifecycle
+                )
         }
         if let restartDelay {
             self.scheduleRestart(id: id, delayInNanoseconds: restartDelay)
@@ -3359,24 +4455,28 @@ public actor ContainersService {
         "\(Self.launchdDomainString)/\(Self.machServicePrefix).\(runtimeName).\(instanceId)"
     }
 
-    /// Returns Docker's terminal event before the existing generic stop event.
-    static func terminalLifecycleEvents(snapshot: ContainerSnapshot) -> [ContainerEvent] {
+    /// Natural exit emits only `die`; an explicit stop/restart additionally
+    /// emits `stop`. Kill already emits its request event at signal delivery.
+    static func terminalLifecycleEvents(
+        snapshot: ContainerSnapshot,
+        explicitCause: ExplicitExitCause? = nil
+    ) -> [ContainerEvent] {
         var exitAttributes = [String: String]()
         if let exitCode = snapshot.exitCode {
             exitAttributes["exitCode"] = "\(exitCode)"
         }
-        return [
-            containerEvent(action: "die", snapshot: snapshot, additionalAttributes: exitAttributes),
-            containerEvent(action: "stop", snapshot: snapshot),
+        var events = [
+            containerEvent(action: "die", snapshot: snapshot, additionalAttributes: exitAttributes)
         ]
+        if explicitCause == .stop || explicitCause == .restart {
+            events.append(containerEvent(action: "stop", snapshot: snapshot))
+        }
+        return events
     }
 
-    /// Returns the generic deletion event and Docker's matching destroy event.
+    /// Docker publishes one terminal destroy action for container removal.
     static func removalEvents(snapshot: ContainerSnapshot) -> [ContainerEvent] {
-        [
-            containerEvent(action: "delete", snapshot: snapshot),
-            containerEvent(action: "destroy", snapshot: snapshot),
-        ]
+        [containerEvent(action: "destroy", snapshot: snapshot)]
     }
 
     /// Describes a signal delivered through the generic container API.
@@ -3398,19 +4498,46 @@ public actor ContainersService {
     ) -> ContainerEvent {
         var attributes = snapshot.configuration.labels
         attributes["image"] = snapshot.configuration.image.reference
+        attributes["name"] = snapshot.configuration.dockerName ?? snapshot.id
         attributes["status"] = snapshot.status.rawValue
         attributes["health"] = snapshot.health?.rawValue
         attributes.merge(additionalAttributes) { _, additional in additional }
         return ContainerEvent(
             type: "container",
-            id: snapshot.id,
+            id: snapshot.configuration.dockerID ?? snapshot.id,
             action: action,
             attributes: attributes
         )
     }
 
+    static func stampEvents(
+        _ events: [ContainerEvent],
+        with lifecycle: ContainerResource.ContainerLifecycleRecordV2
+    ) -> [ContainerEvent] {
+        events.map { source in
+            var event = source
+            event.transitionRevision = lifecycle.snapshot.transitionRevision
+            event.operationGeneration = lifecycle.snapshot.operationGeneration
+            return event
+        }
+    }
+
     private func publishContainerEvent(action: String, snapshot: ContainerSnapshot) async {
-        await eventBroadcaster.publish(Self.containerEvent(action: action, snapshot: snapshot))
+        await publishEvent(Self.containerEvent(action: action, snapshot: snapshot))
+    }
+
+    private func publishEvent(_ sourceEvent: ContainerEvent) async {
+        var event = sourceEvent
+        if event.transitionRevision == 0,
+            event.operationGeneration == 0,
+            let record = lifecycleRecords.values.first(where: {
+                $0.containerID == event.id || $0.immutableBundleKey == event.id
+            })
+        {
+            event.transitionRevision = record.snapshot.transitionRevision
+            event.operationGeneration = record.snapshot.operationGeneration
+        }
+        await eventBroadcaster.publish(event)
     }
 
     private func _cleanUp(id: String) async throws {
@@ -3439,6 +4566,7 @@ public actor ContainersService {
         // To be pedantic. This is only needed if something in the "launch
         // the init process" lifecycle fails before actually fork+exec'ing
         // the OCI runtime.
+        self.runtimeClientTokens.removeValue(forKey: id)
         await self.exitMonitor.stopTracking(id: id)
         let path = try Self.containerPath(root: self.containerRoot, id: id)
 
@@ -3503,6 +4631,7 @@ public actor ContainersService {
 
         let removedSnapshot = self.containers[id]?.snapshot
         self.containers.removeValue(forKey: id)
+        self.explicitExitCauses.removeValue(forKey: id)
         if let removedSnapshot {
             self.completeDockerContainerWaiters(
                 id: id,
@@ -3563,6 +4692,43 @@ public actor ContainersService {
         try await self._cleanUp(id: id)
     }
 
+    static func persistContainerConfiguration(
+        _ configuration: ContainerConfiguration,
+        options: ContainerCreateOptions? = nil,
+        at path: URL
+    ) throws {
+        let bundle = ContainerResource.Bundle(path: path)
+        if FileManager.default.fileExists(
+            atPath: bundle.filePath(for: "config.json").path
+        ) {
+            try bundle.setDurably(configuration: configuration)
+            if let options {
+                try bundle.writeDurably(
+                    filename: "options.json",
+                    value: options
+                )
+            }
+            return
+        }
+
+        let runtime = try RuntimeConfiguration.readRuntimeConfiguration(
+            from: path
+        )
+        let updated = RuntimeConfiguration(
+            path: runtime.path,
+            initialFilesystem: runtime.initialFilesystem,
+            kernel: runtime.kernel,
+            containerConfiguration: configuration,
+            containerRootFilesystem: runtime.containerRootFilesystem,
+            options: options ?? runtime.options,
+            runtimeData: runtime.runtimeData
+        )
+        try bundle.writeDurably(
+            filename: "runtime-configuration.json",
+            value: updated
+        )
+    }
+
     /// Release durable attachment leases only when the container itself is removed.
     private func releaseNetworkAttachments(configuration: ContainerConfiguration) async throws {
         guard !configuration.networks.isEmpty else {
@@ -3585,8 +4751,13 @@ public actor ContainersService {
     private func getContainerCreationOptions(id: String) throws -> ContainerCreateOptions {
         let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
-        let options: ContainerCreateOptions = try bundle.load(filename: "options.json")
-        return options
+        if let options: ContainerCreateOptions = try? bundle.load(
+            filename: "options.json"
+        ) {
+            return options
+        }
+        return try RuntimeConfiguration.readRuntimeConfiguration(from: path)
+            .options ?? .default
     }
 
     static func containerPath(root: URL, id: String) throws -> URL {
@@ -3632,6 +4803,271 @@ public actor ContainersService {
         self.containers[id] = state
     }
 
+    private func setLifecycleRecord(
+        _ record: ContainerResource.ContainerLifecycleRecordV2,
+        id: String
+    ) {
+        lifecycleRecords[id] = record
+    }
+
+    private func setRuntimeClientToken(_ token: UUID, id: String) {
+        runtimeClientTokens[id] = token
+    }
+
+    private func clearRuntimeClientToken(id: String) {
+        runtimeClientTokens.removeValue(forKey: id)
+    }
+
+    private func removeLifecycleRecord(id: String) {
+        lifecycleRecords.removeValue(forKey: id)
+    }
+
+    private func lifecyclePublicState(
+        id: String
+    ) throws -> ContainerResource.ContainerPublicStateV2 {
+        guard let record = lifecycleRecords[id] else {
+            throw ContainerizationError(
+                .internalError,
+                message: "container \(id) has no lifecycle v2 record"
+            )
+        }
+        return record.snapshot.state
+    }
+
+    private func hasContainer(named name: String, excluding id: String) -> Bool {
+        Self.hasContainer(
+            named: name,
+            excluding: id,
+            among: containers.values.map {
+                (
+                    id: $0.snapshot.id,
+                    dockerName: $0.snapshot.configuration.dockerName,
+                    dockerID: $0.snapshot.configuration.dockerID
+                )
+            },
+            reservedNames: quarantinedContainerNames
+        )
+    }
+
+    static func recoveredLifecycleAfterExitPersistenceFailure(
+        _ existing: ContainerResource.ContainerLifecycleRecordV2,
+        exitCode: Int32?,
+        startedAt: Date?,
+        finishedAt: Date?,
+        health: String?,
+        restartConsecutiveFailureCount: UInt32,
+        observedOOMKillCount: UInt64?,
+        manualRestartSuppressed: Bool,
+        terminalError: String? = nil,
+        persistenceError: String
+    ) -> ContainerResource.ContainerLifecycleRecordV2 {
+        var recovered = existing
+        try? Self.advanceLifecycleRevisions(&recovered.snapshot)
+        recovered.snapshot.state = .exited
+        recovered.snapshot.running = false
+        recovered.snapshot.paused = false
+        recovered.snapshot.restarting = false
+        recovered.snapshot.removalInProgress = false
+        recovered.snapshot.dead = false
+        recovered.snapshot.pid = 0
+        recovered.snapshot.exitCode = exitCode ?? 0
+        recovered.snapshot.startedAt = startedAt
+        recovered.snapshot.finishedAt = finishedAt
+        recovered.snapshot.health = health
+        recovered.snapshot.restartConsecutiveFailureCount = restartConsecutiveFailureCount
+        if let observedOOMKillCount,
+            let baseline = recovered.snapshot.oomKillCountBaseline
+        {
+            recovered.snapshot.oomKilled = observedOOMKillCount > baseline
+        }
+        let persistenceMessage =
+            "failed to persist lifecycle exit state: \(persistenceError)"
+        recovered.snapshot.error =
+            terminalError.map {
+                "\($0); \(persistenceMessage)"
+            } ?? persistenceMessage
+        recovered.intent.manualRestartSuppressed = manualRestartSuppressed
+        return recovered
+    }
+
+    static func recoveredContainerStateAfterFailedStart(
+        _ preStartState: ContainerState
+    ) -> ContainerState {
+        var recovered = preStartState
+        recovered.client = nil
+        recovered.snapshot.status = .stopped
+        recovered.snapshot.networks = []
+        recovered.snapshot.health = nil
+        return recovered
+    }
+
+    static func exitPersistenceRecoveryIsCurrent(
+        currentOperationGeneration: UInt64?,
+        expectedOperationGeneration: UInt64,
+        status: RuntimeStatus?
+    ) -> Bool {
+        currentOperationGeneration == expectedOperationGeneration
+            && status == .stopped
+    }
+
+    static func restartStabilityPersistenceRecoveryIsCurrent(
+        status: RuntimeStatus,
+        startedDate: Date?,
+        expectedStartedDate: Date
+    ) -> Bool {
+        status == .running && startedDate == expectedStartedDate
+    }
+
+    static func lifecyclePID(
+        previousPID: Int32,
+        publicState: ContainerResource.ContainerPublicStateV2,
+        runtimeStatus: RuntimeStatus,
+        reportedPID: Int32?
+    ) -> Int32 {
+        guard
+            publicState == .running || publicState == .paused
+                || (publicState == .restarting
+                    && (runtimeStatus == .running || runtimeStatus == .paused))
+        else {
+            return 0
+        }
+        return reportedPID ?? previousPID
+    }
+
+    static func hasContainer(
+        named name: String,
+        excluding id: String,
+        among containers: [(id: String, dockerName: String?, dockerID: String?)],
+        reservedNames: Set<String> = []
+    ) -> Bool {
+        reservedNames.contains(name)
+            || containers.contains {
+                $0.id != id
+                    && ($0.dockerName == name || $0.dockerID == name || $0.id == name)
+            }
+    }
+
+    @discardableResult
+    private func commitLifecycle(
+        id: String,
+        from container: ContainerState,
+        publicState: ContainerResource.ContainerPublicStateV2,
+        error: String? = nil,
+        pid: Int32? = nil,
+        incrementProcessGeneration: Bool = false,
+        incrementRestartCount: Bool = false,
+        restartConsecutiveFailureCount: UInt32? = nil,
+        resetOOMObservation: Bool = false,
+        observedOOMKillCount: UInt64? = nil,
+        intent: ((inout ContainerResource.ContainerLifecycleIntentV2) -> Void)? = nil
+    ) async throws -> ContainerResource.ContainerLifecycleRecordV2 {
+        guard var record = lifecycleRecords[id] else {
+            throw ContainerizationError(
+                .internalError,
+                message: "container \(id) has no lifecycle v2 record"
+            )
+        }
+        try Self.advanceLifecycleRevisions(&record.snapshot)
+        if incrementProcessGeneration {
+            record.snapshot.processGeneration = try Self.nextLifecycleCounter(
+                record.snapshot.processGeneration ?? 0,
+                named: "process generation"
+            )
+        }
+        if incrementRestartCount {
+            record.snapshot.restartCount = try Self.nextLifecycleCounter(
+                record.snapshot.restartCount,
+                named: "restart count"
+            )
+        }
+        if let restartConsecutiveFailureCount {
+            record.snapshot.restartConsecutiveFailureCount = restartConsecutiveFailureCount
+        }
+        if resetOOMObservation {
+            record.snapshot.oomKillCountBaseline = observedOOMKillCount
+            record.snapshot.oomKilled = false
+        } else if let observedOOMKillCount,
+            let baseline = record.snapshot.oomKillCountBaseline
+        {
+            record.snapshot.oomKilled = observedOOMKillCount > baseline
+        }
+        record.snapshot.state = publicState
+        record.snapshot.running =
+            publicState == .running || publicState == .paused
+            || publicState == .restarting
+        record.snapshot.paused = publicState == .paused
+        record.snapshot.restarting = publicState == .restarting
+        record.snapshot.removalInProgress = publicState == .removing
+        record.snapshot.dead = publicState == .dead
+        record.snapshot.pid = Self.lifecyclePID(
+            previousPID: record.snapshot.pid,
+            publicState: publicState,
+            runtimeStatus: container.snapshot.status,
+            reportedPID: pid
+        )
+        record.snapshot.exitCode = container.snapshot.exitCode ?? 0
+        record.snapshot.error = error ?? container.dockerStateError
+        record.snapshot.startedAt = container.snapshot.startedDate
+        record.snapshot.finishedAt = container.snapshot.exitedDate
+        record.snapshot.health = container.snapshot.health?.rawValue
+        intent?(&record.intent)
+
+        let bundle = ContainerResource.Bundle(
+            path: try Self.containerPath(root: containerRoot, id: id)
+        )
+        try bundle.setDurably(lifecycleRecordV2: record)
+        lifecycleRecords[id] = record
+        return record
+    }
+
+    private func recordCleanupFailure(
+        id: String,
+        from container: ContainerState,
+        underlyingError: any Error
+    ) async throws -> Never {
+        do {
+            try await commitLifecycle(
+                id: id,
+                from: container,
+                publicState: .dead,
+                error: String(describing: underlyingError),
+                intent: { $0.removalRequested = true }
+            )
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message:
+                    "cleanup failed: \(underlyingError); failed to record dead state: \(error)"
+            )
+        }
+        throw underlyingError
+    }
+
+    private static func makeLifecycleRecord(
+        configuration: ContainerConfiguration,
+        options: ContainerCreateOptions
+    ) -> ContainerResource.ContainerLifecycleRecordV2 {
+        ContainerResource.ContainerLifecycleRecordV2(
+            containerID: configuration.dockerID
+                ?? ContainerResource.ContainerLifecycleRecordV2.migrate(
+                    bundleKey: configuration.id,
+                    canonicalName: configuration.dockerName ?? configuration.id,
+                    selectedProviderFingerprint: configuration.runtimeHandler,
+                    legacy: nil
+                ).containerID,
+            canonicalName: configuration.dockerName ?? configuration.id,
+            immutableBundleKey: configuration.id,
+            selectedProviderFingerprint: configuration.runtimeHandler,
+            intent: ContainerResource.ContainerLifecycleIntentV2(
+                autoRemove: options.autoRemove,
+                restartPolicy: options.restartPolicy
+            ),
+            snapshot: ContainerResource.ContainerLifecycleSnapshotV2(
+                state: .created
+            )
+        )
+    }
+
     func recordDockerStartError(
         containerID: String,
         error: String
@@ -3648,6 +5084,15 @@ public actor ContainersService {
                     dockerState: ContainerDockerStateV1(error: error)
                 )
                 state.dockerStateError = error
+                let publicState = try await self.lifecyclePublicState(
+                    id: containerID
+                )
+                try await self.commitLifecycle(
+                    id: containerID,
+                    from: state,
+                    publicState: publicState,
+                    error: error
+                )
                 await self.setContainerState(containerID, state, context: context)
             } catch {
                 self.log.error(
@@ -3683,12 +5128,127 @@ public actor ContainersService {
     }
 
     private func markContainerManuallyStopped(id: String) async throws -> ContainerState {
-        cancelRestartTasks(id: id)
-        return try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+        let state = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
             var state = try await self.getContainerState(id: id, context: context)
             state.restart.markManuallyStopped()
             await self.setContainerState(id, state, context: context)
             return state
+        }
+        cancelRestartTasks(id: id)
+        return state
+    }
+
+    private func restoreContainerRestartEligibility(id: String) async -> ContainerState? {
+        await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+            guard var state = try? await self.getContainerState(id: id, context: context) else {
+                return nil
+            }
+            state.restart.restoreAutomaticRestartEligibility()
+            await self.setContainerState(id, state, context: context)
+            return state
+        }
+    }
+
+    private func rollbackManualTerminationIntent(
+        id: String,
+        fallbackState: ContainerState,
+        publicState: ContainerResource.ContainerPublicStateV2,
+        error: any Error
+    ) async throws {
+        explicitExitCauses.removeValue(forKey: id)
+        let recoveredState = await restoreContainerRestartEligibility(id: id) ?? fallbackState
+        do {
+            try await commitLifecycle(
+                id: id,
+                from: recoveredState,
+                publicState: publicState,
+                error: String(describing: error),
+                intent: { $0.manualRestartSuppressed = false }
+            )
+            restoreRestartStabilityResetIfNeeded(
+                id: id,
+                state: recoveredState,
+                publicState: publicState
+            )
+        } catch let rollbackError {
+            throw ContainerizationError(
+                .internalError,
+                message:
+                    "manual termination failed: \(error); failed to roll back durable intent: \(rollbackError)"
+            )
+        }
+    }
+
+    private func restorePausedRuntimeAfterFailedRestart(
+        id: String,
+        client: RuntimeClient,
+        restartError: any Error
+    ) async throws {
+        do {
+            if try await client.state().status != .paused {
+                try await client.pause()
+            }
+        } catch {
+            let pauseError = error
+            explicitExitCauses.removeValue(forKey: id)
+            await markContainerRestartFailed(
+                id: id,
+                error:
+                    "restart failed: \(restartError); failed to restore paused runtime: \(pauseError)"
+            )
+            throw ContainerizationError(
+                .internalError,
+                message:
+                    "restart failed: \(restartError); failed to restore paused runtime: \(pauseError)"
+            )
+        }
+    }
+
+    private func restoreRestartStabilityResetIfNeeded(
+        id: String,
+        state: ContainerState,
+        publicState: ContainerResource.ContainerPublicStateV2
+    ) {
+        guard publicState == .running,
+            state.restart.consecutiveFailures > 0,
+            let startedDate = state.snapshot.startedDate,
+            let record = lifecycleRecords[id]
+        else {
+            return
+        }
+        let duration = ContainerRestartTracker.stableRunDuration(
+            for: record.intent.restartPolicy
+        )
+        scheduleRestartStabilityReset(
+            id: id,
+            startedDate: startedDate,
+            durationInNanoseconds: Self.remainingRestartStabilityDuration(
+                startedDate: startedDate,
+                durationInNanoseconds: duration
+            )
+        )
+    }
+
+    private func rollbackRemovalIntent(
+        id: String,
+        fallbackState: ContainerState,
+        publicState: ContainerResource.ContainerPublicStateV2,
+        error: any Error
+    ) async throws {
+        do {
+            try await commitLifecycle(
+                id: id,
+                from: fallbackState,
+                publicState: publicState,
+                error: String(describing: error),
+                intent: { $0.removalRequested = false }
+            )
+        } catch let rollbackError {
+            throw ContainerizationError(
+                .internalError,
+                message:
+                    "forced removal failed: \(error); failed to roll back durable intent: \(rollbackError)"
+            )
         }
     }
 
@@ -3748,7 +5308,7 @@ public actor ContainersService {
         else {
             return
         }
-        await eventBroadcaster.publish(event)
+        await publishEvent(event)
     }
 
     private func scheduleRestart(id: String, delayInNanoseconds: UInt64) {
@@ -3757,6 +5317,159 @@ public actor ContainersService {
         restartTaskTokens[id] = token
         restartTasks[id] = Task {
             await self.runScheduledRestart(id: id, token: token, delayInNanoseconds: delayInNanoseconds)
+        }
+    }
+
+    private func scheduleExitPersistenceRecovery(
+        id: String,
+        expectedOperationGeneration: UInt64,
+        terminalPublicState: ContainerResource.ContainerPublicStateV2,
+        incrementRestartCount: Bool,
+        observedOOMKillCount: UInt64?,
+        manualRestartSuppressed: Bool,
+        terminalError: String? = nil,
+        action: ExitPersistenceRecoveryAction,
+        terminalPersisted: Bool = false,
+        removalLifecycle: ContainerResource.ContainerLifecycleRecordV2? = nil
+    ) {
+        exitPersistenceRecoveryTasks[id]?.cancel()
+        let token = UUID()
+        exitPersistenceRecoveries[id] = ExitPersistenceRecovery(
+            token: token,
+            expectedOperationGeneration: expectedOperationGeneration,
+            terminalPublicState: terminalPublicState,
+            incrementRestartCount: incrementRestartCount,
+            observedOOMKillCount: observedOOMKillCount,
+            manualRestartSuppressed: manualRestartSuppressed,
+            terminalError: terminalError,
+            action: action,
+            terminalPersisted: terminalPersisted,
+            removalLifecycle: removalLifecycle
+        )
+        exitPersistenceRecoveryTasks[id] = Task {
+            await self.runExitPersistenceRecovery(
+                id: id,
+                token: token
+            )
+        }
+    }
+
+    private func runExitPersistenceRecovery(
+        id: String,
+        token: UUID
+    ) async {
+        defer {
+            if exitPersistenceRecoveries[id]?.token == token {
+                exitPersistenceRecoveryTasks.removeValue(forKey: id)
+                exitPersistenceRecoveries.removeValue(forKey: id)
+            }
+        }
+
+        var retryDelay: UInt64 = 100_000_000
+
+        while !Task.isCancelled {
+            do {
+                try await Task.sleep(for: Self.duration(fromNanoseconds: retryDelay))
+                try Task.checkCancellation()
+                let events = try await withLifecycleMutation(id: id) { () async throws -> [ContainerEvent]? in
+                    guard self.exitPersistenceRecoveries[id]?.token == token else {
+                        return nil
+                    }
+                    return try await self.lock.withLock(
+                        logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+                    ) { context -> [ContainerEvent]? in
+                        try await self.attemptExitPersistenceRecovery(
+                            id: id,
+                            token: token,
+                            context: context
+                        )
+                    }
+                }
+                guard let events else {
+                    return
+                }
+                for event in events {
+                    await publishEvent(event)
+                }
+                return
+            } catch is CancellationError {
+                return
+            } catch {
+                log.error(
+                    "failed to recover lifecycle exit persistence; retrying",
+                    metadata: ["id": "\(id)", "error": "\(error)"]
+                )
+                retryDelay = min(retryDelay.multipliedReportingOverflow(by: 2).partialValue, 5_000_000_000)
+            }
+        }
+    }
+
+    private func attemptExitPersistenceRecovery(
+        id: String,
+        token: UUID,
+        context: AsyncLock.Context
+    ) async throws -> [ContainerEvent]? {
+        guard var recovery = exitPersistenceRecoveries[id],
+            recovery.token == token,
+            let current = lifecycleRecords[id],
+            let state = containers[id],
+            Self.exitPersistenceRecoveryIsCurrent(
+                currentOperationGeneration: current.snapshot.operationGeneration,
+                expectedOperationGeneration: recovery.expectedOperationGeneration,
+                status: state.snapshot.status
+            )
+        else {
+            return nil
+        }
+
+        if !recovery.terminalPersisted {
+            let terminal = try await commitLifecycle(
+                id: id,
+                from: state,
+                publicState: recovery.terminalPublicState,
+                error: recovery.terminalError,
+                incrementRestartCount: recovery.incrementRestartCount,
+                restartConsecutiveFailureCount: state.restart.consecutiveFailures,
+                observedOOMKillCount: recovery.observedOOMKillCount,
+                intent: { intent in
+                    intent.manualRestartSuppressed = recovery.manualRestartSuppressed
+                }
+            )
+            recovery.expectedOperationGeneration = terminal.snapshot.operationGeneration
+            recovery.terminalPersisted = true
+            exitPersistenceRecoveries[id] = recovery
+        }
+
+        switch recovery.action {
+        case .none:
+            return []
+        case .restart(let delayInNanoseconds):
+            scheduleRestart(
+                id: id,
+                delayInNanoseconds: delayInNanoseconds
+            )
+            return []
+        case .remove:
+            if recovery.removalLifecycle == nil {
+                let removal = try await commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: .removing,
+                    intent: { $0.removalRequested = true }
+                )
+                recovery.expectedOperationGeneration = removal.snapshot.operationGeneration
+                recovery.removalLifecycle = removal
+                exitPersistenceRecoveries[id] = recovery
+            }
+            try await cleanUp(id: id, context: context)
+            lifecycleRecords.removeValue(forKey: id)
+            guard let removalLifecycle = recovery.removalLifecycle else {
+                return []
+            }
+            return Self.stampEvents(
+                Self.removalEvents(snapshot: state.snapshot),
+                with: removalLifecycle
+            )
         }
     }
 
@@ -3771,19 +5484,38 @@ public actor ContainersService {
         do {
             try await Task.sleep(for: Self.duration(fromNanoseconds: delayInNanoseconds))
             try Task.checkCancellation()
-            guard try await prepareContainerForRestart(id: id) else {
-                return
+            try await withLifecycleMutation(id: id) {
+                do {
+                    guard self.restartTaskTokens[id] == token else {
+                        return
+                    }
+                    guard try await self.prepareContainerForRestart(id: id) else {
+                        return
+                    }
+                    try Task.checkCancellation()
+                    guard self.restartTaskTokens[id] == token else {
+                        return
+                    }
+                    _ = try await self.bootstrap(
+                        id: id,
+                        stdio: [FileHandle?](repeating: nil, count: 3),
+                        dynamicEnv: [:],
+                        onlyIfNeverStarted: false
+                    )
+                    try await self.startProcessImpl(id: id, processID: id)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    await self.markContainerRestartFailed(
+                        id: id,
+                        error: "automatic restart failed: \(error)"
+                    )
+                    throw error
+                }
             }
-            try Task.checkCancellation()
-            guard restartTaskTokens[id] == token else {
-                return
-            }
-            try await bootstrap(id: id, stdio: [FileHandle?](repeating: nil, count: 3), dynamicEnv: [:])
-            try await startProcess(id: id, processID: id)
         } catch is CancellationError {
             return
         } catch {
-            await markContainerRestartFailed(id: id)
             log.error(
                 "failed to restart container",
                 metadata: [
@@ -3796,14 +5528,30 @@ public actor ContainersService {
     private func prepareContainerForRestart(id: String) async throws -> Bool {
         try await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
             let state = try await self.getContainerState(id: id, context: context)
-            guard state.snapshot.status == .stopped, state.restart.allowsAutomaticRestart else {
+            let options = try await self.getContainerCreationOptions(id: id)
+            let lifecycleRecords = await self.lifecycleRecords
+            let lifecycle = lifecycleRecords[id]
+            guard state.snapshot.status == .stopped,
+                state.restart.allowsAutomaticRestart,
+                Self.restartIntentAllowsPendingRestart(
+                    lifecycleState: lifecycle?.snapshot.state,
+                    manualRestartSuppressed: lifecycle?.intent.manualRestartSuppressed ?? false,
+                    policy: options.restartPolicy,
+                    exitCode: state.snapshot.exitCode,
+                    restartConsecutiveFailureCount: state.restart.consecutiveFailures
+                )
+            else {
                 return false
             }
             return true
         }
     }
 
-    private func markContainerRestartFailed(id: String) async {
+    private func markContainerRestartFailed(
+        id: String,
+        error restartError: String
+    ) async {
+        runtimeClientTokens.removeValue(forKey: id)
         await self.exitMonitor.stopTracking(id: id)
         self.stopHealthCheckMonitor(id: id)
 
@@ -3822,6 +5570,45 @@ public actor ContainersService {
             state.snapshot.networks = []
             state.snapshot.health = nil
             state.client = nil
+            do {
+                try await self.commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: .exited,
+                    error: restartError
+                )
+            } catch {
+                let lifecycleRecords = await self.lifecycleRecords
+                if let existingLifecycle = lifecycleRecords[id] {
+                    let recoveredLifecycle = Self.recoveredLifecycleAfterExitPersistenceFailure(
+                        existingLifecycle,
+                        exitCode: state.snapshot.exitCode,
+                        startedAt: state.snapshot.startedDate,
+                        finishedAt: state.snapshot.exitedDate,
+                        health: state.snapshot.health?.rawValue,
+                        restartConsecutiveFailureCount: state.restart.consecutiveFailures,
+                        observedOOMKillCount: nil,
+                        manualRestartSuppressed: existingLifecycle.intent.manualRestartSuppressed,
+                        terminalError: restartError,
+                        persistenceError: String(describing: error)
+                    )
+                    await self.setLifecycleRecord(recoveredLifecycle, id: id)
+                    await self.scheduleExitPersistenceRecovery(
+                        id: id,
+                        expectedOperationGeneration: recoveredLifecycle.snapshot.operationGeneration,
+                        terminalPublicState: .exited,
+                        incrementRestartCount: false,
+                        observedOOMKillCount: nil,
+                        manualRestartSuppressed: existingLifecycle.intent.manualRestartSuppressed,
+                        terminalError: restartError,
+                        action: .none
+                    )
+                }
+                self.log.error(
+                    "failed to record restart failure; retrying",
+                    metadata: ["id": "\(id)", "error": "\(error)"]
+                )
+            }
             await self.setContainerState(id, state, context: context)
             return (client, label)
         }
@@ -3852,6 +5639,19 @@ public actor ContainersService {
         }
     }
 
+    static func remainingRestartStabilityDuration(
+        startedDate: Date,
+        durationInNanoseconds: UInt64,
+        now: Date = Date()
+    ) -> UInt64 {
+        let elapsedSeconds = max(0, now.timeIntervalSince(startedDate))
+        let elapsedNanoseconds = elapsedSeconds * 1_000_000_000
+        guard elapsedNanoseconds < Double(durationInNanoseconds) else {
+            return 0
+        }
+        return durationInNanoseconds - UInt64(elapsedNanoseconds.rounded(.down))
+    }
+
     private func runRestartStabilityReset(
         id: String,
         token: UUID,
@@ -3871,16 +5671,64 @@ public actor ContainersService {
             return
         }
 
-        await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
-            guard var state = try? await self.getContainerState(id: id, context: context),
-                state.snapshot.status == .running,
-                state.snapshot.startedDate == startedDate
-            else {
+        var retryDelay: UInt64 = 100_000_000
+        while !Task.isCancelled {
+            let shouldRetry = await withLifecycleMutation(id: id) {
+                await lock.withLock(
+                    logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+                ) { context in
+                    guard !Task.isCancelled,
+                        await self.restartStabilityTokenIsCurrent(id: id, token: token),
+                        var state = try? await self.getContainerState(id: id, context: context),
+                        Self.restartStabilityPersistenceRecoveryIsCurrent(
+                            status: state.snapshot.status,
+                            startedDate: state.snapshot.startedDate,
+                            expectedStartedDate: startedDate
+                        )
+                    else {
+                        return false
+                    }
+
+                    state.restart.markStable()
+                    await self.setContainerState(id, state, context: context)
+                    do {
+                        var record = try await self.lifecycleRecord(id: id)
+                        try Self.resetRestartFailureState(&record.snapshot)
+                        let path = try Self.containerPath(
+                            root: self.containerRoot,
+                            id: id
+                        )
+                        try ContainerResource.Bundle(path: path).setDurably(
+                            lifecycleRecordV2: record
+                        )
+                        await self.setLifecycleRecord(record, id: id)
+                        return false
+                    } catch {
+                        self.log.error(
+                            "failed to persist stable restart state; retrying",
+                            metadata: ["id": "\(id)", "error": "\(error)"]
+                        )
+                        return true
+                    }
+                }
+            }
+            guard shouldRetry else {
                 return
             }
-            state.restart.markStable()
-            await self.setContainerState(id, state, context: context)
+            do {
+                try await Task.sleep(for: Self.duration(fromNanoseconds: retryDelay))
+            } catch {
+                return
+            }
+            retryDelay = min(
+                retryDelay.multipliedReportingOverflow(by: 2).partialValue,
+                5_000_000_000
+            )
         }
+    }
+
+    private func restartStabilityTokenIsCurrent(id: String, token: UUID) -> Bool {
+        restartStabilityTaskTokens[id] == token
     }
 
     private func runHealthCheckMonitor(
@@ -3985,15 +5833,51 @@ public actor ContainersService {
         id: String,
         status: HealthStatus
     ) async -> (isRunning: Bool, transition: ContainerSnapshot?) {
-        await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
-            guard var state = try? await self.getContainerState(id: id, context: context), state.snapshot.status == .running else {
+        await withLifecycleMutation(id: id) {
+            guard !Task.isCancelled else {
                 return (false, nil)
             }
-            let previousStatus = state.snapshot.health
-            state.snapshot.health = status
-            await self.setContainerState(id, state, context: context)
-            return (true, previousStatus == status ? nil : state.snapshot)
+            return await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
+                let lifecycleRecords = await self.lifecycleRecords
+                guard let lifecycle = lifecycleRecords[id],
+                    var state = try? await self.getContainerState(id: id, context: context),
+                    Self.healthLifecycleUpdateIsCurrent(
+                        runtimeStatus: state.snapshot.status,
+                        lifecycleState: lifecycle.snapshot.state
+                    )
+                else {
+                    return (false, nil)
+                }
+                let previousStatus = state.snapshot.health
+                guard previousStatus != status else {
+                    return (true, nil)
+                }
+
+                state.snapshot.health = status
+                do {
+                    try await self.commitLifecycle(
+                        id: id,
+                        from: state,
+                        publicState: .running
+                    )
+                } catch {
+                    self.log.error(
+                        "failed to record container health transition; retrying on the next probe",
+                        metadata: ["id": "\(id)", "error": "\(error)"]
+                    )
+                    return (true, nil)
+                }
+                await self.setContainerState(id, state, context: context)
+                return (true, state.snapshot)
+            }
         }
+    }
+
+    static func healthLifecycleUpdateIsCurrent(
+        runtimeStatus: RuntimeStatus,
+        lifecycleState: ContainerResource.ContainerPublicStateV2
+    ) -> Bool {
+        runtimeStatus == .running && lifecycleState == .running
     }
 
     static func duration(fromNanoseconds nanoseconds: UInt64) -> Duration {
@@ -4143,7 +6027,10 @@ extension ContainersService: LoggingHandoffContainerPromoting {
             if currentLogging != container.configuration {
                 var configuration = state.snapshot.configuration
                 configuration.logging = container.configuration
-                try bundle.setDurably(configuration: configuration)
+                try Self.persistContainerConfiguration(
+                    configuration,
+                    at: path
+                )
                 state.snapshot.configuration = configuration
                 await self.setContainerState(
                     container.containerID,
@@ -4199,6 +6086,511 @@ extension ContainersService: LoggingHandoffContainerPromoting {
 }
 
 extension ContainersService {
+    package func restartDockerContainer(
+        id: String,
+        timeoutSeconds: Int32?,
+        signal: String? = nil
+    ) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.restartDockerContainerImpl(
+                id: id,
+                timeoutSeconds: timeoutSeconds,
+                signal: signal
+            )
+        }
+    }
+
+    private func restartDockerContainerImpl(
+        id: String,
+        timeoutSeconds: Int32?,
+        signal: String?
+    ) async throws {
+        let initial = try _getContainerState(id: id)
+        let wasPaused = initial.snapshot.status == .paused
+        var stoppedRestartRollback:
+            (
+                state: ContainerState,
+                publicState: ContainerResource.ContainerPublicStateV2,
+                manualRestartSuppressed: Bool
+            )?
+        switch initial.snapshot.status {
+        case .paused, .running:
+            let state = initial
+            let client = try state.getClient()
+            let stopOptions = Self.resolvedStopOptions(
+                ContainerStopOptions(
+                    timeoutInSeconds: timeoutSeconds,
+                    signal: signal
+                ),
+                configuredSignal: state.snapshot.configuration.stopSignal,
+                configuredTimeoutInSeconds: state.snapshot.configuration.stopTimeoutInSeconds
+            )
+            explicitExitCauses[id] = .restart
+            do {
+                try await commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: .restarting,
+                    intent: { $0.manualRestartSuppressed = true }
+                )
+            } catch {
+                explicitExitCauses.removeValue(forKey: id)
+                throw error
+            }
+            if wasPaused {
+                do {
+                    try await client.resume()
+                } catch {
+                    let resumeError = error
+                    try await restorePausedRuntimeAfterFailedRestart(
+                        id: id,
+                        client: client,
+                        restartError: resumeError
+                    )
+                    try await rollbackManualTerminationIntent(
+                        id: id,
+                        fallbackState: state,
+                        publicState: .paused,
+                        error: resumeError
+                    )
+                    throw resumeError
+                }
+            }
+            do {
+                _ = try await markContainerManuallyStopped(id: id)
+            } catch {
+                if wasPaused {
+                    try await restorePausedRuntimeAfterFailedRestart(
+                        id: id,
+                        client: client,
+                        restartError: error
+                    )
+                }
+                try await rollbackManualTerminationIntent(
+                    id: id,
+                    fallbackState: state,
+                    publicState: wasPaused ? .paused : .running,
+                    error: error
+                )
+                throw error
+            }
+            do {
+                try await client.stop(options: stopOptions)
+            } catch let error as ContainerizationError where error.code == .interrupted {
+                // The runtime service can disappear before replying after a
+                // successful stop. Continue through exit handling, matching
+                // the ordinary stop path.
+            } catch {
+                if wasPaused {
+                    try await restorePausedRuntimeAfterFailedRestart(
+                        id: id,
+                        client: client,
+                        restartError: error
+                    )
+                }
+                try await rollbackManualTerminationIntent(
+                    id: id,
+                    fallbackState: state,
+                    publicState: wasPaused ? .paused : .running,
+                    error: error
+                )
+                throw error
+            }
+            do {
+                try await handleContainerExitImpl(id: id)
+            } catch {
+                explicitExitCauses.removeValue(forKey: id)
+                await markContainerRestartFailed(
+                    id: id,
+                    error: "restart exit handling failed: \(error)"
+                )
+                throw error
+            }
+        case .stopping:
+            throw ContainerizationError(
+                .invalidState,
+                message: "container \(id) is stopping"
+            )
+        case .unknown:
+            throw ContainerizationError(
+                .invalidState,
+                message: "container \(id) requires removal recovery"
+            )
+        case .stopped:
+            let lifecycle = try lifecycleRecord(id: id)
+            guard
+                Self.lifecycleMayBootstrap(
+                    removalRequested: lifecycle.intent.removalRequested,
+                    removalInProgress: lifecycle.snapshot.removalInProgress
+                )
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container \(id) requires removal recovery"
+                )
+            }
+            try await commitLifecycle(
+                id: id,
+                from: initial,
+                publicState: .restarting,
+                intent: { $0.manualRestartSuppressed = true }
+            )
+            stoppedRestartRollback = (
+                state: initial,
+                publicState: lifecycle.snapshot.state,
+                manualRestartSuppressed: lifecycle.intent.manualRestartSuppressed
+            )
+        }
+
+        do {
+            _ = try await bootstrap(
+                id: id,
+                stdio: [FileHandle?](repeating: nil, count: 3),
+                dynamicEnv: [:],
+                onlyIfNeverStarted: false
+            )
+            try await startProcessImpl(id: id, processID: id)
+        } catch {
+            if let stoppedRestartRollback {
+                do {
+                    try await commitLifecycle(
+                        id: id,
+                        from: stoppedRestartRollback.state,
+                        publicState: stoppedRestartRollback.publicState,
+                        error: String(describing: error),
+                        intent: {
+                            $0.manualRestartSuppressed =
+                                stoppedRestartRollback.manualRestartSuppressed
+                        }
+                    )
+                } catch let rollbackError {
+                    throw ContainerizationError(
+                        .internalError,
+                        message:
+                            "explicit restart failed: \(error); failed to roll back durable restart intent: \(rollbackError)"
+                    )
+                }
+                throw error
+            }
+            await markContainerRestartFailed(
+                id: id,
+                error: "explicit restart failed: \(error)"
+            )
+            throw error
+        }
+        await publishContainerEvent(
+            action: "restart",
+            snapshot: try _getContainerState(id: id).snapshot
+        )
+    }
+
+    static func lifecycleMayBootstrap(
+        removalRequested: Bool,
+        removalInProgress: Bool
+    ) -> Bool {
+        !removalRequested && !removalInProgress
+    }
+
+    package func renameDockerContainer(id: String, newName: String) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.renameDockerContainerImpl(id: id, newName: newName)
+        }
+    }
+
+    private func renameDockerContainerImpl(id: String, newName: String) async throws {
+        guard ManagedContainer.nameValid(newName) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid container name \(newName)"
+            )
+        }
+        let renamed = try await lock.withLock(
+            logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+        ) { context -> (snapshot: ContainerSnapshot, oldName: String) in
+            guard !(await self.hasContainer(named: newName, excluding: id)) else {
+                throw ContainerizationError(
+                    .exists,
+                    message: "container name already exists: \(newName)"
+                )
+            }
+            var state = try await self.getContainerState(id: id, context: context)
+            let oldConfiguration = state.snapshot.configuration
+            let oldName = oldConfiguration.dockerName ?? oldConfiguration.id
+            guard oldName != newName else {
+                return (state.snapshot, oldName)
+            }
+            var configuration = oldConfiguration
+            configuration.dockerName = newName
+            let bundle = ContainerResource.Bundle(
+                path: try Self.containerPath(root: self.containerRoot, id: id)
+            )
+            try Self.persistContainerConfiguration(
+                configuration,
+                at: bundle.path
+            )
+            state.snapshot.configuration = configuration
+            do {
+                var record = try await self.lifecycleRecord(id: id)
+                record.canonicalName = newName
+                try Self.advanceLifecycleRevisions(&record.snapshot)
+                try bundle.setDurably(lifecycleRecordV2: record)
+                await self.setLifecycleRecord(record, id: id)
+            } catch {
+                try? Self.persistContainerConfiguration(
+                    oldConfiguration,
+                    at: bundle.path
+                )
+                throw error
+            }
+            await self.setContainerState(id, state, context: context)
+            return (state.snapshot, oldName)
+        }
+        await publishEvent(
+            Self.containerEvent(
+                action: "rename",
+                snapshot: renamed.snapshot,
+                additionalAttributes: ["oldName": renamed.oldName]
+            )
+        )
+    }
+
+    package func updateDockerContainer(
+        id: String,
+        memoryBytes: Int64?,
+        nanoCPUs: Int64?,
+        restartPolicy: ContainerRestartPolicy?
+    ) async throws -> [String] {
+        try await withLifecycleMutation(id: id) {
+            try await self.updateDockerContainerImpl(
+                id: id,
+                memoryBytes: memoryBytes,
+                nanoCPUs: nanoCPUs,
+                restartPolicy: restartPolicy
+            )
+        }
+    }
+
+    static let minimumBootableMemoryInBytes: UInt64 = 200.mib()
+    static let dockerCPUPeriodInMicroseconds: UInt64 = 100_000
+
+    static func validateBootableMemory(_ memoryInBytes: UInt64) throws {
+        guard memoryInBytes >= minimumBootableMemoryInBytes else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "minimum memory amount allowed is 200 MiB (got \(memoryInBytes) bytes)"
+            )
+        }
+    }
+
+    static func validateRestartPolicy(
+        _ restartPolicy: ContainerRestartPolicy,
+        autoRemove: Bool
+    ) throws {
+        guard !autoRemove || restartPolicy.mode == .no else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--rm cannot be combined with --restart"
+            )
+        }
+    }
+
+    static func cpuQuotaInMicroseconds(
+        nanoCPUs: Int64,
+        periodInMicroseconds: UInt64 = dockerCPUPeriodInMicroseconds
+    ) throws -> Int64 {
+        guard nanoCPUs > 0,
+            periodInMicroseconds > 0,
+            periodInMicroseconds <= UInt64(Int64.max)
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "NanoCpus must be a positive value representable as a CPU quota"
+            )
+        }
+        let period = Int64(periodInMicroseconds)
+        let nanosPerCPU: Int64 = 1_000_000_000
+        let (wholeQuota, wholeOverflow) = (nanoCPUs / nanosPerCPU)
+            .multipliedReportingOverflow(by: period)
+        let (fractionalProduct, fractionalOverflow) = (nanoCPUs % nanosPerCPU)
+            .multipliedReportingOverflow(by: period)
+        guard !wholeOverflow, !fractionalOverflow else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "NanoCpus must be a positive value representable as a CPU quota"
+            )
+        }
+        let (quota, quotaOverflow) = wholeQuota.addingReportingOverflow(
+            fractionalProduct / nanosPerCPU
+        )
+        guard !quotaOverflow, quota >= 1 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "NanoCpus must be a positive value representable as a CPU quota"
+            )
+        }
+        return quota
+    }
+
+    static func shouldCancelPendingRestart(
+        lifecycleState: ContainerResource.ContainerPublicStateV2,
+        restartScheduled: Bool,
+        manualRestartSuppressed: Bool = false,
+        updatedPolicy: ContainerRestartPolicy,
+        exitCode: Int32?,
+        restartConsecutiveFailureCount: UInt32
+    ) -> Bool {
+        lifecycleState == .restarting
+            && restartScheduled
+            && !manualRestartSuppressed
+            && !Self.restartPolicyAllowsPendingRestart(
+                updatedPolicy,
+                exitCode: exitCode,
+                restartConsecutiveFailureCount: restartConsecutiveFailureCount
+            )
+    }
+
+    static func restartPolicyAllowsPendingRestart(
+        _ policy: ContainerRestartPolicy,
+        exitCode: Int32?,
+        restartConsecutiveFailureCount: UInt32
+    ) -> Bool {
+        switch policy.mode {
+        case .no:
+            return false
+        case .onFailure:
+            guard exitCode != nil, exitCode != 0 else {
+                return false
+            }
+            guard let maximumRetryCount = policy.maximumRetryCount else {
+                return true
+            }
+            return restartConsecutiveFailureCount <= maximumRetryCount
+        case .always, .unlessStopped:
+            return true
+        }
+    }
+
+    static func restartIntentAllowsPendingRestart(
+        lifecycleState: ContainerResource.ContainerPublicStateV2?,
+        manualRestartSuppressed: Bool,
+        policy: ContainerRestartPolicy,
+        exitCode: Int32?,
+        restartConsecutiveFailureCount: UInt32
+    ) -> Bool {
+        lifecycleState == .restarting && manualRestartSuppressed
+            || Self.restartPolicyAllowsPendingRestart(
+                policy,
+                exitCode: exitCode,
+                restartConsecutiveFailureCount: restartConsecutiveFailureCount
+            )
+    }
+
+    private func updateDockerContainerImpl(
+        id: String,
+        memoryBytes: Int64?,
+        nanoCPUs: Int64?,
+        restartPolicy: ContainerRestartPolicy?
+    ) async throws -> [String] {
+        let restartScheduled = restartTasks[id] != nil
+        let update = try await lock.withLock(
+            logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+        ) { context -> (warnings: [String], cancelPendingRestart: Bool) in
+            var state = try await self.getContainerState(id: id, context: context)
+            if state.snapshot.status == .running || state.snapshot.status == .paused,
+                memoryBytes != nil || nanoCPUs != nil
+            {
+                throw ContainerizationError(
+                    .unsupported,
+                    message: "live resource update is not supported by this runtime provider"
+                )
+            }
+            var configuration = state.snapshot.configuration
+            if let memoryBytes {
+                guard memoryBytes > 0 else {
+                    throw ContainerizationError(.invalidArgument, message: "memory must be positive")
+                }
+                let memoryInBytes = UInt64(memoryBytes)
+                try Self.validateBootableMemory(memoryInBytes)
+                configuration.resources.memoryInBytes = memoryInBytes
+            }
+            if let nanoCPUs {
+                let period = Self.dockerCPUPeriodInMicroseconds
+                configuration.resources.cpuPeriodInMicroseconds = period
+                configuration.resources.cpuQuotaInMicroseconds = try Self.cpuQuotaInMicroseconds(
+                    nanoCPUs: nanoCPUs,
+                    periodInMicroseconds: period
+                )
+            }
+            let bundle = ContainerResource.Bundle(
+                path: try Self.containerPath(root: self.containerRoot, id: id)
+            )
+            let oldConfiguration = state.snapshot.configuration
+            let oldOptions = try await self.getContainerCreationOptions(id: id)
+            let newOptions = ContainerCreateOptions(
+                autoRemove: oldOptions.autoRemove,
+                rootFsOverride: oldOptions.rootFsOverride,
+                restartPolicy: restartPolicy ?? oldOptions.restartPolicy
+            )
+            try Self.validateRestartPolicy(
+                newOptions.restartPolicy,
+                autoRemove: newOptions.autoRemove
+            )
+            let lifecycle = try await self.lifecycleRecord(id: id)
+            let publicState = lifecycle.snapshot.state
+            let cancelPendingRestart = Self.shouldCancelPendingRestart(
+                lifecycleState: publicState,
+                restartScheduled: restartScheduled,
+                manualRestartSuppressed: lifecycle.intent.manualRestartSuppressed,
+                updatedPolicy: newOptions.restartPolicy,
+                exitCode: state.snapshot.exitCode,
+                restartConsecutiveFailureCount: state.restart.consecutiveFailures
+            )
+            do {
+                try Self.persistContainerConfiguration(
+                    configuration,
+                    options: newOptions,
+                    at: bundle.path
+                )
+                state.snapshot.configuration = configuration
+                try await self.commitLifecycle(
+                    id: id,
+                    from: state,
+                    publicState: cancelPendingRestart ? .exited : publicState,
+                    intent: { $0.restartPolicy = newOptions.restartPolicy }
+                )
+            } catch {
+                try? Self.persistContainerConfiguration(
+                    oldConfiguration,
+                    options: oldOptions,
+                    at: bundle.path
+                )
+                throw error
+            }
+            await self.setContainerState(id, state, context: context)
+            await self.publishContainerEvent(action: "update", snapshot: state.snapshot)
+            return ([], cancelPendingRestart)
+        }
+        if update.cancelPendingRestart {
+            cancelRestartTasks(id: id)
+        }
+        return update.warnings
+    }
+
+    package func lifecycleRecord(
+        id: String
+    ) throws -> ContainerResource.ContainerLifecycleRecordV2 {
+        guard let record = lifecycleRecords[id] else {
+            throw ContainerizationError(.notFound, message: "container not found: \(id)")
+        }
+        return record
+    }
+
+    package func lifecycleRecordsForAPI()
+        -> [ContainerResource.ContainerLifecycleRecordV2]
+    {
+        Array(lifecycleRecords.values)
+    }
+
     package func createDockerContainer(
         request: DockerContainerCreateRequest,
         requestedName: String?
@@ -4794,19 +7186,43 @@ extension ContainersService {
             from: path
         )
         let bundle = ContainerResource.Bundle(path: path)
-        let legacyOptions: ContainerCreateOptions? = try? bundle.load(
+        let persistedOptions: ContainerCreateOptions? = try? bundle.load(
             filename: "options.json"
         )
         return ContainerEngineInspectBase(
             snapshot: snapshot,
-            options: runtime?.options ?? legacyOptions ?? .default,
+            lifecycle: try lifecycleRecord(id: containerID),
+            options: Self.authoritativeCreateOptions(
+                persisted: persistedOptions,
+                runtime: runtime?.options
+            ),
             runtimeData: runtime?.runtimeData,
             stateError: state.dockerStateError
         )
     }
 
+    static func authoritativeCreateOptions(
+        persisted: ContainerCreateOptions?,
+        runtime: ContainerCreateOptions?
+    ) -> ContainerCreateOptions {
+        persisted ?? runtime ?? .default
+    }
+
     func engineContainerRootPath() -> String {
         containerRoot.path
+    }
+
+    func engineLifecycleRecords()
+        -> [String: ContainerResource.ContainerLifecycleRecordV2]
+    {
+        lifecycleRecords
+    }
+
+    func engineListSnapshot() -> ContainerEngineListSnapshot {
+        ContainerEngineListSnapshot(
+            snapshots: containers.values.map(\.snapshot),
+            lifecycleRecords: lifecycleRecords
+        )
     }
 
     func engineAttachmentInspection(
@@ -4834,7 +7250,7 @@ extension ContainersService {
         height: UInt32,
         width: UInt32
     ) async {
-        await eventBroadcaster.publish(
+        await publishEvent(
             Self.containerEvent(
                 action: "resize",
                 snapshot: snapshot,

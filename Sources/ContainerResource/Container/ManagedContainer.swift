@@ -49,8 +49,9 @@ public struct ManagedContainer: ManagedResource {
 
     /// Container name rule
     public static func nameValid(_ name: String) -> Bool {
-        // Maximum Linux hostname length is 64, but limit to maximum DNS label length
-        guard name.count <= 63 else {
+        // Docker container names are not DNS labels. Keep the storage key to a
+        // single filesystem component while accepting Docker-compatible names.
+        guard !name.isEmpty, name.utf8.count <= 255 else {
             return false
         }
         let pattern = #"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$"#
