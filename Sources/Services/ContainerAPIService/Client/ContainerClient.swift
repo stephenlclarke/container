@@ -333,6 +333,22 @@ public struct ContainerClient: Sendable {
         return try JSONDecoder().decode([ContainerLifecycleRecordV2].self, from: data)
     }
 
+    /// Returns one atomic resource-and-lifecycle view for every matching container.
+    public func lifecycleViews(
+        filters: ContainerListFilters = .all
+    ) async throws -> [ContainerLifecycleViewV2] {
+        let request = XPCMessage(route: .containerLifecycleViewList)
+        request.set(key: .listFilters, value: try JSONEncoder().encode(filters))
+        let reply = try await xpcClient.send(request)
+        guard let data = reply.dataNoCopy(key: .lifecycleViews) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "lifecycle view list response is missing its records"
+            )
+        }
+        return try JSONDecoder().decode([ContainerLifecycleViewV2].self, from: data)
+    }
+
     /// Delete the container along with any resources.
     public func delete(id: String, force: Bool = false) async throws {
         do {

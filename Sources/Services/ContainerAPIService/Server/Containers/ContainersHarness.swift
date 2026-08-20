@@ -163,6 +163,23 @@ public struct ContainersHarness: Sendable {
     }
 
     @Sendable
+    public func lifecycleViewList(_ message: XPCMessage) async throws -> XPCMessage {
+        var filters = ContainerListFilters.all
+        if let filterData = message.dataNoCopy(key: .listFilters) {
+            filters = try JSONDecoder().decode(ContainerListFilters.self, from: filterData)
+        }
+        let views = try await service.lifecycleViewsForAPI(filters: filters)
+            .sorted {
+                $0.lifecycle.containerID.utf8.lexicographicallyPrecedes(
+                    $1.lifecycle.containerID.utf8
+                )
+            }
+        let reply = message.reply()
+        reply.set(key: .lifecycleViews, value: try JSONEncoder().encode(views))
+        return reply
+    }
+
+    @Sendable
     public func dial(_ message: XPCMessage) async throws -> XPCMessage {
         let id = message.string(key: .id)
         guard let id else {

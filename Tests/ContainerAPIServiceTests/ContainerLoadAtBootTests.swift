@@ -823,6 +823,56 @@ struct ContainerLoadAtBootTests {
     }
 
     @Test
+    func lifecycleViewsPairResourceAndAuthorityIdentityFromOneServiceRevision() async throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "api-bundle"
+        let dockerID = String(repeating: "a", count: 64)
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        var configuration = testConfiguration(id: id)
+        configuration.dockerID = dockerID
+        configuration.dockerName = "api-after-rename"
+        try bundle.set(configuration: configuration)
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2(
+                containerID: dockerID,
+                canonicalName: "api-after-rename",
+                immutableBundleKey: id,
+                selectedProviderFingerprint: configuration.runtimeHandler,
+                snapshot: ContainerLifecycleSnapshotV2(
+                    state: .exited,
+                    transitionRevision: 9
+                )
+            )
+        )
+
+        let service = try ContainersService(
+            appRoot: fixture.root,
+            pluginLoader: fixture.loader,
+            containerSystemConfig: ContainerSystemConfig(),
+            log: fixture.log
+        )
+        let views = try await service.lifecycleViewsForAPI(
+            filters: ContainerListFilters(ids: [id])
+        )
+
+        let view = try #require(views.first)
+        #expect(views.count == 1)
+        #expect(view.container.id == id)
+        #expect(view.container.configuration.dockerName == "api-after-rename")
+        #expect(view.lifecycle.immutableBundleKey == id)
+        #expect(view.lifecycle.containerID == dockerID)
+        #expect(view.lifecycle.canonicalName == "api-after-rename")
+        #expect(view.lifecycle.snapshot.state == .exited)
+    }
+
+    @Test
     func lifecycleEventsRetainTheRevisionThatCreatedThem() throws {
         let configuration = testConfiguration(id: "api")
         let snapshot = ContainerSnapshot(

@@ -82,6 +82,42 @@ struct ContainerLifecycleStateV2Tests {
     }
 
     @Test
+    func lifecycleViewRoundTripsItsResourceAndAuthorityRevision() throws {
+        var configuration = makeTestConfiguration(id: "bundle-key")
+        configuration.dockerID = String(repeating: "a", count: 64)
+        configuration.dockerName = "renamed-api"
+        let view = ContainerLifecycleViewV2(
+            container: ContainerSnapshot(
+                configuration: configuration,
+                status: .running,
+                networks: []
+            ),
+            lifecycle: ContainerLifecycleRecordV2(
+                containerID: configuration.dockerID!,
+                canonicalName: configuration.dockerName!,
+                immutableBundleKey: configuration.id,
+                selectedProviderFingerprint: "provider-a",
+                snapshot: ContainerLifecycleSnapshotV2(
+                    state: .restarting,
+                    restarting: true,
+                    transitionRevision: 7
+                )
+            )
+        )
+
+        let encoded = try JSONEncoder().encode(view)
+        let decoded = try JSONDecoder().decode(
+            ContainerLifecycleViewV2.self,
+            from: encoded
+        )
+
+        #expect(decoded.container.id == decoded.lifecycle.immutableBundleKey)
+        #expect(decoded.container.configuration.dockerID == decoded.lifecycle.containerID)
+        #expect(decoded.lifecycle.canonicalName == "renamed-api")
+        #expect(decoded.lifecycle == view.lifecycle)
+    }
+
+    @Test
     func recordsWithoutRestartFailureStateRemainDecodable() throws {
         let record = ContainerLifecycleRecordV2.migrate(
             bundleKey: "legacy-v2",

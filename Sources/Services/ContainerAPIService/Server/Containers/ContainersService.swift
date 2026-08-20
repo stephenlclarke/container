@@ -1193,6 +1193,12 @@ public actor ContainersService {
             )
         }
 
+        return try filteredContainerSnapshots(filters: filters)
+    }
+
+    private func filteredContainerSnapshots(
+        filters: ContainerListFilters
+    ) throws -> [ContainerSnapshot] {
         let labelPatterns: [(key: String, regex: Regex<AnyRegexOutput>)] = try filters.labels.map { key, pattern in
             do {
                 return (key: key, regex: try Regex(pattern))
@@ -1227,6 +1233,24 @@ public actor ContainersService {
             }
 
             return snapshot
+        }
+    }
+
+    /// Returns resource snapshots and lifecycle records from one actor-isolated revision.
+    package func lifecycleViewsForAPI(
+        filters: ContainerListFilters = .all
+    ) throws -> [ContainerResource.ContainerLifecycleViewV2] {
+        try filteredContainerSnapshots(filters: filters).map { snapshot in
+            guard let lifecycle = lifecycleRecords[snapshot.id] else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "container \(snapshot.id) is missing its lifecycle record"
+                )
+            }
+            return ContainerResource.ContainerLifecycleViewV2(
+                container: snapshot,
+                lifecycle: lifecycle
+            )
         }
     }
 
