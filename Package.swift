@@ -380,10 +380,13 @@ let package = Package(
                 "ContainerAPIService",
                 "ContainerLoggingProviders",
                 "ContainerLoggingStorage",
+                "ContainerPersistence",
+                "ContainerPlugin",
                 "ContainerResource",
                 "DockerSemanticHelper",
                 "ContainerRuntimeLinuxClient",
                 "ContainerRuntimeClient",
+                "ContainerTestSupport",
                 "ContainerXPC",
             ]
         ),
