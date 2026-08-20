@@ -24,7 +24,6 @@ import ContainerXPC
 import Foundation
 import Logging
 import NIO
-import SystemPackage
 
 extension RuntimeLinuxHelper {
     struct Start: AsyncParsableCommand {
@@ -150,12 +149,12 @@ extension RuntimeLinuxHelper {
         private func adjustLimits() throws {
             var limits = rlimit()
             guard getrlimit(RLIMIT_NOFILE, &limits) == 0 else {
-                throw POSIXError(.init(rawValue: errno)!)
+                throw POSIXError(.init(rawValue: errno) ?? .EIO)
             }
             limits.rlim_cur = 65536
             limits.rlim_max = 65536
             guard setrlimit(RLIMIT_NOFILE, &limits) == 0 else {
-                throw POSIXError(.init(rawValue: errno)!)
+                throw POSIXError(.init(rawValue: errno) ?? .EIO)
             }
         }
     }

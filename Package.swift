@@ -64,7 +64,7 @@ let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ??
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-31545611348-88332c96705b"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:c29628471db683a53f4a75bcb759bb9147a65e097ede37c7dde05442afa7518c"
-let scVersion = "0.40.1"
+let scVersion = "0.41.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
 let containerizationRevision = "3e078480b85dceb843133392573cdd4d9efeec0d"
 let containerEngineAPIRevision = "c66fac82d3b2368072959414c1c48c6c3711ae38"
@@ -257,13 +257,12 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "K8sTests",
+            name: "K8sPluginTests",
             dependencies: [
                 "ContainerK8s",
                 "ContainerResource",
                 "Yams",
-            ],
-            path: "Tests/K8sPluginTests"
+            ]
         ),
         .target(
             name: "ContainerK8s",

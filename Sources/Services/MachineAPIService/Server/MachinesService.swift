@@ -29,9 +29,6 @@ import Logging
 import MachineAPIClient
 import SystemPackage
 
-// systemd poweroff signal (SIGRTMIN+4 on Linux, where SIGRTMIN=34 under glibc)
-private let SIGRTMIN4: Int32 = 38
-
 public actor MachinesService {
     private static let machinesDir = FilePath.Component("machines")
     private static let stateFile = FilePath.Component("state.json")
@@ -499,7 +496,9 @@ public actor MachinesService {
                 await state.logger?.value
                 state.logger = nil
 
-                fhs.forEach { try? $0.close() }
+                for fileHandle in fhs {
+                    try? fileHandle.close()
+                }
                 try? await self.client.delete(id: cid, force: true)
 
                 state.snapshot.status = .stopped
@@ -650,14 +649,14 @@ extension MachineBundle {
     func createLogFiles() throws {
         let bootLogFd = Darwin.open(self.bootLog.string, O_CREAT | O_RDONLY, 0o644)
         guard bootLogFd > 0 else {
-            throw POSIXError(.init(rawValue: errno)!)
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
         }
 
         close(bootLogFd)
 
         let stdioLogFd = Darwin.open(self.stdioLog.string, O_CREAT | O_RDONLY, 0o644)
         guard stdioLogFd > 0 else {
-            throw POSIXError(.init(rawValue: errno)!)
+            throw POSIXError(.init(rawValue: errno) ?? .EIO)
         }
         close(stdioLogFd)
     }
@@ -728,6 +727,8 @@ extension MachineConfiguration {
         config.capAdd = ["ALL"]
         config.ssh = true
         config.virtualization = virtualization
+        config.readonlyPaths = []
+        config.maskedPaths = []
 
         config.rosetta = platform.architecture == "amd64" && Arch.hostArchitecture() == .arm64
 
