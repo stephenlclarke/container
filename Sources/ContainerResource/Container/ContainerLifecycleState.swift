@@ -190,6 +190,20 @@ public struct ContainerLifecycleRecordV2: Codable, Equatable, Sendable {
     }
 }
 
+/// One atomic resource-and-lifecycle view from the container authority.
+public struct ContainerLifecycleViewV2: Codable, Sendable {
+    public var container: ContainerSnapshot
+    public var lifecycle: ContainerLifecycleRecordV2
+
+    public init(
+        container: ContainerSnapshot,
+        lifecycle: ContainerLifecycleRecordV2
+    ) {
+        self.container = container
+        self.lifecycle = lifecycle
+    }
+}
+
 extension Bundle {
     public static let lifecycleStateFilename = "lifecycle-v1.json"
     public static let lifecycleRecordV2Filename = "lifecycle-v2.json"
