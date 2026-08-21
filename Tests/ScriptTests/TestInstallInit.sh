@@ -21,10 +21,12 @@ trap 'rm -rf "${TEST_ROOT}"' EXIT
 LOG_PATH="${TEST_ROOT}/operations.log"
 RUNNING_PATH="${TEST_ROOT}/running"
 BOOTSTRAP_ARCHIVE="${TEST_ROOT}/bootstrap-init.oci.tar"
+BUILDER_ARCHIVE="${TEST_ROOT}/builder.oci.tar"
 CONTAINERIZATION_PATH="${TEST_ROOT}/containerization"
 mkdir -p "${CONTAINERIZATION_PATH}/bin"
 touch "${CONTAINERIZATION_PATH}/Package.swift"
 touch "${BOOTSTRAP_ARCHIVE}"
+touch "${BUILDER_ARCHIVE}"
 
 FAKE_SWIFT="${TEST_ROOT}/swift"
 FAKE_CONTAINER="${TEST_ROOT}/container"
@@ -104,6 +106,7 @@ CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
 CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
 CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
 CONTAINER_INIT_BOOTSTRAP_IMAGE_ARCHIVE="${BOOTSTRAP_ARCHIVE}" \
+CONTAINER_INIT_BUILDER_IMAGE_ARCHIVE="${BUILDER_ARCHIVE}" \
 CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
 CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
     scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
@@ -116,6 +119,7 @@ while IFS= read -r operation; do
 done < "${LOG_PATH}"
 EXPECTED=(
     "container --debug system start --timeout 60 --enable-kernel-install --app-root ${TEST_ROOT}/app --init-image-archive ${BOOTSTRAP_ARCHIVE}"
+    "container i load -i ${BUILDER_ARCHIVE}"
     "make -C ${CONTAINERIZATION_PATH} init VMINIT_IMAGE=test-init:latest"
     "cctl images save -o"
     "container system stop"
@@ -145,6 +149,24 @@ then
 fi
 test ! -e "${MISSING_ARCHIVE_RUNNING_PATH}"
 grep -q '^container system stop$' "${MISSING_ARCHIVE_LOG_PATH}"
+
+MISSING_BUILDER_ARCHIVE_LOG_PATH="${TEST_ROOT}/missing-builder-archive.log"
+MISSING_BUILDER_ARCHIVE_RUNNING_PATH="${TEST_ROOT}/missing-builder-archive-running"
+if INSTALL_INIT_TEST_LOG="${MISSING_BUILDER_ARCHIVE_LOG_PATH}" \
+    INSTALL_INIT_TEST_RUNNING="${MISSING_BUILDER_ARCHIVE_RUNNING_PATH}" \
+    CONTAINER_INIT_CLI="${FAKE_CONTAINER}" \
+    CONTAINER_INIT_MAKE="${FAKE_MAKE}" \
+    CONTAINER_INIT_SWIFT="${FAKE_SWIFT}" \
+    CONTAINER_INIT_BUILDER_IMAGE_ARCHIVE="${TEST_ROOT}/missing-builder.oci.tar" \
+    CONTAINERIZATION_INIT_SOURCE_PATH="${CONTAINERIZATION_PATH}" \
+    CONTAINER_INIT_IMAGE_NAME="test-init:latest" \
+    scripts/install-init.sh --enable-kernel-install --app-root "${TEST_ROOT}/app"
+then
+    printf 'expected missing builder archive failure\n' >&2
+    exit 1
+fi
+test ! -e "${MISSING_BUILDER_ARCHIVE_RUNNING_PATH}"
+grep -q '^container system stop$' "${MISSING_BUILDER_ARCHIVE_LOG_PATH}"
 
 run_failure_case() {
     local stage="$1"

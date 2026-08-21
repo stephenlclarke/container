@@ -44,6 +44,9 @@ Environment:
                                Optional OCI archive containing the configured init
                                image. Loads it during the first isolated start before
                                any registry pull.
+    CONTAINER_INIT_BUILDER_IMAGE_ARCHIVE
+                               Optional OCI archive containing the configured builder
+                               image. Loads it before building a source init image.
 
 EOF
     exit 0
@@ -103,6 +106,7 @@ default_image_name() {
 }
 IMAGE_NAME="${CONTAINER_INIT_IMAGE_NAME:-$(default_image_name)}"
 BOOTSTRAP_IMAGE_ARCHIVE="${CONTAINER_INIT_BOOTSTRAP_IMAGE_ARCHIVE:-}"
+BUILDER_IMAGE_ARCHIVE="${CONTAINER_INIT_BUILDER_IMAGE_ARCHIVE:-}"
 INIT_IMAGE_TAR=""
 TEMP_CONTAINERIZATION_ROOT=""
 TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT=""
@@ -171,6 +175,13 @@ if [[ -n "${CONTAINERIZATION_PATH}" || "${CONTAINERIZATION_VERSION}" == "unspeci
 			BOOTSTRAP_START_ARGS+=(--init-image-archive "${BOOTSTRAP_IMAGE_ARCHIVE}")
 		fi
 		"${CONTAINER_INIT_CLI}" --debug system start --timeout 60 "${BOOTSTRAP_START_ARGS[@]}"
+	fi
+	if [[ -n "${BUILDER_IMAGE_ARCHIVE}" ]]; then
+		if [[ ! -f "${BUILDER_IMAGE_ARCHIVE}" ]]; then
+			echo "container init builder image archive does not exist: ${BUILDER_IMAGE_ARCHIVE}" >&2
+			exit 1
+		fi
+		"${CONTAINER_INIT_CLI}" i load -i "${BUILDER_IMAGE_ARCHIVE}"
 	fi
 	BUILD_SCRATCH_ROOT="${CONTAINERIZATION_INIT_BUILD_SCRATCH_ROOT:-${TEMP_CONTAINERIZATION_BUILD_SCRATCH_ROOT}}"
 	if [[ -n "${BUILD_SCRATCH_ROOT}" ]]; then
