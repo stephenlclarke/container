@@ -36,18 +36,15 @@ extension Application {
 
         public func run() async throws {
             let client = ContainerClient()
-            let uniqueIds = Set(containerIds)
-            let containers = try await client.list().filter {
-                uniqueIds.contains($0.id)
-            }
-
-            if containers.count != uniqueIds.count {
-                let found = Set(containers.map { $0.id })
-                let missing = uniqueIds.subtracting(found).sorted()
-                throw ContainerizationError(
-                    .notFound,
-                    message: "container not found: \(missing.joined(separator: ", "))"
-                )
+            let views = try await client.lifecycleViews(filters: .all)
+            let bundleKeys = try Self.resolveBundleKeys(
+                identifiers: containerIds,
+                lifecycles: views.map(\.lifecycle)
+            )
+            let containers = views.compactMap { view in
+                bundleKeys.contains(view.lifecycle.immutableBundleKey)
+                    ? view.container
+                    : nil
             }
 
             try Output.emit(
@@ -56,6 +53,36 @@ extension Application {
                     options: .pretty
                 )
             )
+        }
+
+        /// Resolves native bundle keys from every stable lifecycle identity.
+        static func resolveBundleKeys(
+            identifiers: [String],
+            lifecycles: [ContainerLifecycleRecordV2]
+        ) throws -> Set<String> {
+            var resolved = Set<String>()
+            var missing = [String]()
+
+            for identifier in Set(identifiers) {
+                let matches = lifecycles.filter {
+                    $0.containerID == identifier
+                        || $0.canonicalName == identifier
+                        || $0.immutableBundleKey == identifier
+                }
+                guard matches.count == 1, let match = matches.first else {
+                    missing.append(identifier)
+                    continue
+                }
+                resolved.insert(match.immutableBundleKey)
+            }
+
+            guard missing.isEmpty else {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "container not found: \(missing.sorted().joined(separator: ", "))"
+                )
+            }
+            return resolved
         }
     }
 }
