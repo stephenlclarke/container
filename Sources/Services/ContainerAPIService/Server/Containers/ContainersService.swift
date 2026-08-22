@@ -2149,9 +2149,18 @@ public actor ContainersService {
                 try await self.exitMonitor.track(id: id, waitingOn: waitFunc)
 
                 let sandboxSnapshot = try await client.state()
-                let initPID = Self.reportedInitPID(
-                    try await client.processes().processIdentifiers
-                )
+                let initPID: Int32
+                do {
+                    initPID = Self.reportedInitPID(
+                        try await client.processes().processIdentifiers
+                    )
+                } catch  where Self.isPostStartProcessExitRace(error) {
+                    // A short-lived init can exit between the successful start
+                    // reply and this process snapshot. The exit monitor is
+                    // already registered, so keep the successful start and let
+                    // that monitor publish the terminal state.
+                    initPID = 0
+                }
                 let startedDate = Date()
                 state.snapshot.status = .running
                 state.snapshot.networks = sandboxSnapshot.networks
@@ -2257,6 +2266,21 @@ public actor ContainersService {
         // so retain a zero PID briefly and let that monitor commit the real
         // terminal status instead of cancelling it as a failed start.
         processIdentifiers.filter { $0 > 0 }.min() ?? 0
+    }
+
+    static func isPostStartProcessExitRace(_ error: any Error) -> Bool {
+        guard let error = error as? ContainerizationError else {
+            return false
+        }
+        if error.code == .invalidState,
+            error.message.contains("container must be running or paused")
+        {
+            return true
+        }
+        guard let cause = error.cause else {
+            return false
+        }
+        return isPostStartProcessExitRace(cause)
     }
 
     /// Send a signal to the container.

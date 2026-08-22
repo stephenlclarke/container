@@ -29,6 +29,26 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func exitedPostStartProcessSnapshotDefersToTheExitMonitor() {
+        let exited = ContainerizationError(
+            .invalidState,
+            message: "failed to processIdentifiers: container must be running or paused"
+        )
+        let wrapped = ContainerizationError(
+            .internalError,
+            message: "failed to get processes for container example",
+            cause: exited
+        )
+
+        #expect(ContainersService.isPostStartProcessExitRace(wrapped))
+        #expect(
+            !ContainersService.isPostStartProcessExitRace(
+                ContainerizationError(.timeout, message: "process snapshot timed out")
+            )
+        )
+    }
+
+    @Test
     func createAndUpdateShareTheBootableMemoryFloor() throws {
         try ContainersService.validateBootableMemory(
             ContainersService.minimumBootableMemoryInBytes
