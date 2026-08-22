@@ -319,6 +319,12 @@ public struct MachineClient: Sendable {
 // MARK: Container machine artifact fetching
 
 extension MachineClient {
+    enum RegistryAuthenticationMode: Equatable {
+        case environment
+        case anonymous
+        case keychain
+    }
+
     /// Fetch machine metadata from an OCI artifact attached to an image via the referrers API.
     ///
     /// Returns `nil` if no artifact is found or the registry doesn't support referrers.
@@ -334,9 +340,27 @@ extension MachineClient {
 
         let insecure = try scheme.schemeFor(host: ref.resolvedDomain ?? "", internalDnsDomain: nil) == .http
 
-        // Look up credentials from keychain
-        let keychain = KeychainHelper(securityDomain: Constants.keychainID)
-        let auth = try? keychain.lookup(hostname: domain)
+        let environment = ProcessInfo.processInfo.environment
+        let auth: Authentication?
+        switch Self.authenticationMode(host: domain, environment: environment) {
+        case .environment:
+            guard let username = environment["CONTAINER_REGISTRY_USER"],
+                let password = environment["CONTAINER_REGISTRY_TOKEN"]
+            else {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "incomplete environment credentials for host \(domain)"
+                )
+            }
+            auth = BasicAuthentication(
+                username: username,
+                password: password)
+        case .anonymous:
+            auth = nil
+        case .keychain:
+            let keychain = KeychainHelper(securityDomain: Constants.keychainID)
+            auth = try? keychain.lookup(hostname: domain)
+        }
 
         let client = try RegistryClient(reference: reference, insecure: insecure, auth: auth)
         let name = ref.path
@@ -393,6 +417,29 @@ extension MachineClient {
         }
 
         return merge(resources: resources, setupScript: setupScript)
+    }
+
+    static func authenticationMode(
+        host: String,
+        environment: [String: String]
+    ) -> RegistryAuthenticationMode {
+        if environment["CONTAINER_REGISTRY_HOST"] == host,
+            environment["CONTAINER_REGISTRY_USER"] != nil,
+            environment["CONTAINER_REGISTRY_TOKEN"] != nil
+        {
+            return .environment
+        }
+
+        let normalizedHost = host.lowercased()
+        let anonymousHosts =
+            environment["CONTAINER_REGISTRY_ANONYMOUS_HOSTS"]?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            ?? []
+        if anonymousHosts.contains(normalizedHost) {
+            return .anonymous
+        }
+        return .keychain
     }
 
     /// Merge a separately-fetched setup script into the decoded machine resources.
