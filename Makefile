@@ -468,6 +468,12 @@ INTEGRATION_POST_TEST ?=
 # ordinary runs; coverage runs set LLVM_PROFILE_FILE here so launchd-managed helper
 # (XPC service) processes emit their own profraw data.
 INTEGRATION_PROFILE_ENV ?=
+# Integration fixtures use only public GHCR images. Force those hosts through
+# the anonymous registry path so an ad-hoc coverage binary never blocks on a
+# developer Keychain ACL prompt. Override with an empty value when explicitly
+# exercising authenticated GHCR behaviour.
+INTEGRATION_ANONYMOUS_REGISTRY_HOSTS ?= ghcr.io
+INTEGRATION_REGISTRY_ENV := $(if $(strip $(INTEGRATION_ANONYMOUS_REGISTRY_HOSTS)),CONTAINER_REGISTRY_ANONYMOUS_HOSTS="$(strip $(INTEGRATION_ANONYMOUS_REGISTRY_HOSTS))")
 # Keep integration runs independent of a developer's persisted runtime configuration.
 # `container system start` snapshots XDG's config file into APP_ROOT, so an inherited
 # ~/.config/container/config.toml can otherwise change the builder image under test.
@@ -501,9 +507,9 @@ define RUN_INTEGRATION
 			find "$(APP_ROOT)" -mindepth 1 -maxdepth 1 -exec rm -rf {} + ; \
 		fi ; \
 	fi
-	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_NAMESPACE_ENV) "$(MAKE)" init-block
+	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_REGISTRY_ENV) $(INTEGRATION_NAMESPACE_ENV) "$(MAKE)" init-block
 	@echo Running the integration tests...
-	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_PROFILE_ENV) $(INTEGRATION_NAMESPACE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
+	@XDG_CONFIG_HOME="$(INTEGRATION_CONFIG_HOME)" $(INTEGRATION_PROFILE_ENV) $(INTEGRATION_REGISTRY_ENV) $(INTEGRATION_NAMESPACE_ENV) bin/container --debug system start --timeout 60 $(KERNEL_INSTALL_OPT) $(SYSTEM_START_OPTS) && \
 	{ \
 		if [ -n "$(APP_ROOT)" ]; then CONTAINER_APP_ROOT=$(APP_ROOT) && export CONTAINER_APP_ROOT ; fi ; \
 		if [ -n "$(strip $(INTEGRATION_SERVICE_NAMESPACE))" ]; then CONTAINER_SERVICE_NAMESPACE="$(strip $(INTEGRATION_SERVICE_NAMESPACE))" && export CONTAINER_SERVICE_NAMESPACE ; fi ; \

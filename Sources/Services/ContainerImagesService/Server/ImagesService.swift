@@ -411,6 +411,12 @@ extension ImagesService {
 // MARK: Static Methods
 
 extension ImagesService {
+    enum RegistryAuthenticationMode: Equatable {
+        case environment
+        case anonymous
+        case keychain
+    }
+
     private static func withAuthentication<T>(
         ref: String, _ body: @Sendable @escaping (_ auth: Authentication?) async throws -> T?
     ) async throws -> T? {
@@ -419,16 +425,21 @@ extension ImagesService {
         guard let host = ref.resolvedDomain else {
             throw ContainerizationError(.invalidArgument, message: "no host specified in image reference: \(ref)")
         }
-        authentication = Self.authenticationFromEnv(host: host)
-        if let authentication {
+        let environment = ProcessInfo.processInfo.environment
+        switch Self.authenticationMode(host: host, environment: environment) {
+        case .environment:
+            authentication = Self.authenticationFromEnv(host: host, environment: environment)
             return try await body(authentication)
-        }
-        let keychain = KeychainHelper(securityDomain: Constants.keychainID)
-        do {
-            authentication = try keychain.lookup(hostname: host)
-        } catch let err as KeychainHelper.Error {
-            guard case .keyNotFound = err else {
-                throw ContainerizationError(.internalError, message: "error querying keychain for \(host)", cause: err)
+        case .anonymous:
+            break
+        case .keychain:
+            let keychain = KeychainHelper(securityDomain: Constants.keychainID)
+            do {
+                authentication = try keychain.lookup(hostname: host)
+            } catch let err as KeychainHelper.Error {
+                guard case .keyNotFound = err else {
+                    throw ContainerizationError(.internalError, message: "error querying keychain for \(host)", cause: err)
+                }
             }
         }
         do {
@@ -447,12 +458,39 @@ extension ImagesService {
         }
     }
 
-    private static func authenticationFromEnv(host: String) -> Authentication? {
-        let env = ProcessInfo.processInfo.environment
-        guard env["CONTAINER_REGISTRY_HOST"] == host else {
+    static func authenticationMode(
+        host: String,
+        environment: [String: String]
+    ) -> RegistryAuthenticationMode {
+        if environment["CONTAINER_REGISTRY_HOST"] == host,
+            environment["CONTAINER_REGISTRY_USER"] != nil,
+            environment["CONTAINER_REGISTRY_TOKEN"] != nil
+        {
+            return .environment
+        }
+
+        let normalizedHost = host.lowercased()
+        let anonymousHosts =
+            environment["CONTAINER_REGISTRY_ANONYMOUS_HOSTS"]?
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            ?? []
+        if anonymousHosts.contains(normalizedHost) {
+            return .anonymous
+        }
+        return .keychain
+    }
+
+    private static func authenticationFromEnv(
+        host: String,
+        environment: [String: String]
+    ) -> Authentication? {
+        guard environment["CONTAINER_REGISTRY_HOST"] == host else {
             return nil
         }
-        guard let user = env["CONTAINER_REGISTRY_USER"], let password = env["CONTAINER_REGISTRY_TOKEN"] else {
+        guard let user = environment["CONTAINER_REGISTRY_USER"],
+            let password = environment["CONTAINER_REGISTRY_TOKEN"]
+        else {
             return nil
         }
         return BasicAuthentication(username: user, password: password)
