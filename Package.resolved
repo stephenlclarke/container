@@ -1,5 +1,5 @@
 {
-  "originHash" : "9559defae8fdfed44352c018882441e176de9b62eea9d518a527834aba3fc217",
+  "originHash" : "1d2e8439a4e5bffbf9612cf262aad56722cf04af8ab4f7dfab7f6ae31ce7dec3",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -33,7 +33,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/container-engine-api.git",
       "state" : {
-        "revision" : "2709e6b6a60cce62d172d6a38fd847a5e09627e0"
+        "revision" : "386a40c726ecd25d67a3e5933582aebbfbe4fa2f"
       }
     },
     {
@@ -41,7 +41,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
-        "revision" : "0301c42448752f7a8747f95502024b163adf44c3"
+        "revision" : "153492f49e4eef3af47401d1f2dee4f70ea4d975"
       }
     },
     {
