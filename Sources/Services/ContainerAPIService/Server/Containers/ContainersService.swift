@@ -2774,6 +2774,18 @@ public actor ContainersService {
             )
         }
 
+        if Self.isInitProcess(id: id, processID: processID) {
+            let result = try await waitForDockerContainer(
+                id: id,
+                condition: .notRunning
+            )
+            let exitedAt = try? self._getContainerState(id: id).snapshot.exitedDate
+            return ExitStatus(
+                exitCode: result.statusCode,
+                exitedAt: exitedAt ?? .now
+            )
+        }
+
         let state = try self._getContainerState(id: id)
         let client = try state.getClient()
         return try await client.wait(processID)
