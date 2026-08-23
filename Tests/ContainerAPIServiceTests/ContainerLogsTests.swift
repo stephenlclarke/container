@@ -1359,6 +1359,12 @@ struct ContainerLogsTests {
             ) == DockerContainerWaitResult(statusCode: 0)
         )
         #expect(immediateRegistration.count == 1)
+        #expect(
+            try await containers.wait(
+                id: immediateID,
+                processID: immediateID
+            ).exitCode == 0
+        )
 
         let nextExitRegistration = WaitRegistrationProbe()
         let nextExit = Task {
