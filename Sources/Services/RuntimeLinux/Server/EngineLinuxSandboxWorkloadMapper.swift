@@ -99,6 +99,15 @@ enum EngineLinuxSandboxWorkloadMapper {
             }
         }
 
+        for inboundSocket in config.inboundSockets {
+            workload.sockets.append(
+                try EngineSocketGrantResolver.resolve(
+                    inboundSocket,
+                    containerID: config.id
+                )
+            )
+        }
+
         for publishedSocket in config.publishedSockets {
             workload.sockets.append(
                 UnixSocketConfiguration(

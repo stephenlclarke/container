@@ -98,6 +98,7 @@ struct TestCLIVersion {
                     "io.github.stephenlclarke.container.compose.lifecycle.v1",
                     "io.github.stephenlclarke.container.compose.network-scoped-aliases.v1",
                     "io.github.stephenlclarke.container.compose.observation.v1",
+                    "io.github.stephenlclarke.container.inbound-unix-socket.v1",
                     "io.github.stephenlclarke.container.logging-drivers.v1",
                 ]
             )

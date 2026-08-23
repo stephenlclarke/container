@@ -23,6 +23,7 @@ public enum RuntimeCapability: String, CaseIterable, Codable, Sendable {
     case composeLifecycle = "io.github.stephenlclarke.container.compose.lifecycle.v1"
     case composeNetworkScopedAliases = "io.github.stephenlclarke.container.compose.network-scoped-aliases.v1"
     case composeObservation = "io.github.stephenlclarke.container.compose.observation.v1"
+    case inboundUnixSocket = "io.github.stephenlclarke.container.inbound-unix-socket.v1"
     case loggingDrivers = "io.github.stephenlclarke.container.logging-drivers.v1"
 }
 

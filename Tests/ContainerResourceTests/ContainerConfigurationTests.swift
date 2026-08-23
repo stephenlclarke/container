@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerEngineRuntimeSPI
 import Foundation
 import Testing
 
@@ -52,6 +53,31 @@ func makeTestConfiguration(
 }
 
 struct ContainerConfigurationResourcesTests {
+    @Test func roundTripsInboundEngineSocketWithoutPersistingHostAuthorityPath() throws {
+        var config = makeTestConfiguration()
+        config.inboundSockets = [try .engineAPI()]
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: data)
+
+        #expect(decoded.inboundSockets == config.inboundSockets)
+        #expect(!String(decoding: data, as: UTF8.self).contains("/tmp/container-engine-"))
+    }
+
+    @Test func decodesMissingInboundSocketsAsEmpty() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "inboundSockets")
+
+        let decoded = try JSONDecoder().decode(
+            ContainerConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.inboundSockets.isEmpty)
+    }
+
     @Test func roundTripsExposedPorts() throws {
         var config = makeTestConfiguration()
         config.exposedPorts = ["8080", "8443/udp"]

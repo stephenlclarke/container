@@ -1683,6 +1683,15 @@ public actor RuntimeService {
             }
         }
 
+        for inboundSocket in config.inboundSockets {
+            czConfig.sockets.append(
+                try EngineSocketGrantResolver.resolve(
+                    inboundSocket,
+                    containerID: config.id
+                )
+            )
+        }
+
         for publishedSocket in config.publishedSockets {
             // UnixSocketConfiguration (Containerization) takes URL; convert from FilePath at the boundary.
             let socketConfig = UnixSocketConfiguration(

@@ -34,6 +34,7 @@ struct ContainerServiceNamespaceTests {
         #expect(namespace.runtimeServicePrefix == "com.apple.container.runtime")
         #expect(namespace.networkServicePrefix == "com.apple.container.network")
         #expect(namespace.engineLaunchdLabel == "io.github.stephenlclarke.container.engine")
+        #expect(namespace.enginePublicSocketPath(effectiveUserID: 501) == "/tmp/container-engine-501/docker.sock")
     }
 
     @Test
@@ -48,6 +49,10 @@ struct ContainerServiceNamespaceTests {
         #expect(namespace.runtimeServicePrefix == "io.github.example.candidate.runtime")
         #expect(namespace.networkServicePrefix == "io.github.example.candidate.network")
         #expect(namespace.engineLaunchdLabel == "io.github.example.candidate.engine")
+        #expect(
+            namespace.enginePublicSocketPath(effectiveUserID: 501)
+                == "/tmp/container-engine-501-\(namespace.socketDirectorySuffix)/docker.sock"
+        )
         #expect(namespace.socketDirectorySuffix.count == 24)
         for character in namespace.socketDirectorySuffix {
             #expect(character.isHexDigit)

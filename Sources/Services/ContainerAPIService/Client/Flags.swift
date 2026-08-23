@@ -263,6 +263,7 @@ public struct Flags {
             rosetta: Bool,
             runtime: String?,
             ssh: Bool,
+            engineAPISocket: Bool = false,
             shmSize: String?,
             stopSignal: String? = nil,
             stopTimeout: Int32? = nil,
@@ -331,6 +332,7 @@ public struct Flags {
             self.rosetta = rosetta
             self.runtime = runtime
             self.ssh = ssh
+            self.engineAPISocket = engineAPISocket
             self.shmSize = shmSize
             self.stopSignal = stopSignal
             self.stopTimeout = stopTimeout
@@ -571,6 +573,12 @@ public struct Flags {
 
         @Flag(name: .long, help: "Forward SSH agent socket to container")
         public var ssh = false
+
+        @Flag(
+            name: .customLong("engine-api-socket"),
+            help: "Project the selected Docker-compatible Engine socket at /var/run/docker.sock"
+        )
+        public var engineAPISocket = false
 
         @Option(name: .customLong("shm-size"), help: "Size of /dev/shm (e.g. 64M, 1G)")
         public var shmSize: String?

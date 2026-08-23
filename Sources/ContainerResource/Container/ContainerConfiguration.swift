@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerEngineRuntimeSPI
 import ContainerizationOCI
 import Foundation
 
@@ -36,6 +37,11 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var exposedPorts: [String] = []
     /// Sockets to publish from container to host.
     public var publishedSockets: [PublishSocket] = []
+    /// Authority-owned sockets to project into the container at start.
+    ///
+    /// Durable intent contains only canonical guest-visible paths. The selected
+    /// authority resolves its private host broker immediately before activation.
+    public var inboundSockets: [InboundUnixSocketIntentV1] = []
     /// Key/Value labels for the container.
     public var labels: [String: String] = [:]
     /// OCI annotations for the container runtime specification.
@@ -118,6 +124,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         case publishedPorts
         case exposedPorts
         case publishedSockets
+        case inboundSockets
         case labels
         case annotations
         case sysctls
@@ -167,6 +174,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         publishedPorts = try container.decodeIfPresent([PublishPort].self, forKey: .publishedPorts) ?? []
         exposedPorts = try container.decodeIfPresent([String].self, forKey: .exposedPorts) ?? []
         publishedSockets = try container.decodeIfPresent([PublishSocket].self, forKey: .publishedSockets) ?? []
+        inboundSockets = try container.decodeIfPresent([InboundUnixSocketIntentV1].self, forKey: .inboundSockets) ?? []
         labels = try container.decodeIfPresent([String: String].self, forKey: .labels) ?? [:]
         annotations = try container.decodeIfPresent([String: String].self, forKey: .annotations) ?? [:]
         sysctls = try container.decodeIfPresent([String: String].self, forKey: .sysctls) ?? [:]
@@ -246,6 +254,7 @@ public struct ContainerConfiguration: Sendable, Codable {
         try container.encode(publishedPorts, forKey: .publishedPorts)
         try container.encode(exposedPorts, forKey: .exposedPorts)
         try container.encode(publishedSockets, forKey: .publishedSockets)
+        try container.encode(inboundSockets, forKey: .inboundSockets)
         try container.encode(labels, forKey: .labels)
         try container.encode(annotations, forKey: .annotations)
         try container.encode(sysctls, forKey: .sysctls)

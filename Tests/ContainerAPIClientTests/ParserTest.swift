@@ -28,6 +28,13 @@ import Testing
 
 struct ParserTest {
     @Test
+    func testManagementFlagsAcceptEngineAPISocketProjection() throws {
+        let flags = try Flags.Management.parse(["--engine-api-socket"])
+
+        #expect(flags.engineAPISocket)
+    }
+
+    @Test
     func testPublishPortParserTcp() throws {
         let result = try Parser.publishPorts(["127.0.0.1:8080:8000/tcp"])
         #expect(result.count == 1)

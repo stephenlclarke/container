@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerEngineRuntimeSPI
 import ContainerPersistence
 import ContainerResource
 import Containerization
@@ -370,6 +371,7 @@ public struct Utility {
         config.publishedSockets = try Parser.publishSockets(management.publishSockets)
 
         config.ssh = management.ssh
+        config.inboundSockets = management.engineAPISocket ? [try .engineAPI()] : []
         config.readOnly = management.readOnly
         config.useInit = management.useInit
         config.hostPIDNamespace = try Parser.hostPIDNamespace(management.pid)
