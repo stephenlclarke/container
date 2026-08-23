@@ -25,7 +25,8 @@ struct ReleaseVersionTests {
         let identifiers = manifest.capabilities.map(\.rawValue)
 
         #expect(manifest.schemaVersion == 1)
-        #expect(identifiers.count == 8)
+        #expect(identifiers.count == 9)
+        #expect(identifiers.contains("io.github.stephenlclarke.container.inbound-unix-socket.v1"))
         #expect(identifiers.contains("io.github.stephenlclarke.container.logging-drivers.v1"))
         #expect(identifiers == identifiers.sorted())
         #expect(Set(identifiers).count == identifiers.count)

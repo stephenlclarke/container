@@ -66,8 +66,8 @@ let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSI
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:c29628471db683a53f4a75bcb759bb9147a65e097ede37c7dde05442afa7518c"
 let scVersion = "0.41.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "3e078480b85dceb843133392573cdd4d9efeec0d"
-let containerEngineAPIRevision = "c66fac82d3b2368072959414c1c48c6c3711ae38"
+let containerizationRevision = "0301c42448752f7a8747f95502024b163adf44c3"
+let containerEngineAPIRevision = "2709e6b6a60cce62d172d6a38fd847a5e09627e0"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -394,6 +394,7 @@ let package = Package(
             name: "ContainerAPIClient",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "ContainerEngineRuntimeSPI", package: "container-engine-api"),
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationArchive", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
@@ -564,6 +565,7 @@ let package = Package(
             name: "ContainerRuntimeLinuxServer",
             dependencies: [
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "ContainerEngineRuntimeSPI", package: "container-engine-api"),
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
@@ -597,6 +599,7 @@ let package = Package(
         .testTarget(
             name: "ContainerRuntimeLinuxServerTests",
             dependencies: [
+                .product(name: "ContainerEngineRuntimeSPI", package: "container-engine-api"),
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "NIOPosix", package: "swift-nio"),
@@ -621,6 +624,7 @@ let package = Package(
             name: "ContainerResource",
             dependencies: [
                 .product(name: "Collections", package: "swift-collections"),
+                .product(name: "ContainerEngineRuntimeSPI", package: "container-engine-api"),
                 .product(name: "Containerization", package: "containerization"),
                 "ContainerXPC",
                 "CAuditToken",
@@ -630,6 +634,7 @@ let package = Package(
         .testTarget(
             name: "ContainerResourceTests",
             dependencies: [
+                .product(name: "ContainerEngineRuntimeSPI", package: "container-engine-api"),
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
                 "ContainerAPIService",

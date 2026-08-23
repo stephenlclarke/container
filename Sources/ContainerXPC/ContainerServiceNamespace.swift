@@ -107,6 +107,15 @@ public struct ContainerServiceNamespace: Equatable, Sendable {
         value == Self.defaultValue ? Self.defaultEngineLaunchdLabel : serviceIdentifier("engine")
     }
 
+    /// Canonical public Docker-compatible socket owned by this service namespace.
+    public func enginePublicSocketPath(effectiveUserID: UInt32) -> String {
+        let directoryName =
+            value == Self.defaultValue
+            ? "container-engine-\(effectiveUserID)"
+            : "container-engine-\(effectiveUserID)-\(socketDirectorySuffix)"
+        return "/tmp/\(directoryName)/docker.sock"
+    }
+
     /// A bounded, stable socket-directory suffix for a non-default namespace.
     public var socketDirectorySuffix: String {
         SHA256.hash(data: Data(value.utf8))

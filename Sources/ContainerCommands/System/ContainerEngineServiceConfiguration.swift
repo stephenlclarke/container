@@ -36,15 +36,10 @@ struct ContainerEngineServiceConfiguration: Equatable, Sendable {
         effectiveUserID: uid_t = geteuid()
     ) {
         launchdLabel = serviceNamespace.engineLaunchdLabel
-        let publicDirectoryName: String
-        if serviceNamespace.value == ContainerServiceNamespace.defaultValue {
-            publicDirectoryName = "container-engine-\(effectiveUserID)"
-        } else {
-            publicDirectoryName = "container-engine-\(effectiveUserID)-\(serviceNamespace.socketDirectorySuffix)"
-        }
-        let publicDirectory = FilePath("/tmp/\(publicDirectoryName)")
-        publicSocketPath = publicDirectory.appending(
-            FilePath.Component("docker.sock")
+        publicSocketPath = FilePath(
+            serviceNamespace.enginePublicSocketPath(
+                effectiveUserID: UInt32(effectiveUserID)
+            )
         )
         providerSocketPath =
             appRoot
