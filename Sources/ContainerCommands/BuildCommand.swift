@@ -246,7 +246,8 @@ extension Application {
                             do {
                                 let fh = try await client.dial(id: builderContainerId, port: vsockPort)
 
-                                let threadGroup: MultiThreadedEventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+                                // The builder client owns one gRPC connection, so one event loop is sufficient.
+                                let threadGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
                                 let b = try await Builder(socket: fh, group: threadGroup, logger: log)
 
                                 // If this call succeeds, then BuildKit is running.
