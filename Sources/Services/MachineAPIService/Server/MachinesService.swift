@@ -52,6 +52,7 @@ struct MachineCreationReservations: Sendable {
 }
 
 enum ConcurrentMachineBootPreparation {
+    @concurrent
     static func run<Discovery: Sendable, Configuration: Sendable, PreparedKernel: Sendable>(
         discovery: @Sendable @escaping () async throws -> Discovery,
         configuration: @Sendable @escaping () async throws -> Configuration,
@@ -61,6 +62,21 @@ enum ConcurrentMachineBootPreparation {
         async let configured = configuration()
         async let resolvedKernel = kernel()
         return try await (discovered, configured, resolvedKernel)
+    }
+}
+
+enum ConcurrentMachineCreationPreparation {
+    @concurrent
+    static func run<Bundle: Sendable, Filesystem: Sendable>(
+        bundle: @Sendable @escaping () async throws -> Bundle,
+        filesystem: @Sendable @escaping () async throws -> Filesystem,
+        finalize: @Sendable @escaping (Bundle, Filesystem) async throws -> Void
+    ) async throws -> Bundle {
+        async let preparedBundle = bundle()
+        async let preparedFilesystem = filesystem()
+        let values = try await (preparedBundle, preparedFilesystem)
+        try await finalize(values.0, values.1)
+        return values.0
     }
 }
 
@@ -245,22 +261,29 @@ public actor MachinesService {
         }
 
         do {
-            let bundle = try MachineBundle.create(
-                path: path,
-                machineConfiguration: configuration,
-                resourceRoot: self.resourceRoot,
-                resources: resources,
-                bootConfig: bootConfig,
+            let resourceRoot = self.resourceRoot
+            _ = try await ConcurrentMachineCreationPreparation.run(
+                bundle: {
+                    try MachineBundle.create(
+                        path: path,
+                        machineConfiguration: configuration,
+                        resourceRoot: resourceRoot,
+                        resources: resources,
+                        bootConfig: bootConfig,
+                    )
+                },
+                filesystem: {
+                    let machineImage = ClientImage(description: configuration.image)
+                    return try await machineImage.getCreateSnapshot(platform: configuration.platform)
+                },
+                finalize: { bundle, imageFs in
+                    try bundle.setMachineRootFs(cloning: imageFs)
+                    try Self.validateMachineRootfs(
+                        blockDevice: FilePath(bundle.machineRootfs.source),
+                        image: configuration.image.reference
+                    )
+                }
             )
-
-            let machineImage = ClientImage(description: configuration.image)
-            let imageFs = try await machineImage.getCreateSnapshot(platform: configuration.platform)
-            try bundle.setMachineRootFs(cloning: imageFs)
-            try Self.validateMachineRootfs(
-                blockDevice: FilePath(bundle.machineRootfs.source),
-                image: configuration.image.reference
-            )
-
             let snapshot = MachineSnapshot(
                 configuration: configuration,
                 status: .stopped,

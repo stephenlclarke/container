@@ -98,6 +98,47 @@ struct MachineBootPreflightTests {
     }
 }
 
+struct MachineCreationPreflightTests {
+    @Test("Bundle and image preparation overlap before rootfs finalization")
+    func preparationRunsConcurrently() async throws {
+        let entrants = PollingCountdown(count: 2)
+        let release = PollingGate()
+        let finalized = PollingCountdown(count: 1)
+        let preparation = Task {
+            try await ConcurrentMachineCreationPreparation.run(
+                bundle: {
+                    await entrants.arrive()
+                    try await release.wait()
+                    return "bundle"
+                },
+                filesystem: {
+                    await entrants.arrive()
+                    try await release.wait()
+                    return "filesystem"
+                },
+                finalize: { bundle, filesystem in
+                    #expect(bundle == "bundle")
+                    #expect(filesystem == "filesystem")
+                    await finalized.arrive()
+                }
+            )
+        }
+
+        do {
+            try await entrants.wait(timeout: .seconds(1))
+        } catch {
+            preparation.cancel()
+            await release.open()
+            throw error
+        }
+        await release.open()
+        let bundle = try await preparation.value
+
+        #expect(bundle == "bundle")
+        try await finalized.wait(timeout: .seconds(1))
+    }
+}
+
 private enum PreparationError: Error {
     case expected
     case timedOut
