@@ -196,6 +196,7 @@ public struct LinuxNodeProvisioner: NodeProvisioner {
         let client = ContainerClient()
         log.info("Waiting for node to become ready", metadata: ["node": "\(name)"])
         for attempt in 1...timeout {
+            let pollStart = ContinuousClock.now
             let code: Int32
             do {
                 code = try await K8sHelper.runProbe(
@@ -213,7 +214,7 @@ public struct LinuxNodeProvisioner: NodeProvisioner {
                     .timeout,
                     message: "node \(name) did not become Ready within \(timeout * 2)s")
             }
-            try await Task.sleep(for: .seconds(2))
+            try await K8sHelper.waitForNextReadinessPoll(since: pollStart)
         }
     }
 
