@@ -113,7 +113,88 @@ struct ImageDiskUsageTotalsTests {
     }
 }
 
+struct ActiveImageDiskUsageTests {
+    @Test("Independent active image reads overlap")
+    func boundedMapRunsConcurrently() async throws {
+        let entrants = PollingCountdown(count: 2)
+        let release = PollingGate()
+        let values = Task {
+            try await ConcurrentActiveImageDiskUsage.boundedMap(
+                [1, 2],
+                maximumConcurrentTasks: 2
+            ) { value in
+                await entrants.arrive()
+                try await release.wait()
+                return value * 10
+            }
+        }
+
+        do {
+            try await entrants.wait(timeout: .seconds(1))
+        } catch {
+            values.cancel()
+            await release.open()
+            throw error
+        }
+        await release.open()
+
+        #expect(try await values.value.sorted() == [10, 20])
+    }
+
+    @Test("Duplicate active content and snapshots count once")
+    func usageReductionDeduplicatesDigests() {
+        let result = ConcurrentActiveImageDiskUsage.reduce([
+            .init(
+                contentDigests: ["index", "manifest", "shared-layer"],
+                snapshotSizes: [(digest: "shared-snapshot", size: 10)]
+            ),
+            .init(
+                contentDigests: ["other-index", "shared-layer"],
+                snapshotSizes: [
+                    (digest: "shared-snapshot", size: 10),
+                    (digest: "other-snapshot", size: 20),
+                ]
+            ),
+        ])
+
+        #expect(result.contentDigests == ["index", "manifest", "other-index", "shared-layer"])
+        #expect(result.snapshotSizes == ["other-snapshot": 20, "shared-snapshot": 10])
+    }
+
+    @Test("A failed active image read cancels unfinished work")
+    func boundedMapCancelsAfterFailure() async throws {
+        let entrants = PollingCountdown(count: 2)
+        let cancellations = PollingCountdown(count: 1)
+
+        do {
+            _ = try await ConcurrentActiveImageDiskUsage.boundedMap(
+                [false, true],
+                maximumConcurrentTasks: 2
+            ) { shouldFail in
+                await entrants.arrive()
+                try await entrants.wait(timeout: .seconds(1))
+                if shouldFail {
+                    throw ConcurrencyTestError.expectedFailure
+                }
+
+                do {
+                    try await Task.sleep(for: .seconds(10))
+                    return 0
+                } catch is CancellationError {
+                    await cancellations.arrive()
+                    throw CancellationError()
+                }
+            }
+        } catch ConcurrencyTestError.expectedFailure {
+            // Expected: the throwing child ends the group and cancels its sibling.
+        }
+
+        try await cancellations.wait(timeout: .seconds(1))
+    }
+}
+
 private enum ConcurrencyTestError: Error {
+    case expectedFailure
     case timedOut
 }
 
