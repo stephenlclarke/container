@@ -2128,43 +2128,39 @@ public actor ContainersService {
 
         let restartPolicy = try getContainerCreationOptions(id: id).restartPolicy
         let execConfiguration = execEventTracker.configuration(containerID: id, processID: processID)
-        let (startedInitProcess, startedExecProcess) = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)", "processId": "\(processID)"]) {
-            context -> (StartedInitProcess?, StartedExecProcess?) in
-            var state = try await self.getContainerState(id: id, context: context)
+        let state = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-snapshot", "id": "\(id)"]) { context in
+            try await self.getContainerState(id: id, context: context)
+        }
+        let isInit = Self.isInitProcess(id: id, processID: processID)
+        if state.snapshot.status == .running && isInit {
+            return
+        }
 
-            let isInit = Self.isInitProcess(id: id, processID: processID)
-            if state.snapshot.status == .running && isInit {
-                return (nil, nil)
-            }
-
-            let client = try state.getClient()
-            let oomKillCountBaseline: UInt64?
-            if isInit {
-                do {
-                    oomKillCountBaseline = try await client.statistics().memoryOOMKillCount
-                } catch {
-                    oomKillCountBaseline = nil
-                }
-            } else {
+        let client = try state.getClient()
+        let oomKillCountBaseline: UInt64?
+        if isInit {
+            do {
+                oomKillCountBaseline = try await client.statistics().memoryOOMKillCount
+            } catch {
                 oomKillCountBaseline = nil
             }
-            let preStartState = state
-            try await client.startProcess(processID)
+        } else {
+            oomKillCountBaseline = nil
+        }
+        let preStartState = state
+        try await client.startProcess(processID)
 
-            guard isInit else {
-                guard execConfiguration != nil else {
-                    return (nil, nil)
-                }
-                return (
-                    nil,
-                    StartedExecProcess(
-                        snapshot: state.snapshot,
-                        processID: processID,
-                        client: client
-                    )
+        var startedInitProcess: StartedInitProcess?
+        var startedExecProcess: StartedExecProcess?
+        if !isInit {
+            if execConfiguration != nil {
+                startedExecProcess = StartedExecProcess(
+                    snapshot: state.snapshot,
+                    processID: processID,
+                    client: client
                 )
             }
-
+        } else {
             do {
                 try await self.remoteLogDriverPlane?.activate(
                     containerID: id
@@ -2198,58 +2194,57 @@ public actor ContainersService {
                     initPID = 0
                 }
                 let startedDate = Date()
-                state.snapshot.status = .running
-                state.snapshot.networks = sandboxSnapshot.networks
-                state.snapshot.startedDate = startedDate
-                state.snapshot.exitCode = nil
-                state.snapshot.exitedDate = nil
-                state.snapshot.health = state.snapshot.configuration.healthCheck == nil ? nil : .starting
-                let path = try Self.containerPath(
-                    root: self.containerRoot,
-                    id: id
-                )
-                let bundle = ContainerResource.Bundle(path: path)
-                try bundle.setDurably(
-                    dockerState: ContainerDockerStateV1()
-                )
-                state.dockerStateError = ""
-                try bundle.setDurably(
-                    lifecycleState: ContainerLifecycleStateV1(
-                        startedDate: startedDate
+                startedInitProcess = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]) { context in
+                    var currentState = try await self.getContainerState(id: id, context: context)
+                    Self.markContainerStarted(
+                        &currentState,
+                        from: sandboxSnapshot,
+                        at: startedDate
                     )
-                )
-                state.restart.markStarted()
-                let lifecycle = try await self.commitLifecycle(
-                    id: id,
-                    from: state,
-                    publicState: .running,
-                    pid: initPID,
-                    incrementProcessGeneration: true,
-                    resetOOMObservation: true,
-                    observedOOMKillCount: oomKillCountBaseline,
-                    intent: { $0.manualRestartSuppressed = false }
-                )
-                await self.setContainerState(id, state, context: context)
-                await self.scheduleRestartStabilityReset(
+                    let path = try Self.containerPath(
+                        root: self.containerRoot,
+                        id: id
+                    )
+                    let bundle = ContainerResource.Bundle(path: path)
+                    try bundle.setDurably(
+                        dockerState: ContainerDockerStateV1()
+                    )
+                    currentState.dockerStateError = ""
+                    try bundle.setDurably(
+                        lifecycleState: ContainerLifecycleStateV1(
+                            startedDate: startedDate
+                        )
+                    )
+                    currentState.restart.markStarted()
+                    let lifecycle = try await self.commitLifecycle(
+                        id: id,
+                        from: currentState,
+                        publicState: .running,
+                        pid: initPID,
+                        incrementProcessGeneration: true,
+                        resetOOMObservation: true,
+                        observedOOMKillCount: oomKillCountBaseline,
+                        intent: { $0.manualRestartSuppressed = false }
+                    )
+                    await self.setContainerState(id, currentState, context: context)
+                    return StartedInitProcess(
+                        snapshot: currentState.snapshot,
+                        lifecycle: lifecycle
+                    )
+                }
+                self.scheduleRestartStabilityReset(
                     id: id,
                     startedDate: startedDate,
                     durationInNanoseconds: ContainerRestartTracker.stableRunDuration(for: restartPolicy)
                 )
                 await self.startHealthCheckMonitor(
                     id: id,
-                    healthCheck: state.snapshot.configuration.healthCheck,
+                    healthCheck: startedInitProcess?.snapshot.configuration.healthCheck,
                     client: client
                 )
-                return (
-                    StartedInitProcess(
-                        snapshot: state.snapshot,
-                        lifecycle: lifecycle
-                    ),
-                    nil
-                )
             } catch {
-                await self.stopHealthCheckMonitor(id: id)
-                await self.clearRuntimeClientToken(id: id)
+                self.stopHealthCheckMonitor(id: id)
+                self.clearRuntimeClientToken(id: id)
                 await self.exitMonitor.stopTracking(id: id)
                 try? await client.stop(options: ContainerStopOptions.default)
                 try? await client.shutdown()
@@ -2262,7 +2257,9 @@ public actor ContainersService {
                 let recoveredState = Self.recoveredContainerStateAfterFailedStart(
                     preStartState
                 )
-                await self.setContainerState(id, recoveredState, context: context)
+                await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(id)"]) { context in
+                    await self.setContainerState(id, recoveredState, context: context)
+                }
                 throw error
             }
         }
@@ -2302,6 +2299,19 @@ public actor ContainersService {
         // so retain a zero PID briefly and let that monitor commit the real
         // terminal status instead of cancelling it as a failed start.
         processIdentifiers.filter { $0 > 0 }.min() ?? 0
+    }
+
+    static func markContainerStarted(
+        _ state: inout ContainerState,
+        from sandboxSnapshot: SandboxSnapshot,
+        at startedDate: Date
+    ) {
+        state.snapshot.status = .running
+        state.snapshot.networks = sandboxSnapshot.networks
+        state.snapshot.startedDate = startedDate
+        state.snapshot.exitCode = nil
+        state.snapshot.exitedDate = nil
+        state.snapshot.health = state.snapshot.configuration.healthCheck == nil ? nil : .starting
     }
 
     static func isPostStartProcessExitRace(_ error: any Error) -> Bool {
