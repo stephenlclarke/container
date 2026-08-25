@@ -37,6 +37,18 @@ enum ConcurrentImageDiskUsageTotals {
     }
 }
 
+enum ConcurrentImageCleanup {
+    @concurrent
+    static func run<Content: Sendable>(
+        snapshots: @Sendable @escaping () async throws -> UInt64,
+        content: @Sendable @escaping () async throws -> Content
+    ) async throws -> (snapshotBytes: UInt64, content: Content) {
+        async let snapshotResult = snapshots()
+        async let contentResult = content()
+        return try await (snapshotResult, contentResult)
+    }
+}
+
 enum ConcurrentActiveImageDiskUsage {
     struct ImageUsage: Sendable {
         let contentDigests: [String]
@@ -378,9 +390,23 @@ public actor ImagesService {
         }
 
         let images = try await self._list()
-        let freedSnapshotBytes = try await self.snapshotStore.clean(keepingSnapshotsFor: images)
-        let (deleted, freedContentBytes) = try await self.imageStore.cleanUpOrphanedBlobs()
-        return (deleted, freedContentBytes + freedSnapshotBytes)
+        let snapshotStore = self.snapshotStore
+        let imageStore = self.imageStore
+        let cleanup = try await ConcurrentImageCleanup.run(
+            snapshots: {
+                try Task.checkCancellation()
+                let bytes = try await snapshotStore.clean(keepingSnapshotsFor: images)
+                try Task.checkCancellation()
+                return bytes
+            },
+            content: {
+                try Task.checkCancellation()
+                let result = try await imageStore.cleanUpOrphanedBlobs()
+                try Task.checkCancellation()
+                return result
+            }
+        )
+        return (cleanup.content.deleted, cleanup.content.freed + cleanup.snapshotBytes)
     }
 
     /// Calculate disk usage for images

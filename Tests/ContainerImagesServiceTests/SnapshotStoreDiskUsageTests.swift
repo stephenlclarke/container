@@ -113,6 +113,73 @@ struct ImageDiskUsageTotalsTests {
     }
 }
 
+struct ImageCleanupTests {
+    @Test("Snapshot and content cleanup overlap")
+    func cleanupRunsConcurrently() async throws {
+        let entrants = PollingCountdown(count: 2)
+        let release = PollingGate()
+        let cleanup = Task {
+            try await ConcurrentImageCleanup.run(
+                snapshots: {
+                    await entrants.arrive()
+                    try await release.wait()
+                    return 10
+                },
+                content: {
+                    await entrants.arrive()
+                    try await release.wait()
+                    return (deleted: ["orphan"], freed: UInt64(20))
+                }
+            )
+        }
+
+        do {
+            try await entrants.wait(timeout: .seconds(1))
+        } catch {
+            cleanup.cancel()
+            await release.open()
+            throw error
+        }
+        await release.open()
+        let result = try await cleanup.value
+
+        #expect(result.snapshotBytes == 10)
+        #expect(result.content.deleted == ["orphan"])
+        #expect(result.content.freed + result.snapshotBytes == 30)
+    }
+
+    @Test("A cleanup failure cancels its sibling")
+    func cleanupFailureCancelsSibling() async throws {
+        let entrants = PollingCountdown(count: 2)
+        let cancellations = PollingCountdown(count: 1)
+
+        do {
+            _ = try await ConcurrentImageCleanup.run(
+                snapshots: { () async throws -> UInt64 in
+                    await entrants.arrive()
+                    try await entrants.wait(timeout: .seconds(1))
+                    throw ConcurrencyTestError.expectedFailure
+                },
+                content: {
+                    await entrants.arrive()
+                    try await entrants.wait(timeout: .seconds(1))
+                    do {
+                        try await Task.sleep(for: .seconds(10))
+                        return (deleted: [String](), freed: UInt64(0))
+                    } catch is CancellationError {
+                        await cancellations.arrive()
+                        throw CancellationError()
+                    }
+                }
+            )
+        } catch ConcurrencyTestError.expectedFailure {
+            // Expected: the failed cleanup cancels its unfinished sibling.
+        }
+
+        try await cancellations.wait(timeout: .seconds(1))
+    }
+}
+
 struct ActiveImageDiskUsageTests {
     @Test("Independent active image reads overlap")
     func boundedMapRunsConcurrently() async throws {
