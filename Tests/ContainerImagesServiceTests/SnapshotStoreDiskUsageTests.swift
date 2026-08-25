@@ -46,4 +46,34 @@ struct SnapshotStoreDiskUsageTests {
 
         #expect(size == 0)
     }
+
+    @Test("Independent snapshot sizes preserve descriptor order")
+    func allocatedSizesRunConcurrentlyInOrder() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-sizes-\(UUID())")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let first = root.appendingPathComponent("first")
+        let last = root.appendingPathComponent("last")
+        for snapshot in [first, last] {
+            try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+            try Data(repeating: 1, count: 8 * 1024).write(to: snapshot.appendingPathComponent("data"))
+        }
+
+        let sizes = await SnapshotStore.allocatedSizes(
+            for: [
+                .init(index: 0, digest: "first", path: first),
+                .init(index: 1, digest: "missing", path: root.appendingPathComponent("missing")),
+                .init(index: 2, digest: "last", path: last),
+            ]
+        )
+
+        #expect(sizes.map(\.digest) == ["first", "last"])
+        #expect(
+            sizes.map(\.size) == [
+                FileManager.default.allocatedSize(of: first),
+                FileManager.default.allocatedSize(of: last),
+            ])
+    }
 }

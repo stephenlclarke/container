@@ -27,6 +27,12 @@ import Logging
 import TerminalProgress
 
 public actor SnapshotStore {
+    struct DiskUsageEntry: Sendable {
+        let index: Int
+        let digest: String
+        let path: URL
+    }
+
     private static let snapshotFileName = "snapshot"
     private static let snapshotInfoFileName = "snapshot-info"
     private static let ingestDirName = "ingest"
@@ -223,13 +229,15 @@ public actor SnapshotStore {
 
     /// Returns (trimmed digest, size) pairs for every unpackable snapshot owned by the image.
     public func getSnapshotSizes(for image: Containerization.Image) async throws -> [(digest: String, size: UInt64)] {
-        var results: [(digest: String, size: UInt64)] = []
-        for descriptor in try await image.unpackableDescriptors() {
-            let size = await self.getSnapshotSize(descriptor: descriptor)
-            guard size > 0 else { continue }
-            results.append((descriptor.digest.trimmingDigestPrefix, size))
+        let descriptors = try await image.unpackableDescriptors()
+        let entries = descriptors.enumerated().map { index, descriptor in
+            DiskUsageEntry(
+                index: index,
+                digest: descriptor.digest.trimmingDigestPrefix,
+                path: self.snapshotDir(descriptor)
+            )
         }
-        return results
+        return await Self.allocatedSizes(for: entries)
     }
 
     /// Total allocated bytes across all snapshot storage (including orphans).
@@ -244,6 +252,26 @@ public actor SnapshotStore {
             return 0
         }
         return fm.allocatedSize(of: path)
+    }
+
+    @concurrent
+    static func allocatedSizes(
+        for entries: [DiskUsageEntry]
+    ) async -> [(digest: String, size: UInt64)] {
+        await withTaskGroup(of: (index: Int, digest: String, size: UInt64).self) { group in
+            for entry in entries {
+                group.addTask {
+                    let size = await Self.allocatedSize(of: entry.path)
+                    return (entry.index, entry.digest, size)
+                }
+            }
+
+            var ordered = [(digest: String, size: UInt64)?](repeating: nil, count: entries.count)
+            for await result in group where result.size > 0 {
+                ordered[result.index] = (result.digest, result.size)
+            }
+            return ordered.compactMap { $0 }
+        }
     }
 }
 
