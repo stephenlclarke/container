@@ -51,6 +51,19 @@ struct MachineCreationReservations: Sendable {
     }
 }
 
+enum ConcurrentMachineBootPreparation {
+    static func run<Discovery: Sendable, Configuration: Sendable, PreparedKernel: Sendable>(
+        discovery: @Sendable @escaping () async throws -> Discovery,
+        configuration: @Sendable @escaping () async throws -> Configuration,
+        kernel: @Sendable @escaping () async throws -> PreparedKernel
+    ) async throws -> (discovery: Discovery, configuration: Configuration, kernel: PreparedKernel) {
+        async let discovered = discovery()
+        async let configured = configuration()
+        async let resolvedKernel = kernel()
+        return try await (discovered, configured, resolvedKernel)
+    }
+}
+
 public actor MachinesService {
     private static let machinesDir = FilePath.Component("machines")
     private static let stateFile = FilePath.Component("state.json")
@@ -503,48 +516,53 @@ public actor MachinesService {
             }
 
             let cid = "\(id)-\(UUID().uuidString.prefix(MachineConfiguration.containerUUIDLength).lowercased())"
-            guard try await self.client.list(filters: .init(ids: [cid])).isEmpty else {
-                throw ContainerizationError(.internalError, message: "container \(cid) already exists")
-            }
-
             let path = try self.bundlePath(id: id)
             let bundle = MachineBundle(path: path)
             let rootfs = try bundle.machineRootfs
 
             let bootConfig = state.snapshot.bootConfig
-            var config = try await state.snapshot.configuration.toContainerConfig(
-                cid: cid,
-                sbin: path.appending(MachineBundle.sbinDirectory),
-                initializedFile: path.appending(MachineBundle.initializedFile),
-                homeMountOption: bootConfig.homeMount,
-                virtualization: bootConfig.virtualization,
+            let machineConfiguration = state.snapshot.configuration
+            let client = self.client
+            let systemPlatform = Self.systemPlatform(from: machineConfiguration.platform)
+            let preparation = try await ConcurrentMachineBootPreparation.run(
+                discovery: {
+                    try await client.list(filters: .init(ids: [cid]))
+                },
+                configuration: {
+                    try await machineConfiguration.toContainerConfig(
+                        cid: cid,
+                        sbin: path.appending(MachineBundle.sbinDirectory),
+                        initializedFile: path.appending(MachineBundle.initializedFile),
+                        homeMountOption: bootConfig.homeMount,
+                        virtualization: bootConfig.virtualization,
+                    )
+                },
+                kernel: {
+                    if let kernelPath = bootConfig.kernelPath {
+                        let validated = try MachineConfig.validateKernelPath(kernelPath.string)
+                        return Kernel(
+                            path: URL(fileURLWithPath: validated.string),
+                            platform: systemPlatform
+                        )
+                    }
+                    return try await ClientKernel.getDefaultKernel(for: .current)
+                }
             )
+            guard preparation.discovery.isEmpty else {
+                throw ContainerizationError(.internalError, message: "container \(cid) already exists")
+            }
 
+            var config = preparation.configuration
             config.resources.cpus = bootConfig.cpus
             config.resources.cpuOverhead = 0
             config.resources.memoryInBytes = bootConfig.memory.toUInt64(unit: .bytes)
-
-            let kernel: Kernel
-            if let kernelPath = bootConfig.kernelPath {
-                let validated = try MachineConfig.validateKernelPath(kernelPath.string)
-                kernel = Kernel(
-                    path: URL(fileURLWithPath: validated.string),
-                    platform: Self.systemPlatform(from: state.snapshot.configuration.platform)
-                )
-            } else {
-                // Virtualization.framework boots a kernel compiled for the host
-                // architecture. The requested OCI architecture selects the
-                // userspace and enables Rosetta when needed; it must not select
-                // an incompatible default kernel.
-                kernel = try await ClientKernel.getDefaultKernel(for: .current)
-            }
 
             var fhs: [FileHandle] = []
             do {
                 try await self.client.create(
                     configuration: config,
                     options: ContainerCreateOptions(autoRemove: true, rootFsOverride: rootfs),
-                    kernel: kernel
+                    kernel: preparation.kernel
                 )
 
                 let process = try await self.client.bootstrap(
