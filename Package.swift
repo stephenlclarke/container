@@ -948,7 +948,11 @@ let package = Package(
             dependencies: [
                 .product(name: "ContainerizationEXT4", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "SystemPackage", package: "swift-system"),
+                "ContainerPersistence",
+                "ContainerResource",
+                "MachineAPIClient",
                 "MachineAPIService",
             ]
         ),
