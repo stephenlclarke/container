@@ -36,6 +36,67 @@ import Foundation
 import Logging
 import SystemPackage
 
+struct ContainerCreationReservations: Sendable {
+    private var reservations: [String: ContainerSnapshot] = [:]
+
+    var snapshots: [ContainerSnapshot] {
+        Array(reservations.values)
+    }
+
+    mutating func reserve(
+        _ snapshot: ContainerSnapshot,
+        existing: [ContainerSnapshot],
+        reservedNames: Set<String>
+    ) throws {
+        guard reservations[snapshot.id] == nil, !existing.contains(where: { $0.id == snapshot.id }) else {
+            throw ContainerizationError(
+                .exists,
+                message: "container already exists: \(snapshot.id)"
+            )
+        }
+
+        let dockerName = snapshot.configuration.dockerName ?? snapshot.id
+        let occupiedNames = Set(
+            (existing + snapshots).flatMap { container in
+                [
+                    container.id,
+                    container.configuration.dockerName,
+                    container.configuration.dockerID,
+                ].compactMap { $0 }
+            }
+        ).union(reservedNames)
+        let requestedNames = [
+            dockerName,
+            snapshot.id,
+            snapshot.configuration.dockerID,
+        ].compactMap { $0 }
+        if let conflictingName = requestedNames.first(where: occupiedNames.contains) {
+            throw ContainerizationError(
+                .exists,
+                message: "container name already exists: \(conflictingName)"
+            )
+        }
+
+        let conflictingHostnames = ContainersService.conflictingNetworkNames(
+            existingAttachments: (existing + snapshots).map(\.configuration.networks),
+            requestedAttachments: snapshot.configuration.networks
+        )
+        guard conflictingHostnames.isEmpty else {
+            throw ContainerizationError(
+                .exists,
+                message: "hostname(s) already exist: \(conflictingHostnames)"
+            )
+        }
+
+        reservations[snapshot.id] = snapshot
+    }
+
+    @discardableResult
+    mutating func remove(_ id: String) -> ContainerSnapshot? {
+        reservations.removeValue(forKey: id)
+    }
+}
+
 public actor ContainersService {
     enum ContainerLoggingCreatePlan: Sendable {
         case legacy(ContainerLogConfiguration)
@@ -121,6 +182,7 @@ public actor ContainersService {
 
     private let lock: AsyncLock
     private var containers: [String: ContainerState]
+    private var pendingCreations = ContainerCreationReservations()
     private var lifecycleRecords: [String: ContainerResource.ContainerLifecycleRecordV2]
     private let quarantinedContainerNames: Set<String>
     private var runtimeClientTokens: [String: UUID] = [:]
@@ -1301,7 +1363,7 @@ public actor ContainersService {
         _ operation: @Sendable @escaping ([ContainerSnapshot]) async throws -> T
     ) async throws -> T {
         try await lock.withLock(logMetadata: logMetadata) { context in
-            let snapshots = await self.containers.values.map { $0.snapshot }
+            let snapshots = await self.protectedContainerSnapshots()
             return try await operation(snapshots)
         }
     }
@@ -1311,12 +1373,12 @@ public actor ContainersService {
     public func calculateDiskUsage() async -> (Int, Int, UInt64, UInt64) {
         let containers = await lock.withLock(logMetadata: ["acquirer": "\(#function)"]) { _ in
             let lifecycleRecords = await self.lifecycleRecords
-            return await self.containers.map {
+            return await self.protectedContainerSnapshots().map {
                 ContainerDiskUsageEntry(
-                    id: $0.key,
+                    id: $0.id,
                     isActive: Self.isActiveForDiskUsage(
-                        runtimeStatus: $0.value.snapshot.status,
-                        lifecycleState: lifecycleRecords[$0.key]?.snapshot.state
+                        runtimeStatus: $0.status,
+                        lifecycleState: lifecycleRecords[$0.id]?.snapshot.state
                     )
                 )
             }
@@ -1384,8 +1446,8 @@ public actor ContainersService {
     public func getActiveImageReferences() async -> Set<String> {
         await lock.withLock(logMetadata: ["acquirer": "\(#function)"]) { _ in
             var imageRefs = Set<String>()
-            for (_, state) in await self.containers {
-                imageRefs.insert(state.snapshot.configuration.image.reference)
+            for snapshot in await self.protectedContainerSnapshots() {
+                imageRefs.insert(snapshot.configuration.image.reference)
             }
             return imageRefs
         }
@@ -1427,154 +1489,121 @@ public actor ContainersService {
             )
         }
 
-        let createdSnapshot = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(configuration.id)"]) { context -> ContainerSnapshot in
-            try Utility.validEntityName(configuration.id)
-
-            guard await self.containers[configuration.id] == nil else {
-                throw ContainerizationError(
-                    .exists,
-                    message: "container already exists: \(configuration.id)"
-                )
-            }
-
-            let path = try Self.containerPath(root: self.containerRoot, id: configuration.id)
-            guard !FileManager.default.fileExists(atPath: path.path) else {
-                throw ContainerizationError(
-                    .exists,
-                    message: "container bundle already exists: \(configuration.id)"
-                )
-            }
-
-            let dockerName = configuration.dockerName ?? configuration.id
-            guard !(await self.hasContainer(named: dockerName, excluding: configuration.id)) else {
-                throw ContainerizationError(
-                    .exists,
-                    message: "container name already exists: \(dockerName)"
-                )
-            }
-
-            let existingAttachments = await self.containers.values.map(\.snapshot.configuration.networks)
-            let conflictingHostnames = Self.conflictingNetworkNames(
-                existingAttachments: existingAttachments,
-                requestedAttachments: configuration.networks
+        try Utility.validEntityName(configuration.id)
+        let path = try Self.containerPath(root: self.containerRoot, id: configuration.id)
+        let requestedSnapshot = ContainerSnapshot(
+            configuration: configuration,
+            status: .stopped,
+            networks: [],
+            startedDate: nil
+        )
+        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-reserve", "id": "\(configuration.id)"]) { context in
+            try await self.reserveContainerCreation(
+                requestedSnapshot,
+                path: path,
+                context: context
             )
+        }
 
-            guard conflictingHostnames.isEmpty else {
-                throw ContainerizationError(
-                    .exists,
-                    message: "hostname(s) already exist: \(conflictingHostnames)"
-                )
-            }
-
-            guard self.runtimePlugins.first(where: { $0.name == configuration.runtimeHandler }) != nil else {
-                throw ContainerizationError(
-                    .notFound,
-                    message: "unable to locate runtime plugin \(configuration.runtimeHandler)"
-                )
-            }
-
-            // Protect against a user providing a memory amount that will cause us to not be able
-            // to boot. We can go lower, but this is a somewhat safe threshold. Containerization
-            // also gives a little bit extra than the user asked for to account for guest agent overhead.
-            //
-            // NOTE: We could potentially leave this validation to the runtime service(s), as
-            // it's possible there could be an implementation that can get away with a lower
-            // amount and be perfectly safe.
-            try Self.validateBootableMemory(configuration.resources.memoryInBytes)
-
+        var sealedLogging: SealedContainerLogging?
+        let createdSnapshot: ContainerSnapshot
+        do {
             let systemPlatform = kernel.platform
-
-            // Fetch init image (custom or default)
             self.log.debug(
-                "ContainersService: get init block",
+                "ContainersService: prepare filesystems",
                 metadata: [
-                    "id": "\(configuration.id)"
+                    "id": "\(configuration.id)",
+                    "ref": "\(configuration.image.reference)",
                 ]
             )
-            let initFilesystem = try await self.getInitBlock(for: systemPlatform.ociPlatform(), imageRef: initImage)
-
-            var sealedLogging: SealedContainerLogging?
-            do {
-                self.log.debug(
-                    "create snapshot",
-                    metadata: [
-                        "id": "\(configuration.id)",
-                        "ref": "\(configuration.image.reference)",
-                    ])
-                let containerImage = ClientImage(description: configuration.image)
-                let imageFs = try await options.rootFsOverride == nil ? containerImage.getCreateSnapshot(platform: configuration.platform) : nil
-
-                let logging = try await self.sealLoggingForCreate(
-                    containerID: configuration.id,
-                    plan: loggingPlan
-                )
-                sealedLogging = logging
-                var authoritativeConfiguration = configuration
-                authoritativeConfiguration.logging = logging.configuration
-
-                self.log.debug(
-                    "configure runtime",
-                    metadata: [
-                        "id": "\(configuration.id)",
-                        "kernel": "\(kernel.path)",
-                        "initfs": "\(initImage ?? self.containerSystemConfig.vminit.image)",
-                    ])
-                let runtimeConfig = RuntimeConfiguration(
-                    path: path,
-                    initialFilesystem: initFilesystem,
-                    kernel: kernel,
-                    containerConfiguration: authoritativeConfiguration,
-                    containerRootFilesystem: imageFs,
-                    options: options,
-                    runtimeData: runtimeData
-                )
-
-                try runtimeConfig.writeRuntimeConfiguration()
-
-                let snapshot = ContainerSnapshot(
-                    configuration: authoritativeConfiguration,
-                    status: .stopped,
-                    networks: [],
-                    startedDate: nil
-                )
-                let lifecycleRecord = Self.makeLifecycleRecord(
-                    configuration: authoritativeConfiguration,
-                    options: options
-                )
-                try ContainerResource.Bundle(path: path).setDurably(
-                    lifecycleRecordV2: lifecycleRecord
-                )
-                await self.setLifecycleRecord(
-                    lifecycleRecord,
-                    id: configuration.id
-                )
-                await self.setContainerState(configuration.id, ContainerState(snapshot: snapshot), context: context)
-                return snapshot
-            } catch {
-                if let sealedLogging {
-                    let bundle = ContainerResource.Bundle(path: path)
-                    let bundleRemoved: Bool
-                    if FileManager.default.fileExists(atPath: path.path) {
-                        do {
-                            try bundle.delete()
-                            bundleRemoved = true
-                        } catch {
-                            bundleRemoved = false
-                            self.log.warning(
-                                "failed to remove container bundle after create failure",
-                                metadata: ["id": "\(configuration.id)"]
-                            )
-                        }
-                    } else {
-                        bundleRemoved = true
-                    }
-                    if bundleRemoved {
-                        await self.removeLifecycleRecord(id: configuration.id)
-                        await self.rollbackSealedLogging(sealedLogging)
-                    }
+            async let initFilesystem = self.getInitBlock(
+                for: systemPlatform.ociPlatform(),
+                imageRef: initImage
+            )
+            async let imageFilesystem: Filesystem? = {
+                guard options.rootFsOverride == nil else {
+                    return nil
                 }
-                throw error
+                let containerImage = ClientImage(description: configuration.image)
+                return try await containerImage.getCreateSnapshot(platform: configuration.platform)
+            }()
+            let (preparedInitFilesystem, preparedImageFilesystem) = try await (
+                initFilesystem,
+                imageFilesystem
+            )
+
+            let logging = try await self.sealLoggingForCreate(
+                containerID: configuration.id,
+                plan: loggingPlan
+            )
+            sealedLogging = logging
+            var authoritativeConfiguration = configuration
+            authoritativeConfiguration.logging = logging.configuration
+
+            self.log.debug(
+                "configure runtime",
+                metadata: [
+                    "id": "\(configuration.id)",
+                    "kernel": "\(kernel.path)",
+                    "initfs": "\(initImage ?? self.containerSystemConfig.vminit.image)",
+                ]
+            )
+            let runtimeConfig = RuntimeConfiguration(
+                path: path,
+                initialFilesystem: preparedInitFilesystem,
+                kernel: kernel,
+                containerConfiguration: authoritativeConfiguration,
+                containerRootFilesystem: preparedImageFilesystem,
+                options: options,
+                runtimeData: runtimeData
+            )
+            try runtimeConfig.writeRuntimeConfiguration()
+
+            let snapshot = ContainerSnapshot(
+                configuration: authoritativeConfiguration,
+                status: .stopped,
+                networks: [],
+                startedDate: nil
+            )
+            let lifecycleRecord = Self.makeLifecycleRecord(
+                configuration: authoritativeConfiguration,
+                options: options
+            )
+            try ContainerResource.Bundle(path: path).setDurably(
+                lifecycleRecordV2: lifecycleRecord
+            )
+            try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-commit", "id": "\(configuration.id)"]) { context in
+                try await self.commitContainerCreation(
+                    snapshot,
+                    lifecycleRecord: lifecycleRecord,
+                    context: context
+                )
             }
+            createdSnapshot = snapshot
+        } catch {
+            let bundle = ContainerResource.Bundle(path: path)
+            let bundleRemoved: Bool
+            if FileManager.default.fileExists(atPath: path.path) {
+                do {
+                    try bundle.delete()
+                    bundleRemoved = true
+                } catch {
+                    bundleRemoved = false
+                    self.log.warning(
+                        "failed to remove container bundle after create failure",
+                        metadata: ["id": "\(configuration.id)"]
+                    )
+                }
+            } else {
+                bundleRemoved = true
+            }
+            if bundleRemoved, let sealedLogging {
+                await self.rollbackSealedLogging(sealedLogging)
+            }
+            await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(configuration.id)"]) { context in
+                await self.rollbackContainerCreation(configuration.id, context: context)
+            }
+            throw error
         }
 
         await publishContainerEvent(action: "create", snapshot: createdSnapshot)
@@ -4868,6 +4897,66 @@ public actor ContainersService {
 
     private func setContainerState(_ id: String, _ state: ContainerState, context: AsyncLock.Context) async {
         self.containers[id] = state
+    }
+
+    private func protectedContainerSnapshots() -> [ContainerSnapshot] {
+        self.containers.values.map(\.snapshot) + self.pendingCreations.snapshots
+    }
+
+    private func reserveContainerCreation(
+        _ snapshot: ContainerSnapshot,
+        path: URL,
+        context _: AsyncLock.Context
+    ) throws {
+        guard !FileManager.default.fileExists(atPath: path.path) else {
+            throw ContainerizationError(
+                .exists,
+                message: "container bundle already exists: \(snapshot.id)"
+            )
+        }
+
+        try self.pendingCreations.reserve(
+            snapshot,
+            existing: self.containers.values.map(\.snapshot),
+            reservedNames: quarantinedContainerNames
+        )
+
+        do {
+            try Task.checkCancellation()
+            guard self.runtimePlugins.contains(where: { $0.name == snapshot.configuration.runtimeHandler }) else {
+                throw ContainerizationError(
+                    .notFound,
+                    message: "unable to locate runtime plugin \(snapshot.configuration.runtimeHandler)"
+                )
+            }
+            try Self.validateBootableMemory(snapshot.configuration.resources.memoryInBytes)
+        } catch {
+            self.pendingCreations.remove(snapshot.id)
+            throw error
+        }
+    }
+
+    private func commitContainerCreation(
+        _ snapshot: ContainerSnapshot,
+        lifecycleRecord: ContainerResource.ContainerLifecycleRecordV2,
+        context _: AsyncLock.Context
+    ) throws {
+        try Task.checkCancellation()
+        guard self.pendingCreations.remove(snapshot.id) != nil else {
+            throw ContainerizationError(
+                .internalError,
+                message: "container creation reservation not found: \(snapshot.id)"
+            )
+        }
+        self.lifecycleRecords[snapshot.id] = lifecycleRecord
+        self.containers[snapshot.id] = ContainerState(snapshot: snapshot)
+    }
+
+    private func rollbackContainerCreation(
+        _ id: String,
+        context _: AsyncLock.Context
+    ) {
+        self.pendingCreations.remove(id)
     }
 
     private func setLifecycleRecord(
