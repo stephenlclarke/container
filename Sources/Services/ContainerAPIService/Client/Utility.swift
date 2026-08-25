@@ -163,6 +163,7 @@ public struct Utility {
         // to its unpack phase must not suppress progress from the other.
         let imageTaskManager = ProgressTaskCoordinator()
         let initTaskManager = ProgressTaskCoordinator()
+        let mountTaskManager = ProgressTaskCoordinator()
         let initImageRef = management.initImage ?? containerSystemConfig.vminit.image
         let (img, kernel, _) = try await prepareConcurrently(
             {
@@ -304,7 +305,7 @@ public struct Utility {
                     .setDescription("Unpacking image mount"),
                     .setItemsName("entries"),
                 ])
-                let mountTask = await taskManager.startTask()
+                let mountTask = await mountTaskManager.startTask()
                 let mountProgressUpdate = progressUpdate.map {
                     ProgressTaskCoordinator.handler(for: mountTask, from: $0)
                 }
@@ -316,7 +317,7 @@ public struct Utility {
             }
         }
 
-        await taskManager.finish()
+        await mountTaskManager.finish()
 
         config.mounts = resolvedMounts
 
