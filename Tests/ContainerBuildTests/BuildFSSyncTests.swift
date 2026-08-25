@@ -298,6 +298,54 @@ import Testing
         return fileInfos
     }
 
+    private func walkTAR(_ fssync: BuildFSSync, followPaths: [String] = ["*"]) async throws -> [ClientStream] {
+        var packet = walkJSONPacket(followPaths: followPaths)
+        packet.metadata["mode"] = "tar"
+
+        var continuation: AsyncStream<ClientStream>.Continuation!
+        let stream = AsyncStream<ClientStream> { continuation = $0 }
+        try await fssync.walk(continuation, packet, "build-0")
+        continuation.finish()
+
+        var responses: [ClientStream] = []
+        for await response in stream {
+            responses.append(response)
+        }
+        return responses
+    }
+
+    @Test("A cached context sends only a completed digest header")
+    func cachedContextSkipsTarBody() async throws {
+        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
+        let fssync = try BuildFSSync(contextDir) { digest in
+            #expect(digest.count == 64)
+            return true
+        }
+
+        let responses = try await walkTAR(fssync)
+        let header = try #require(responses.first).buildTransfer
+        #expect(responses.count == 1)
+        #expect(header.complete)
+        #expect(header.data.isEmpty)
+        #expect(header.metadata["hash"]?.count == 64)
+    }
+
+    @Test("A missing context retains the ordered tar stream")
+    func missingContextStreamsTarBody() async throws {
+        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
+        let fssync = try BuildFSSync(contextDir) { _ in false }
+
+        let responses = try await walkTAR(fssync)
+        let transfers = responses.map(\.buildTransfer)
+        let header = try #require(transfers.first)
+        let completion = try #require(transfers.last)
+        #expect(transfers.count >= 3)
+        #expect(!header.complete)
+        #expect(header.metadata["hash"]?.count == 64)
+        #expect(transfers.dropFirst().dropLast().contains { !$0.data.isEmpty })
+        #expect(completion.complete)
+    }
+
     @Test func testWalkJSONReportsEmptyTargetForRegularFile() async throws {
         try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
 

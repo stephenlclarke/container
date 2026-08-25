@@ -162,6 +162,24 @@ public struct Builder: Sendable {
         try? self.builderShimSocket.close()
     }
 
+    /// Older builder shims do not expose the lookup RPC, so they retain the
+    /// original streaming behavior without blocking a build.
+    func contextIsCached(_ digest: String) async throws -> Bool {
+        var request = Com_Apple_Container_Build_V1_LookupContextRequest()
+        request.digest = digest
+        var opts = CallOptions.defaults
+        opts.timeout = .seconds(5)
+        do {
+            let response: Com_Apple_Container_Build_V1_LookupContextResponse = try await self.client.lookupContext(
+                request,
+                options: opts
+            )
+            return response.present
+        } catch let error as RPCError where error.code == .unimplemented {
+            return false
+        }
+    }
+
     // TODO
     // - Symlinks in build context dir
     // - cache-to, cache-from
@@ -207,7 +225,9 @@ public struct Builder: Sendable {
             continuation.finish()
         }
 
-        let pipeline = try await BuildPipeline(config)
+        let pipeline = try await BuildPipeline(config) { digest in
+            try await self.contextIsCached(digest)
+        }
         do {
             try await self.client.performBuild(
                 metadata: try Self.buildMetadata(config),

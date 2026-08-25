@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //===----------------------------------------------------------------------===//
-
 // DO NOT EDIT.
 // swift-format-ignore-file
 // swiftlint:disable all
@@ -163,6 +162,32 @@ public nonisolated struct Com_Apple_Container_Build_V1_InfoResponse: Sendable {
   // SwiftProtobuf.Message conformance is added in an extension below. See the
   // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
   // methods supported on all messages.
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Com_Apple_Container_Build_V1_LookupContextRequest: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// Lowercase hexadecimal SHA-256 digest of the context tar stream.
+  public var digest: String = String()
+
+  public var unknownFields = SwiftProtobuf.UnknownStorage()
+
+  public init() {}
+}
+
+public nonisolated struct Com_Apple_Container_Build_V1_LookupContextResponse: Sendable {
+  // SwiftProtobuf.Message conformance is added in an extension below. See the
+  // `Message` and `Message+*Additions` files in the SwiftProtobuf library for
+  // methods supported on all messages.
+
+  /// True when the unpacked context is available in the local cache.
+  public var present: Bool = false
 
   public var unknownFields = SwiftProtobuf.UnknownStorage()
 
@@ -619,6 +644,66 @@ nonisolated extension Com_Apple_Container_Build_V1_InfoResponse: SwiftProtobuf.M
   }
 
   public static func ==(lhs: Com_Apple_Container_Build_V1_InfoResponse, rhs: Com_Apple_Container_Build_V1_InfoResponse) -> Bool {
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Com_Apple_Container_Build_V1_LookupContextRequest: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".LookupContextRequest"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}digest\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularStringField(value: &self.digest) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if !self.digest.isEmpty {
+      try visitor.visitSingularStringField(value: self.digest, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Com_Apple_Container_Build_V1_LookupContextRequest, rhs: Com_Apple_Container_Build_V1_LookupContextRequest) -> Bool {
+    if lhs.digest != rhs.digest {return false}
+    if lhs.unknownFields != rhs.unknownFields {return false}
+    return true
+  }
+}
+
+nonisolated extension Com_Apple_Container_Build_V1_LookupContextResponse: SwiftProtobuf.Message, SwiftProtobuf._MessageImplementationBase, SwiftProtobuf._ProtoNameProviding {
+  public static let protoMessageName: String = _protobuf_package + ".LookupContextResponse"
+  public static let _protobuf_nameMap = SwiftProtobuf._NameMap(bytecode: "\0\u{1}present\0")
+
+  public mutating func decodeMessage<D: SwiftProtobuf.Decoder>(decoder: inout D) throws {
+    while let fieldNumber = try decoder.nextFieldNumber() {
+      // The use of inline closures is to circumvent an issue where the compiler
+      // allocates stack space for every case branch when no optimizations are
+      // enabled. https://github.com/apple/swift-protobuf/issues/1034
+      switch fieldNumber {
+      case 1: try { try decoder.decodeSingularBoolField(value: &self.present) }()
+      default: break
+      }
+    }
+  }
+
+  public func traverse<V: SwiftProtobuf.Visitor>(visitor: inout V) throws {
+    if self.present != false {
+      try visitor.visitSingularBoolField(value: self.present, fieldNumber: 1)
+    }
+    try unknownFields.traverse(visitor: &visitor)
+  }
+
+  public static func ==(lhs: Com_Apple_Container_Build_V1_LookupContextResponse, rhs: Com_Apple_Container_Build_V1_LookupContextResponse) -> Bool {
+    if lhs.present != rhs.present {return false}
     if lhs.unknownFields != rhs.unknownFields {return false}
     return true
   }

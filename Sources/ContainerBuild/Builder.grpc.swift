@@ -13,7 +13,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //===----------------------------------------------------------------------===//
-
 // DO NOT EDIT.
 // swift-format-ignore-file
 // swiftlint:disable all
@@ -75,11 +74,25 @@ public enum Com_Apple_Container_Build_V1_Builder: Sendable {
                 type: .unary
             )
         }
+        /// Namespace for "LookupContext" metadata.
+        public enum LookupContext: Sendable {
+            /// Request type for "LookupContext".
+            public typealias Input = Com_Apple_Container_Build_V1_LookupContextRequest
+            /// Response type for "LookupContext".
+            public typealias Output = Com_Apple_Container_Build_V1_LookupContextResponse
+            /// Descriptor for "LookupContext".
+            public static let descriptor = GRPCCore.MethodDescriptor(
+                service: GRPCCore.ServiceDescriptor(fullyQualifiedService: "com.apple.container.build.v1.Builder"),
+                method: "LookupContext",
+                type: .unary
+            )
+        }
         /// Descriptors for all methods in the "com.apple.container.build.v1.Builder" service.
         public static let descriptors: [GRPCCore.MethodDescriptor] = [
             CreateBuild.descriptor,
             PerformBuild.descriptor,
-            Info.descriptor
+            Info.descriptor,
+            LookupContext.descriptor
         ]
     }
 }
@@ -245,6 +258,24 @@ extension Com_Apple_Container_Build_V1_Builder {
             request: GRPCCore.StreamingServerRequest<Com_Apple_Container_Build_V1_InfoRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.StreamingServerResponse<Com_Apple_Container_Build_V1_InfoResponse>
+
+        /// Handle the "LookupContext" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Check whether a content-addressed build context is already available.
+        ///
+        /// - Parameters:
+        ///   - request: A streaming request of `Com_Apple_Container_Build_V1_LookupContextRequest` messages.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A streaming response of `Com_Apple_Container_Build_V1_LookupContextResponse` messages.
+        func lookupContext(
+            request: GRPCCore.StreamingServerRequest<Com_Apple_Container_Build_V1_LookupContextRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.StreamingServerResponse<Com_Apple_Container_Build_V1_LookupContextResponse>
     }
 
     /// Service protocol for the "com.apple.container.build.v1.Builder" service.
@@ -395,6 +426,24 @@ extension Com_Apple_Container_Build_V1_Builder {
             request: GRPCCore.ServerRequest<Com_Apple_Container_Build_V1_InfoRequest>,
             context: GRPCCore.ServerContext
         ) async throws -> GRPCCore.ServerResponse<Com_Apple_Container_Build_V1_InfoResponse>
+
+        /// Handle the "LookupContext" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Check whether a content-addressed build context is already available.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Com_Apple_Container_Build_V1_LookupContextRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A response containing a single `Com_Apple_Container_Build_V1_LookupContextResponse` message.
+        func lookupContext(
+            request: GRPCCore.ServerRequest<Com_Apple_Container_Build_V1_LookupContextRequest>,
+            context: GRPCCore.ServerContext
+        ) async throws -> GRPCCore.ServerResponse<Com_Apple_Container_Build_V1_LookupContextResponse>
     }
 
     /// Simple service protocol for the "com.apple.container.build.v1.Builder" service.
@@ -544,6 +593,24 @@ extension Com_Apple_Container_Build_V1_Builder {
             request: Com_Apple_Container_Build_V1_InfoRequest,
             context: GRPCCore.ServerContext
         ) async throws -> Com_Apple_Container_Build_V1_InfoResponse
+
+        /// Handle the "LookupContext" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Check whether a content-addressed build context is already available.
+        ///
+        /// - Parameters:
+        ///   - request: A `Com_Apple_Container_Build_V1_LookupContextRequest` message.
+        ///   - context: Context providing information about the RPC.
+        /// - Throws: Any error which occurred during the processing of the request. Thrown errors
+        ///     of type `RPCError` are mapped to appropriate statuses. All other errors are converted
+        ///     to an internal error.
+        /// - Returns: A `Com_Apple_Container_Build_V1_LookupContextResponse` to respond with.
+        func lookupContext(
+            request: Com_Apple_Container_Build_V1_LookupContextRequest,
+            context: GRPCCore.ServerContext
+        ) async throws -> Com_Apple_Container_Build_V1_LookupContextResponse
     }
 }
 
@@ -584,6 +651,17 @@ extension Com_Apple_Container_Build_V1_Builder.StreamingServiceProtocol {
                 )
             }
         )
+        router.registerHandler(
+            forMethod: Com_Apple_Container_Build_V1_Builder.Method.LookupContext.descriptor,
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Com_Apple_Container_Build_V1_LookupContextRequest>(),
+            serializer: GRPCProtobuf.ProtobufSerializer<Com_Apple_Container_Build_V1_LookupContextResponse>(),
+            handler: { request, context in
+                try await self.lookupContext(
+                    request: request,
+                    context: context
+                )
+            }
+        )
     }
 }
 
@@ -606,6 +684,17 @@ extension Com_Apple_Container_Build_V1_Builder.ServiceProtocol {
         context: GRPCCore.ServerContext
     ) async throws -> GRPCCore.StreamingServerResponse<Com_Apple_Container_Build_V1_InfoResponse> {
         let response = try await self.info(
+            request: GRPCCore.ServerRequest(stream: request),
+            context: context
+        )
+        return GRPCCore.StreamingServerResponse(single: response)
+    }
+
+    public func lookupContext(
+        request: GRPCCore.StreamingServerRequest<Com_Apple_Container_Build_V1_LookupContextRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.StreamingServerResponse<Com_Apple_Container_Build_V1_LookupContextResponse> {
+        let response = try await self.lookupContext(
             request: GRPCCore.ServerRequest(stream: request),
             context: context
         )
@@ -652,6 +741,19 @@ extension Com_Apple_Container_Build_V1_Builder.SimpleServiceProtocol {
     ) async throws -> GRPCCore.ServerResponse<Com_Apple_Container_Build_V1_InfoResponse> {
         return GRPCCore.ServerResponse<Com_Apple_Container_Build_V1_InfoResponse>(
             message: try await self.info(
+                request: request.message,
+                context: context
+            ),
+            metadata: [:]
+        )
+    }
+
+    public func lookupContext(
+        request: GRPCCore.ServerRequest<Com_Apple_Container_Build_V1_LookupContextRequest>,
+        context: GRPCCore.ServerContext
+    ) async throws -> GRPCCore.ServerResponse<Com_Apple_Container_Build_V1_LookupContextResponse> {
+        return GRPCCore.ServerResponse<Com_Apple_Container_Build_V1_LookupContextResponse>(
+            message: try await self.lookupContext(
                 request: request.message,
                 context: context
             ),
@@ -823,6 +925,29 @@ extension Com_Apple_Container_Build_V1_Builder {
             deserializer: some GRPCCore.MessageDeserializer<Com_Apple_Container_Build_V1_InfoResponse>,
             options: GRPCCore.CallOptions,
             onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Com_Apple_Container_Build_V1_InfoResponse>) async throws -> Result
+        ) async throws -> Result where Result: Sendable
+
+        /// Call the "LookupContext" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Check whether a content-addressed build context is already available.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Com_Apple_Container_Build_V1_LookupContextRequest` message.
+        ///   - serializer: A serializer for `Com_Apple_Container_Build_V1_LookupContextRequest` messages.
+        ///   - deserializer: A deserializer for `Com_Apple_Container_Build_V1_LookupContextResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        func lookupContext<Result>(
+            request: GRPCCore.ClientRequest<Com_Apple_Container_Build_V1_LookupContextRequest>,
+            serializer: some GRPCCore.MessageSerializer<Com_Apple_Container_Build_V1_LookupContextRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Com_Apple_Container_Build_V1_LookupContextResponse>,
+            options: GRPCCore.CallOptions,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Com_Apple_Container_Build_V1_LookupContextResponse>) async throws -> Result
         ) async throws -> Result where Result: Sendable
     }
 
@@ -1028,6 +1153,40 @@ extension Com_Apple_Container_Build_V1_Builder {
                 onResponse: handleResponse
             )
         }
+
+        /// Call the "LookupContext" method.
+        ///
+        /// > Source IDL Documentation:
+        /// >
+        /// > Check whether a content-addressed build context is already available.
+        ///
+        /// - Parameters:
+        ///   - request: A request containing a single `Com_Apple_Container_Build_V1_LookupContextRequest` message.
+        ///   - serializer: A serializer for `Com_Apple_Container_Build_V1_LookupContextRequest` messages.
+        ///   - deserializer: A deserializer for `Com_Apple_Container_Build_V1_LookupContextResponse` messages.
+        ///   - options: Options to apply to this RPC.
+        ///   - handleResponse: A closure which handles the response, the result of which is
+        ///       returned to the caller. Returning from the closure will cancel the RPC if it
+        ///       hasn't already finished.
+        /// - Returns: The result of `handleResponse`.
+        public func lookupContext<Result>(
+            request: GRPCCore.ClientRequest<Com_Apple_Container_Build_V1_LookupContextRequest>,
+            serializer: some GRPCCore.MessageSerializer<Com_Apple_Container_Build_V1_LookupContextRequest>,
+            deserializer: some GRPCCore.MessageDeserializer<Com_Apple_Container_Build_V1_LookupContextResponse>,
+            options: GRPCCore.CallOptions = .defaults,
+            onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Com_Apple_Container_Build_V1_LookupContextResponse>) async throws -> Result = { response in
+                try response.message
+            }
+        ) async throws -> Result where Result: Sendable {
+            try await self.client.unary(
+                request: request,
+                descriptor: Com_Apple_Container_Build_V1_Builder.Method.LookupContext.descriptor,
+                serializer: serializer,
+                deserializer: deserializer,
+                options: options,
+                onResponse: handleResponse
+            )
+        }
     }
 }
 
@@ -1112,6 +1271,35 @@ extension Com_Apple_Container_Build_V1_Builder.ClientProtocol {
             request: request,
             serializer: GRPCProtobuf.ProtobufSerializer<Com_Apple_Container_Build_V1_InfoRequest>(),
             deserializer: GRPCProtobuf.ProtobufDeserializer<Com_Apple_Container_Build_V1_InfoResponse>(),
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "LookupContext" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Check whether a content-addressed build context is already available.
+    ///
+    /// - Parameters:
+    ///   - request: A request containing a single `Com_Apple_Container_Build_V1_LookupContextRequest` message.
+    ///   - options: Options to apply to this RPC.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func lookupContext<Result>(
+        request: GRPCCore.ClientRequest<Com_Apple_Container_Build_V1_LookupContextRequest>,
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Com_Apple_Container_Build_V1_LookupContextResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        try await self.lookupContext(
+            request: request,
+            serializer: GRPCProtobuf.ProtobufSerializer<Com_Apple_Container_Build_V1_LookupContextRequest>(),
+            deserializer: GRPCProtobuf.ProtobufDeserializer<Com_Apple_Container_Build_V1_LookupContextResponse>(),
             options: options,
             onResponse: handleResponse
         )
@@ -1211,6 +1399,39 @@ extension Com_Apple_Container_Build_V1_Builder.ClientProtocol {
             metadata: metadata
         )
         return try await self.info(
+            request: request,
+            options: options,
+            onResponse: handleResponse
+        )
+    }
+
+    /// Call the "LookupContext" method.
+    ///
+    /// > Source IDL Documentation:
+    /// >
+    /// > Check whether a content-addressed build context is already available.
+    ///
+    /// - Parameters:
+    ///   - message: request message to send.
+    ///   - metadata: Additional metadata to send, defaults to empty.
+    ///   - options: Options to apply to this RPC, defaults to `.defaults`.
+    ///   - handleResponse: A closure which handles the response, the result of which is
+    ///       returned to the caller. Returning from the closure will cancel the RPC if it
+    ///       hasn't already finished.
+    /// - Returns: The result of `handleResponse`.
+    public func lookupContext<Result>(
+        _ message: Com_Apple_Container_Build_V1_LookupContextRequest,
+        metadata: GRPCCore.Metadata = [:],
+        options: GRPCCore.CallOptions = .defaults,
+        onResponse handleResponse: @Sendable @escaping (GRPCCore.ClientResponse<Com_Apple_Container_Build_V1_LookupContextResponse>) async throws -> Result = { response in
+            try response.message
+        }
+    ) async throws -> Result where Result: Sendable {
+        let request = GRPCCore.ClientRequest<Com_Apple_Container_Build_V1_LookupContextRequest>(
+            message: message,
+            metadata: metadata
+        )
+        return try await self.lookupContext(
             request: request,
             options: options,
             onResponse: handleResponse

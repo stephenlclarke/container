@@ -35,6 +35,10 @@ import GRPCCore
 /// issues `PACKET_REQ` for regular files it needs; the shim serves those from
 /// the local cache without any further calls to the host.
 ///
+/// After calculating the archive digest, the host probes that cache. A hit is
+/// represented by a completed digest header, so no archive bytes cross the VM
+/// boundary. A miss retains the original header, body, and completion sequence.
+///
 /// When a context path is a symlink whose target lies within the context root,
 /// ``walk(_:_:_:)`` adds the target to the archive alongside the symlink so
 /// BuildKit can dereference it during `COPY`/`ADD` processing.
@@ -53,10 +57,17 @@ import GRPCCore
 /// Dockerignore filtering is **not** applied here; the shim applies it after
 /// unpacking the tar.
 actor BuildFSSync: BuildPipelineHandler {
+    typealias ContextCacheLookup = @Sendable (String) async throws -> Bool
+
     let contextDir: URL
     let namedContexts: [String: URL]
+    private let contextCacheLookup: ContextCacheLookup
 
-    init(_ contextDir: URL, namedContexts: [String: String] = [:]) throws {
+    init(
+        _ contextDir: URL,
+        namedContexts: [String: String] = [:],
+        contextCacheLookup: @escaping ContextCacheLookup = { _ in false }
+    ) throws {
         let resolved = contextDir.resolvingSymlinksInPath()
         guard FileManager.default.fileExists(atPath: contextDir.cleanPath) else {
             throw Error.contextNotFound(contextDir.cleanPath)
@@ -82,6 +93,7 @@ actor BuildFSSync: BuildPipelineHandler {
             }
             result[name] = resolved
         }
+        self.contextCacheLookup = contextCacheLookup
     }
 
     nonisolated func accept(_ packet: ServerStream) throws -> Bool {
@@ -314,10 +326,11 @@ actor BuildFSSync: BuildPipelineHandler {
             archiveHasher.update(data: chunk)
         }
         let hash = archiveHasher.finalize().map { String(format: "%02x", $0) }.joined()
+        let contextIsCached = try await contextCacheLookup(hash)
         let header = BuildTransfer(
             id: packet.id,
             source: tarURL.path,
-            complete: false,
+            complete: contextIsCached,
             isDir: false,
             metadata: [
                 "os": "linux",
@@ -331,6 +344,10 @@ actor BuildFSSync: BuildPipelineHandler {
         resp.buildTransfer = header
         resp.packetType = .buildTransfer(header)
         sender.yield(resp)
+
+        if contextIsCached {
+            return
+        }
 
         for try await chunk in try tarURL.bufferedCopyReader() {
             let part = BuildTransfer(
