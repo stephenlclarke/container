@@ -16,9 +16,7 @@
 
 import Collections
 import ContainerAPIClient
-import ContainerizationArchive
 import ContainerizationOCI
-import CryptoKit
 import Foundation
 import GRPCCore
 
@@ -283,49 +281,33 @@ actor BuildFSSync: BuildPipelineHandler {
             return
         }
 
+        let includedPaths = Set(entries.values.flatMap { $0.map(\.relativePath) })
+        try await sendTar(
+            sender,
+            packet: packet,
+            buildID: buildID,
+            contextDir: root,
+            includedPaths: includedPaths
+        )
+    }
+
+    private func sendTar(
+        _ sender: AsyncStream<ClientStream>.Continuation,
+        packet: BuildTransfer,
+        buildID: String,
+        contextDir: URL,
+        includedPaths: Set<String>
+    ) async throws {
         let tarURL = URL.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".tar")
-
         defer { try? FileManager.default.removeItem(at: tarURL) }
 
-        let writerCfg = ArchiveWriterConfiguration(
-            format: .paxRestricted,
-            filter: .none)
-
-        _ = try Archiver.compress(
-            source: root,
+        let tarHash = try await ConcurrentBuildContextArchive.archive(
+            contextDir: contextDir,
             destination: tarURL,
-            writerConfiguration: writerCfg
-        ) { url in
-            guard let rel = try? url.relativeChildPath(to: root) else {
-                return nil
-            }
-
-            guard let parent = try? url.deletingLastPathComponent().relativeChildPath(to: root) else {
-                return nil
-            }
-
-            guard let items = entries[parent] else {
-                return nil
-            }
-
-            let entry = DirEntry(url: url, isDirectory: url.hasDirectoryPath, relativePath: rel)
-            let include = items.contains(entry)
-
-            guard include else {
-                return nil
-            }
-
-            return Archiver.ArchiveEntryInfo(
-                pathOnHost: url,
-                pathInArchive: URL(fileURLWithPath: rel))
-        }
-
-        var archiveHasher = SHA256()
-        for try await chunk in try tarURL.bufferedCopyReader() {
-            archiveHasher.update(data: chunk)
-        }
-        let hash = archiveHasher.finalize().map { String(format: "%02x", $0) }.joined()
+            includedPaths: includedPaths
+        )
+        let hash = tarHash.compactMap { String(format: "%02x", $0) }.joined()
         let contextIsCached = try await contextCacheLookup(hash)
         let header = BuildTransfer(
             id: packet.id,
@@ -381,7 +363,6 @@ actor BuildFSSync: BuildPipelineHandler {
             ],
             data: Data()
         )
-
         var finalResp = ClientStream()
         finalResp.buildID = buildID
         finalResp.buildTransfer = done

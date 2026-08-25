@@ -298,9 +298,16 @@ import Testing
         return fileInfos
     }
 
-    private func walkTAR(_ fssync: BuildFSSync, followPaths: [String] = ["*"]) async throws -> [ClientStream] {
+    private func walkTAR(
+        _ fssync: BuildFSSync,
+        followPaths: [String] = ["*"],
+        dirName: String? = nil
+    ) async throws -> [ClientStream] {
         var packet = walkJSONPacket(followPaths: followPaths)
         packet.metadata["mode"] = "tar"
+        if let dirName {
+            packet.metadata["dir-name"] = dirName
+        }
 
         var continuation: AsyncStream<ClientStream>.Continuation!
         let stream = AsyncStream<ClientStream> { continuation = $0 }
@@ -344,6 +351,57 @@ import Testing
         #expect(header.metadata["hash"]?.count == 64)
         #expect(transfers.dropFirst().dropLast().contains { !$0.data.isEmpty })
         #expect(completion.complete)
+    }
+
+    @Test("Named contexts archive from their selected root")
+    func namedContextTarUsesSelectedRoot() async throws {
+        let shared = base.appendingPathComponent("shared")
+        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
+        try write("main-only", to: contextDir.appendingPathComponent("payload.txt"))
+        try write("shared-only", to: shared.appendingPathComponent("payload.txt"))
+
+        let fssync = try BuildFSSync(contextDir, namedContexts: ["shared": shared.path])
+        let responses = try await walkTAR(fssync, dirName: "shared")
+        let body = responses.dropFirst().dropLast().reduce(into: Data()) { result, response in
+            result.append(response.buildTransfer.data)
+        }
+        let archive = String(decoding: body, as: UTF8.self)
+
+        #expect(archive.contains("shared-only"))
+        #expect(!archive.contains("main-only"))
+    }
+
+    @Test("Context archive work does not hold actor isolation")
+    func contextArchiveDoesNotBlockActor() async throws {
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let probe = BuildArchiveIsolationProbe()
+        let archive = Task {
+            try await probe.archive(started: started, release: release)
+        }
+
+        let didStart = await BuildArchiveSemaphore.wait(started, timeout: .now() + 1)
+        guard didStart else {
+            release.signal()
+            archive.cancel()
+            throw BuildArchiveTestError.timedOut
+        }
+
+        let pinged = BuildArchiveCountdown(count: 1)
+        let ping = Task {
+            await probe.ping(pinged)
+        }
+        do {
+            try await pinged.wait(timeout: .seconds(1))
+        } catch {
+            release.signal()
+            archive.cancel()
+            throw error
+        }
+
+        release.signal()
+        await ping.value
+        #expect(try await archive.value == SHA256.hash(data: Data()))
     }
 
     @Test func testWalkJSONReportsEmptyTargetForRegularFile() async throws {
@@ -663,4 +721,55 @@ import Testing
         #expect(responses.first?.buildTransfer.metadata["hash"] != nil)
     }
 
+}
+
+private enum BuildArchiveTestError: Error {
+    case timedOut
+}
+
+private enum BuildArchiveSemaphore {
+    static func wait(_ semaphore: DispatchSemaphore, timeout: DispatchTime) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: semaphore.wait(timeout: timeout) == .success)
+            }
+        }
+    }
+}
+
+private actor BuildArchiveCountdown {
+    private var remaining: Int
+
+    init(count: Int) {
+        self.remaining = count
+    }
+
+    func arrive() {
+        remaining -= 1
+    }
+
+    func wait(timeout: Duration) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while remaining > 0 {
+            guard clock.now < deadline else {
+                throw BuildArchiveTestError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+}
+
+private actor BuildArchiveIsolationProbe {
+    func archive(started: DispatchSemaphore, release: DispatchSemaphore) async throws -> SHA256.Digest {
+        try await ConcurrentBuildContextArchive.run {
+            started.signal()
+            release.wait()
+            return SHA256.hash(data: Data())
+        }
+    }
+
+    func ping(_ countdown: BuildArchiveCountdown) async {
+        await countdown.arrive()
+    }
 }
