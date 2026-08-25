@@ -294,13 +294,6 @@ public struct Builder: Sendable {
         }
     }
 
-    public func shutdown() async throws {
-        self.grpcClient.beginGracefulShutdown()
-        self.clientTask.cancel()
-        _ = await self.clientTask.result
-        try await self.shutdownEventLoopGroup()
-    }
-
     public struct BuildExport: Sendable {
         public let type: String
         public var destination: URL?

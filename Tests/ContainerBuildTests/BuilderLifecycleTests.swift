@@ -44,7 +44,7 @@ struct BuilderLifecycleTests {
         )
 
         try peer.close()
-        try await builder.shutdown()
+        await builder.shutdown()
 
         #expect(recorder.count == 1)
     }
