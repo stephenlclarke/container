@@ -245,6 +245,7 @@ let package = Package(
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 "ContainerPersistence",
                 "ContainerBuild",
+                .product(name: "NIOPosix", package: "swift-nio"),
             ]
         ),
         .testTarget(

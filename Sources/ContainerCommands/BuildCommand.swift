@@ -248,11 +248,32 @@ extension Application {
 
                                 // The builder client owns one gRPC connection, so one event loop is sufficient.
                                 let threadGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-                                let b = try await Builder(socket: fh, group: threadGroup, logger: log)
+                                let b: Builder
+                                do {
+                                    b = try await Builder(socket: fh, group: threadGroup, logger: log)
+                                } catch {
+                                    let connectionError = error
+                                    do {
+                                        try await threadGroup.shutdownGracefully()
+                                    } catch {
+                                        log.warning("failed to shut down builder event loop: \(error)")
+                                    }
+                                    throw connectionError
+                                }
 
                                 // If this call succeeds, then BuildKit is running.
-                                let _ = try await b.info()
-                                return b
+                                do {
+                                    let _ = try await b.info()
+                                    return b
+                                } catch {
+                                    let readinessError = error
+                                    do {
+                                        try await b.shutdown()
+                                    } catch {
+                                        log.warning("failed to shut down builder client: \(error)")
+                                    }
+                                    throw readinessError
+                                }
                             } catch {
                                 let builderStatus = try? await client.get(id: builderContainerId).status
                                 if Self.builderExitedBeforeDial(status: builderStatus) {

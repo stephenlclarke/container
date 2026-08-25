@@ -62,15 +62,36 @@ public struct Builder: Sendable {
 
     let client: Com_Apple_Container_Build_V1_Builder.Client<HTTP2ClientTransport.WrappedChannel>
     let grpcClient: GRPCClient<HTTP2ClientTransport.WrappedChannel>
-    let group: EventLoopGroup
+    let shutdownEventLoopGroup: @Sendable () async throws -> Void
     let builderShimSocket: FileHandle
     let clientTask: Task<Void, any Swift.Error>
     let logger: Logger
     private let shutdownState: ShutdownState
 
     public init(socket: FileHandle, group: EventLoopGroup, logger: Logger) async throws {
-        try socket.setSendBufSize(4 << 20)
-        try socket.setRecvBufSize(2 << 20)
+        try await self.init(
+            socket: socket,
+            group: group,
+            logger: logger,
+            shutdownEventLoopGroup: {
+                try await group.shutdownGracefully()
+            }
+        )
+    }
+
+    init(
+        socket: FileHandle,
+        group: EventLoopGroup,
+        logger: Logger,
+        shutdownEventLoopGroup: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        do {
+            try socket.setSendBufSize(4 << 20)
+            try socket.setRecvBufSize(2 << 20)
+        } catch {
+            try? socket.close()
+            throw error
+        }
 
         let transport = try await HTTP2ClientTransport.WrappedChannel.wrapping(
             config: .defaults,
@@ -93,7 +114,7 @@ public struct Builder: Sendable {
         let grpcClient = GRPCClient(transport: transport)
         self.grpcClient = grpcClient
         self.client = Com_Apple_Container_Build_V1_Builder.Client(wrapping: grpcClient)
-        self.group = group
+        self.shutdownEventLoopGroup = shutdownEventLoopGroup
         self.builderShimSocket = socket
         self.logger = logger
         self.shutdownState = ShutdownState()
@@ -130,9 +151,10 @@ public struct Builder: Sendable {
 
         self.grpcClient.beginGracefulShutdown()
         self.clientTask.cancel()
+        _ = await self.clientTask.result
 
         do {
-            try await self.group.shutdownGracefully()
+            try await self.shutdownEventLoopGroup()
         } catch {
             self.logger.debug("builder event loop shutdown failed: \(error)")
         }
@@ -250,6 +272,13 @@ public struct Builder: Sendable {
         for await _ in signals {
             update()
         }
+    }
+
+    public func shutdown() async throws {
+        self.grpcClient.beginGracefulShutdown()
+        self.clientTask.cancel()
+        _ = await self.clientTask.result
+        try await self.shutdownEventLoopGroup()
     }
 
     public struct BuildExport: Sendable {
