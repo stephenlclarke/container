@@ -1845,12 +1845,19 @@ public actor ContainersService {
                     configuration: config.logging
                 )
 
-            var networkBootstrapInfos = [NetworkBootstrapInfo]()
-            for n in Self.networkBootstrapAttachments(for: config) {
-                guard let plugin = try await self.networksService?.plugin(for: n.network) else {
-                    throw ContainerizationError(.internalError, message: "failed to get plugin for network \(n.network)")
+            let networkAttachments = Self.networkBootstrapAttachments(for: config)
+            let networkBootstrapInfos: [NetworkBootstrapInfo]
+            if networkAttachments.isEmpty {
+                networkBootstrapInfos = []
+            } else {
+                let networkIDs = networkAttachments.map(\.network)
+                guard let plugins = try await self.networksService?.plugins(for: networkIDs) else {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "failed to get plugin for network \(networkIDs[0])"
+                    )
                 }
-                networkBootstrapInfos.append(NetworkBootstrapInfo(plugin: plugin))
+                networkBootstrapInfos = plugins.map { NetworkBootstrapInfo(plugin: $0) }
             }
 
             do {

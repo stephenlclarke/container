@@ -327,6 +327,24 @@ public actor NetworksService {
         return serviceState.configuration.plugin
     }
 
+    public func plugins(for ids: [String]) throws -> [String] {
+        try Self.resolvePlugins(for: ids) { id in
+            serviceStates[id]?.configuration.plugin
+        }
+    }
+
+    static func resolvePlugins(
+        for ids: [String],
+        lookup: (String) -> String?
+    ) throws -> [String] {
+        try ids.map { id in
+            guard let plugin = lookup(id) else {
+                throw ContainerizationError(.notFound, message: "no network for id \(id)")
+            }
+            return plugin
+        }
+    }
+
     /// Release a container-owned attachment while its network service is still live.
     public func releaseAttachment(network id: String, hostname: String) async throws {
         let client = try await stateLock.withLock { _ in
