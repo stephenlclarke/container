@@ -464,6 +464,7 @@ let package = Package(
         .testTarget(
             name: "ContainerImagesServiceTests",
             dependencies: [
+                .product(name: "ContainerizationArchive", package: "containerization"),
                 "ContainerImagesService",
                 "ContainerResource",
             ]

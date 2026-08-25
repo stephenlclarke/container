@@ -18,7 +18,6 @@ import ContainerAPIClient
 import ContainerImagesServiceClient
 import ContainerResource
 import Containerization
-import ContainerizationArchive
 import ContainerizationError
 import ContainerizationExtras
 import ContainerizationOCI
@@ -323,9 +322,7 @@ public actor ImagesService {
             try? FileManager.default.removeItem(at: tempDir)
         }
         try await self.imageStore.save(references: references, out: tempDir, platform: platform)
-        let writer = try ArchiveWriter(format: .pax, filter: .none, file: out)
-        try writer.archiveDirectory(tempDir)
-        try writer.finishEncoding()
+        try await ConcurrentImageArchiveIO.writeDirectory(tempDir, to: out)
     }
 
     public func load(from tarFile: URL, force: Bool) async throws -> ([ImageDescription], [String]) {
@@ -347,12 +344,11 @@ public actor ImagesService {
             )
         }
 
-        let reader = try ArchiveReader(file: tarFile)
         let tempDir = FileManager.default.uniqueTemporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: tempDir)
         }
-        let rejectedMembers = try reader.extractContents(to: tempDir)
+        let rejectedMembers = try await ConcurrentImageArchiveIO.extract(tarFile, to: tempDir)
         guard rejectedMembers.isEmpty || force else {
             throw ContainerizationError(.invalidArgument, message: "cannot load tar image with rejected paths: \(rejectedMembers)")
         }
