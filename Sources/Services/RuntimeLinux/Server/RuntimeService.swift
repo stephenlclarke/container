@@ -228,6 +228,7 @@ public actor RuntimeService {
                 kernel: kernel,
                 initialFilesystem: bundle.initialFilesystem.asMount,
                 rosetta: config.rosetta,
+                group: self.eventLoopGroup,
                 logger: self.log
             )
 
