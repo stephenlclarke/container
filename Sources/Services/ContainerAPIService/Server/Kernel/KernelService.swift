@@ -16,10 +16,8 @@
 
 import ContainerAPIClient
 import Containerization
-import ContainerizationArchive
 import ContainerizationError
 import ContainerizationExtras
-import CryptoKit
 import Foundation
 import Logging
 import TerminalProgress
@@ -161,7 +159,7 @@ public actor KernelService {
             await progressUpdate?([
                 .setDescription("Verifying kernel archive")
             ])
-            try Self.verifyDigest(of: tarFile, expected: expectedDigest)
+            try await Self.verifyDigest(of: tarFile, expected: expectedDigest)
             await progressUpdate?([
                 .addTasks(1)
             ])
@@ -170,7 +168,7 @@ public actor KernelService {
         await progressUpdate?([
             .setDescription("Unpacking kernel")
         ])
-        let kernelFile = try self.extractFile(tarFile: tarFile, at: kernelFilePath, to: tempDir)
+        let kernelFile = try await ConcurrentKernelArchiveIO.extractFile(tarFile: tarFile, at: kernelFilePath, to: tempDir)
         try self.installKernel(kernelFile: kernelFile, platform: platform, force: force)
         await progressUpdate?([
             .addTasks(1)
@@ -181,8 +179,8 @@ public actor KernelService {
         }
     }
 
-    private static func verifyDigest(of file: URL, expected: ExpectedDigest) throws {
-        let actualDigest = try sha256Hex(of: file)
+    private static func verifyDigest(of file: URL, expected: ExpectedDigest) async throws {
+        let actualDigest = try await ConcurrentKernelArchiveIO.digest(of: file)
         try verifyDigest(actualSHA256Hex: actualDigest, expected: expected)
     }
 
@@ -211,13 +209,7 @@ public actor KernelService {
     }
 
     static func sha256Hex(of file: URL) throws -> String {
-        var hasher = SHA256()
-        let handle = try FileHandle(forReadingFrom: file)
-        defer { try? handle.close() }
-        while let data = try handle.read(upToCount: Int(1.mib())), !data.isEmpty {
-            hasher.update(data: data)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        try ConcurrentKernelArchiveIO.sha256Hex(of: file)
     }
 
     private func setDefaultKernel(name: String, platform: SystemPlatform) throws {
@@ -276,28 +268,4 @@ public actor KernelService {
         return Kernel(path: defaultKernelPath, platform: platform)
     }
 
-    private func extractFile(tarFile: URL, at: String, to directory: URL) throws -> URL {
-        var target = at
-        var archiveReader = try ArchiveReader(file: tarFile)
-        var (entry, data) = try archiveReader.extractFile(path: target)
-
-        // if the target file is a symlink, get the data for the actual file
-        if entry.fileType == .symbolicLink, let symlinkRelative = entry.symlinkTarget {
-            // the previous extractFile changes the underlying file pointer, so we need to reopen the file
-            // to ensure we traverse all the files in the archive
-            archiveReader = try ArchiveReader(file: tarFile)
-            let symlinkTarget = URL(filePath: target).deletingLastPathComponent().appending(path: symlinkRelative)
-
-            // standardize so that we remove any and all ../ and ./ in the path since symlink targets
-            // are relative paths to the target file from the symlink's parent dir itself
-            target = symlinkTarget.standardized.relativePath
-            let (_, targetData) = try archiveReader.extractFile(path: target)
-            data = targetData
-        }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: nil)
-        let fileName = URL(filePath: target).lastPathComponent
-        let fileURL = directory.appendingPathComponent(fileName)
-        try data.write(to: fileURL, options: .atomic)
-        return fileURL
-    }
 }
