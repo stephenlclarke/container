@@ -347,16 +347,18 @@ public struct Utility {
             }
         case .attachments(let parsedNetworks):
             let networkClient = NetworkClient()
-            let builtinNetworkId = try await networkClient.builtin?.id
+            let availableNetworks = try await networkClient.list()
+            let builtinNetworkId = availableNetworks.first(where: \.isBuiltin)?.id
             config.networks = try getAttachmentConfigurations(
                 containerId: config.id,
                 builtinNetworkId: builtinNetworkId,
                 networks: parsedNetworks,
                 dnsDomain: containerSystemConfig.dns.domain,
             )
-            for attachmentConfiguration in config.networks {
-                _ = try await networkClient.get(id: attachmentConfiguration.network)
-            }
+            try validateNetworkAttachments(
+                config.networks,
+                availableNetworkIDs: Set(availableNetworks.map(\.id))
+            )
         }
 
         if management.dnsDisabled {
@@ -555,6 +557,15 @@ public struct Utility {
             return .host
         }
         return .attachments(try networks.map { try Parser.network($0) })
+    }
+
+    static func validateNetworkAttachments(
+        _ attachments: [AttachmentConfiguration],
+        availableNetworkIDs: Set<String>
+    ) throws {
+        for attachment in attachments where !availableNetworkIDs.contains(attachment.network) {
+            throw ContainerizationError(.notFound, message: "network \(attachment.network) not found")
+        }
     }
 
     private static func getKernel(path: String?, arguments: [String]) async throws -> Kernel {

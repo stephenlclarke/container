@@ -138,6 +138,31 @@ struct UtilityTests {
         #expect(await probe.cancelled == 2)
     }
 
+    @Test("Validate network attachments from one network snapshot")
+    func testBatchNetworkAttachmentValidation() throws {
+        let attachments = [
+            AttachmentConfiguration(network: "frontend", options: .init(hostname: "web")),
+            AttachmentConfiguration(network: "backend", options: .init(hostname: "db")),
+        ]
+
+        try Utility.validateNetworkAttachments(
+            attachments,
+            availableNetworkIDs: ["frontend", "backend", "unused"]
+        )
+        do {
+            try Utility.validateNetworkAttachments(
+                attachments,
+                availableNetworkIDs: ["frontend"]
+            )
+            Issue.record("expected missing network error")
+        } catch let error as ContainerizationError {
+            #expect(error.code == .notFound)
+            #expect(error.message == "network backend not found")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+    }
+
     @Test("Parse simple key-value pairs")
     func testSimpleKeyValuePairs() {
         let result = Utility.parseKeyValuePairs(["key1=value1", "key2=value2"])
