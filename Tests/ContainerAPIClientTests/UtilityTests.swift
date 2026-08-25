@@ -22,6 +22,32 @@ import Testing
 
 @testable import ContainerAPIClient
 
+private actor PreparationOverlapProbe {
+    private var active = 0
+    private(set) var maximumActive = 0
+
+    func begin() {
+        active += 1
+        maximumActive = max(maximumActive, active)
+    }
+
+    func end() {
+        active -= 1
+    }
+}
+
+private actor PreparationCancellationProbe {
+    private(set) var cancelled = 0
+
+    func recordCancellation() {
+        cancelled += 1
+    }
+}
+
+private enum PreparationTestError: Error {
+    case expected
+}
+
 struct UtilityTests {
 
     @Test("A v2 logging request bypasses the legacy driver projection")
@@ -49,6 +75,67 @@ struct UtilityTests {
         )
 
         #expect(configuration.storage == .none)
+    }
+
+    @Test("Prepare independent container resources concurrently")
+    func testConcurrentContainerPreparation() async throws {
+        let probe = PreparationOverlapProbe()
+
+        let result = try await Utility.prepareConcurrently(
+            {
+                await probe.begin()
+                try await Task.sleep(for: .milliseconds(50))
+                await probe.end()
+                return "image"
+            },
+            {
+                await probe.begin()
+                try await Task.sleep(for: .milliseconds(50))
+                await probe.end()
+                return "kernel"
+            },
+            {
+                await probe.begin()
+                try await Task.sleep(for: .milliseconds(50))
+                await probe.end()
+                return "init"
+            }
+        )
+
+        #expect(result.0 == "image")
+        #expect(result.1 == "kernel")
+        #expect(result.2 == "init")
+        #expect(await probe.maximumActive == 3)
+    }
+
+    @Test("Cancel remaining container preparation after a failure")
+    func testConcurrentContainerPreparationCancellation() async {
+        let probe = PreparationCancellationProbe()
+        let failing: @Sendable () async throws -> String = {
+            try await Task.sleep(for: .milliseconds(20))
+            throw PreparationTestError.expected
+        }
+        let waiting: @Sendable () async throws -> String = {
+            do {
+                try await Task.sleep(for: .seconds(10))
+                return "unexpected"
+            } catch is CancellationError {
+                await probe.recordCancellation()
+                throw CancellationError()
+            } catch {
+                throw error
+            }
+        }
+
+        do {
+            _ = try await Utility.prepareConcurrently(failing, waiting, waiting)
+            Issue.record("expected preparation failure")
+        } catch PreparationTestError.expected {
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(await probe.cancelled == 2)
     }
 
     @Test("Parse simple key-value pairs")
