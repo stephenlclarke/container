@@ -29,6 +29,28 @@ import Logging
 import MachineAPIClient
 import SystemPackage
 
+// systemd poweroff signal (SIGRTMIN+4 on Linux, where SIGRTMIN=34 under glibc)
+private let SIGRTMIN4: Int32 = 38
+
+struct MachineCreationReservations: Sendable {
+    private(set) var ids: Set<String> = []
+
+    mutating func reserve(_ id: String, existing: Set<String>) throws {
+        guard !ids.contains(id), !existing.contains(id) else {
+            throw ContainerizationError(
+                .exists,
+                message: "container machine already exists: \(id)"
+            )
+        }
+        ids.insert(id)
+    }
+
+    @discardableResult
+    mutating func remove(_ id: String) -> Bool {
+        ids.remove(id) != nil
+    }
+}
+
 public actor MachinesService {
     private static let machinesDir = FilePath.Component("machines")
     private static let stateFile = FilePath.Component("state.json")
@@ -53,6 +75,7 @@ public actor MachinesService {
     private let machineRoot: FilePath
     private let lock = AsyncLock()
     private var machines: [String: MachineState]
+    private var pendingCreations = MachineCreationReservations()
     private let exitMonitor: ExitMonitor
     private let log: Logger
 
@@ -203,15 +226,12 @@ public actor MachinesService {
     public func create(configuration: MachineConfiguration, resources: MachineResources?, bootConfig: MachineConfig) async throws {
         self.log.debug("\(#function)")
 
-        try await self.lock.withLock { context in
-            guard await self.machines[configuration.id] == nil else {
-                throw ContainerizationError(
-                    .exists,
-                    message: "container machine already exists: \(configuration.id)"
-                )
-            }
+        let path = try self.bundlePath(id: configuration.id)
+        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-reserve", "id": "\(configuration.id)"]) { context in
+            try await self.reserveMachineCreation(configuration.id, context: context)
+        }
 
-            let path = try self.bundlePath(id: configuration.id)
+        do {
             let bundle = try MachineBundle.create(
                 path: path,
                 machineConfiguration: configuration,
@@ -220,38 +240,40 @@ public actor MachinesService {
                 bootConfig: bootConfig,
             )
 
-            do {
-                let machineImage = ClientImage(description: configuration.image)
-                let imageFs = try await machineImage.getCreateSnapshot(platform: configuration.platform)
-                try bundle.setMachineRootFs(cloning: imageFs)
-                try Self.validateMachineRootfs(
-                    blockDevice: FilePath(bundle.machineRootfs.source),
-                    image: configuration.image.reference
-                )
+            let machineImage = ClientImage(description: configuration.image)
+            let imageFs = try await machineImage.getCreateSnapshot(platform: configuration.platform)
+            try bundle.setMachineRootFs(cloning: imageFs)
+            try Self.validateMachineRootfs(
+                blockDevice: FilePath(bundle.machineRootfs.source),
+                image: configuration.image.reference
+            )
 
-                let state = MachineState(
-                    snapshot: .init(
-                        configuration: configuration,
-                        status: .stopped,
-                        bootConfig: bootConfig,
-                        createdDate: Date(),
-                        containerId: nil,
-                    )
-                )
-                await self.setMachineState(configuration.id, state, context: context)
-
-                if await self.default == nil {
-                    try await self._setDefault(id: configuration.id)
-                }
-            } catch {
-                do {
-                    try bundle.delete()
-                } catch {
-                    self.log.error("failed to delete bundle for container machine \(configuration.id)")
-                }
-
-                throw error
+            let snapshot = MachineSnapshot(
+                configuration: configuration,
+                status: .stopped,
+                bootConfig: bootConfig,
+                createdDate: Date(),
+                containerId: nil
+            )
+            try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-commit", "id": "\(configuration.id)"]) { context in
+                try await self.commitMachineCreation(snapshot, context: context)
             }
+        } catch {
+            if FileManager.default.fileExists(atPath: path.string) {
+                do {
+                    let bundle = MachineBundle(path: path)
+                    try bundle.delete()
+                } catch let cleanupError {
+                    self.log.error(
+                        "failed to delete bundle for container machine \(configuration.id)",
+                        metadata: ["error": "\(cleanupError)"]
+                    )
+                }
+            }
+            await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(configuration.id)"]) { context in
+                await self.rollbackMachineCreation(configuration.id, context: context)
+            }
+            throw error
         }
     }
 
@@ -356,6 +378,44 @@ public actor MachinesService {
 
     private func setMachineState(_ id: String, _ state: MachineState, context: AsyncLock.Context) async {
         self.machines[id] = state
+    }
+
+    private func reserveMachineCreation(
+        _ id: String,
+        context _: AsyncLock.Context
+    ) throws {
+        try self.pendingCreations.reserve(id, existing: Set(self.machines.keys))
+        do {
+            try Task.checkCancellation()
+        } catch {
+            self.pendingCreations.remove(id)
+            throw error
+        }
+    }
+
+    private func commitMachineCreation(
+        _ snapshot: MachineSnapshot,
+        context _: AsyncLock.Context
+    ) throws {
+        try Task.checkCancellation()
+        guard self.pendingCreations.ids.contains(snapshot.id) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "container machine creation reservation not found: \(snapshot.id)"
+            )
+        }
+        if self.default == nil {
+            try self._setDefault(id: snapshot.id)
+        }
+        self.pendingCreations.remove(snapshot.id)
+        self.machines[snapshot.id] = MachineState(snapshot: snapshot)
+    }
+
+    private func rollbackMachineCreation(
+        _ id: String,
+        context _: AsyncLock.Context
+    ) {
+        self.pendingCreations.remove(id)
     }
 
     static func markMachineRunning(
