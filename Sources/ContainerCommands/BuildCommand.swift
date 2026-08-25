@@ -29,6 +29,19 @@ import Foundation
 import NIO
 import TerminalProgress
 
+struct BuilderReadinessBackoff: Sendable {
+    private static let initialDelay: Duration = .milliseconds(50)
+    private static let maximumDelay: Duration = .seconds(1)
+
+    private var delay = Self.initialDelay
+
+    mutating func nextDelay() -> Duration {
+        let current = delay
+        delay = min(delay * 2, Self.maximumDelay)
+        return current
+    }
+}
+
 extension Application {
     public struct BuildCommand: AsyncLoggableCommand {
         public init() {}
@@ -242,6 +255,7 @@ extension Application {
 
                     group.addTask { [builderContainerId, vsockPort, cpus, memory, log, dnsNameservers, sshForwarding] in
                         let client = ContainerClient()
+                        var retryBackoff = BuilderReadinessBackoff()
                         while true {
                             do {
                                 let fh = try await client.dial(id: builderContainerId, port: vsockPort)
@@ -267,11 +281,7 @@ extension Application {
                                     return b
                                 } catch {
                                     let readinessError = error
-                                    do {
-                                        try await b.shutdown()
-                                    } catch {
-                                        log.warning("failed to shut down builder client: \(error)")
-                                    }
+                                    await b.shutdown()
                                     throw readinessError
                                 }
                             } catch {
@@ -288,21 +298,24 @@ extension Application {
                                 progress.set(tasks: 0)
                                 progress.set(totalTasks: 3)
 
-                                try await BuilderStart.start(
-                                    cpus: cpus,
-                                    memory: memory,
-                                    log: log,
-                                    dnsNameservers: dnsNameservers,
-                                    enableSSHForwarding: enableSSHForwarding,
-                                    sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
-                                    sshSocketMounts: sshForwarding.socketMounts,
-                                    builderContainerId: builderContainerId,
-                                    progressUpdate: progress.handler,
-                                    containerSystemConfig: containerSystemConfig,
-                                )
+                                if let containerError = error as? ContainerizationError,
+                                    containerError.code == .invalidState || containerError.code == .notFound
+                                {
+                                    try await BuilderStart.start(
+                                        cpus: cpus,
+                                        memory: memory,
+                                        log: log,
+                                        dnsNameservers: dnsNameservers,
+                                        enableSSHForwarding: enableSSHForwarding,
+                                        sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
+                                        sshSocketMounts: sshForwarding.socketMounts,
+                                        builderContainerId: builderContainerId,
+                                        progressUpdate: progress.handler,
+                                        containerSystemConfig: containerSystemConfig,
+                                    )
+                                }
 
-                                // wait (seconds) for builder to start listening on vsock
-                                try await Task.sleep(for: .seconds(5))
+                                try await Task.sleep(for: retryBackoff.nextDelay())
                                 continue
                             }
                         }
