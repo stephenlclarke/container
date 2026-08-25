@@ -26,6 +26,18 @@ import Foundation
 import Logging
 import TerminalProgress
 
+enum ConcurrentImageDiskUsageTotals {
+    @concurrent
+    static func run<Content: Sendable, Snapshots: Sendable>(
+        content: @Sendable @escaping () async throws -> Content,
+        snapshots: @Sendable @escaping () async throws -> Snapshots
+    ) async throws -> (content: Content, snapshots: Snapshots) {
+        async let contentSize = content()
+        async let snapshotSize = snapshots()
+        return try await (contentSize, snapshotSize)
+    }
+}
+
 public actor ImagesService {
     private let log: Logger
     private let contentStore: ContentStore
@@ -294,6 +306,16 @@ public actor ImagesService {
         }
 
         let images = try await self._list()
+        let contentStore = self.contentStore
+        let snapshotStore = self.snapshotStore
+        async let diskTotals = ConcurrentImageDiskUsageTotals.run(
+            content: {
+                try await contentStore.totalAllocatedSize()
+            },
+            snapshots: {
+                await snapshotStore.totalAllocatedSize()
+            }
+        )
         var activeCount = 0
         var activeContentSizes: [String: UInt64] = [:]
         var activeSnapshotSizes: [String: UInt64] = [:]
@@ -314,9 +336,8 @@ public actor ImagesService {
             }
         }
 
-        let snapshotDiskSize = await self.snapshotStore.totalAllocatedSize()
-        let contentDiskTotal = try await self.contentStore.totalAllocatedSize()
-        let totalOnDisk = contentDiskTotal + snapshotDiskSize
+        let totals = try await diskTotals
+        let totalOnDisk = totals.content + totals.snapshots
         let activeSize = activeContentSizes.values.reduce(0, +) + activeSnapshotSizes.values.reduce(0, +)
         let reclaimable = totalOnDisk > activeSize ? totalOnDisk - activeSize : 0
 

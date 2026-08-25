@@ -77,3 +77,79 @@ struct SnapshotStoreDiskUsageTests {
             ])
     }
 }
+
+struct ImageDiskUsageTotalsTests {
+    @Test("Content and snapshot totals are measured concurrently")
+    func totalsOverlap() async throws {
+        let entrants = PollingCountdown(count: 2)
+        let release = PollingGate()
+        let totals = Task {
+            try await ConcurrentImageDiskUsageTotals.run(
+                content: {
+                    await entrants.arrive()
+                    try await release.wait()
+                    return 10
+                },
+                snapshots: {
+                    await entrants.arrive()
+                    try await release.wait()
+                    return 20
+                }
+            )
+        }
+
+        do {
+            try await entrants.wait(timeout: .seconds(1))
+        } catch {
+            totals.cancel()
+            await release.open()
+            throw error
+        }
+        await release.open()
+        let result = try await totals.value
+
+        #expect(result.content == 10)
+        #expect(result.snapshots == 20)
+    }
+}
+
+private enum ConcurrencyTestError: Error {
+    case timedOut
+}
+
+private actor PollingCountdown {
+    private var remaining: Int
+
+    init(count: Int) {
+        self.remaining = count
+    }
+
+    func arrive() {
+        remaining -= 1
+    }
+
+    func wait(timeout: Duration) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while remaining > 0 {
+            guard clock.now < deadline else {
+                throw ConcurrencyTestError.timedOut
+            }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+}
+
+private actor PollingGate {
+    private var isOpen = false
+
+    func wait() async throws {
+        while !isOpen {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+    }
+
+    func open() {
+        isOpen = true
+    }
+}
