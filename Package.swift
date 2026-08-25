@@ -463,7 +463,10 @@ let package = Package(
         ),
         .testTarget(
             name: "ContainerImagesServiceTests",
-            dependencies: ["ContainerImagesService"]
+            dependencies: [
+                "ContainerImagesService",
+                "ContainerResource",
+            ]
         ),
         .target(
             name: "ContainerImagesServiceClient",

@@ -216,19 +216,16 @@ public actor SnapshotStore {
     }
 
     /// Get the disk size for a specific snapshot descriptor
-    public func getSnapshotSize(descriptor: Descriptor) -> UInt64 {
+    public func getSnapshotSize(descriptor: Descriptor) async -> UInt64 {
         let snapshotPath = self.snapshotDir(descriptor)
-        guard self.fm.fileExists(atPath: snapshotPath.path) else {
-            return 0
-        }
-        return self.fm.allocatedSize(of: snapshotPath)
+        return await Self.allocatedSize(of: snapshotPath)
     }
 
     /// Returns (trimmed digest, size) pairs for every unpackable snapshot owned by the image.
     public func getSnapshotSizes(for image: Containerization.Image) async throws -> [(digest: String, size: UInt64)] {
         var results: [(digest: String, size: UInt64)] = []
         for descriptor in try await image.unpackableDescriptors() {
-            let size = self.getSnapshotSize(descriptor: descriptor)
+            let size = await self.getSnapshotSize(descriptor: descriptor)
             guard size > 0 else { continue }
             results.append((descriptor.digest.trimmingDigestPrefix, size))
         }
@@ -236,8 +233,17 @@ public actor SnapshotStore {
     }
 
     /// Total allocated bytes across all snapshot storage (including orphans).
-    public func totalAllocatedSize() -> UInt64 {
-        self.fm.allocatedSize(of: self.path)
+    public func totalAllocatedSize() async -> UInt64 {
+        await Self.allocatedSize(of: self.path)
+    }
+
+    @concurrent
+    static func allocatedSize(of path: URL) async -> UInt64 {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: path.path) else {
+            return 0
+        }
+        return fm.allocatedSize(of: path)
     }
 }
 
