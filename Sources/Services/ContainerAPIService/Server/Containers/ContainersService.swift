@@ -125,6 +125,9 @@ public actor ContainersService {
         var client: RuntimeClient? = nil
         var restart = ContainerRestartTracker()
         var dockerStateError = ""
+        /// Distinguishes a container from a later replacement that reuses its ID.
+        /// Copies retain the generation so delayed commits can be fenced safely.
+        let generation = UUID()
 
         func getClient() throws -> RuntimeClient {
             guard let client else {
@@ -135,6 +138,38 @@ public actor ContainersService {
                 throw ContainerizationError(.invalidState, message: message)
             }
             return client
+        }
+    }
+
+    private struct ContainerBootstrapPlan {
+        let containerGeneration: UUID
+        let operationGeneration: UInt64
+        let path: URL
+        let configuration: ContainerConfiguration
+    }
+
+    private struct ContainerBootstrapTimings {
+        private let startedAt = ProcessInfo.processInfo.systemUptime
+        private var phaseStartedAt = ProcessInfo.processInfo.systemUptime
+        private var phases: [(String, Int64)] = []
+
+        mutating func finish(_ phase: String) {
+            let now = ProcessInfo.processInfo.systemUptime
+            phases.append((phase, Int64((now - phaseStartedAt) * 1_000_000)))
+            phaseStartedAt = now
+        }
+
+        func metadata(id: String, outcome: String) -> Logger.Metadata {
+            let phaseSummary = phases.map { "\($0.0)=\($0.1)" }.joined(separator: ",")
+            let totalMicroseconds = Int64(
+                (ProcessInfo.processInfo.systemUptime - startedAt) * 1_000_000
+            )
+            return [
+                "id": "\(id)",
+                "outcome": "\(outcome)",
+                "phase-duration-us": "\(phaseSummary)",
+                "total-duration-us": "\(totalMicroseconds)",
+            ]
         }
     }
 
@@ -1835,46 +1870,70 @@ public actor ContainersService {
             )
         }
 
-        let lifecycle = try lifecycleRecord(id: id)
-        guard
-            Self.lifecycleMayBootstrap(
-                removalRequested: lifecycle.intent.removalRequested,
-                removalInProgress: lifecycle.snapshot.removalInProgress
-            )
-        else {
-            throw ContainerizationError(
-                .invalidState,
-                message: "container \(id) requires removal recovery"
-            )
-        }
-
-        return try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
-            var state = try await self.getContainerState(id: id, context: context)
+        var timings = ContainerBootstrapTimings()
+        let plan = try await self.lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
+        ) { context -> ContainerBootstrapPlan? in
+            let state = try await self.getContainerState(id: id, context: context)
 
             // We've already bootstrapped this container. Ideally we should be able to
             // return some sort of error code from the sandbox svc to check here, but this
             // is also a very simple check and faster than doing an rpc to get the same result.
             if state.client != nil {
-                return false
+                return nil
             }
 
             // Attach is allowed to bootstrap only a never-started container.
             // Once startedDate is durable, recreating the runtime here would
             // silently turn an attach to an exited container into a restart.
             if onlyIfNeverStarted, state.snapshot.startedDate != nil {
-                return false
+                return nil
+            }
+
+            let lifecycle = try await self.lifecycleRecord(id: id)
+            guard
+                Self.lifecycleMayBootstrap(
+                    removalRequested: lifecycle.intent.removalRequested,
+                    removalInProgress: lifecycle.snapshot.removalInProgress
+                )
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container \(id) requires removal recovery"
+                )
             }
 
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let (config, _) = try Self.getContainerConfiguration(at: path)
+            return ContainerBootstrapPlan(
+                containerGeneration: state.generation,
+                operationGeneration: lifecycle.snapshot.operationGeneration,
+                path: path,
+                configuration: config
+            )
+        }
+        timings.finish("capture")
+        guard let plan else {
+            log.debug(
+                "container bootstrap timings",
+                metadata: timings.metadata(id: id, outcome: "already-bootstrapped")
+            )
+            return false
+        }
+
+        var runtimeClientToken: UUID?
+        do {
             let authenticatedProtectedOptions =
                 try await self
                 .validateLoggingForStart(
                     containerID: id,
-                    configuration: config.logging
+                    configuration: plan.configuration.logging
                 )
+            timings.finish("logging-validation")
 
-            let networkAttachments = Self.networkBootstrapAttachments(for: config)
+            let networkAttachments = Self.networkBootstrapAttachments(
+                for: plan.configuration
+            )
             let networkBootstrapInfos: [NetworkBootstrapInfo]
             if networkAttachments.isEmpty {
                 networkBootstrapInfos = []
@@ -1888,77 +1947,141 @@ public actor ContainersService {
                 }
                 networkBootstrapInfos = plugins.map { NetworkBootstrapInfo(plugin: $0) }
             }
+            timings.finish("network-resolution")
 
-            do {
-                let runtimeStdio: [FileHandle?]
-                if let remoteLogDriverPlane = self.remoteLogDriverPlane {
-                    runtimeStdio =
-                        try await remoteLogDriverPlane
-                        .prepareBootstrap(
-                            containerID: id,
-                            bundle: ContainerResource.Bundle(path: path),
-                            configuration: config,
-                            authenticatedProtectedOptions:
-                                authenticatedProtectedOptions,
-                            stdio: stdio
-                        )
-                } else {
-                    runtimeStdio = stdio
+            let runtimeStdio: [FileHandle?]
+            if let remoteLogDriverPlane = self.remoteLogDriverPlane {
+                runtimeStdio =
+                    try await remoteLogDriverPlane
+                    .prepareBootstrap(
+                        containerID: id,
+                        bundle: ContainerResource.Bundle(path: plan.path),
+                        configuration: plan.configuration,
+                        authenticatedProtectedOptions:
+                            authenticatedProtectedOptions,
+                        stdio: stdio
+                    )
+            } else {
+                runtimeStdio = stdio
+            }
+            timings.finish("logging-prepare")
+
+            guard
+                let runtimePlugin = self.runtimePlugins.first(where: {
+                    $0.name == plan.configuration.runtimeHandler
+                })
+            else {
+                throw ContainerizationError(
+                    .notFound,
+                    message:
+                        "unable to locate runtime plugin \(plan.configuration.runtimeHandler)"
+                )
+            }
+            try Self.registerService(
+                plugin: runtimePlugin,
+                loader: self.pluginLoader,
+                configuration: plan.configuration,
+                path: plan.path,
+                debug: self.debugHelpers
+            )
+            timings.finish("launchd-registration")
+
+            let runtimeClient = try await RuntimeClient.create(
+                id: id,
+                runtime: plan.configuration.runtimeHandler
+            )
+            timings.finish("runtime-client")
+            try await runtimeClient.bootstrap(
+                stdio: runtimeStdio,
+                networkBootstrapInfos: networkBootstrapInfos,
+                dynamicEnv: dynamicEnv
+            )
+            timings.finish("runtime-bootstrap")
+            try await self.remoteLogDriverPlane?.bootstrapSucceeded(
+                containerID: id
+            )
+            timings.finish("logging-commit")
+
+            let token = UUID()
+            runtimeClientToken = token
+            try await self.exitMonitor.registerProcess(id: id) {
+                [weak self] callbackID, status in
+                guard let self else {
+                    return
                 }
-                try Self.registerService(
-                    plugin: self.runtimePlugins.first { $0.name == config.runtimeHandler }!,
-                    loader: self.pluginLoader,
-                    configuration: config,
-                    path: path,
-                    debug: self.debugHelpers
+                try await self.handleContainerExit(
+                    id: callbackID,
+                    code: status,
+                    runtimeClientToken: token
                 )
+            }
+            timings.finish("exit-monitor")
 
-                let runtime = state.snapshot.configuration.runtimeHandler
-                let runtimeClient = try await RuntimeClient.create(
-                    id: id,
-                    runtime: runtime
-                )
-                try await runtimeClient.bootstrap(
-                    stdio: runtimeStdio,
-                    networkBootstrapInfos: networkBootstrapInfos,
-                    dynamicEnv: dynamicEnv
-                )
-                try await self.remoteLogDriverPlane?.bootstrapSucceeded(
-                    containerID: id
-                )
-
-                let runtimeClientToken = UUID()
-                try await self.exitMonitor.registerProcess(id: id) {
-                    [weak self] callbackID, status in
-                    guard let self else {
-                        return
-                    }
-                    try await self.handleContainerExit(
-                        id: callbackID,
-                        code: status,
-                        runtimeClientToken: runtimeClientToken
+            try await self.lock.withLock(
+                logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]
+            ) { context in
+                var state = try await self.getContainerState(id: id, context: context)
+                let lifecycle = try await self.lifecycleRecord(id: id)
+                guard
+                    Self.bootstrapCommitIsCurrent(
+                        plannedContainerGeneration: plan.containerGeneration,
+                        currentContainerGeneration: state.generation,
+                        plannedOperationGeneration: plan.operationGeneration,
+                        currentOperationGeneration: lifecycle.snapshot.operationGeneration
+                    ),
+                    Self.lifecycleMayBootstrap(
+                        removalRequested: lifecycle.intent.removalRequested,
+                        removalInProgress: lifecycle.snapshot.removalInProgress
+                    ),
+                    state.client == nil,
+                    !onlyIfNeverStarted || state.snapshot.startedDate == nil
+                else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "container \(id) changed during bootstrap"
                     )
                 }
 
                 state.client = runtimeClient
-                await self.setRuntimeClientToken(runtimeClientToken, id: id)
+                await self.setRuntimeClientToken(token, id: id)
                 await self.setContainerState(id, state, context: context)
-                return true
-            } catch {
-                let label = Self.fullLaunchdServiceLabel(
-                    runtimeName: config.runtimeHandler,
-                    instanceId: id
-                )
-
-                await self.exitMonitor.stopTracking(id: id)
-                await self.clearRuntimeClientToken(id: id)
-                try? ServiceManager.deregister(fullServiceLabel: label)
-                try? await self.remoteLogDriverPlane?.abortBootstrap(
-                    containerID: id
-                )
-                throw error
             }
+            timings.finish("state-commit")
+            log.debug(
+                "container bootstrap timings",
+                metadata: timings.metadata(id: id, outcome: "success")
+            )
+            return true
+        } catch {
+            let label = Self.fullLaunchdServiceLabel(
+                runtimeName: plan.configuration.runtimeHandler,
+                instanceId: id
+            )
+
+            await self.exitMonitor.stopTracking(id: id)
+            if let runtimeClientToken {
+                self.clearRuntimeClientToken(runtimeClientToken, id: id)
+            }
+            try? ServiceManager.deregister(fullServiceLabel: label)
+            try? await self.remoteLogDriverPlane?.abortBootstrap(
+                containerID: id
+            )
+            log.debug(
+                "container bootstrap timings",
+                metadata: timings.metadata(id: id, outcome: "failure")
+            )
+            throw error
         }
+    }
+
+    static func bootstrapCommitIsCurrent(
+        plannedContainerGeneration: UUID,
+        currentContainerGeneration: UUID,
+        plannedOperationGeneration: UInt64,
+        currentOperationGeneration: UInt64
+    ) -> Bool {
+        plannedContainerGeneration == currentContainerGeneration
+            && plannedOperationGeneration == currentOperationGeneration
     }
 
     func validateLoggingForStart(
@@ -4981,6 +5104,13 @@ public actor ContainersService {
     }
 
     private func clearRuntimeClientToken(id: String) {
+        runtimeClientTokens.removeValue(forKey: id)
+    }
+
+    private func clearRuntimeClientToken(_ token: UUID, id: String) {
+        guard runtimeClientTokens[id] == token else {
+            return
+        }
         runtimeClientTokens.removeValue(forKey: id)
     }
 
