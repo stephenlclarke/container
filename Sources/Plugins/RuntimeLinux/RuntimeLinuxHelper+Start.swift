@@ -60,7 +60,8 @@ extension RuntimeLinuxHelper {
                 log.info("stopping helper", metadata: ["name": "\(commandName)"])
             }
 
-            let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
+            // Each helper manages one VM, so one event loop can serve its agent and socket forwarders.
+            let eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
             do {
                 try adjustLimits()
                 signal(SIGPIPE, SIG_IGN)

@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerRuntimeClient
 import ContainerizationError
 import Foundation
 import Testing
@@ -26,6 +27,33 @@ struct ContainerLifecycleValidationTests {
     func emptyPostStartProcessSnapshotDefersToTheExitMonitor() {
         #expect(ContainersService.reportedInitPID([]) == 0)
         #expect(ContainersService.reportedInitPID([-1, 42, 7]) == 7)
+    }
+
+    @Test
+    func finalStartCommitRecordsRuntimeStateAtomically() {
+        var state = ContainersService.ContainerState(
+            snapshot: Self.snapshot(id: "started")
+        )
+        state.snapshot.exitCode = 1
+        state.snapshot.exitedDate = Date(timeIntervalSince1970: 100)
+        let startedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let runtimeState = SandboxSnapshot(
+            status: .running,
+            networks: [],
+            containers: []
+        )
+
+        ContainersService.markContainerStarted(
+            &state,
+            from: runtimeState,
+            at: startedDate
+        )
+
+        #expect(state.snapshot.status == .running)
+        #expect(state.snapshot.networks.isEmpty)
+        #expect(state.snapshot.startedDate == startedDate)
+        #expect(state.snapshot.exitCode == nil)
+        #expect(state.snapshot.exitedDate == nil)
     }
 
     @Test
@@ -371,6 +399,32 @@ struct ContainerLifecycleValidationTests {
                 runtimeStatus: .stopped,
                 reportedPID: 84
             ) == 0
+        )
+    }
+
+    private static func snapshot(id: String) -> ContainerSnapshot {
+        let image = ImageDescription(
+            reference: "docker.io/library/alpine:latest",
+            descriptor: .init(
+                mediaType: "application/vnd.oci.image.manifest.v1+json",
+                digest: "sha256:" + String(repeating: "0", count: 64),
+                size: 0
+            )
+        )
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: []
+        )
+        return ContainerSnapshot(
+            configuration: ContainerConfiguration(
+                id: id,
+                image: image,
+                process: process
+            ),
+            status: .stopped,
+            networks: [],
+            startedDate: nil
         )
     }
 }

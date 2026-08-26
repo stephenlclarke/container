@@ -39,6 +39,40 @@ public struct Utility {
         case attachments([Parser.ParsedNetwork])
     }
 
+    /// Run independent preparation operations as structured child tasks so a
+    /// failure cancels and awaits the remaining work before returning.
+    static func prepareConcurrently<A: Sendable, B: Sendable, C: Sendable>(
+        _ first: @escaping @Sendable () async throws -> A,
+        _ second: @escaping @Sendable () async throws -> B,
+        _ third: @escaping @Sendable () async throws -> C
+    ) async throws -> (A, B, C) {
+        async let firstResult = first()
+        async let secondResult = second()
+        async let thirdResult = third()
+        return try await (firstResult, secondResult, thirdResult)
+    }
+
+    /// Divide the user-visible download budget between the workload and init
+    /// image pipelines. A budget of one keeps the image pulls serial while the
+    /// independent kernel fetch can still overlap them.
+    static func imageDownloadLimits(
+        maxConcurrentDownloads: Int
+    ) throws -> (workload: Int, initImage: Int?) {
+        guard maxConcurrentDownloads > 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "maximum number of concurrent downloads must be greater than 0, got \(maxConcurrentDownloads)"
+            )
+        }
+        guard maxConcurrentDownloads > 1 else {
+            return (workload: 1, initImage: nil)
+        }
+        return (
+            workload: (maxConcurrentDownloads + 1) / 2,
+            initImage: maxConcurrentDownloads / 2
+        )
+    }
+
     public static func createContainerID(name: String?) -> String {
         guard let name else {
             return UUID().uuidString.lowercased()
@@ -142,72 +176,97 @@ public struct Utility {
             log: log
         )
         let scheme = try RequestScheme(registry.scheme)
-
-        await progressUpdate?([
-            .setDescription("Fetching image"),
-            .setItemsName("blobs"),
-        ])
-        let taskManager = ProgressTaskCoordinator()
-        let fetchTask = await taskManager.startTask()
-        let fetchProgressUpdate = progressUpdate.map {
-            ProgressTaskCoordinator.handler(for: fetchTask, from: $0)
-        }
-        let img = try await ClientImage.fetch(
-            reference: image,
-            platform: requestedPlatform,
-            scheme: scheme,
-            containerSystemConfig: containerSystemConfig,
-            progressUpdate: fetchProgressUpdate,
+        let imageDownloadLimits = try imageDownloadLimits(
             maxConcurrentDownloads: imageFetch.maxConcurrentDownloads
         )
+        let kernelPath = management.kernel
+        let kernelArguments = management.kernelArgs
 
-        // Unpack a fetched image before use
-        await progressUpdate?([
-            .setDescription("Unpacking image"),
-            .setItemsName("entries"),
-        ])
-        let unpackTask = await taskManager.startTask()
-        let unpackProgressUpdate = progressUpdate.map {
-            ProgressTaskCoordinator.handler(for: unpackTask, from: $0)
-        }
-        try await img.getCreateSnapshot(
-            platform: requestedPlatform,
-            progressUpdate: unpackProgressUpdate)
-
-        await progressUpdate?([
-            .setDescription("Fetching kernel"),
-            .setItemsName("binary"),
-        ])
-
-        let kernel = try await self.getKernel(management: management)
-
-        // Pull and unpack the initial filesystem
-        await progressUpdate?([
-            .setDescription("Fetching init image"),
-            .setItemsName("blobs"),
-        ])
-        let fetchInitTask = await taskManager.startTask()
+        // Each image pipeline needs its own coordinator: one pipeline moving
+        // to its unpack phase must not suppress progress from the other.
+        let imageTaskManager = ProgressTaskCoordinator()
+        let initTaskManager = ProgressTaskCoordinator()
+        let mountTaskManager = ProgressTaskCoordinator()
         let initImageRef = management.initImage ?? containerSystemConfig.vminit.image
-        let fetchInitProgressUpdate = progressUpdate.map {
-            ProgressTaskCoordinator.handler(for: fetchInitTask, from: $0)
-        }
-        let initImage = try await ClientImage.fetch(
-            reference: initImageRef, platform: .current, scheme: scheme,
-            containerSystemConfig: containerSystemConfig,
-            progressUpdate: fetchInitProgressUpdate,
-            maxConcurrentDownloads: imageFetch.maxConcurrentDownloads)
+        let prepareInitImage: @Sendable (Int) async throws -> Void = { downloadLimit in
+            await progressUpdate?([
+                .setDescription("Fetching init image"),
+                .setItemsName("blobs"),
+            ])
+            let fetchTask = await initTaskManager.startTask()
+            let initImage = try await ClientImage.fetch(
+                reference: initImageRef,
+                platform: .current,
+                scheme: scheme,
+                containerSystemConfig: containerSystemConfig,
+                progressUpdate: progressUpdate.map {
+                    ProgressTaskCoordinator.handler(for: fetchTask, from: $0)
+                },
+                maxConcurrentDownloads: downloadLimit
+            )
 
-        await progressUpdate?([
-            .setDescription("Unpacking init image"),
-            .setItemsName("entries"),
-        ])
-        let unpackInitTask = await taskManager.startTask()
-        let unpackInitProgressUpdate = progressUpdate.map {
-            ProgressTaskCoordinator.handler(for: unpackInitTask, from: $0)
+            await progressUpdate?([
+                .setDescription("Unpacking init image"),
+                .setItemsName("entries"),
+            ])
+            let unpackTask = await initTaskManager.startTask()
+            try await initImage.getCreateSnapshot(
+                platform: .current,
+                progressUpdate: progressUpdate.map {
+                    ProgressTaskCoordinator.handler(for: unpackTask, from: $0)
+                }
+            )
+            await initTaskManager.finish()
         }
-        _ = try await initImage.getCreateSnapshot(
-            platform: .current,
-            progressUpdate: unpackInitProgressUpdate)
+        let (img, kernel, _) = try await prepareConcurrently(
+            {
+                await progressUpdate?([
+                    .setDescription("Fetching image"),
+                    .setItemsName("blobs"),
+                ])
+                let fetchTask = await imageTaskManager.startTask()
+                let workloadImage = try await ClientImage.fetch(
+                    reference: image,
+                    platform: requestedPlatform,
+                    scheme: scheme,
+                    containerSystemConfig: containerSystemConfig,
+                    progressUpdate: progressUpdate.map {
+                        ProgressTaskCoordinator.handler(for: fetchTask, from: $0)
+                    },
+                    maxConcurrentDownloads: imageDownloadLimits.workload
+                )
+
+                await progressUpdate?([
+                    .setDescription("Unpacking image"),
+                    .setItemsName("entries"),
+                ])
+                let unpackTask = await imageTaskManager.startTask()
+                try await workloadImage.getCreateSnapshot(
+                    platform: requestedPlatform,
+                    progressUpdate: progressUpdate.map {
+                        ProgressTaskCoordinator.handler(for: unpackTask, from: $0)
+                    }
+                )
+                await imageTaskManager.finish()
+                return workloadImage
+            },
+            {
+                await progressUpdate?([
+                    .setDescription("Fetching kernel"),
+                    .setItemsName("binary"),
+                ])
+                return try await self.getKernel(path: kernelPath, arguments: kernelArguments)
+            },
+            {
+                guard let initImageDownloadLimit = imageDownloadLimits.initImage else {
+                    return
+                }
+                try await prepareInitImage(initImageDownloadLimit)
+            }
+        )
+        if imageDownloadLimits.initImage == nil {
+            try await prepareInitImage(imageDownloadLimits.workload)
+        }
 
         let imageConfig = try await img.config(for: requestedPlatform).config
         let description = img.description
@@ -278,7 +337,7 @@ public struct Utility {
                     .setDescription("Unpacking image mount"),
                     .setItemsName("entries"),
                 ])
-                let mountTask = await taskManager.startTask()
+                let mountTask = await mountTaskManager.startTask()
                 let mountProgressUpdate = progressUpdate.map {
                     ProgressTaskCoordinator.handler(for: mountTask, from: $0)
                 }
@@ -290,7 +349,7 @@ public struct Utility {
             }
         }
 
-        await taskManager.finish()
+        await mountTaskManager.finish()
 
         config.mounts = resolvedMounts
 
@@ -321,16 +380,18 @@ public struct Utility {
             }
         case .attachments(let parsedNetworks):
             let networkClient = NetworkClient()
-            let builtinNetworkId = try await networkClient.builtin?.id
+            let availableNetworks = try await networkClient.list()
+            let builtinNetworkId = availableNetworks.first(where: \.isBuiltin)?.id
             config.networks = try getAttachmentConfigurations(
                 containerId: config.id,
                 builtinNetworkId: builtinNetworkId,
                 networks: parsedNetworks,
                 dnsDomain: containerSystemConfig.dns.domain,
             )
-            for attachmentConfiguration in config.networks {
-                _ = try await networkClient.get(id: attachmentConfiguration.network)
-            }
+            try validateNetworkAttachments(
+                config.networks,
+                availableNetworkIDs: Set(availableNetworks.map(\.id))
+            )
         }
 
         if management.dnsDisabled {
@@ -531,12 +592,21 @@ public struct Utility {
         return .attachments(try networks.map { try Parser.network($0) })
     }
 
-    private static func getKernel(management: Flags.Management) async throws -> Kernel {
+    static func validateNetworkAttachments(
+        _ attachments: [AttachmentConfiguration],
+        availableNetworkIDs: Set<String>
+    ) throws {
+        for attachment in attachments where !availableNetworkIDs.contains(attachment.network) {
+            throw ContainerizationError(.notFound, message: "network \(attachment.network) not found")
+        }
+    }
+
+    private static func getKernel(path: String?, arguments: [String]) async throws -> Kernel {
         // For the image itself we'll take the user input and try with it as we can do userspace
         // emulation for x86, but for the kernel we need it to match the hosts architecture.
         let s: SystemPlatform = .current
         var kernel: Kernel
-        if let userKernel = management.kernel {
+        if let userKernel = path {
             guard FileManager.default.fileExists(atPath: userKernel) else {
                 throw ContainerizationError(.notFound, message: "kernel file not found at path \(userKernel)")
             }
@@ -547,7 +617,7 @@ public struct Utility {
         }
         // Persist any user-supplied boot args onto the kernel command line. A key supplied
         // here overrides the runtime's matching built-in default (see RuntimeService.bootstrap).
-        kernel.commandLine.kernelArgs.append(contentsOf: management.kernelArgs)
+        kernel.commandLine.kernelArgs.append(contentsOf: arguments)
         return kernel
     }
 

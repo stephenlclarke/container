@@ -17,6 +17,7 @@
 import ContainerPersistence
 import ContainerResource
 import ContainerizationError
+import Darwin
 import Foundation
 import SystemPackage
 
@@ -142,34 +143,46 @@ extension MachineBundle {
         bootConfig: MachineConfig,
     ) throws -> MachineBundle {
         let fm = FileManager.default
-
-        try fm.createDirectory(atPath: path.string, withIntermediateDirectories: true)
+        guard Darwin.mkdir(path.string, 0o755) == 0 else {
+            let code = POSIXErrorCode(rawValue: errno) ?? .EIO
+            if code == .EEXIST {
+                throw ContainerizationError(
+                    .exists,
+                    message: "container machine bundle already exists: \(path.string)"
+                )
+            }
+            throw POSIXError(code)
+        }
         let bundle = MachineBundle(path: path)
+        do {
+            let persisted = PersistedMachineConfig(configuration: machineConfiguration, createdDate: Date())
+            try bundle.write(filename: Self.configFile, value: persisted)
+            try bundle.write(filename: Self.bootConfigFile, value: bootConfig)
 
-        let persisted = PersistedMachineConfig(configuration: machineConfiguration, createdDate: Date())
-        try bundle.write(filename: Self.configFile, value: persisted)
-        try bundle.write(filename: Self.bootConfigFile, value: bootConfig)
+            let sbin = path.appending(sbinDirectory)
+            let initPath = sbin.appending(initFile)
+            let setupScriptPath = sbin.appending(userSetupFile)
+            let initializedPath = path.appending(initializedFile)
 
-        let sbin = path.appending(sbinDirectory)
-        let initPath = sbin.appending(initFile)
-        let setupScriptPath = sbin.appending(userSetupFile)
-        let initializedPath = path.appending(initializedFile)
+            try fm.createDirectory(atPath: sbin.string, withIntermediateDirectories: true)
+            try fm.copyItem(atPath: resourceRoot.appending(initFile).string, toPath: initPath.string)
 
-        try fm.createDirectory(atPath: sbin.string, withIntermediateDirectories: true)
-        try fm.copyItem(atPath: resourceRoot.appending(initFile).string, toPath: initPath.string)
+            if let setupScript = resources?.setupScript {
+                try setupScript.write(toFile: setupScriptPath.string, atomically: true, encoding: .utf8)
+                try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: setupScriptPath.string)
+            } else {
+                try fm.copyItem(atPath: resourceRoot.appending(userSetupFile).string, toPath: setupScriptPath.string)
+            }
 
-        if let setupScript = resources?.setupScript {
-            try setupScript.write(toFile: setupScriptPath.string, atomically: true, encoding: .utf8)
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: setupScriptPath.string)
-        } else {
-            try fm.copyItem(atPath: resourceRoot.appending(userSetupFile).string, toPath: setupScriptPath.string)
+            guard fm.createFile(atPath: initializedPath.string, contents: "".data(using: .utf8)) else {
+                throw ContainerizationError(.internalError, message: "failed to create \(initializedPath.string)")
+            }
+
+            return bundle
+        } catch {
+            try? fm.removeItem(atPath: path.string)
+            throw error
         }
-
-        guard fm.createFile(atPath: initializedPath.string, contents: "".data(using: .utf8)) else {
-            throw ContainerizationError(.internalError, message: "failed to create \(initializedPath.string)")
-        }
-
-        return bundle
     }
 
     public static func sync(path: FilePath, resourceRoot: FilePath) throws {

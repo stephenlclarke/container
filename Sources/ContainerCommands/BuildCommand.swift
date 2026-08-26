@@ -29,6 +29,40 @@ import Foundation
 import NIO
 import TerminalProgress
 
+struct BuilderReadinessBackoff: Sendable {
+    private static let initialDelay: Duration = .milliseconds(50)
+    private static let maximumDelay: Duration = .seconds(1)
+
+    private var delay = Self.initialDelay
+
+    mutating func nextDelay() -> Duration {
+        let current = delay
+        delay = min(delay * 2, Self.maximumDelay)
+        return current
+    }
+}
+
+struct BuilderReadinessRecovery {
+    static func shouldRestart(
+        after readinessError: Error,
+        builderStatusError: Error?
+    ) -> Bool {
+        if let containerError = readinessError as? ContainerizationError,
+            containerError.code == .invalidState || containerError.code == .notFound
+        {
+            return true
+        }
+
+        if let containerError = builderStatusError as? ContainerizationError,
+            containerError.code == .notFound
+        {
+            return true
+        }
+
+        return false
+    }
+}
+
 extension Application {
     public struct BuildCommand: AsyncLoggableCommand {
         public init() {}
@@ -242,18 +276,48 @@ extension Application {
 
                     group.addTask { [builderContainerId, vsockPort, cpus, memory, log, dnsNameservers, sshForwarding] in
                         let client = ContainerClient()
+                        var retryBackoff = BuilderReadinessBackoff()
                         while true {
                             do {
                                 let fh = try await client.dial(id: builderContainerId, port: vsockPort)
 
-                                let threadGroup: MultiThreadedEventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)
-                                let b = try await Builder(socket: fh, group: threadGroup, logger: log)
+                                // The builder client owns one gRPC connection, so one event loop is sufficient.
+                                let threadGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+                                let b: Builder
+                                do {
+                                    b = try await Builder(socket: fh, group: threadGroup, logger: log)
+                                } catch {
+                                    let connectionError = error
+                                    do {
+                                        try await threadGroup.shutdownGracefully()
+                                    } catch {
+                                        log.warning("failed to shut down builder event loop: \(error)")
+                                    }
+                                    throw connectionError
+                                }
 
                                 // If this call succeeds, then BuildKit is running.
-                                let _ = try await b.info()
-                                return b
+                                do {
+                                    let _ = try await b.info()
+                                    return b
+                                } catch {
+                                    let readinessError = error
+                                    await b.shutdown()
+                                    throw readinessError
+                                }
                             } catch {
-                                let builderStatus = try? await client.get(id: builderContainerId).status
+                                try Task.checkCancellation()
+
+                                let builderStatus: RuntimeStatus?
+                                let builderStatusError: Error?
+                                do {
+                                    builderStatus = try await client.get(id: builderContainerId).status
+                                    builderStatusError = nil
+                                } catch {
+                                    try Task.checkCancellation()
+                                    builderStatus = nil
+                                    builderStatusError = error
+                                }
                                 if Self.builderExitedBeforeDial(status: builderStatus) {
                                     throw ContainerizationError(
                                         .invalidState,
@@ -266,21 +330,25 @@ extension Application {
                                 progress.set(tasks: 0)
                                 progress.set(totalTasks: 3)
 
-                                try await BuilderStart.start(
-                                    cpus: cpus,
-                                    memory: memory,
-                                    log: log,
-                                    dnsNameservers: dnsNameservers,
-                                    enableSSHForwarding: enableSSHForwarding,
-                                    sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
-                                    sshSocketMounts: sshForwarding.socketMounts,
-                                    builderContainerId: builderContainerId,
-                                    progressUpdate: progress.handler,
-                                    containerSystemConfig: containerSystemConfig,
-                                )
+                                if BuilderReadinessRecovery.shouldRestart(
+                                    after: error,
+                                    builderStatusError: builderStatusError
+                                ) {
+                                    try await BuilderStart.start(
+                                        cpus: cpus,
+                                        memory: memory,
+                                        log: log,
+                                        dnsNameservers: dnsNameservers,
+                                        enableSSHForwarding: enableSSHForwarding,
+                                        sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
+                                        sshSocketMounts: sshForwarding.socketMounts,
+                                        builderContainerId: builderContainerId,
+                                        progressUpdate: progress.handler,
+                                        containerSystemConfig: containerSystemConfig,
+                                    )
+                                }
 
-                                // wait (seconds) for builder to start listening on vsock
-                                try await Task.sleep(for: .seconds(5))
+                                try await Task.sleep(for: retryBackoff.nextDelay())
                                 continue
                             }
                         }

@@ -29,16 +29,135 @@ import Logging
 import MachineAPIClient
 import SystemPackage
 
+// systemd poweroff signal (SIGRTMIN+4 on Linux, where SIGRTMIN=34 under glibc)
+private let SIGRTMIN4: Int32 = 38
+
+struct MachineCreationReservations: Sendable {
+    private(set) var ids: Set<String> = []
+
+    mutating func reserve(_ id: String, existing: Set<String>) throws {
+        guard !ids.contains(id), !existing.contains(id) else {
+            throw ContainerizationError(
+                .exists,
+                message: "container machine already exists: \(id)"
+            )
+        }
+        ids.insert(id)
+    }
+
+    @discardableResult
+    mutating func remove(_ id: String) -> Bool {
+        ids.remove(id) != nil
+    }
+}
+
+enum ConcurrentMachineBootPreparation {
+    @concurrent
+    static func run<Discovery: Sendable, Configuration: Sendable, PreparedKernel: Sendable>(
+        discovery: @Sendable @escaping () async throws -> Discovery,
+        configuration: @Sendable @escaping () async throws -> Configuration,
+        kernel: @Sendable @escaping () async throws -> PreparedKernel
+    ) async throws -> (discovery: Discovery, configuration: Configuration, kernel: PreparedKernel) {
+        async let discovered = discovery()
+        async let configured = configuration()
+        async let resolvedKernel = kernel()
+        return try await (discovered, configured, resolvedKernel)
+    }
+}
+
+enum ConcurrentMachineCreationPreparation {
+    private enum Prepared<Bundle: Sendable, Filesystem: Sendable>: Sendable {
+        case bundle(Bundle)
+        case filesystem(Filesystem)
+    }
+
+    @concurrent
+    static func run<Bundle: Sendable, Filesystem: Sendable>(
+        bundle: @Sendable @escaping () async throws -> Bundle,
+        filesystem: @Sendable @escaping () async throws -> Filesystem,
+        finalize: @Sendable @escaping (Bundle, Filesystem) async throws -> Void,
+        cleanup: @Sendable @escaping (Bundle) async -> Void
+    ) async throws -> Bundle {
+        try await withThrowingTaskGroup(of: Prepared<Bundle, Filesystem>.self) { group in
+            group.addTask {
+                .bundle(try await bundle())
+            }
+            group.addTask {
+                .filesystem(try await filesystem())
+            }
+
+            var preparedBundle: Bundle?
+            var preparedFilesystem: Filesystem?
+            do {
+                for try await result in group {
+                    switch result {
+                    case .bundle(let bundle):
+                        preparedBundle = bundle
+                    case .filesystem(let filesystem):
+                        preparedFilesystem = filesystem
+                    }
+                }
+            } catch {
+                group.cancelAll()
+                while !group.isEmpty {
+                    do {
+                        if let result = try await group.next(),
+                            case .bundle(let bundle) = result
+                        {
+                            preparedBundle = bundle
+                        }
+                    } catch {
+                        // The first error below remains the operation result.
+                    }
+                }
+                if let preparedBundle {
+                    await cleanup(preparedBundle)
+                }
+                throw error
+            }
+
+            guard let preparedBundle, let preparedFilesystem else {
+                preconditionFailure("machine creation preparation completed without both results")
+            }
+            do {
+                try await finalize(preparedBundle, preparedFilesystem)
+                return preparedBundle
+            } catch {
+                await cleanup(preparedBundle)
+                throw error
+            }
+        }
+    }
+}
+
+enum MachineDeletionTransaction {
+    @concurrent
+    static func run(
+        prepare: @Sendable @escaping () async throws -> Void,
+        removeBundle: @Sendable @escaping () async throws -> Void,
+        commit: @Sendable @escaping () async throws -> Void
+    ) async throws {
+        try await prepare()
+        try await removeBundle()
+        try await commit()
+    }
+}
+
 public actor MachinesService {
     private static let machinesDir = FilePath.Component("machines")
     private static let stateFile = FilePath.Component("state.json")
 
-    private struct MachineState {
+    struct MachineState {
         var snapshot: MachineSnapshot
 
         var id: String { snapshot.configuration.id }
 
         var logger: Task<Void, Never>?
+
+        // Machine lifecycle locks are acquired before the service-wide lock.
+        // The generation prevents delayed work from acting on a replacement with the same ID.
+        let lifecycleLock = AsyncLock()
+        let generation = UUID()
     }
 
     private var serviceState: ServiceState
@@ -48,6 +167,7 @@ public actor MachinesService {
     private let machineRoot: FilePath
     private let lock = AsyncLock()
     private var machines: [String: MachineState]
+    private var pendingCreations = MachineCreationReservations()
     private let exitMonitor: ExitMonitor
     private let log: Logger
 
@@ -198,63 +318,75 @@ public actor MachinesService {
     public func create(configuration: MachineConfiguration, resources: MachineResources?, bootConfig: MachineConfig) async throws {
         self.log.debug("\(#function)")
 
-        try await self.lock.withLock { context in
-            guard await self.machines[configuration.id] == nil else {
-                throw ContainerizationError(
-                    .exists,
-                    message: "container machine already exists: \(configuration.id)"
-                )
-            }
+        let path = try self.bundlePath(id: configuration.id)
+        try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-reserve", "id": "\(configuration.id)"]) { context in
+            try await self.reserveMachineCreation(configuration.id, context: context)
+        }
 
-            let path = try self.bundlePath(id: configuration.id)
-            let bundle = try MachineBundle.create(
-                path: path,
-                machineConfiguration: configuration,
-                resourceRoot: self.resourceRoot,
-                resources: resources,
-                bootConfig: bootConfig,
-            )
-
-            do {
-                let machineImage = ClientImage(description: configuration.image)
-                let imageFs = try await machineImage.getCreateSnapshot(platform: configuration.platform)
-                try bundle.setMachineRootFs(cloning: imageFs)
-                try Self.validateMachineRootfs(
-                    blockDevice: FilePath(bundle.machineRootfs.source),
-                    image: configuration.image.reference
-                )
-
-                let state = MachineState(
-                    snapshot: .init(
-                        configuration: configuration,
-                        status: .stopped,
+        var createdBundle: MachineBundle?
+        do {
+            let resourceRoot = self.resourceRoot
+            createdBundle = try await ConcurrentMachineCreationPreparation.run(
+                bundle: {
+                    try MachineBundle.create(
+                        path: path,
+                        machineConfiguration: configuration,
+                        resourceRoot: resourceRoot,
+                        resources: resources,
                         bootConfig: bootConfig,
-                        createdDate: Date(),
-                        containerId: nil,
                     )
-                )
-                await self.setMachineState(configuration.id, state, context: context)
-
-                if await self.default == nil {
-                    try await self._setDefault(id: configuration.id)
+                },
+                filesystem: {
+                    let machineImage = ClientImage(description: configuration.image)
+                    return try await machineImage.getCreateSnapshot(platform: configuration.platform)
+                },
+                finalize: { bundle, imageFs in
+                    try bundle.setMachineRootFs(cloning: imageFs)
+                    try Self.validateMachineRootfs(
+                        blockDevice: FilePath(bundle.machineRootfs.source),
+                        image: configuration.image.reference
+                    )
+                },
+                cleanup: { bundle in
+                    try? bundle.delete()
                 }
-            } catch {
-                do {
-                    try bundle.delete()
-                } catch {
-                    self.log.error("failed to delete bundle for container machine \(configuration.id)")
-                }
-
-                throw error
+            )
+            let snapshot = MachineSnapshot(
+                configuration: configuration,
+                status: .stopped,
+                bootConfig: bootConfig,
+                createdDate: Date(),
+                containerId: nil
+            )
+            try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-commit", "id": "\(configuration.id)"]) { context in
+                try await self.commitMachineCreation(snapshot, context: context)
             }
+        } catch {
+            if let createdBundle {
+                do {
+                    try createdBundle.delete()
+                } catch let cleanupError {
+                    self.log.error(
+                        "failed to delete bundle for container machine \(configuration.id)",
+                        metadata: ["error": "\(cleanupError)"]
+                    )
+                }
+            }
+            await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(configuration.id)"]) { context in
+                await self.rollbackMachineCreation(configuration.id, context: context)
+            }
+            throw error
         }
     }
 
     public func delete(id: String) async throws {
         self.log.debug("\(#function)")
 
-        try await self.lock.withLock { context in
-            let state = try await self._getMachineState(id: id)
+        let initialState = try self._getMachineState(id: id)
+        try await initialState.lifecycleLock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { _ in
+            let state = try await self.lock.withLock { context in
+                try await self.getMachineState(id: id, generation: initialState.generation, context: context)
+            }
 
             switch state.snapshot.status {
             case .running:
@@ -265,11 +397,38 @@ public actor MachinesService {
                 break
             }
 
-            if let defaultMachine = await self.default, defaultMachine.id == id {
-                try await self._setDefault(id: nil)
-            }
-
-            try await self._cleanUp(id: id)
+            let path = try self.bundlePath(id: id)
+            try await MachineDeletionTransaction.run(
+                prepare: {
+                    try await self.lock.withLock { context in
+                        _ = try await self.getMachineState(
+                            id: id,
+                            generation: initialState.generation,
+                            context: context
+                        )
+                        if let defaultMachine = await self.default, defaultMachine.id == id {
+                            try await self._setDefault(id: nil)
+                        }
+                    }
+                },
+                removeBundle: {
+                    try MachineBundle(path: path).delete()
+                },
+                commit: {
+                    try await self.lock.withLock { context in
+                        _ = try await self.getMachineState(
+                            id: id,
+                            generation: initialState.generation,
+                            context: context
+                        )
+                        _ = await self.removeMachineState(
+                            id: id,
+                            generation: initialState.generation,
+                            context: context
+                        )
+                    }
+                }
+            )
         }
     }
 
@@ -282,22 +441,36 @@ public actor MachinesService {
     public func setDefault(id: String) async throws {
         self.log.debug("\(#function)")
 
-        try await self.lock.withLock { context in
-            let state = try await self._getMachineState(id: id)
-            try await self._setDefault(id: state.id)
+        let initialState = try self._getMachineState(id: id)
+        try await initialState.lifecycleLock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { _ in
+            try await self.lock.withLock { context in
+                let state = try await self.getMachineState(
+                    id: id,
+                    generation: initialState.generation,
+                    context: context
+                )
+                try await self._setDefault(id: state.id)
+            }
         }
     }
 
     public func setConfig(id: String, bootConfig: MachineConfig) async throws {
         self.log.debug("\(#function)")
-        try await self.lock.withLock { context in
-            var state = try await self._getMachineState(id: id)
+        let initialState = try self._getMachineState(id: id)
+        try await initialState.lifecycleLock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { _ in
+            var state = try await self.lock.withLock { context in
+                try await self.getMachineState(id: id, generation: initialState.generation, context: context)
+            }
             let path = try self.bundlePath(id: id)
             let bundle = MachineBundle(path: path)
             try bundle.set(bootConfig: bootConfig)
 
             state.snapshot.bootConfig = bootConfig
-            await self.setMachineState(id, state, context: context)
+            let updatedState = state
+            try await self.lock.withLock { context in
+                _ = try await self.getMachineState(id: id, generation: initialState.generation, context: context)
+                await self.setMachineState(id, updatedState, context: context)
+            }
         }
     }
 
@@ -311,8 +484,106 @@ public actor MachinesService {
         return state
     }
 
+    private func getMachineState(id: String, generation: UUID) throws -> MachineState {
+        let state = try self._getMachineState(id: id)
+        guard state.generation == generation else {
+            throw ContainerizationError(
+                .notFound,
+                message: "container machine with ID \(id) was replaced"
+            )
+        }
+        return state
+    }
+
+    private func getMachineState(
+        id: String,
+        generation: UUID,
+        context _: AsyncLock.Context
+    ) throws -> MachineState {
+        try self.getMachineState(id: id, generation: generation)
+    }
+
     private func setMachineState(_ id: String, _ state: MachineState, context: AsyncLock.Context) async {
         self.machines[id] = state
+    }
+
+    private func reserveMachineCreation(
+        _ id: String,
+        context _: AsyncLock.Context
+    ) throws {
+        try self.pendingCreations.reserve(id, existing: Set(self.machines.keys))
+        do {
+            try Task.checkCancellation()
+        } catch {
+            self.pendingCreations.remove(id)
+            throw error
+        }
+    }
+
+    private func commitMachineCreation(
+        _ snapshot: MachineSnapshot,
+        context _: AsyncLock.Context
+    ) throws {
+        try Task.checkCancellation()
+        guard self.pendingCreations.ids.contains(snapshot.id) else {
+            throw ContainerizationError(
+                .internalError,
+                message: "container machine creation reservation not found: \(snapshot.id)"
+            )
+        }
+        if self.default == nil {
+            try self._setDefault(id: snapshot.id)
+        }
+        self.pendingCreations.remove(snapshot.id)
+        self.machines[snapshot.id] = MachineState(snapshot: snapshot)
+    }
+
+    private func rollbackMachineCreation(
+        _ id: String,
+        context _: AsyncLock.Context
+    ) {
+        self.pendingCreations.remove(id)
+    }
+
+    static func markMachineRunning(
+        _ state: inout MachineState,
+        containerID: String,
+        startedDate: Date,
+        initialized: Bool
+    ) {
+        state.snapshot.status = .running
+        state.snapshot.startedDate = startedDate
+        state.snapshot.containerId = containerID
+        state.snapshot.initialized = initialized
+    }
+
+    static func markMachineStopped(_ state: inout MachineState) {
+        state.snapshot.status = .stopped
+        state.snapshot.startedDate = nil
+        state.snapshot.containerId = nil
+        state.snapshot.ipAddress = nil
+    }
+
+    @discardableResult
+    static func removeMachineState(
+        id: String,
+        generation: UUID,
+        from machines: inout [String: MachineState]
+    ) -> Bool {
+        guard machines[id]?.generation == generation else {
+            return false
+        }
+        machines.removeValue(forKey: id)
+        return true
+    }
+
+    @discardableResult
+    private func removeMachineState(
+        id: String,
+        generation: UUID,
+        context _: AsyncLock.Context
+    ) -> Bool {
+        Self.removeMachineState(id: id, generation: generation, from: &self.machines)
     }
 
     private nonisolated func bundlePath(id: String) throws -> FilePath {
@@ -329,24 +600,7 @@ public actor MachinesService {
         try serviceState.setDefault(id: id)
     }
 
-    private func _cleanUp(id: String) throws {
-        self.log.debug("\(#function)")
-
-        if self.machines[id] == nil {
-            return
-        }
-
-        let path = try self.bundlePath(id: id)
-        let bundle = MachineBundle(path: path)
-        try bundle.delete()
-        self.machines.removeValue(forKey: id)
-    }
-
-    private func cleanUp(id: String, context: AsyncLock.Context) async throws {
-        try self._cleanUp(id: id)
-    }
-
-    static func systemPlatform(from ociPlatform: ContainerizationOCI.Platform) -> SystemPlatform {
+    nonisolated static func systemPlatform(from ociPlatform: ContainerizationOCI.Platform) -> SystemPlatform {
         ociPlatform.architecture == "amd64" ? .linuxAmd : .linuxArm
     }
 
@@ -360,8 +614,11 @@ public actor MachinesService {
             )
         }
 
-        return try await self.lock.withLock { context in
-            var state = try await self._getMachineState(id: id)
+        let initialState = try self._getMachineState(id: id)
+        return try await initialState.lifecycleLock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { _ in
+            var state = try await self.lock.withLock { context in
+                try await self.getMachineState(id: id, generation: initialState.generation, context: context)
+            }
 
             switch state.snapshot.status {
             case .running:
@@ -373,48 +630,53 @@ public actor MachinesService {
             }
 
             let cid = "\(id)-\(UUID().uuidString.prefix(MachineConfiguration.containerUUIDLength).lowercased())"
-            guard try await self.client.list(filters: .init(ids: [cid])).isEmpty else {
-                throw ContainerizationError(.internalError, message: "container \(cid) already exists")
-            }
-
             let path = try self.bundlePath(id: id)
             let bundle = MachineBundle(path: path)
             let rootfs = try bundle.machineRootfs
 
             let bootConfig = state.snapshot.bootConfig
-            var config = try await state.snapshot.configuration.toContainerConfig(
-                cid: cid,
-                sbin: path.appending(MachineBundle.sbinDirectory),
-                initializedFile: path.appending(MachineBundle.initializedFile),
-                homeMountOption: bootConfig.homeMount,
-                virtualization: bootConfig.virtualization,
+            let machineConfiguration = state.snapshot.configuration
+            let client = self.client
+            let systemPlatform = Self.systemPlatform(from: machineConfiguration.platform)
+            let preparation = try await ConcurrentMachineBootPreparation.run(
+                discovery: {
+                    try await client.list(filters: .init(ids: [cid]))
+                },
+                configuration: {
+                    try await machineConfiguration.toContainerConfig(
+                        cid: cid,
+                        sbin: path.appending(MachineBundle.sbinDirectory),
+                        initializedFile: path.appending(MachineBundle.initializedFile),
+                        homeMountOption: bootConfig.homeMount,
+                        virtualization: bootConfig.virtualization,
+                    )
+                },
+                kernel: {
+                    if let kernelPath = bootConfig.kernelPath {
+                        let validated = try MachineConfig.validateKernelPath(kernelPath.string)
+                        return Kernel(
+                            path: URL(fileURLWithPath: validated.string),
+                            platform: systemPlatform
+                        )
+                    }
+                    return try await ClientKernel.getDefaultKernel(for: .current)
+                }
             )
+            guard preparation.discovery.isEmpty else {
+                throw ContainerizationError(.internalError, message: "container \(cid) already exists")
+            }
 
+            var config = preparation.configuration
             config.resources.cpus = bootConfig.cpus
             config.resources.cpuOverhead = 0
             config.resources.memoryInBytes = bootConfig.memory.toUInt64(unit: .bytes)
-
-            let kernel: Kernel
-            if let kernelPath = bootConfig.kernelPath {
-                let validated = try MachineConfig.validateKernelPath(kernelPath.string)
-                kernel = Kernel(
-                    path: URL(fileURLWithPath: validated.string),
-                    platform: Self.systemPlatform(from: state.snapshot.configuration.platform)
-                )
-            } else {
-                // Virtualization.framework boots a kernel compiled for the host
-                // architecture. The requested OCI architecture selects the
-                // userspace and enables Rosetta when needed; it must not select
-                // an incompatible default kernel.
-                kernel = try await ClientKernel.getDefaultKernel(for: .current)
-            }
 
             var fhs: [FileHandle] = []
             do {
                 try await self.client.create(
                     configuration: config,
                     options: ContainerCreateOptions(autoRemove: true, rootFsOverride: rootfs),
-                    kernel: kernel
+                    kernel: preparation.kernel
                 )
 
                 let process = try await self.client.bootstrap(
@@ -464,16 +726,20 @@ public actor MachinesService {
                     }
                 }
 
+                let generation = state.generation
                 try await self.exitMonitor.registerProcess(
                     id: id,
-                    onExit: self.handleMachineExit
+                    onExit: { [weak self] id, status in
+                        guard let self else {
+                            return
+                        }
+                        await self.handleMachineExit(
+                            id: id,
+                            code: status,
+                            generation: generation
+                        )
+                    }
                 )
-
-                state.snapshot.status = .running
-                state.snapshot.startedDate = Date()
-                state.snapshot.containerId = cid
-                state.snapshot.initialized = bundle.initialized
-                await self.setMachineState(id, state, context: context)
 
                 // Monitor container exit in the background so we can update container machine state
                 // when the backing container stops (e.g., VM crash, kill, etc.)
@@ -488,7 +754,25 @@ public actor MachinesService {
                     return ExitStatus(exitCode: code)
                 }
 
-                return state.snapshot
+                let startedDate = Date()
+                let initialized = bundle.initialized
+                let logger = state.logger
+                return try await self.lock.withLock { context in
+                    var currentState = try await self.getMachineState(
+                        id: id,
+                        generation: generation,
+                        context: context
+                    )
+                    currentState.logger = logger
+                    Self.markMachineRunning(
+                        &currentState,
+                        containerID: cid,
+                        startedDate: startedDate,
+                        initialized: initialized
+                    )
+                    await self.setMachineState(id, currentState, context: context)
+                    return currentState.snapshot
+                }
             } catch {
                 await self.exitMonitor.stopTracking(id: id)
 
@@ -501,12 +785,6 @@ public actor MachinesService {
                 }
                 try? await self.client.delete(id: cid, force: true)
 
-                state.snapshot.status = .stopped
-                state.snapshot.startedDate = nil
-                state.snapshot.containerId = nil
-                state.snapshot.ipAddress = nil
-                await self.setMachineState(id, state, context: context)
-
                 throw error
             }
         }
@@ -515,8 +793,11 @@ public actor MachinesService {
     public func stop(id: String) async throws {
         self.log.debug("\(#function)")
 
-        try await self.lock.withLock { context in
-            let state = try await self._getMachineState(id: id)
+        let initialState = try self._getMachineState(id: id)
+        try await initialState.lifecycleLock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { _ in
+            let state = try await self.lock.withLock { context in
+                try await self.getMachineState(id: id, generation: initialState.generation, context: context)
+            }
 
             switch state.snapshot.status {
             case .stopped:
@@ -538,32 +819,41 @@ public actor MachinesService {
             }
 
             try await self.client.stop(id: cid, opts: ContainerStopOptions(timeoutInSeconds: 10, signal: nil))
-            await self.handleMachineExit(id: id, code: nil, context: context)
+            await self.finishMachineExit(id: id, code: nil, generation: initialState.generation)
         }
     }
 
-    private func handleMachineExit(id: String, code: ExitStatus? = nil) async {
-        await self.lock.withLock { [self] context in
-            await handleMachineExit(id: id, code: code, context: context)
-        }
-    }
-
-    private func handleMachineExit(id: String, code: ExitStatus?, context: AsyncLock.Context) async {
-        self.log.info("container exited for container machine \(id)")
-        guard var state = self.machines[id] else {
+    private func handleMachineExit(id: String, code: ExitStatus?, generation: UUID) async {
+        guard let initialState = self.machines[id], initialState.generation == generation else {
             return
         }
-        state.snapshot.status = .stopped
-        state.snapshot.startedDate = nil
-        state.snapshot.containerId = nil
-        state.snapshot.ipAddress = nil
+        await initialState.lifecycleLock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { _ in
+            await self.finishMachineExit(id: id, code: code, generation: generation)
+        }
+    }
 
-        state.logger?.cancel()
-        await state.logger?.value
-        state.logger = nil
+    private func finishMachineExit(id: String, code: ExitStatus?, generation: UUID) async {
+        self.log.info(
+            "container exited for container machine \(id)",
+            metadata: ["status": "\(String(describing: code))"]
+        )
+        let result: (matched: Bool, logger: Task<Void, Never>?) = await self.lock.withLock { context in
+            guard var state = try? await self.getMachineState(id: id, generation: generation, context: context) else {
+                return (false, nil)
+            }
+            let logger = state.logger
+            state.logger = nil
+            Self.markMachineStopped(&state)
+            await self.setMachineState(id, state, context: context)
+            return (true, logger)
+        }
+        guard result.matched else {
+            return
+        }
 
+        result.logger?.cancel()
+        await result.logger?.value
         await self.exitMonitor.stopTracking(id: id)
-        await self.setMachineState(id, state, context: context)
     }
 
     public func inspect(id: String) async throws -> MachineSnapshot {
@@ -605,7 +895,7 @@ public actor MachinesService {
 }
 
 extension MachinesService {
-    fileprivate struct ServiceState: Codable, Sendable {
+    struct ServiceState: Codable, Sendable {
         private var path: FilePath?
 
         public var defaultMachine: String?
@@ -638,9 +928,11 @@ extension MachinesService {
                 )
             }
 
-            self.defaultMachine = id
-            let data = try JSONEncoder().encode(self)
+            var updated = self
+            updated.defaultMachine = id
+            let data = try JSONEncoder().encode(updated)
             try data.write(to: URL(filePath: path.string), options: .atomic)
+            self = updated
         }
     }
 }

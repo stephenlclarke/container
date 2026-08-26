@@ -18,13 +18,138 @@ import ContainerAPIClient
 import ContainerImagesServiceClient
 import ContainerResource
 import Containerization
-import ContainerizationArchive
 import ContainerizationError
 import ContainerizationExtras
 import ContainerizationOCI
 import Foundation
 import Logging
 import TerminalProgress
+
+enum ConcurrentImageDiskUsageTotals {
+    @concurrent
+    static func run<Content: Sendable, Snapshots: Sendable>(
+        content: @Sendable @escaping () async throws -> Content,
+        snapshots: @Sendable @escaping () async throws -> Snapshots
+    ) async throws -> (content: Content, snapshots: Snapshots) {
+        async let contentSize = content()
+        async let snapshotSize = snapshots()
+        return try await (contentSize, snapshotSize)
+    }
+}
+
+enum ConcurrentImageCleanup {
+    @concurrent
+    static func run<Content: Sendable>(
+        snapshots: @Sendable @escaping () async throws -> UInt64,
+        content: @Sendable @escaping () async throws -> Content
+    ) async throws -> (snapshotBytes: UInt64, content: Content) {
+        async let snapshotResult = snapshots()
+        async let contentResult = content()
+        return try await (snapshotResult, contentResult)
+    }
+}
+
+enum ConcurrentActiveImageDiskUsage {
+    struct ImageUsage: Sendable {
+        let contentDigests: [String]
+        let snapshotSizes: [(digest: String, size: UInt64)]
+    }
+
+    struct Usage: Sendable {
+        let contentSizes: [String: UInt64]
+        let snapshotSizes: [String: UInt64]
+    }
+
+    private struct ContentUsage: Sendable {
+        let digest: String
+        let size: UInt64
+    }
+
+    private static let defaultMaximumConcurrentTasks = 8
+
+    @concurrent
+    static func run(
+        images: [Containerization.Image],
+        contentStore: ContentStore,
+        snapshotStore: SnapshotStore
+    ) async throws -> Usage {
+        let imageUsage = try await boundedMap(images) { image in
+            let contentDigests = try await image.referencedDigests()
+            try Task.checkCancellation()
+            let snapshotSizes = try await snapshotStore.getSnapshotSizes(for: image)
+            return ImageUsage(contentDigests: contentDigests, snapshotSizes: snapshotSizes)
+        }
+        let references = reduce(imageUsage)
+        let contentUsage = try await boundedMap(references.contentDigests.sorted()) { digest -> ContentUsage? in
+            try Task.checkCancellation()
+            guard let content: Content = try await contentStore.get(digest: digest) else {
+                return nil
+            }
+            try Task.checkCancellation()
+            return ContentUsage(digest: digest, size: try contentDiskSize(content))
+        }
+
+        return Usage(
+            contentSizes: Dictionary(
+                uniqueKeysWithValues: contentUsage.compactMap { usage in
+                    usage.map { ($0.digest, $0.size) }
+                }),
+            snapshotSizes: references.snapshotSizes
+        )
+    }
+
+    static func reduce(_ imageUsage: [ImageUsage]) -> (contentDigests: Set<String>, snapshotSizes: [String: UInt64]) {
+        var contentDigests = Set<String>()
+        var snapshotSizes: [String: UInt64] = [:]
+
+        for usage in imageUsage {
+            contentDigests.formUnion(usage.contentDigests)
+            for snapshot in usage.snapshotSizes {
+                snapshotSizes[snapshot.digest] = max(snapshotSizes[snapshot.digest] ?? 0, snapshot.size)
+            }
+        }
+        return (contentDigests, snapshotSizes)
+    }
+
+    @concurrent
+    static func boundedMap<Input: Sendable, Output: Sendable>(
+        _ inputs: [Input],
+        maximumConcurrentTasks: Int = defaultMaximumConcurrentTasks,
+        operation: @Sendable @escaping (Input) async throws -> Output
+    ) async throws -> [Output] {
+        precondition(maximumConcurrentTasks > 0)
+
+        return try await withThrowingTaskGroup(of: Output.self) { group in
+            var iterator = inputs.makeIterator()
+            for _ in 0..<min(maximumConcurrentTasks, inputs.count) {
+                guard let input = iterator.next() else { break }
+                group.addTask {
+                    try await operation(input)
+                }
+            }
+
+            var output: [Output] = []
+            output.reserveCapacity(inputs.count)
+            while let result = try await group.next() {
+                output.append(result)
+                if let input = iterator.next() {
+                    group.addTask {
+                        try await operation(input)
+                    }
+                }
+            }
+            return output
+        }
+    }
+
+    private static func contentDiskSize(_ content: Content) throws -> UInt64 {
+        let values = try? content.path.resourceValues(forKeys: [.totalFileAllocatedSizeKey])
+        if let allocatedSize = values?.totalFileAllocatedSize {
+            return UInt64(allocatedSize)
+        }
+        return try content.size()
+    }
+}
 
 public actor ImagesService {
     private let log: Logger
@@ -209,9 +334,7 @@ public actor ImagesService {
             try? FileManager.default.removeItem(at: tempDir)
         }
         try await self.imageStore.save(references: references, out: tempDir, platform: platform)
-        let writer = try ArchiveWriter(format: .pax, filter: .none, file: out)
-        try writer.archiveDirectory(tempDir)
-        try writer.finishEncoding()
+        try await ConcurrentImageArchiveIO.writeDirectory(tempDir, to: out)
     }
 
     public func load(from tarFile: URL, force: Bool) async throws -> ([ImageDescription], [String]) {
@@ -233,12 +356,11 @@ public actor ImagesService {
             )
         }
 
-        let reader = try ArchiveReader(file: tarFile)
         let tempDir = FileManager.default.uniqueTemporaryDirectory()
         defer {
             try? FileManager.default.removeItem(at: tempDir)
         }
-        let rejectedMembers = try reader.extractContents(to: tempDir)
+        let rejectedMembers = try await ConcurrentImageArchiveIO.extract(tarFile, to: tempDir)
         guard rejectedMembers.isEmpty || force else {
             throw ContainerizationError(.invalidArgument, message: "cannot load tar image with rejected paths: \(rejectedMembers)")
         }
@@ -268,9 +390,23 @@ public actor ImagesService {
         }
 
         let images = try await self._list()
-        let freedSnapshotBytes = try await self.snapshotStore.clean(keepingSnapshotsFor: images)
-        let (deleted, freedContentBytes) = try await self.imageStore.cleanUpOrphanedBlobs()
-        return (deleted, freedContentBytes + freedSnapshotBytes)
+        let snapshotStore = self.snapshotStore
+        let imageStore = self.imageStore
+        let cleanup = try await ConcurrentImageCleanup.run(
+            snapshots: {
+                try Task.checkCancellation()
+                let bytes = try await snapshotStore.clean(keepingSnapshotsFor: images)
+                try Task.checkCancellation()
+                return bytes
+            },
+            content: {
+                try Task.checkCancellation()
+                let result = try await imageStore.cleanUpOrphanedBlobs()
+                try Task.checkCancellation()
+                return result
+            }
+        )
+        return (cleanup.content.deleted, cleanup.content.freed + cleanup.snapshotBytes)
     }
 
     /// Calculate disk usage for images
@@ -294,41 +430,40 @@ public actor ImagesService {
         }
 
         let images = try await self._list()
-        var activeCount = 0
-        var activeContentSizes: [String: UInt64] = [:]
-        var activeSnapshotSizes: [String: UInt64] = [:]
-        var processedDigests = Set<String>()
-
-        for image in images {
-            guard activeReferences.contains(image.reference) else { continue }
-            activeCount += 1
-            let imageDigest = image.digest.trimmingDigestPrefix
-            guard processedDigests.insert(imageDigest).inserted else { continue }
-
-            for digest in try await image.referencedDigests() where activeContentSizes[digest] == nil {
-                guard let content: Content = try await self.contentStore.get(digest: digest) else { continue }
-                activeContentSizes[digest] = try self.contentDiskSize(content)
+        let contentStore = self.contentStore
+        let snapshotStore = self.snapshotStore
+        async let diskTotals = ConcurrentImageDiskUsageTotals.run(
+            content: {
+                try await contentStore.totalAllocatedSize()
+            },
+            snapshots: {
+                await snapshotStore.totalAllocatedSize()
             }
-            for (digest, size) in try await self.snapshotStore.getSnapshotSizes(for: image) {
-                activeSnapshotSizes[digest] = size
+        )
+        let activeImages = images.filter { activeReferences.contains($0.reference) }
+        var uniqueActiveImages: [Containerization.Image] = []
+        uniqueActiveImages.reserveCapacity(activeImages.count)
+        var processedDigests = Set<String>()
+        for image in activeImages {
+            let imageDigest = image.digest.trimmingDigestPrefix
+            if processedDigests.insert(imageDigest).inserted {
+                uniqueActiveImages.append(image)
             }
         }
+        async let activeDiskUsage = ConcurrentActiveImageDiskUsage.run(
+            images: uniqueActiveImages,
+            contentStore: contentStore,
+            snapshotStore: snapshotStore
+        )
 
-        let snapshotDiskSize = await self.snapshotStore.totalAllocatedSize()
-        let contentDiskTotal = try await self.contentStore.totalAllocatedSize()
-        let totalOnDisk = contentDiskTotal + snapshotDiskSize
-        let activeSize = activeContentSizes.values.reduce(0, +) + activeSnapshotSizes.values.reduce(0, +)
+        let (totals, activeUsage) = try await (diskTotals, activeDiskUsage)
+        let totalOnDisk = totals.content + totals.snapshots
+        let activeContentSize = activeUsage.contentSizes.values.reduce(0, +)
+        let activeSnapshotSize = activeUsage.snapshotSizes.values.reduce(0, +)
+        let activeSize = activeContentSize + activeSnapshotSize
         let reclaimable = totalOnDisk > activeSize ? totalOnDisk - activeSize : 0
 
-        return (images.count, activeCount, totalOnDisk, reclaimable)
-    }
-
-    private func contentDiskSize(_ content: Content) throws -> UInt64 {
-        let values = try? content.path.resourceValues(forKeys: [.totalFileAllocatedSizeKey])
-        if let allocatedSize = values?.totalFileAllocatedSize {
-            return UInt64(allocatedSize)
-        }
-        return try content.size()
+        return (images.count, activeImages.count, totalOnDisk, reclaimable)
     }
 }
 

@@ -24,6 +24,21 @@ import Logging
 extension K8sHelper {
     // MARK: - Readiness
 
+    static let readinessPollInterval: Duration = .seconds(2)
+
+    static func readinessPollDelay(elapsed: Duration) -> Duration? {
+        let remaining = readinessPollInterval - elapsed
+        return remaining > .zero ? remaining : nil
+    }
+
+    static func waitForNextReadinessPoll(since start: ContinuousClock.Instant) async throws {
+        let elapsed = start.duration(to: .now)
+        guard let delay = readinessPollDelay(elapsed: elapsed) else {
+            return
+        }
+        try await Task.sleep(for: delay)
+    }
+
     public static func runProbe(client: ContainerClient, containerId: String, arguments: [String]) async throws -> Int32 {
         let devNull = FileHandle(forWritingAtPath: "/dev/null")
         defer { try? devNull?.close() }
@@ -45,6 +60,7 @@ extension K8sHelper {
         let timeout = 120
         log.info("Waiting for node to boot", metadata: ["node": "\(containerId)"])
         for attempt in 1...timeout {
+            let pollStart = ContinuousClock.now
             let result = try await execCapture(
                 containerId: containerId, executable: "/bin/sh",
                 arguments: ["-c", "test -S /run/containerd/containerd.sock"], client: client)
@@ -56,7 +72,7 @@ extension K8sHelper {
                     message: "node \(containerId) did not boot within \(timeout * 2)s: containerd socket not present at /run/containerd/containerd.sock"
                 )
             }
-            try await Task.sleep(for: .seconds(2))
+            try await waitForNextReadinessPoll(since: pollStart)
         }
     }
 
@@ -66,6 +82,7 @@ extension K8sHelper {
 
         log.info("Waiting for control-plane node to become ready")
         for attempt in 1...nodeReadyTimeout {
+            let pollStart = ContinuousClock.now
             let code: Int32
             do {
                 code = try await runProbe(
@@ -83,11 +100,12 @@ extension K8sHelper {
                     message: "k8s cluster \(containerId) control-plane node did not become Ready within \(nodeReadyTimeout * 2)s"
                 )
             }
-            try await Task.sleep(for: .seconds(2))
+            try await waitForNextReadinessPoll(since: pollStart)
         }
 
         log.info("Waiting for kube-system pods to become ready")
         for attempt in 1...podReadyTimeout {
+            let pollStart = ContinuousClock.now
             let code: Int32
             do {
                 code = try await runProbe(
@@ -99,7 +117,7 @@ extension K8sHelper {
             }
             if code == 0 { return }
             if attempt < podReadyTimeout {
-                try await Task.sleep(for: .seconds(2))
+                try await waitForNextReadinessPoll(since: pollStart)
             }
         }
         log.info("inspect pod state with 'container exec \(containerId) kubectl get pods -n kube-system'")

@@ -22,6 +22,32 @@ import Testing
 
 @testable import ContainerAPIClient
 
+private actor PreparationOverlapProbe {
+    private var active = 0
+    private(set) var maximumActive = 0
+
+    func begin() {
+        active += 1
+        maximumActive = max(maximumActive, active)
+    }
+
+    func end() {
+        active -= 1
+    }
+}
+
+private actor PreparationCancellationProbe {
+    private(set) var cancelled = 0
+
+    func recordCancellation() {
+        cancelled += 1
+    }
+}
+
+private enum PreparationTestError: Error {
+    case expected
+}
+
 struct UtilityTests {
 
     @Test("A v2 logging request bypasses the legacy driver projection")
@@ -49,6 +75,124 @@ struct UtilityTests {
         )
 
         #expect(configuration.storage == .none)
+    }
+
+    @Test("Prepare independent container resources concurrently")
+    func testConcurrentContainerPreparation() async throws {
+        let probe = PreparationOverlapProbe()
+
+        let result = try await Utility.prepareConcurrently(
+            {
+                await probe.begin()
+                try await Task.sleep(for: .milliseconds(50))
+                await probe.end()
+                return "image"
+            },
+            {
+                await probe.begin()
+                try await Task.sleep(for: .milliseconds(50))
+                await probe.end()
+                return "kernel"
+            },
+            {
+                await probe.begin()
+                try await Task.sleep(for: .milliseconds(50))
+                await probe.end()
+                return "init"
+            }
+        )
+
+        #expect(result.0 == "image")
+        #expect(result.1 == "kernel")
+        #expect(result.2 == "init")
+        #expect(await probe.maximumActive == 3)
+    }
+
+    @Test("Cancel remaining container preparation after a failure")
+    func testConcurrentContainerPreparationCancellation() async {
+        let probe = PreparationCancellationProbe()
+        let failing: @Sendable () async throws -> String = {
+            try await Task.sleep(for: .milliseconds(20))
+            throw PreparationTestError.expected
+        }
+        let waiting: @Sendable () async throws -> String = {
+            do {
+                try await Task.sleep(for: .seconds(10))
+                return "unexpected"
+            } catch is CancellationError {
+                await probe.recordCancellation()
+                throw CancellationError()
+            } catch {
+                throw error
+            }
+        }
+
+        do {
+            _ = try await Utility.prepareConcurrently(failing, waiting, waiting)
+            Issue.record("expected preparation failure")
+        } catch PreparationTestError.expected {
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
+
+        #expect(await probe.cancelled == 2)
+    }
+
+    @Test(
+        "Split the image download cap across both image pipelines",
+        arguments: [
+            (maximum: 1, workload: 1, initImage: nil),
+            (maximum: 2, workload: 1, initImage: 1),
+            (maximum: 3, workload: 2, initImage: 1),
+            (maximum: 8, workload: 4, initImage: 4),
+        ]
+    )
+    func imageDownloadLimits(
+        maximum: Int,
+        workload: Int,
+        initImage: Int?
+    ) throws {
+        let limits = try Utility.imageDownloadLimits(
+            maxConcurrentDownloads: maximum
+        )
+
+        #expect(limits.workload == workload)
+        #expect(limits.initImage == initImage)
+        #expect(limits.workload + (limits.initImage ?? 0) <= maximum)
+    }
+
+    @Test("Reject a non-positive image download cap", arguments: [0, -1])
+    func rejectNonPositiveImageDownloadLimit(_ maximum: Int) {
+        let error = #expect(throws: ContainerizationError.self) {
+            try Utility.imageDownloadLimits(maxConcurrentDownloads: maximum)
+        }
+
+        #expect(error?.code == .invalidArgument)
+    }
+
+    @Test("Validate network attachments from one network snapshot")
+    func testBatchNetworkAttachmentValidation() throws {
+        let attachments = [
+            AttachmentConfiguration(network: "frontend", options: .init(hostname: "web")),
+            AttachmentConfiguration(network: "backend", options: .init(hostname: "db")),
+        ]
+
+        try Utility.validateNetworkAttachments(
+            attachments,
+            availableNetworkIDs: ["frontend", "backend", "unused"]
+        )
+        do {
+            try Utility.validateNetworkAttachments(
+                attachments,
+                availableNetworkIDs: ["frontend"]
+            )
+            Issue.record("expected missing network error")
+        } catch let error as ContainerizationError {
+            #expect(error.code == .notFound)
+            #expect(error.message == "network backend not found")
+        } catch {
+            Issue.record("unexpected error: \(error)")
+        }
     }
 
     @Test("Parse simple key-value pairs")

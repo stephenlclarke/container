@@ -16,9 +16,7 @@
 
 import Collections
 import ContainerAPIClient
-import ContainerizationArchive
 import ContainerizationOCI
-import CryptoKit
 import Foundation
 import GRPCCore
 
@@ -34,6 +32,11 @@ import GRPCCore
 /// local cache and presents the files to BuildKit via `DiffCopy`. BuildKit then
 /// issues `PACKET_REQ` for regular files it needs; the shim serves those from
 /// the local cache without any further calls to the host.
+///
+/// After calculating the archive digest, the host probes that cache. A hit is
+/// represented by a completed digest header, so no archive bytes cross the VM
+/// boundary. A miss or non-cancellation probe failure retains the original
+/// header, body, and completion sequence.
 ///
 /// When a context path is a symlink whose target lies within the context root,
 /// ``walk(_:_:_:)`` adds the target to the archive alongside the symlink so
@@ -53,10 +56,17 @@ import GRPCCore
 /// Dockerignore filtering is **not** applied here; the shim applies it after
 /// unpacking the tar.
 actor BuildFSSync: BuildPipelineHandler {
+    typealias ContextCacheLookup = @Sendable (String) async throws -> Bool
+
     let contextDir: URL
     let namedContexts: [String: URL]
+    private let contextCacheLookup: ContextCacheLookup
 
-    init(_ contextDir: URL, namedContexts: [String: String] = [:]) throws {
+    init(
+        _ contextDir: URL,
+        namedContexts: [String: String] = [:],
+        contextCacheLookup: @escaping ContextCacheLookup = { _ in false }
+    ) throws {
         let resolved = contextDir.resolvingSymlinksInPath()
         guard FileManager.default.fileExists(atPath: contextDir.cleanPath) else {
             throw Error.contextNotFound(contextDir.cleanPath)
@@ -82,6 +92,7 @@ actor BuildFSSync: BuildPipelineHandler {
             }
             result[name] = resolved
         }
+        self.contextCacheLookup = contextCacheLookup
     }
 
     nonisolated func accept(_ packet: ServerStream) throws -> Bool {
@@ -271,53 +282,46 @@ actor BuildFSSync: BuildPipelineHandler {
             return
         }
 
+        let includedPaths = Set(entries.values.flatMap { $0.map(\.relativePath) })
+        try await sendTar(
+            sender,
+            packet: packet,
+            buildID: buildID,
+            contextDir: root,
+            includedPaths: includedPaths
+        )
+    }
+
+    private func sendTar(
+        _ sender: AsyncStream<ClientStream>.Continuation,
+        packet: BuildTransfer,
+        buildID: String,
+        contextDir: URL,
+        includedPaths: Set<String>
+    ) async throws {
         let tarURL = URL.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".tar")
-
         defer { try? FileManager.default.removeItem(at: tarURL) }
 
-        let writerCfg = ArchiveWriterConfiguration(
-            format: .paxRestricted,
-            filter: .none)
-
-        _ = try Archiver.compress(
-            source: root,
+        let tarHash = try await ConcurrentBuildContextArchive.archive(
+            contextDir: contextDir,
             destination: tarURL,
-            writerConfiguration: writerCfg
-        ) { url in
-            guard let rel = try? url.relativeChildPath(to: root) else {
-                return nil
-            }
-
-            guard let parent = try? url.deletingLastPathComponent().relativeChildPath(to: root) else {
-                return nil
-            }
-
-            guard let items = entries[parent] else {
-                return nil
-            }
-
-            let entry = DirEntry(url: url, isDirectory: url.hasDirectoryPath, relativePath: rel)
-            let include = items.contains(entry)
-
-            guard include else {
-                return nil
-            }
-
-            return Archiver.ArchiveEntryInfo(
-                pathOnHost: url,
-                pathInArchive: URL(fileURLWithPath: rel))
+            includedPaths: includedPaths
+        )
+        let hash = tarHash.compactMap { String(format: "%02x", $0) }.joined()
+        let contextIsCached: Bool
+        do {
+            contextIsCached = try await contextCacheLookup(hash)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            contextIsCached = false
         }
-
-        var archiveHasher = SHA256()
-        for try await chunk in try tarURL.bufferedCopyReader() {
-            archiveHasher.update(data: chunk)
-        }
-        let hash = archiveHasher.finalize().map { String(format: "%02x", $0) }.joined()
         let header = BuildTransfer(
             id: packet.id,
             source: tarURL.path,
-            complete: false,
+            complete: contextIsCached,
             isDir: false,
             metadata: [
                 "os": "linux",
@@ -331,6 +335,10 @@ actor BuildFSSync: BuildPipelineHandler {
         resp.buildTransfer = header
         resp.packetType = .buildTransfer(header)
         sender.yield(resp)
+
+        if contextIsCached {
+            return
+        }
 
         for try await chunk in try tarURL.bufferedCopyReader() {
             let part = BuildTransfer(
@@ -364,7 +372,6 @@ actor BuildFSSync: BuildPipelineHandler {
             ],
             data: Data()
         )
-
         var finalResp = ClientStream()
         finalResp.buildID = buildID
         finalResp.buildTransfer = done

@@ -62,15 +62,36 @@ public struct Builder: Sendable {
 
     let client: Com_Apple_Container_Build_V1_Builder.Client<HTTP2ClientTransport.WrappedChannel>
     let grpcClient: GRPCClient<HTTP2ClientTransport.WrappedChannel>
-    let group: EventLoopGroup
+    let shutdownEventLoopGroup: @Sendable () async throws -> Void
     let builderShimSocket: FileHandle
     let clientTask: Task<Void, any Swift.Error>
     let logger: Logger
     private let shutdownState: ShutdownState
 
     public init(socket: FileHandle, group: EventLoopGroup, logger: Logger) async throws {
-        try socket.setSendBufSize(4 << 20)
-        try socket.setRecvBufSize(2 << 20)
+        try await self.init(
+            socket: socket,
+            group: group,
+            logger: logger,
+            shutdownEventLoopGroup: {
+                try await group.shutdownGracefully()
+            }
+        )
+    }
+
+    init(
+        socket: FileHandle,
+        group: EventLoopGroup,
+        logger: Logger,
+        shutdownEventLoopGroup: @escaping @Sendable () async throws -> Void
+    ) async throws {
+        do {
+            try socket.setSendBufSize(4 << 20)
+            try socket.setRecvBufSize(2 << 20)
+        } catch {
+            try? socket.close()
+            throw error
+        }
 
         let transport = try await HTTP2ClientTransport.WrappedChannel.wrapping(
             config: .defaults,
@@ -93,7 +114,7 @@ public struct Builder: Sendable {
         let grpcClient = GRPCClient(transport: transport)
         self.grpcClient = grpcClient
         self.client = Com_Apple_Container_Build_V1_Builder.Client(wrapping: grpcClient)
-        self.group = group
+        self.shutdownEventLoopGroup = shutdownEventLoopGroup
         self.builderShimSocket = socket
         self.logger = logger
         self.shutdownState = ShutdownState()
@@ -130,14 +151,33 @@ public struct Builder: Sendable {
 
         self.grpcClient.beginGracefulShutdown()
         self.clientTask.cancel()
+        _ = await self.clientTask.result
 
         do {
-            try await self.group.shutdownGracefully()
+            try await self.shutdownEventLoopGroup()
         } catch {
             self.logger.debug("builder event loop shutdown failed: \(error)")
         }
 
         try? self.builderShimSocket.close()
+    }
+
+    /// Older builder shims do not expose the lookup RPC, so they retain the
+    /// original streaming behavior without blocking a build.
+    func contextIsCached(_ digest: String) async throws -> Bool {
+        var request = Com_Apple_Container_Build_V1_LookupContextRequest()
+        request.digest = digest
+        var opts = CallOptions.defaults
+        opts.timeout = .seconds(5)
+        do {
+            let response: Com_Apple_Container_Build_V1_LookupContextResponse = try await self.client.lookupContext(
+                request,
+                options: opts
+            )
+            return response.present
+        } catch let error as RPCError where error.code == .unimplemented {
+            return false
+        }
     }
 
     // TODO
@@ -185,7 +225,9 @@ public struct Builder: Sendable {
             continuation.finish()
         }
 
-        let pipeline = try await BuildPipeline(config)
+        let pipeline = try await BuildPipeline(config) { digest in
+            try await self.contextIsCached(digest)
+        }
         do {
             try await self.client.performBuild(
                 metadata: try Self.buildMetadata(config),

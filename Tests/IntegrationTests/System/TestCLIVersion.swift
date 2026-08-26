@@ -68,7 +68,7 @@ struct TestCLIVersion {
             #expect(!lines[0].contains("COMPONENT"))
             #expect(lines.contains(where: { $0.hasPrefix("  version: ") }))
             #expect(!result.output.contains("version:  "))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:c29628471db683a53f4a75bcb759bb9147a65e097ede37c7dde05442afa7518c"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:d81d12e1dca1133ede535483a809803e6b256555a73d17f207003279539454a4"))
 
             let expected = expectedBuildType()
             #expect(lines.contains(where: { $0.contains("build") && $0.contains(expected) }))
@@ -86,8 +86,8 @@ struct TestCLIVersion {
             #expect(!decoded[0].version.isEmpty)
             #expect(!decoded[0].commit.isEmpty)
             #expect(decoded[0].builderShimRepository == "ghcr.io/stephenlclarke/container-builder-shim/builder")
-            #expect(decoded[0].builderShimVersion == "current-31545611348-88332c96705b")
-            #expect(decoded[0].builderShimDigest == "sha256:c29628471db683a53f4a75bcb759bb9147a65e097ede37c7dde05442afa7518c")
+            #expect(decoded[0].builderShimVersion == "current-32967604909-2df7b287e530")
+            #expect(decoded[0].builderShimDigest == "sha256:d81d12e1dca1133ede535483a809803e6b256555a73d17f207003279539454a4")
             #expect(decoded[0].runtimeCapabilitySchemaVersion == 1)
             #expect(
                 decoded[0].runtimeCapabilities == [
@@ -135,7 +135,7 @@ struct TestCLIVersion {
             #expect(lines.contains(where: { $0.contains("builder-shim") }))
             #expect(lines.contains("  runtime-capability-schema: 1"))
             #expect(lines.contains(where: { $0.hasPrefix("  runtime-capabilities: ") }))
-            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:c29628471db683a53f4a75bcb759bb9147a65e097ede37c7dde05442afa7518c"))
+            #expect(result.output.contains("ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:d81d12e1dca1133ede535483a809803e6b256555a73d17f207003279539454a4"))
         }
     }
 

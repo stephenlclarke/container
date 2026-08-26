@@ -75,10 +75,22 @@ protocol BuildPipelineHandler: Sendable {
 /// ```
 public actor BuildPipeline {
     let handlers: [BuildPipelineHandler]
+
     public init(_ config: Builder.BuildConfig) async throws {
+        try await self.init(config, contextCacheLookup: { _ in false })
+    }
+
+    init(
+        _ config: Builder.BuildConfig,
+        contextCacheLookup: @escaping BuildFSSync.ContextCacheLookup
+    ) async throws {
         self.handlers =
             [
-                try BuildFSSync(URL(filePath: config.contextDir), namedContexts: config.localBuildContexts),
+                try BuildFSSync(
+                    URL(filePath: config.contextDir),
+                    namedContexts: config.localBuildContexts,
+                    contextCacheLookup: contextCacheLookup
+                ),
                 try BuildRemoteContentProxy(config.contentStore),
                 try BuildImageResolver(
                     config.contentStore,

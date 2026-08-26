@@ -62,11 +62,11 @@ let releaseVersion = ProcessInfo.processInfo.environment["RELEASE_VERSION"] ?? "
 let gitCommit = ProcessInfo.processInfo.environment["GIT_COMMIT"] ?? "unspecified"
 let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ?? "stephenlclarke/container"
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
-let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-31545611348-88332c96705b"
-let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:c29628471db683a53f4a75bcb759bb9147a65e097ede37c7dde05442afa7518c"
+let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-32967604909-2df7b287e530"
+let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:d81d12e1dca1133ede535483a809803e6b256555a73d17f207003279539454a4"
 let scVersion = "0.41.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "fefced145304666076d646609f21397f32909fcf"
+let containerizationRevision = "050cf2484a50fcc0931ee53f544e027bf4012e05"
 let containerEngineAPIRevision = "386a40c726ecd25d67a3e5933582aebbfbe4fa2f"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
@@ -245,6 +245,7 @@ let package = Package(
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 "ContainerPersistence",
                 "ContainerBuild",
+                .product(name: "NIOPosix", package: "swift-nio"),
             ]
         ),
         .testTarget(
@@ -462,7 +463,11 @@ let package = Package(
         ),
         .testTarget(
             name: "ContainerImagesServiceTests",
-            dependencies: ["ContainerImagesService"]
+            dependencies: [
+                .product(name: "ContainerizationArchive", package: "containerization"),
+                "ContainerImagesService",
+                "ContainerResource",
+            ]
         ),
         .target(
             name: "ContainerImagesServiceClient",
@@ -943,7 +948,11 @@ let package = Package(
             dependencies: [
                 .product(name: "ContainerizationEXT4", package: "containerization"),
                 .product(name: "ContainerizationExtras", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "SystemPackage", package: "swift-system"),
+                "ContainerPersistence",
+                "ContainerResource",
+                "MachineAPIClient",
                 "MachineAPIService",
             ]
         ),
