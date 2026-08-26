@@ -353,6 +353,36 @@ import Testing
         #expect(completion.complete)
     }
 
+    @Test("A failed cache probe falls back to the ordered tar stream")
+    func failedCacheProbeStreamsTarBody() async throws {
+        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
+        let fssync = try BuildFSSync(contextDir) { _ in
+            throw BuildContextCacheTestError.lookupFailed
+        }
+
+        let responses = try await walkTAR(fssync)
+        let transfers = responses.map(\.buildTransfer)
+        let header = try #require(transfers.first)
+        let completion = try #require(transfers.last)
+        #expect(transfers.count >= 3)
+        #expect(!header.complete)
+        #expect(header.metadata["hash"]?.count == 64)
+        #expect(transfers.dropFirst().dropLast().contains { !$0.data.isEmpty })
+        #expect(completion.complete)
+    }
+
+    @Test("A cancelled cache probe cancels the context stream")
+    func cancelledCacheProbeStopsStreaming() async throws {
+        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
+        let fssync = try BuildFSSync(contextDir) { _ in
+            throw CancellationError()
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await self.walkTAR(fssync)
+        }
+    }
+
     @Test("Named contexts archive from their selected root")
     func namedContextTarUsesSelectedRoot() async throws {
         let shared = base.appendingPathComponent("shared")
@@ -721,6 +751,10 @@ import Testing
         #expect(responses.first?.buildTransfer.metadata["hash"] != nil)
     }
 
+}
+
+private enum BuildContextCacheTestError: Error {
+    case lookupFailed
 }
 
 private enum BuildArchiveTestError: Error {

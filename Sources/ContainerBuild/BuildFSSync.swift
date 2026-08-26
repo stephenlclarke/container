@@ -35,7 +35,8 @@ import GRPCCore
 ///
 /// After calculating the archive digest, the host probes that cache. A hit is
 /// represented by a completed digest header, so no archive bytes cross the VM
-/// boundary. A miss retains the original header, body, and completion sequence.
+/// boundary. A miss or non-cancellation probe failure retains the original
+/// header, body, and completion sequence.
 ///
 /// When a context path is a symlink whose target lies within the context root,
 /// ``walk(_:_:_:)`` adds the target to the archive alongside the symlink so
@@ -308,7 +309,15 @@ actor BuildFSSync: BuildPipelineHandler {
             includedPaths: includedPaths
         )
         let hash = tarHash.compactMap { String(format: "%02x", $0) }.joined()
-        let contextIsCached = try await contextCacheLookup(hash)
+        let contextIsCached: Bool
+        do {
+            contextIsCached = try await contextCacheLookup(hash)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            contextIsCached = false
+        }
         let header = BuildTransfer(
             id: packet.id,
             source: tarURL.path,
