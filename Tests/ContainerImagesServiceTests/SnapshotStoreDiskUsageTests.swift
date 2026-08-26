@@ -163,7 +163,7 @@ struct ActiveImageDiskUsageTests {
 
     @Test("A failed active image read cancels unfinished work")
     func boundedMapCancelsAfterFailure() async throws {
-        let entrants = PollingCountdown(count: 2)
+        let siblingIsCancellable = PollingCountdown(count: 1)
         let cancellations = PollingCountdown(count: 1)
 
         do {
@@ -171,18 +171,19 @@ struct ActiveImageDiskUsageTests {
                 [false, true],
                 maximumConcurrentTasks: 2
             ) { shouldFail in
-                await entrants.arrive()
-                try await entrants.wait(timeout: .seconds(1))
                 if shouldFail {
+                    try await siblingIsCancellable.wait(timeout: .seconds(1))
                     throw ConcurrencyTestError.expectedFailure
                 }
 
-                do {
+                return try await withTaskCancellationHandler {
+                    await siblingIsCancellable.arrive()
                     try await Task.sleep(for: .seconds(10))
                     return 0
-                } catch is CancellationError {
-                    await cancellations.arrive()
-                    throw CancellationError()
+                } onCancel: {
+                    Task {
+                        await cancellations.arrive()
+                    }
                 }
             }
         } catch ConcurrencyTestError.expectedFailure {
