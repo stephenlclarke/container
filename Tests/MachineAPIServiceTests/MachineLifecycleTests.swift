@@ -19,6 +19,7 @@ import ContainerResource
 import ContainerizationOCI
 import Foundation
 import MachineAPIClient
+import SystemPackage
 import Testing
 
 @testable import MachineAPIService
@@ -157,6 +158,64 @@ struct MachineLifecycleTests {
             )
         )
         #expect(machines.isEmpty)
+    }
+
+    @Test("Machine deletion persists state before removing the bundle")
+    func deletionOrdersPersistenceBeforeBundleRemoval() async throws {
+        let events = EventRecorder()
+
+        try await MachineDeletionTransaction.run(
+            prepare: {
+                await events.append("persist")
+            },
+            removeBundle: {
+                await events.append("remove")
+            },
+            commit: {
+                await events.append("commit")
+            }
+        )
+
+        #expect(await events.values == ["persist", "remove", "commit"])
+    }
+
+    @Test("A persistence failure leaves the machine bundle untouched")
+    func deletionStopsBeforeBundleRemovalWhenPersistenceFails() async {
+        let events = EventRecorder()
+
+        await #expect(throws: LifecycleTestError.self) {
+            try await MachineDeletionTransaction.run(
+                prepare: {
+                    await events.append("persist")
+                    throw LifecycleTestError.expected
+                },
+                removeBundle: {
+                    await events.append("remove")
+                },
+                commit: {
+                    await events.append("commit")
+                }
+            )
+        }
+
+        #expect(await events.values == ["persist"])
+    }
+
+    @Test("A failed default-state write preserves the in-memory default")
+    func failedDefaultWritePreservesState() throws {
+        let root = FilePath(NSTemporaryDirectory()).appending("machine-state-safety-\(UUID())")
+        defer { try? FileManager.default.removeItem(atPath: root.string) }
+        try FileManager.default.createDirectory(atPath: root.string, withIntermediateDirectories: false)
+        let statePath = root.appending("state.json")
+        var state = try MachinesService.ServiceState.from(statePath)
+        try FileManager.default.removeItem(atPath: statePath.string)
+        try FileManager.default.createDirectory(atPath: statePath.string, withIntermediateDirectories: false)
+
+        #expect(throws: (any Error).self) {
+            try state.setDefault(id: "machine")
+        }
+
+        #expect(state.defaultMachine == nil)
     }
 
     private static func snapshot(id: String) throws -> MachineSnapshot {

@@ -66,17 +66,80 @@ enum ConcurrentMachineBootPreparation {
 }
 
 enum ConcurrentMachineCreationPreparation {
+    private enum Prepared<Bundle: Sendable, Filesystem: Sendable>: Sendable {
+        case bundle(Bundle)
+        case filesystem(Filesystem)
+    }
+
     @concurrent
     static func run<Bundle: Sendable, Filesystem: Sendable>(
         bundle: @Sendable @escaping () async throws -> Bundle,
         filesystem: @Sendable @escaping () async throws -> Filesystem,
-        finalize: @Sendable @escaping (Bundle, Filesystem) async throws -> Void
+        finalize: @Sendable @escaping (Bundle, Filesystem) async throws -> Void,
+        cleanup: @Sendable @escaping (Bundle) async -> Void
     ) async throws -> Bundle {
-        async let preparedBundle = bundle()
-        async let preparedFilesystem = filesystem()
-        let values = try await (preparedBundle, preparedFilesystem)
-        try await finalize(values.0, values.1)
-        return values.0
+        try await withThrowingTaskGroup(of: Prepared<Bundle, Filesystem>.self) { group in
+            group.addTask {
+                .bundle(try await bundle())
+            }
+            group.addTask {
+                .filesystem(try await filesystem())
+            }
+
+            var preparedBundle: Bundle?
+            var preparedFilesystem: Filesystem?
+            do {
+                for try await result in group {
+                    switch result {
+                    case .bundle(let bundle):
+                        preparedBundle = bundle
+                    case .filesystem(let filesystem):
+                        preparedFilesystem = filesystem
+                    }
+                }
+            } catch {
+                group.cancelAll()
+                while !group.isEmpty {
+                    do {
+                        if let result = try await group.next(),
+                            case .bundle(let bundle) = result
+                        {
+                            preparedBundle = bundle
+                        }
+                    } catch {
+                        // The first error below remains the operation result.
+                    }
+                }
+                if let preparedBundle {
+                    await cleanup(preparedBundle)
+                }
+                throw error
+            }
+
+            guard let preparedBundle, let preparedFilesystem else {
+                preconditionFailure("machine creation preparation completed without both results")
+            }
+            do {
+                try await finalize(preparedBundle, preparedFilesystem)
+                return preparedBundle
+            } catch {
+                await cleanup(preparedBundle)
+                throw error
+            }
+        }
+    }
+}
+
+enum MachineDeletionTransaction {
+    @concurrent
+    static func run(
+        prepare: @Sendable @escaping () async throws -> Void,
+        removeBundle: @Sendable @escaping () async throws -> Void,
+        commit: @Sendable @escaping () async throws -> Void
+    ) async throws {
+        try await prepare()
+        try await removeBundle()
+        try await commit()
     }
 }
 
@@ -260,9 +323,10 @@ public actor MachinesService {
             try await self.reserveMachineCreation(configuration.id, context: context)
         }
 
+        var createdBundle: MachineBundle?
         do {
             let resourceRoot = self.resourceRoot
-            _ = try await ConcurrentMachineCreationPreparation.run(
+            createdBundle = try await ConcurrentMachineCreationPreparation.run(
                 bundle: {
                     try MachineBundle.create(
                         path: path,
@@ -282,6 +346,9 @@ public actor MachinesService {
                         blockDevice: FilePath(bundle.machineRootfs.source),
                         image: configuration.image.reference
                     )
+                },
+                cleanup: { bundle in
+                    try? bundle.delete()
                 }
             )
             let snapshot = MachineSnapshot(
@@ -295,10 +362,9 @@ public actor MachinesService {
                 try await self.commitMachineCreation(snapshot, context: context)
             }
         } catch {
-            if FileManager.default.fileExists(atPath: path.string) {
+            if let createdBundle {
                 do {
-                    let bundle = MachineBundle(path: path)
-                    try bundle.delete()
+                    try createdBundle.delete()
                 } catch let cleanupError {
                     self.log.error(
                         "failed to delete bundle for container machine \(configuration.id)",
@@ -332,19 +398,37 @@ public actor MachinesService {
             }
 
             let path = try self.bundlePath(id: id)
-            try MachineBundle(path: path).delete()
-
-            try await self.lock.withLock { context in
-                _ = try await self.getMachineState(id: id, generation: initialState.generation, context: context)
-                if let defaultMachine = await self.default, defaultMachine.id == id {
-                    try await self._setDefault(id: nil)
+            try await MachineDeletionTransaction.run(
+                prepare: {
+                    try await self.lock.withLock { context in
+                        _ = try await self.getMachineState(
+                            id: id,
+                            generation: initialState.generation,
+                            context: context
+                        )
+                        if let defaultMachine = await self.default, defaultMachine.id == id {
+                            try await self._setDefault(id: nil)
+                        }
+                    }
+                },
+                removeBundle: {
+                    try MachineBundle(path: path).delete()
+                },
+                commit: {
+                    try await self.lock.withLock { context in
+                        _ = try await self.getMachineState(
+                            id: id,
+                            generation: initialState.generation,
+                            context: context
+                        )
+                        _ = await self.removeMachineState(
+                            id: id,
+                            generation: initialState.generation,
+                            context: context
+                        )
+                    }
                 }
-                _ = await self.removeMachineState(
-                    id: id,
-                    generation: initialState.generation,
-                    context: context
-                )
-            }
+            )
         }
     }
 
@@ -357,9 +441,16 @@ public actor MachinesService {
     public func setDefault(id: String) async throws {
         self.log.debug("\(#function)")
 
-        try await self.lock.withLock { context in
-            let state = try await self._getMachineState(id: id)
-            try await self._setDefault(id: state.id)
+        let initialState = try self._getMachineState(id: id)
+        try await initialState.lifecycleLock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { _ in
+            try await self.lock.withLock { context in
+                let state = try await self.getMachineState(
+                    id: id,
+                    generation: initialState.generation,
+                    context: context
+                )
+                try await self._setDefault(id: state.id)
+            }
         }
     }
 
@@ -804,7 +895,7 @@ public actor MachinesService {
 }
 
 extension MachinesService {
-    fileprivate struct ServiceState: Codable, Sendable {
+    struct ServiceState: Codable, Sendable {
         private var path: FilePath?
 
         public var defaultMachine: String?
@@ -837,9 +928,11 @@ extension MachinesService {
                 )
             }
 
-            self.defaultMachine = id
-            let data = try JSONEncoder().encode(self)
+            var updated = self
+            updated.defaultMachine = id
+            let data = try JSONEncoder().encode(updated)
             try data.write(to: URL(filePath: path.string), options: .atomic)
+            self = updated
         }
     }
 }

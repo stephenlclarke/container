@@ -120,6 +120,9 @@ struct MachineCreationPreflightTests {
                     #expect(bundle == "bundle")
                     #expect(filesystem == "filesystem")
                     await finalized.arrive()
+                },
+                cleanup: { _ in
+                    Issue.record("successful preparation must not clean up its bundle")
                 }
             )
         }
@@ -136,6 +139,93 @@ struct MachineCreationPreflightTests {
 
         #expect(bundle == "bundle")
         try await finalized.wait(timeout: .seconds(1))
+    }
+
+    @Test("A failed filesystem preparation cleans up a completed bundle")
+    func filesystemFailureCleansUpBundle() async throws {
+        let cleaned = PollingCountdown(count: 1)
+
+        let error = await #expect(throws: PreparationError.self) {
+            try await ConcurrentMachineCreationPreparation.run(
+                bundle: {
+                    "bundle"
+                },
+                filesystem: { () async throws -> String in
+                    throw PreparationError.expected
+                },
+                finalize: { _, _ in
+                    Issue.record("failed preparation must not finalize")
+                },
+                cleanup: { bundle in
+                    #expect(bundle == "bundle")
+                    await cleaned.arrive()
+                }
+            )
+        }
+
+        #expect(error == .expected)
+        try await cleaned.wait(timeout: .seconds(1))
+    }
+
+    @Test("A failed rootfs finalization cleans up its bundle")
+    func finalizationFailureCleansUpBundle() async throws {
+        let cleaned = PollingCountdown(count: 1)
+
+        let error = await #expect(throws: PreparationError.self) {
+            try await ConcurrentMachineCreationPreparation.run(
+                bundle: {
+                    "bundle"
+                },
+                filesystem: {
+                    "filesystem"
+                },
+                finalize: { _, _ in
+                    throw PreparationError.expected
+                },
+                cleanup: { bundle in
+                    #expect(bundle == "bundle")
+                    await cleaned.arrive()
+                }
+            )
+        }
+
+        #expect(error == .expected)
+        try await cleaned.wait(timeout: .seconds(1))
+    }
+
+    @Test("A failed creation preparation cancels its unfinished sibling")
+    func failureCancelsSibling() async throws {
+        let entrants = PollingCountdown(count: 2)
+        let cancellations = PollingCountdown(count: 1)
+
+        let error = await #expect(throws: PreparationError.self) {
+            try await ConcurrentMachineCreationPreparation.run(
+                bundle: {
+                    await entrants.arrive()
+                    do {
+                        try await Task.sleep(for: .seconds(30))
+                        return "bundle"
+                    } catch {
+                        await cancellations.arrive()
+                        throw error
+                    }
+                },
+                filesystem: { () async throws -> String in
+                    await entrants.arrive()
+                    try await entrants.wait(timeout: .seconds(1))
+                    throw PreparationError.expected
+                },
+                finalize: { _, _ in
+                    Issue.record("failed preparation must not finalize")
+                },
+                cleanup: { _ in
+                    Issue.record("an unfinished bundle must not be cleaned as complete")
+                }
+            )
+        }
+
+        #expect(error == .expected)
+        try await cancellations.wait(timeout: .seconds(1))
     }
 }
 
