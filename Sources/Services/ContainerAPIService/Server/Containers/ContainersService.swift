@@ -159,6 +159,11 @@ public actor ContainersService {
             phaseStartedAt = now
         }
 
+        mutating func finish(_ measuredPhases: [(String, Int64)]) {
+            phases.append(contentsOf: measuredPhases)
+            phaseStartedAt = ProcessInfo.processInfo.systemUptime
+        }
+
         func metadata(id: String, outcome: String) -> Logger.Metadata {
             let phaseSummary = phases.map { "\($0.0)=\($0.1)" }.joined(separator: ",")
             let totalMicroseconds = Int64(
@@ -202,6 +207,16 @@ public actor ContainersService {
     static let loggingProtectedOptionsDirectoryName = "logging-protected-options"
     private static let loggingLeaseGeneration: UInt64 = 1
     private static let bootServiceDeregistrationAttempts = 3
+    // A 50-VM release diagnostic on an 18-core host found a sharp VZ/guest
+    // setup contention cliff after the fifteenth simultaneous bootstrap.
+    // Lower-core hosts remain bounded by their available processor count.
+    private static let maximumConcurrentRuntimeBootstraps = 15
+    private static let runtimeBootstrapLimiter = RuntimeBootstrapLimiter(
+        limit: min(
+            maximumConcurrentRuntimeBootstraps,
+            max(1, ProcessInfo.processInfo.activeProcessorCount)
+        )
+    )
 
     private let log: Logger
     private let debugHelpers: Bool
@@ -1991,12 +2006,27 @@ public actor ContainersService {
                 runtime: plan.configuration.runtimeHandler
             )
             timings.finish("runtime-client")
-            try await runtimeClient.bootstrap(
-                stdio: runtimeStdio,
-                networkBootstrapInfos: networkBootstrapInfos,
-                dynamicEnv: dynamicEnv
-            )
-            timings.finish("runtime-bootstrap")
+            let bootstrapWaitStartedAt = ProcessInfo.processInfo.systemUptime
+            let bootstrapPhases = try await Self.runtimeBootstrapLimiter.withPermit {
+                let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
+                try await runtimeClient.bootstrap(
+                    stdio: runtimeStdio,
+                    networkBootstrapInfos: networkBootstrapInfos,
+                    dynamicEnv: dynamicEnv
+                )
+                let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
+                return [
+                    (
+                        "runtime-bootstrap-admission",
+                        Int64((bootstrapStartedAt - bootstrapWaitStartedAt) * 1_000_000)
+                    ),
+                    (
+                        "runtime-bootstrap",
+                        Int64((bootstrapFinishedAt - bootstrapStartedAt) * 1_000_000)
+                    ),
+                ]
+            }
+            timings.finish(bootstrapPhases)
             try await self.remoteLogDriverPlane?.bootstrapSucceeded(
                 containerID: id
             )
