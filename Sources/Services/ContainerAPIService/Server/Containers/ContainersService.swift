@@ -159,6 +159,11 @@ public actor ContainersService {
             phaseStartedAt = now
         }
 
+        mutating func finish(_ measuredPhases: [(String, Int64)]) {
+            phases.append(contentsOf: measuredPhases)
+            phaseStartedAt = ProcessInfo.processInfo.systemUptime
+        }
+
         func metadata(id: String, outcome: String) -> Logger.Metadata {
             let phaseSummary = phases.map { "\($0.0)=\($0.1)" }.joined(separator: ",")
             let totalMicroseconds = Int64(
@@ -202,6 +207,16 @@ public actor ContainersService {
     static let loggingProtectedOptionsDirectoryName = "logging-protected-options"
     private static let loggingLeaseGeneration: UInt64 = 1
     private static let bootServiceDeregistrationAttempts = 3
+    // A 50-VM release diagnostic on an 18-core host found a sharp VZ/guest
+    // setup contention cliff after the fifteenth simultaneous bootstrap.
+    // Lower-core hosts remain bounded by their available processor count.
+    private static let maximumConcurrentRuntimeBootstraps = 15
+    private static let runtimeBootstrapLimiter = RuntimeBootstrapLimiter(
+        limit: min(
+            maximumConcurrentRuntimeBootstraps,
+            max(1, ProcessInfo.processInfo.activeProcessorCount)
+        )
+    )
 
     private let log: Logger
     private let debugHelpers: Bool
@@ -1922,6 +1937,7 @@ public actor ContainersService {
         }
 
         var runtimeClientToken: UUID?
+        var runtimeBootstrapPermitHeld = false
         do {
             let authenticatedProtectedOptions =
                 try await self
@@ -1991,12 +2007,49 @@ public actor ContainersService {
                 runtime: plan.configuration.runtimeHandler
             )
             timings.finish("runtime-client")
-            try await runtimeClient.bootstrap(
-                stdio: runtimeStdio,
-                networkBootstrapInfos: networkBootstrapInfos,
-                dynamicEnv: dynamicEnv
+            let bootstrapWaitStartedAt = ProcessInfo.processInfo.systemUptime
+            do {
+                try await Self.runtimeBootstrapLimiter.acquirePermit()
+            } catch {
+                let admissionFinishedAt = ProcessInfo.processInfo.systemUptime
+                timings.finish(
+                    Self.runtimeBootstrapPhases(
+                        waitStartedAt: bootstrapWaitStartedAt,
+                        bootstrapStartedAt: nil,
+                        bootstrapFinishedAt: admissionFinishedAt
+                    )
+                )
+                throw error
+            }
+            runtimeBootstrapPermitHeld = true
+            let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
+            do {
+                try await runtimeClient.bootstrap(
+                    stdio: runtimeStdio,
+                    networkBootstrapInfos: networkBootstrapInfos,
+                    dynamicEnv: dynamicEnv
+                )
+            } catch {
+                let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
+                timings.finish(
+                    Self.runtimeBootstrapPhases(
+                        waitStartedAt: bootstrapWaitStartedAt,
+                        bootstrapStartedAt: bootstrapStartedAt,
+                        bootstrapFinishedAt: bootstrapFinishedAt
+                    )
+                )
+                throw error
+            }
+            let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
+            timings.finish(
+                Self.runtimeBootstrapPhases(
+                    waitStartedAt: bootstrapWaitStartedAt,
+                    bootstrapStartedAt: bootstrapStartedAt,
+                    bootstrapFinishedAt: bootstrapFinishedAt
+                )
             )
-            timings.finish("runtime-bootstrap")
+            await Self.runtimeBootstrapLimiter.releasePermit()
+            runtimeBootstrapPermitHeld = false
             try await self.remoteLogDriverPlane?.bootstrapSucceeded(
                 containerID: id
             )
@@ -2062,7 +2115,25 @@ public actor ContainersService {
             if let runtimeClientToken {
                 self.clearRuntimeClientToken(runtimeClientToken, id: id)
             }
-            try? ServiceManager.deregister(fullServiceLabel: label)
+            do {
+                try Self.stopRuntimeServiceAndConfirmInactive(
+                    fullServiceLabel: label
+                )
+                if runtimeBootstrapPermitHeld {
+                    await Self.runtimeBootstrapLimiter.releasePermit()
+                    runtimeBootstrapPermitHeld = false
+                }
+            } catch let cleanupError {
+                log.error(
+                    "failed to stop runtime service after bootstrap failure",
+                    metadata: [
+                        "id": "\(id)",
+                        "label": "\(label)",
+                        "bootstrap-permit-retained": "\(runtimeBootstrapPermitHeld)",
+                        "error": "\(cleanupError)",
+                    ]
+                )
+            }
             try? await self.remoteLogDriverPlane?.abortBootstrap(
                 containerID: id
             )
@@ -2082,6 +2153,57 @@ public actor ContainersService {
     ) -> Bool {
         plannedContainerGeneration == currentContainerGeneration
             && plannedOperationGeneration == currentOperationGeneration
+    }
+
+    static func runtimeBootstrapPhases(
+        waitStartedAt: TimeInterval,
+        bootstrapStartedAt: TimeInterval?,
+        bootstrapFinishedAt: TimeInterval
+    ) -> [(String, Int64)] {
+        let startedAt = bootstrapStartedAt ?? bootstrapFinishedAt
+        return [
+            (
+                "runtime-bootstrap-admission",
+                Int64((startedAt - waitStartedAt) * 1_000_000)
+            ),
+            (
+                "runtime-bootstrap",
+                Int64((bootstrapFinishedAt - startedAt) * 1_000_000)
+            ),
+        ]
+    }
+
+    static func stopRuntimeServiceAndConfirmInactive(
+        fullServiceLabel label: String,
+        deregisterService: (String) throws -> Int32 = { label in
+            var status: Int32 = -1
+            try ServiceManager.deregister(
+                fullServiceLabel: label,
+                status: &status
+            )
+            return status
+        },
+        isServiceRegistered: (String) throws -> Bool = { label in
+            try ServiceManager.isRegistered(fullServiceLabel: label)
+        }
+    ) throws {
+        let status: Int32
+        do {
+            status = try deregisterService(label)
+        } catch {
+            guard try isServiceRegistered(label) else {
+                return
+            }
+            throw error
+        }
+        if status != 0,
+            try isServiceRegistered(label)
+        {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stop surviving runtime service \(label)"
+            )
+        }
     }
 
     func validateLoggingForStart(
