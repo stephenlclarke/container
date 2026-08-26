@@ -38,12 +38,14 @@ actor RuntimeBootstrapLimiter {
     func withPermit<T: Sendable>(
         _ operation: @Sendable () async throws -> T
     ) async throws -> T {
-        try await acquire()
-        defer { release() }
+        try await acquirePermit()
+        defer { releasePermit() }
         return try await operation()
     }
 
-    private func acquire() async throws {
+    // The explicit lease API lets callers finish stopping an admitted runtime
+    // helper before returning its host-pressure capacity to the queue.
+    func acquirePermit() async throws {
         try Task.checkCancellation()
         guard activeCount >= limit else {
             activeCount += 1
@@ -66,12 +68,12 @@ actor RuntimeBootstrapLimiter {
             // A release may have transferred a permit immediately before the
             // cancellation handler ran. Return that permit instead of leaking
             // capacity from every later bootstrap.
-            release()
+            releasePermit()
             throw error
         }
     }
 
-    private func release() {
+    func releasePermit() {
         precondition(activeCount > 0, "runtime bootstrap permit released without an owner")
         guard !waiters.isEmpty else {
             activeCount -= 1

@@ -11,7 +11,7 @@ Pull request 143 removed host-wide bootstrap serialization and allowed independe
 - Preserve parallel VM starts below the measured contention threshold.
 - Bound only the expensive runtime bootstrap phase; lifecycle capture, logging preparation, launchd registration, runtime-client creation, and atomic state publication remain independently concurrent.
 - Admit queued bootstraps in FIFO order.
-- Return capacity after success, failure, or cancellation, including cancellation racing with permit transfer.
+- Return capacity after success, failure, or cancellation, including cancellation racing with permit transfer; an admitted cancellation retains capacity until its runtime helper is confirmed inactive.
 - Record admission wait separately from actual runtime bootstrap time.
 
 ## Acceptance evidence

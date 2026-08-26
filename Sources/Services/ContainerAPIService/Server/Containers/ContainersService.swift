@@ -1937,6 +1937,7 @@ public actor ContainersService {
         }
 
         var runtimeClientToken: UUID?
+        var runtimeBootstrapPermitHeld = false
         do {
             let authenticatedProtectedOptions =
                 try await self
@@ -2007,35 +2008,8 @@ public actor ContainersService {
             )
             timings.finish("runtime-client")
             let bootstrapWaitStartedAt = ProcessInfo.processInfo.systemUptime
-            let bootstrapAttempt:
-                (
-                    phases: [(String, Int64)],
-                    result: Result<Void, any Error>
-                )
             do {
-                bootstrapAttempt = try await Self.runtimeBootstrapLimiter.withPermit {
-                    let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
-                    let result: Result<Void, any Error>
-                    do {
-                        try await runtimeClient.bootstrap(
-                            stdio: runtimeStdio,
-                            networkBootstrapInfos: networkBootstrapInfos,
-                            dynamicEnv: dynamicEnv
-                        )
-                        result = .success(())
-                    } catch {
-                        result = .failure(error)
-                    }
-                    let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
-                    return (
-                        Self.runtimeBootstrapPhases(
-                            waitStartedAt: bootstrapWaitStartedAt,
-                            bootstrapStartedAt: bootstrapStartedAt,
-                            bootstrapFinishedAt: bootstrapFinishedAt
-                        ),
-                        result
-                    )
-                }
+                try await Self.runtimeBootstrapLimiter.acquirePermit()
             } catch {
                 let admissionFinishedAt = ProcessInfo.processInfo.systemUptime
                 timings.finish(
@@ -2047,8 +2021,35 @@ public actor ContainersService {
                 )
                 throw error
             }
-            timings.finish(bootstrapAttempt.phases)
-            try bootstrapAttempt.result.get()
+            runtimeBootstrapPermitHeld = true
+            let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
+            do {
+                try await runtimeClient.bootstrap(
+                    stdio: runtimeStdio,
+                    networkBootstrapInfos: networkBootstrapInfos,
+                    dynamicEnv: dynamicEnv
+                )
+            } catch {
+                let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
+                timings.finish(
+                    Self.runtimeBootstrapPhases(
+                        waitStartedAt: bootstrapWaitStartedAt,
+                        bootstrapStartedAt: bootstrapStartedAt,
+                        bootstrapFinishedAt: bootstrapFinishedAt
+                    )
+                )
+                throw error
+            }
+            let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
+            timings.finish(
+                Self.runtimeBootstrapPhases(
+                    waitStartedAt: bootstrapWaitStartedAt,
+                    bootstrapStartedAt: bootstrapStartedAt,
+                    bootstrapFinishedAt: bootstrapFinishedAt
+                )
+            )
+            await Self.runtimeBootstrapLimiter.releasePermit()
+            runtimeBootstrapPermitHeld = false
             try await self.remoteLogDriverPlane?.bootstrapSucceeded(
                 containerID: id
             )
@@ -2114,7 +2115,25 @@ public actor ContainersService {
             if let runtimeClientToken {
                 self.clearRuntimeClientToken(runtimeClientToken, id: id)
             }
-            try? ServiceManager.deregister(fullServiceLabel: label)
+            do {
+                try Self.stopRuntimeServiceAndConfirmInactive(
+                    fullServiceLabel: label
+                )
+                if runtimeBootstrapPermitHeld {
+                    await Self.runtimeBootstrapLimiter.releasePermit()
+                    runtimeBootstrapPermitHeld = false
+                }
+            } catch let cleanupError {
+                log.error(
+                    "failed to stop runtime service after bootstrap failure",
+                    metadata: [
+                        "id": "\(id)",
+                        "label": "\(label)",
+                        "bootstrap-permit-retained": "\(runtimeBootstrapPermitHeld)",
+                        "error": "\(cleanupError)",
+                    ]
+                )
+            }
             try? await self.remoteLogDriverPlane?.abortBootstrap(
                 containerID: id
             )
@@ -2152,6 +2171,39 @@ public actor ContainersService {
                 Int64((bootstrapFinishedAt - startedAt) * 1_000_000)
             ),
         ]
+    }
+
+    static func stopRuntimeServiceAndConfirmInactive(
+        fullServiceLabel label: String,
+        deregisterService: (String) throws -> Int32 = { label in
+            var status: Int32 = -1
+            try ServiceManager.deregister(
+                fullServiceLabel: label,
+                status: &status
+            )
+            return status
+        },
+        isServiceRegistered: (String) throws -> Bool = { label in
+            try ServiceManager.isRegistered(fullServiceLabel: label)
+        }
+    ) throws {
+        let status: Int32
+        do {
+            status = try deregisterService(label)
+        } catch {
+            guard try isServiceRegistered(label) else {
+                return
+            }
+            throw error
+        }
+        if status != 0,
+            try isServiceRegistered(label)
+        {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to stop surviving runtime service \(label)"
+            )
+        }
     }
 
     func validateLoggingForStart(

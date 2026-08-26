@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerizationError
 import Foundation
 import Testing
 
@@ -147,6 +148,60 @@ struct ContainerBootstrapConcurrencyTests {
         #expect(cancelled.map(\.1) == [4_000_000, 0])
     }
 
+    @Test("An admitted bootstrap permit remains held until cleanup completes")
+    func runtimeBootstrapPermitWaitsForCleanup() async throws {
+        let limiter = RuntimeBootstrapLimiter(limit: 1)
+        let permitAcquired = BootstrapReleaseGate()
+        let cleanupCompleted = BootstrapReleaseGate()
+        let waiterEntered = BootstrapReleaseGate()
+
+        let admitted = Task {
+            try await limiter.acquirePermit()
+            await permitAcquired.release()
+            await cleanupCompleted.wait()
+            await limiter.releasePermit()
+        }
+        await permitAcquired.wait()
+
+        let waiter = Task {
+            try await limiter.withPermit {
+                await waiterEntered.release()
+            }
+        }
+        var waiterQueued = false
+        for _ in 0..<1_000 {
+            if (await limiter.occupancy).waiting == 1 {
+                waiterQueued = true
+                break
+            }
+            await Task.yield()
+        }
+        #expect(waiterQueued)
+        #expect(!(await waiterEntered.isReleased))
+
+        await cleanupCompleted.release()
+        try await admitted.value
+        try await waiter.value
+        #expect(await waiterEntered.isReleased)
+    }
+
+    @Test("Runtime cleanup confirms a failed bootout did not leave a helper")
+    func runtimeCleanupConfirmsInactiveHelper() throws {
+        try ContainersService.stopRuntimeServiceAndConfirmInactive(
+            fullServiceLabel: "test.runtime",
+            deregisterService: { _ in 3 },
+            isServiceRegistered: { _ in false }
+        )
+
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.stopRuntimeServiceAndConfirmInactive(
+                fullServiceLabel: "test.runtime",
+                deregisterService: { _ in 3 },
+                isServiceRegistered: { _ in true }
+            )
+        }
+    }
+
     @Test("State copies retain identity while replacements receive a new generation")
     func stateGenerationDistinguishesReplacement() {
         let state = ContainersService.ContainerState(
@@ -251,6 +306,10 @@ private actor BootstrapStartBarrier {
 private actor BootstrapReleaseGate {
     private var released = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var isReleased: Bool {
+        released
+    }
 
     func wait() async {
         guard !released else {
