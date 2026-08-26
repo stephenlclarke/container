@@ -2007,26 +2007,48 @@ public actor ContainersService {
             )
             timings.finish("runtime-client")
             let bootstrapWaitStartedAt = ProcessInfo.processInfo.systemUptime
-            let bootstrapPhases = try await Self.runtimeBootstrapLimiter.withPermit {
-                let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
-                try await runtimeClient.bootstrap(
-                    stdio: runtimeStdio,
-                    networkBootstrapInfos: networkBootstrapInfos,
-                    dynamicEnv: dynamicEnv
+            let bootstrapAttempt:
+                (
+                    phases: [(String, Int64)],
+                    result: Result<Void, any Error>
                 )
-                let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
-                return [
-                    (
-                        "runtime-bootstrap-admission",
-                        Int64((bootstrapStartedAt - bootstrapWaitStartedAt) * 1_000_000)
-                    ),
-                    (
-                        "runtime-bootstrap",
-                        Int64((bootstrapFinishedAt - bootstrapStartedAt) * 1_000_000)
-                    ),
-                ]
+            do {
+                bootstrapAttempt = try await Self.runtimeBootstrapLimiter.withPermit {
+                    let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
+                    let result: Result<Void, any Error>
+                    do {
+                        try await runtimeClient.bootstrap(
+                            stdio: runtimeStdio,
+                            networkBootstrapInfos: networkBootstrapInfos,
+                            dynamicEnv: dynamicEnv
+                        )
+                        result = .success(())
+                    } catch {
+                        result = .failure(error)
+                    }
+                    let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
+                    return (
+                        Self.runtimeBootstrapPhases(
+                            waitStartedAt: bootstrapWaitStartedAt,
+                            bootstrapStartedAt: bootstrapStartedAt,
+                            bootstrapFinishedAt: bootstrapFinishedAt
+                        ),
+                        result
+                    )
+                }
+            } catch {
+                let admissionFinishedAt = ProcessInfo.processInfo.systemUptime
+                timings.finish(
+                    Self.runtimeBootstrapPhases(
+                        waitStartedAt: bootstrapWaitStartedAt,
+                        bootstrapStartedAt: nil,
+                        bootstrapFinishedAt: admissionFinishedAt
+                    )
+                )
+                throw error
             }
-            timings.finish(bootstrapPhases)
+            timings.finish(bootstrapAttempt.phases)
+            try bootstrapAttempt.result.get()
             try await self.remoteLogDriverPlane?.bootstrapSucceeded(
                 containerID: id
             )
@@ -2112,6 +2134,24 @@ public actor ContainersService {
     ) -> Bool {
         plannedContainerGeneration == currentContainerGeneration
             && plannedOperationGeneration == currentOperationGeneration
+    }
+
+    static func runtimeBootstrapPhases(
+        waitStartedAt: TimeInterval,
+        bootstrapStartedAt: TimeInterval?,
+        bootstrapFinishedAt: TimeInterval
+    ) -> [(String, Int64)] {
+        let startedAt = bootstrapStartedAt ?? bootstrapFinishedAt
+        return [
+            (
+                "runtime-bootstrap-admission",
+                Int64((startedAt - waitStartedAt) * 1_000_000)
+            ),
+            (
+                "runtime-bootstrap",
+                Int64((bootstrapFinishedAt - startedAt) * 1_000_000)
+            ),
+        ]
     }
 
     func validateLoggingForStart(

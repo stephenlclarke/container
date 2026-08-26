@@ -128,6 +128,25 @@ struct ContainerBootstrapConcurrencyTests {
         #expect(occupancy.waiting == 0)
     }
 
+    @Test("Runtime bootstrap timing covers success, failure, and queued cancellation")
+    func runtimeBootstrapTimingPhases() {
+        let admitted = ContainersService.runtimeBootstrapPhases(
+            waitStartedAt: 10,
+            bootstrapStartedAt: 12,
+            bootstrapFinishedAt: 15
+        )
+        #expect(admitted.map(\.0) == ["runtime-bootstrap-admission", "runtime-bootstrap"])
+        #expect(admitted.map(\.1) == [2_000_000, 3_000_000])
+
+        let cancelled = ContainersService.runtimeBootstrapPhases(
+            waitStartedAt: 10,
+            bootstrapStartedAt: nil,
+            bootstrapFinishedAt: 14
+        )
+        #expect(cancelled.map(\.0) == ["runtime-bootstrap-admission", "runtime-bootstrap"])
+        #expect(cancelled.map(\.1) == [4_000_000, 0])
+    }
+
     @Test("State copies retain identity while replacements receive a new generation")
     func stateGenerationDistinguishesReplacement() {
         let state = ContainersService.ContainerState(
