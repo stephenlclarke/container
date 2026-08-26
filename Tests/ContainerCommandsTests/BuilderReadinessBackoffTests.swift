@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerizationError
 import Testing
 
 @testable import ContainerCommands
@@ -34,5 +35,69 @@ struct BuilderReadinessBackoffTests {
                     .seconds(1),
                     .seconds(1),
                 ])
+    }
+
+    @Test("Builder readiness restarts a builder missing from status")
+    func missingBuilderStatus() {
+        let readinessError = ContainerizationError(
+            .internalError,
+            message: "failed to dial builder"
+        )
+        let statusError = ContainerizationError(
+            .notFound,
+            message: "builder disappeared"
+        )
+
+        #expect(
+            BuilderReadinessRecovery.shouldRestart(
+                after: readinessError,
+                builderStatusError: statusError
+            ))
+    }
+
+    @Test("Builder readiness does not restart a builder with observable status")
+    func existingBuilderStatus() {
+        let readinessError = ContainerizationError(
+            .internalError,
+            message: "builder is not ready"
+        )
+
+        #expect(
+            !BuilderReadinessRecovery.shouldRestart(
+                after: readinessError,
+                builderStatusError: nil
+            ))
+    }
+
+    @Test("Builder readiness preserves direct restart errors")
+    func directRestartError() {
+        let readinessError = ContainerizationError(
+            .invalidState,
+            message: "builder state changed"
+        )
+
+        #expect(
+            BuilderReadinessRecovery.shouldRestart(
+                after: readinessError,
+                builderStatusError: nil
+            ))
+    }
+
+    @Test("Builder readiness does not restart after an inconclusive status failure")
+    func inconclusiveBuilderStatus() {
+        let readinessError = ContainerizationError(
+            .internalError,
+            message: "failed to dial builder"
+        )
+        let statusError = ContainerizationError(
+            .internalError,
+            message: "failed to query builder status"
+        )
+
+        #expect(
+            !BuilderReadinessRecovery.shouldRestart(
+                after: readinessError,
+                builderStatusError: statusError
+            ))
     }
 }

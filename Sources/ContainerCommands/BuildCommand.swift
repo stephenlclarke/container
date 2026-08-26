@@ -42,6 +42,27 @@ struct BuilderReadinessBackoff: Sendable {
     }
 }
 
+struct BuilderReadinessRecovery {
+    static func shouldRestart(
+        after readinessError: Error,
+        builderStatusError: Error?
+    ) -> Bool {
+        if let containerError = readinessError as? ContainerizationError,
+            containerError.code == .invalidState || containerError.code == .notFound
+        {
+            return true
+        }
+
+        if let containerError = builderStatusError as? ContainerizationError,
+            containerError.code == .notFound
+        {
+            return true
+        }
+
+        return false
+    }
+}
+
 extension Application {
     public struct BuildCommand: AsyncLoggableCommand {
         public init() {}
@@ -285,7 +306,18 @@ extension Application {
                                     throw readinessError
                                 }
                             } catch {
-                                let builderStatus = try? await client.get(id: builderContainerId).status
+                                try Task.checkCancellation()
+
+                                let builderStatus: RuntimeStatus?
+                                let builderStatusError: Error?
+                                do {
+                                    builderStatus = try await client.get(id: builderContainerId).status
+                                    builderStatusError = nil
+                                } catch {
+                                    try Task.checkCancellation()
+                                    builderStatus = nil
+                                    builderStatusError = error
+                                }
                                 if Self.builderExitedBeforeDial(status: builderStatus) {
                                     throw ContainerizationError(
                                         .invalidState,
@@ -298,9 +330,10 @@ extension Application {
                                 progress.set(tasks: 0)
                                 progress.set(totalTasks: 3)
 
-                                if let containerError = error as? ContainerizationError,
-                                    containerError.code == .invalidState || containerError.code == .notFound
-                                {
+                                if BuilderReadinessRecovery.shouldRestart(
+                                    after: error,
+                                    builderStatusError: builderStatusError
+                                ) {
                                     try await BuilderStart.start(
                                         cpus: cpus,
                                         memory: memory,
