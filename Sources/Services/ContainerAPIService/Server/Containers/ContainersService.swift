@@ -1373,7 +1373,7 @@ public actor ContainersService {
     public func calculateDiskUsage() async -> (Int, Int, UInt64, UInt64) {
         let containers = await lock.withLock(logMetadata: ["acquirer": "\(#function)"]) { _ in
             let lifecycleRecords = await self.lifecycleRecords
-            return await self.protectedContainerSnapshots().map {
+            return await self.containers.values.map(\.snapshot).map {
                 ContainerDiskUsageEntry(
                     id: $0.id,
                     isActive: Self.isActiveForDiskUsage(

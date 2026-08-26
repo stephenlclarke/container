@@ -138,6 +138,38 @@ struct UtilityTests {
         #expect(await probe.cancelled == 2)
     }
 
+    @Test(
+        "Split the image download cap across both image pipelines",
+        arguments: [
+            (maximum: 1, workload: 1, initImage: nil),
+            (maximum: 2, workload: 1, initImage: 1),
+            (maximum: 3, workload: 2, initImage: 1),
+            (maximum: 8, workload: 4, initImage: 4),
+        ]
+    )
+    func imageDownloadLimits(
+        maximum: Int,
+        workload: Int,
+        initImage: Int?
+    ) throws {
+        let limits = try Utility.imageDownloadLimits(
+            maxConcurrentDownloads: maximum
+        )
+
+        #expect(limits.workload == workload)
+        #expect(limits.initImage == initImage)
+        #expect(limits.workload + (limits.initImage ?? 0) <= maximum)
+    }
+
+    @Test("Reject a non-positive image download cap", arguments: [0, -1])
+    func rejectNonPositiveImageDownloadLimit(_ maximum: Int) {
+        let error = #expect(throws: ContainerizationError.self) {
+            try Utility.imageDownloadLimits(maxConcurrentDownloads: maximum)
+        }
+
+        #expect(error?.code == .invalidArgument)
+    }
+
     @Test("Validate network attachments from one network snapshot")
     func testBatchNetworkAttachmentValidation() throws {
         let attachments = [
