@@ -2401,6 +2401,12 @@ public actor ContainersService {
         runtimeIsReachable ? .retainForRetry : .confirmInactiveService
     }
 
+    static func preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+        _ disposition: PreparedRuntimeShutdownFailureDisposition?
+    ) -> Bool {
+        disposition == .confirmInactiveService
+    }
+
     @discardableResult
     private func discardDedicatedPrewarm(id: String) async throws -> Bool {
         let discarded = try await self.lock.withLock(
@@ -2426,6 +2432,7 @@ public actor ContainersService {
             runtimeName: configuration.runtimeHandler,
             instanceId: id
         )
+        var shutdownFailureDisposition: PreparedRuntimeShutdownFailureDisposition?
         do {
             try await client.shutdown()
         } catch let shutdownError {
@@ -2436,9 +2443,11 @@ public actor ContainersService {
             } catch {
                 runtimeIsReachable = false
             }
-            switch Self.preparedRuntimeShutdownFailureDisposition(
+            let disposition = Self.preparedRuntimeShutdownFailureDisposition(
                 runtimeIsReachable: runtimeIsReachable
-            ) {
+            )
+            shutdownFailureDisposition = disposition
+            switch disposition {
             case .retainForRetry:
                 log.warning(
                     "prewarmed runtime cleanup failed; retaining it for retry",
@@ -2453,19 +2462,34 @@ public actor ContainersService {
             }
         }
 
+        let stopServiceBeforeLogging =
+            Self.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+                shutdownFailureDisposition
+            )
+        if stopServiceBeforeLogging {
+            // A runtime that no longer answers RPC may still own the logging
+            // pipe descriptors. Stop the helper before waiting for EOF so an
+            // unreachable prepared runtime cannot deadlock cleanup.
+            try Self.stopRuntimeServiceAndConfirmInactive(
+                fullServiceLabel: label
+            )
+        }
+
         var firstError: (any Error)?
         do {
             try await remoteLogDriverPlane?.abortBootstrap(containerID: id)
         } catch {
             firstError = error
         }
-        do {
-            try Self.stopRuntimeServiceAndConfirmInactive(
-                fullServiceLabel: label
-            )
-        } catch {
-            if firstError == nil {
-                firstError = error
+        if !stopServiceBeforeLogging {
+            do {
+                try Self.stopRuntimeServiceAndConfirmInactive(
+                    fullServiceLabel: label
+                )
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
             }
         }
         if let firstError {
@@ -3228,6 +3252,21 @@ public actor ContainersService {
         nanoCPUs: Int64?
     ) -> Bool {
         prewarmed && (memoryBytes != nil || nanoCPUs != nil)
+    }
+
+    static func validatedResourceUpdateInvalidatesPrewarm(
+        prewarmed: Bool,
+        memoryBytes: Int64?,
+        nanoCPUs: Int64?,
+        restartPolicy: ContainerRestartPolicy,
+        autoRemove: Bool
+    ) throws -> Bool {
+        try validateRestartPolicy(restartPolicy, autoRemove: autoRemove)
+        return resourceUpdateInvalidatesPrewarm(
+            prewarmed: prewarmed,
+            memoryBytes: memoryBytes,
+            nanoCPUs: nanoCPUs
+        )
     }
 
     static func renameInvalidatesPrewarm(
@@ -7419,91 +7458,104 @@ extension ContainersService {
             updatedCPUQuotaInMicroseconds = nil
         }
 
-        let prewarmed = try await lock.withLock(
+        let invalidatedPrewarm = try await lock.withLock(
             logMetadata: ["acquirer": "\(#function)-prewarm", "id": "\(id)"]
         ) { context in
-            try await self.getContainerState(id: id, context: context).prewarmed
+            let state = try await self.getContainerState(id: id, context: context)
+            let oldOptions = try await self.getContainerCreationOptions(id: id)
+            return try Self.validatedResourceUpdateInvalidatesPrewarm(
+                prewarmed: state.prewarmed,
+                memoryBytes: memoryBytes,
+                nanoCPUs: nanoCPUs,
+                restartPolicy: restartPolicy ?? oldOptions.restartPolicy,
+                autoRemove: oldOptions.autoRemove
+            )
         }
-        let invalidatedPrewarm = Self.resourceUpdateInvalidatesPrewarm(
-            prewarmed: prewarmed,
-            memoryBytes: memoryBytes,
-            nanoCPUs: nanoCPUs
-        )
         if invalidatedPrewarm {
             try await discardDedicatedPrewarm(id: id)
         }
 
         let restartScheduled = restartTasks[id] != nil
-        let update = try await lock.withLock(
-            logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
-        ) { context -> (warnings: [String], cancelPendingRestart: Bool, snapshot: ContainerSnapshot) in
-            var state = try await self.getContainerState(id: id, context: context)
-            if state.snapshot.status == .running || state.snapshot.status == .paused,
-                memoryBytes != nil || nanoCPUs != nil
+        let update: (warnings: [String], cancelPendingRestart: Bool, snapshot: ContainerSnapshot)
+        do {
+            update = try await lock.withLock(
+                logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+            ) { context -> (warnings: [String], cancelPendingRestart: Bool, snapshot: ContainerSnapshot) in
+                var state = try await self.getContainerState(id: id, context: context)
+                if state.snapshot.status == .running || state.snapshot.status == .paused,
+                    memoryBytes != nil || nanoCPUs != nil
+                {
+                    throw ContainerizationError(
+                        .unsupported,
+                        message: "live resource update is not supported by this runtime provider"
+                    )
+                }
+                var configuration = state.snapshot.configuration
+                if let memoryInBytes = updatedMemoryInBytes {
+                    configuration.resources.memoryInBytes = memoryInBytes
+                }
+                if let cpuQuotaInMicroseconds = updatedCPUQuotaInMicroseconds {
+                    configuration.resources.cpuPeriodInMicroseconds =
+                        Self.dockerCPUPeriodInMicroseconds
+                    configuration.resources.cpuQuotaInMicroseconds =
+                        cpuQuotaInMicroseconds
+                }
+                let bundle = ContainerResource.Bundle(
+                    path: try Self.containerPath(root: self.containerRoot, id: id)
+                )
+                let oldConfiguration = state.snapshot.configuration
+                let oldOptions = try await self.getContainerCreationOptions(id: id)
+                let newOptions = ContainerCreateOptions(
+                    autoRemove: oldOptions.autoRemove,
+                    rootFsOverride: oldOptions.rootFsOverride,
+                    restartPolicy: restartPolicy ?? oldOptions.restartPolicy
+                )
+                try Self.validateRestartPolicy(
+                    newOptions.restartPolicy,
+                    autoRemove: newOptions.autoRemove
+                )
+                let lifecycle = try await self.lifecycleRecord(id: id)
+                let publicState = lifecycle.snapshot.state
+                let cancelPendingRestart = Self.shouldCancelPendingRestart(
+                    lifecycleState: publicState,
+                    restartScheduled: restartScheduled,
+                    manualRestartSuppressed: lifecycle.intent.manualRestartSuppressed,
+                    updatedPolicy: newOptions.restartPolicy,
+                    exitCode: state.snapshot.exitCode,
+                    restartConsecutiveFailureCount: state.restart.consecutiveFailures
+                )
+                do {
+                    try Self.persistContainerConfiguration(
+                        configuration,
+                        options: newOptions,
+                        at: bundle.path
+                    )
+                    state.snapshot.configuration = configuration
+                    try await self.commitLifecycle(
+                        id: id,
+                        from: state,
+                        publicState: cancelPendingRestart ? .exited : publicState,
+                        intent: { $0.restartPolicy = newOptions.restartPolicy }
+                    )
+                } catch {
+                    try? Self.persistContainerConfiguration(
+                        oldConfiguration,
+                        options: oldOptions,
+                        at: bundle.path
+                    )
+                    throw error
+                }
+                await self.setContainerState(id, state, context: context)
+                await self.publishContainerEvent(action: "update", snapshot: state.snapshot)
+                return ([], cancelPendingRestart, state.snapshot)
+            }
+        } catch {
+            if invalidatedPrewarm,
+                let snapshot = try? self._getContainerState(id: id).snapshot
             {
-                throw ContainerizationError(
-                    .unsupported,
-                    message: "live resource update is not supported by this runtime provider"
-                )
+                rescheduleDedicatedPrewarm(snapshot: snapshot)
             }
-            var configuration = state.snapshot.configuration
-            if let memoryInBytes = updatedMemoryInBytes {
-                configuration.resources.memoryInBytes = memoryInBytes
-            }
-            if let cpuQuotaInMicroseconds = updatedCPUQuotaInMicroseconds {
-                configuration.resources.cpuPeriodInMicroseconds =
-                    Self.dockerCPUPeriodInMicroseconds
-                configuration.resources.cpuQuotaInMicroseconds =
-                    cpuQuotaInMicroseconds
-            }
-            let bundle = ContainerResource.Bundle(
-                path: try Self.containerPath(root: self.containerRoot, id: id)
-            )
-            let oldConfiguration = state.snapshot.configuration
-            let oldOptions = try await self.getContainerCreationOptions(id: id)
-            let newOptions = ContainerCreateOptions(
-                autoRemove: oldOptions.autoRemove,
-                rootFsOverride: oldOptions.rootFsOverride,
-                restartPolicy: restartPolicy ?? oldOptions.restartPolicy
-            )
-            try Self.validateRestartPolicy(
-                newOptions.restartPolicy,
-                autoRemove: newOptions.autoRemove
-            )
-            let lifecycle = try await self.lifecycleRecord(id: id)
-            let publicState = lifecycle.snapshot.state
-            let cancelPendingRestart = Self.shouldCancelPendingRestart(
-                lifecycleState: publicState,
-                restartScheduled: restartScheduled,
-                manualRestartSuppressed: lifecycle.intent.manualRestartSuppressed,
-                updatedPolicy: newOptions.restartPolicy,
-                exitCode: state.snapshot.exitCode,
-                restartConsecutiveFailureCount: state.restart.consecutiveFailures
-            )
-            do {
-                try Self.persistContainerConfiguration(
-                    configuration,
-                    options: newOptions,
-                    at: bundle.path
-                )
-                state.snapshot.configuration = configuration
-                try await self.commitLifecycle(
-                    id: id,
-                    from: state,
-                    publicState: cancelPendingRestart ? .exited : publicState,
-                    intent: { $0.restartPolicy = newOptions.restartPolicy }
-                )
-            } catch {
-                try? Self.persistContainerConfiguration(
-                    oldConfiguration,
-                    options: oldOptions,
-                    at: bundle.path
-                )
-                throw error
-            }
-            await self.setContainerState(id, state, context: context)
-            await self.publishContainerEvent(action: "update", snapshot: state.snapshot)
-            return ([], cancelPendingRestart, state.snapshot)
+            throw error
         }
         if update.cancelPendingRestart {
             cancelRestartTasks(id: id)

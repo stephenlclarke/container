@@ -56,6 +56,16 @@ struct ContainerLifecycleValidationTests {
                 runtimeIsReachable: false
             ) == .confirmInactiveService
         )
+        #expect(
+            !ContainersService.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+                .retainForRetry
+            )
+        )
+        #expect(
+            ContainersService.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+                .confirmInactiveService
+            )
+        )
     }
 
     @Test
@@ -153,6 +163,28 @@ struct ContainerLifecycleValidationTests {
                 autoRemove: true
             )
         }
+    }
+
+    @Test
+    func invalidResourceUpdateIsRejectedBeforePrewarmInvalidation() throws {
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validatedResourceUpdateInvalidatesPrewarm(
+                prewarmed: true,
+                memoryBytes: 512 * 1024 * 1024,
+                nanoCPUs: nil,
+                restartPolicy: ContainerRestartPolicy(mode: .always),
+                autoRemove: true
+            )
+        }
+        #expect(
+            try ContainersService.validatedResourceUpdateInvalidatesPrewarm(
+                prewarmed: true,
+                memoryBytes: 512 * 1024 * 1024,
+                nanoCPUs: nil,
+                restartPolicy: .no,
+                autoRemove: true
+            )
+        )
     }
 
     @Test
