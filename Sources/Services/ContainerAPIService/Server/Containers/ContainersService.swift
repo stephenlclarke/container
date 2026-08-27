@@ -2099,6 +2099,12 @@ public actor ContainersService {
         var runtimeBootstrapPermitHeld = false
         var bootstrappedClient: ManagedRuntimeClient?
         do {
+            // A prior bootstrap may have stopped its runtime but failed part
+            // way through retryable logging cleanup. Finish that cleanup
+            // before preparing a replacement run for the same container.
+            try await self.remoteLogDriverPlane?.abortBootstrap(
+                containerID: id
+            )
             let authenticatedProtectedOptions =
                 try await self
                 .validateLoggingForStart(
@@ -2208,6 +2214,10 @@ public actor ContainersService {
                 runtimeBootstrapPermitHeld = true
             }
             let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
+            // The runtime may have booted even if its XPC reply is lost. Keep
+            // the client before the ambiguous RPC so failed cleanup can be
+            // retained as a retryable tombstone.
+            bootstrappedClient = runtimeClient
             do {
                 try await runtimeClient.bootstrap(
                     stdio: runtimeStdio,
@@ -2238,7 +2248,6 @@ public actor ContainersService {
                 await Self.runtimeBootstrapLimiter.releasePermit()
                 runtimeBootstrapPermitHeld = false
             }
-            bootstrappedClient = runtimeClient
             try await self.remoteLogDriverPlane?.bootstrapSucceeded(
                 containerID: id
             )
@@ -2295,7 +2304,7 @@ public actor ContainersService {
                 metadata: timings.metadata(id: id, outcome: "success")
             )
             return true
-        } catch {
+        } catch let bootstrapError {
             await self.exitMonitor.stopTracking(id: id)
             if let runtimeClientToken {
                 self.clearRuntimeClientToken(runtimeClientToken, id: id)
@@ -2347,16 +2356,28 @@ public actor ContainersService {
                     }
                 }
             }
+            var loggingCleanupError: (any Error)?
             if dedicatedRuntimeServiceConfirmedInactive {
-                try? await self.remoteLogDriverPlane?.abortBootstrap(
-                    containerID: id
-                )
+                do {
+                    try await self.remoteLogDriverPlane?.abortBootstrap(
+                        containerID: id
+                    )
+                } catch {
+                    loggingCleanupError = error
+                    log.warning(
+                        "failed to abort logging after bootstrap failure; retaining it for retry",
+                        metadata: ["id": "\(id)", "error": "\(error)"]
+                    )
+                }
             }
             log.debug(
                 "container bootstrap timings",
                 metadata: timings.metadata(id: id, outcome: "failure")
             )
-            throw error
+            if let loggingCleanupError {
+                throw loggingCleanupError
+            }
+            throw bootstrapError
         }
     }
 
