@@ -27,6 +27,8 @@ public enum RuntimeKeys: String {
     case fd
     /// Options for stopping a container key.
     case stopOptions
+    /// Live workload-memory target in bytes.
+    case memoryTargetInBytes
     /// An endpoint to talk to the runtime service.
     case runtimeServiceEndpoint
 

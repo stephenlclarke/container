@@ -364,6 +364,9 @@ public struct ContainerConfiguration: Sendable, Codable {
         public var cpuSet: String?
         /// Memory in bytes allocated.
         public var memoryInBytes: UInt64 = 1024.mib()
+        /// Optional live workload-memory target. This does not change the
+        /// configured boot-time maximum in `memoryInBytes`.
+        public var memoryTargetInBytes: UInt64?
         /// Storage quota/size in bytes.
         public var storage: UInt64?
         /// Additional CPU cores allocated for VM overhead (guest agent, etc).
@@ -378,6 +381,7 @@ public struct ContainerConfiguration: Sendable, Codable {
             self.cpuPeriodInMicroseconds = try c.decodeIfPresent(UInt64.self, forKey: .cpuPeriodInMicroseconds)
             self.cpuSet = try c.decodeIfPresent(String.self, forKey: .cpuSet)
             self.memoryInBytes = try c.decodeIfPresent(UInt64.self, forKey: .memoryInBytes) ?? 1024.mib()
+            self.memoryTargetInBytes = try c.decodeIfPresent(UInt64.self, forKey: .memoryTargetInBytes)
             self.storage = try c.decodeIfPresent(UInt64.self, forKey: .storage)
             self.cpuOverhead = try c.decodeIfPresent(Int.self, forKey: .cpuOverhead) ?? 1
         }

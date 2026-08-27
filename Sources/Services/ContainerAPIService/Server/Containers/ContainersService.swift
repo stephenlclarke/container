@@ -3661,6 +3661,99 @@ public actor ContainersService {
         prewarmed && currentName != newName
     }
 
+    /// Request a live workload-memory target without changing the configured
+    /// boot-time maximum.
+    public func setMemoryTarget(id: String, memoryInBytes: UInt64) async throws {
+        try await withLifecycleMutation(id: id) {
+            try await self.setMemoryTargetImpl(id: id, memoryInBytes: memoryInBytes)
+        }
+    }
+
+    private func setMemoryTargetImpl(id: String, memoryInBytes: UInt64) async throws {
+        let plan = try await lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-plan", "id": "\(id)"]
+        ) { context -> (client: ManagedRuntimeClient, generation: UUID, previousTarget: UInt64, noOp: Bool) in
+            let state = try await self.getContainerState(id: id, context: context)
+            guard state.snapshot.status == .running || state.snapshot.status == .paused else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "live memory targeting requires a running or paused container"
+                )
+            }
+            try Self.validateLiveMemoryTarget(
+                memoryInBytes,
+                maximum: state.snapshot.configuration.resources.memoryInBytes
+            )
+            let client = try state.getClient()
+            guard client.isDedicated else {
+                throw ContainerizationError(
+                    .unsupported,
+                    message: "live memory targeting is unavailable for shared-vm isolation"
+                )
+            }
+            let resources = state.snapshot.configuration.resources
+            let previousTarget = resources.memoryTargetInBytes ?? resources.memoryInBytes
+            return (client, state.generation, previousTarget, previousTarget == memoryInBytes)
+        }
+
+        guard !plan.noOp else {
+            return
+        }
+
+        try await plan.client.setMemoryTarget(memoryInBytes)
+
+        let updatedSnapshot: ContainerSnapshot
+        do {
+            updatedSnapshot = try await lock.withLock(
+                logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]
+            ) { context -> ContainerSnapshot in
+                var state = try await self.getContainerState(id: id, context: context)
+                guard state.generation == plan.generation else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "container was replaced while applying its memory target"
+                    )
+                }
+                let oldConfiguration = state.snapshot.configuration
+                var configuration = oldConfiguration
+                configuration.resources.memoryTargetInBytes =
+                    memoryInBytes == configuration.resources.memoryInBytes ? nil : memoryInBytes
+                let bundle = ContainerResource.Bundle(
+                    path: try Self.containerPath(root: self.containerRoot, id: id)
+                )
+                do {
+                    try Self.persistContainerConfiguration(configuration, at: bundle.path)
+                    state.snapshot.configuration = configuration
+                    let lifecycle = try await self.lifecycleRecord(id: id)
+                    try await self.commitLifecycle(
+                        id: id,
+                        from: state,
+                        publicState: lifecycle.snapshot.state
+                    )
+                } catch {
+                    try? Self.persistContainerConfiguration(oldConfiguration, at: bundle.path)
+                    throw error
+                }
+                await self.setContainerState(id, state, context: context)
+                return state.snapshot
+            }
+        } catch {
+            let persistenceError = error
+            do {
+                try await plan.client.setMemoryTarget(plan.previousTarget)
+            } catch {
+                throw ContainerizationError(
+                    .internalError,
+                    message:
+                        "failed to persist memory target: \(persistenceError); failed to restore runtime target: \(error)"
+                )
+            }
+            throw persistenceError
+        }
+
+        await publishContainerEvent(action: "update", snapshot: updatedSnapshot)
+    }
+
     /// Pause a running container.
     public func pause(id: String) async throws {
         try await withLifecycleMutation(id: id) {
@@ -7709,7 +7802,46 @@ extension ContainersService {
         restartPolicy: ContainerRestartPolicy?
     ) async throws -> [String] {
         try await withLifecycleMutation(id: id) {
-            try await self.updateDockerContainerImpl(
+            let status = try await lock.withLock(
+                logMetadata: ["acquirer": "\(#function)-status", "id": "\(id)"]
+            ) { context in
+                try await self.getContainerState(id: id, context: context).snapshot.status
+            }
+            if status == .running || status == .paused {
+                guard nanoCPUs == nil else {
+                    throw ContainerizationError(
+                        .unsupported,
+                        message: "live CPU update is not supported by this runtime provider"
+                    )
+                }
+                if let memoryBytes {
+                    let oldOptions = try self.getContainerCreationOptions(id: id)
+                    try Self.validateRestartPolicy(
+                        restartPolicy ?? oldOptions.restartPolicy,
+                        autoRemove: oldOptions.autoRemove
+                    )
+                    guard memoryBytes > 0 else {
+                        throw ContainerizationError(
+                            .invalidArgument,
+                            message: "memory must be positive"
+                        )
+                    }
+                    try await self.setMemoryTargetImpl(
+                        id: id,
+                        memoryInBytes: UInt64(memoryBytes)
+                    )
+                    guard restartPolicy != nil else {
+                        return []
+                    }
+                    return try await self.updateDockerContainerImpl(
+                        id: id,
+                        memoryBytes: nil,
+                        nanoCPUs: nil,
+                        restartPolicy: restartPolicy
+                    )
+                }
+            }
+            return try await self.updateDockerContainerImpl(
                 id: id,
                 memoryBytes: memoryBytes,
                 nanoCPUs: nanoCPUs,
@@ -7719,6 +7851,8 @@ extension ContainersService {
     }
 
     static let minimumBootableMemoryInBytes: UInt64 = 200.mib()
+    static let liveMemoryTargetAlignmentInBytes: UInt64 = 1.mib()
+    static let minimumLiveMemoryTargetInBytes: UInt64 = 4.mib()
     static let dockerCPUPeriodInMicroseconds: UInt64 = 100_000
 
     static func validateBootableMemory(_ memoryInBytes: UInt64) throws {
@@ -7726,6 +7860,24 @@ extension ContainersService {
             throw ContainerizationError(
                 .invalidArgument,
                 message: "minimum memory amount allowed is 200 MiB (got \(memoryInBytes) bytes)"
+            )
+        }
+    }
+
+    static func validateLiveMemoryTarget(_ memoryInBytes: UInt64, maximum: UInt64) throws {
+        guard memoryInBytes.isMultiple(of: liveMemoryTargetAlignmentInBytes) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "live memory target must be a multiple of 1 MiB"
+            )
+        }
+        guard memoryInBytes >= minimumLiveMemoryTargetInBytes,
+            memoryInBytes <= maximum
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message:
+                    "live memory target must be between 4 MiB and the configured boot-time maximum"
             )
         }
     }
@@ -7898,6 +8050,7 @@ extension ContainersService {
                 var configuration = state.snapshot.configuration
                 if let memoryInBytes = updatedMemoryInBytes {
                     configuration.resources.memoryInBytes = memoryInBytes
+                    configuration.resources.memoryTargetInBytes = nil
                 }
                 if let cpuQuotaInMicroseconds = updatedCPUQuotaInMicroseconds {
                     configuration.resources.cpuPeriodInMicroseconds =

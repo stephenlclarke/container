@@ -149,6 +149,18 @@ enum ManagedRuntimeClient: Sendable {
         }
     }
 
+    func setMemoryTarget(_ memoryInBytes: UInt64) async throws {
+        switch self {
+        case .dedicated(let client):
+            try await client.setMemoryTarget(memoryInBytes)
+        case .shared:
+            throw ContainerizationError(
+                .unsupported,
+                message: "live memory targeting is unavailable for shared-vm isolation"
+            )
+        }
+    }
+
     func kill(_ id: String, signal: String) async throws {
         switch self {
         case .dedicated(let client): try await client.kill(id, signal: signal)

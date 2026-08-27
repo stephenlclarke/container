@@ -59,6 +59,8 @@ public enum XPCKeys: String {
     case logRecords
     /// Options for stopping a container key.
     case stopOptions
+    /// Live workload-memory target in bytes.
+    case memoryTargetInBytes
     /// Whether to force stop a container when deleting.
     case forceDelete
     /// Plugins
@@ -193,6 +195,7 @@ public enum XPCRoute: String {
     case containerRestart
     case containerPause
     case containerUnpause
+    case containerSetMemoryTarget
     case containerDial
     case containerResize
     case containerKill
