@@ -123,10 +123,12 @@ public actor ContainersService {
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var prewarmed = false
+        var prewarmCleanupRequired = false
         var client: ManagedRuntimeClient? = nil {
             didSet {
                 if client == nil {
                     prewarmed = false
+                    prewarmCleanupRequired = false
                 }
             }
         }
@@ -2302,6 +2304,7 @@ public actor ContainersService {
                 await Self.runtimeBootstrapLimiter.releasePermit()
                 runtimeBootstrapPermitHeld = false
             }
+            var dedicatedRuntimeServiceConfirmedInactive = true
             if let bootstrappedClient, !bootstrappedClient.isDedicated {
                 try? await bootstrappedClient.shutdown()
             } else if plan.configuration.effectiveIsolation == .dedicatedVM {
@@ -2314,6 +2317,7 @@ public actor ContainersService {
                         fullServiceLabel: label
                     )
                 } catch let cleanupError {
+                    dedicatedRuntimeServiceConfirmedInactive = false
                     log.error(
                         "failed to stop runtime service after bootstrap failure",
                         metadata: [
@@ -2322,11 +2326,32 @@ public actor ContainersService {
                             "error": "\(cleanupError)",
                         ]
                     )
+                    if let bootstrappedClient {
+                        do {
+                            try await retainDedicatedBootstrapCleanupTombstone(
+                                id: id,
+                                client: bootstrappedClient,
+                                plannedContainerGeneration: plan.containerGeneration
+                            )
+                        } catch let retentionError {
+                            log.critical(
+                                "failed to retain live runtime after bootstrap cleanup failure",
+                                metadata: [
+                                    "id": "\(id)",
+                                    "cleanupError": "\(cleanupError)",
+                                    "retentionError": "\(retentionError)",
+                                ]
+                            )
+                            throw retentionError
+                        }
+                    }
                 }
             }
-            try? await self.remoteLogDriverPlane?.abortBootstrap(
-                containerID: id
-            )
+            if dedicatedRuntimeServiceConfirmedInactive {
+                try? await self.remoteLogDriverPlane?.abortBootstrap(
+                    containerID: id
+                )
+            }
             log.debug(
                 "container bootstrap timings",
                 metadata: timings.metadata(id: id, outcome: "failure")
@@ -2341,14 +2366,21 @@ public actor ContainersService {
     ) async throws -> Bool {
         let prepared = try await self.lock.withLock(
             logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
-        ) { context -> (ManagedRuntimeClient, UUID)? in
+        ) { context -> (ManagedRuntimeClient, UUID, Bool)? in
             let state = try await self.getContainerState(id: id, context: context)
-            guard state.prewarmed, let client = state.client else {
+            guard state.prewarmed || state.prewarmCleanupRequired,
+                let client = state.client
+            else {
                 return nil
             }
-            return (client, state.generation)
+            return (client, state.generation, state.prewarmCleanupRequired)
         }
-        guard let (client, generation) = prepared else {
+        guard let (client, generation, cleanupRequired) = prepared else {
+            return false
+        }
+
+        if cleanupRequired {
+            try await discardDedicatedPrewarm(id: id)
             return false
         }
 
@@ -2413,7 +2445,9 @@ public actor ContainersService {
             logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
         ) { context -> (ManagedRuntimeClient, ContainerConfiguration, UUID)? in
             let state = try await self.getContainerState(id: id, context: context)
-            guard state.prewarmed, let client = state.client else {
+            guard state.prewarmed || state.prewarmCleanupRequired,
+                let client = state.client
+            else {
                 return nil
             }
             return (client, state.snapshot.configuration, state.generation)
@@ -2500,7 +2534,9 @@ public actor ContainersService {
             logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]
         ) { context in
             var state = try await self.getContainerState(id: id, context: context)
-            guard state.generation == generation, state.prewarmed else {
+            guard state.generation == generation,
+                state.prewarmed || state.prewarmCleanupRequired
+            else {
                 return
             }
             state.client = nil
@@ -2517,6 +2553,43 @@ public actor ContainersService {
     ) -> Bool {
         plannedContainerGeneration == currentContainerGeneration
             && plannedOperationGeneration == currentOperationGeneration
+    }
+
+    static func bootstrapCleanupTombstoneMayCommit(
+        plannedContainerGeneration: UUID,
+        currentContainerGeneration: UUID,
+        currentClientExists: Bool
+    ) -> Bool {
+        plannedContainerGeneration == currentContainerGeneration
+            && !currentClientExists
+    }
+
+    private func retainDedicatedBootstrapCleanupTombstone(
+        id: String,
+        client: ManagedRuntimeClient,
+        plannedContainerGeneration: UUID
+    ) async throws {
+        try await self.lock.withLock(
+            logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+        ) { context in
+            var state = try await self.getContainerState(id: id, context: context)
+            guard
+                Self.bootstrapCleanupTombstoneMayCommit(
+                    plannedContainerGeneration: plannedContainerGeneration,
+                    currentContainerGeneration: state.generation,
+                    currentClientExists: state.client != nil
+                )
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container \(id) changed before failed bootstrap cleanup could be retained"
+                )
+            }
+            state.client = client
+            state.prewarmed = false
+            state.prewarmCleanupRequired = true
+            await self.setContainerState(id, state, context: context)
+        }
     }
 
     static func runtimeBootstrapPhases(
@@ -7226,7 +7299,7 @@ extension ContainersService {
             let state = try await self.getContainerState(id: id, context: context)
             let configuration = state.snapshot.configuration
             return Self.renameInvalidatesPrewarm(
-                prewarmed: state.prewarmed,
+                prewarmed: state.prewarmed || state.prewarmCleanupRequired,
                 currentName: configuration.dockerName ?? configuration.id,
                 newName: newName
             )
@@ -7464,7 +7537,7 @@ extension ContainersService {
             let state = try await self.getContainerState(id: id, context: context)
             let oldOptions = try await self.getContainerCreationOptions(id: id)
             return try Self.validatedResourceUpdateInvalidatesPrewarm(
-                prewarmed: state.prewarmed,
+                prewarmed: state.prewarmed || state.prewarmCleanupRequired,
                 memoryBytes: memoryBytes,
                 nanoCPUs: nanoCPUs,
                 restartPolicy: restartPolicy ?? oldOptions.restartPolicy,

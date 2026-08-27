@@ -247,6 +247,33 @@ struct ContainerBootstrapConcurrencyTests {
         )
     }
 
+    @Test("Failed bootstrap cleanup is retained only on the captured container generation")
+    func bootstrapCleanupTombstoneGenerationFence() {
+        let containerGeneration = UUID()
+
+        #expect(
+            ContainersService.bootstrapCleanupTombstoneMayCommit(
+                plannedContainerGeneration: containerGeneration,
+                currentContainerGeneration: containerGeneration,
+                currentClientExists: false
+            )
+        )
+        #expect(
+            !ContainersService.bootstrapCleanupTombstoneMayCommit(
+                plannedContainerGeneration: containerGeneration,
+                currentContainerGeneration: UUID(),
+                currentClientExists: false
+            )
+        )
+        #expect(
+            !ContainersService.bootstrapCleanupTombstoneMayCommit(
+                plannedContainerGeneration: containerGeneration,
+                currentContainerGeneration: containerGeneration,
+                currentClientExists: true
+            )
+        )
+    }
+
     @Test("Only never-started dedicated containers without caller-owned SSH state prewarm")
     func dedicatedPrewarmEligibility() {
         let eligible = Self.snapshot(id: "eligible")
