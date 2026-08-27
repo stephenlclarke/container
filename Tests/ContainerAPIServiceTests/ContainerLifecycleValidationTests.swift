@@ -45,6 +45,44 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func preparedInitProcessCannotBypassForegroundBootstrap() throws {
+        try ContainersService.validateProcessStartState(
+            status: .stopped,
+            isInit: true,
+            prewarmed: false,
+            cleanupRequired: false,
+            id: "cold"
+        )
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateProcessStartState(
+                status: .stopped,
+                isInit: true,
+                prewarmed: true,
+                cleanupRequired: false,
+                id: "prepared"
+            )
+        }
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateProcessStartState(
+                status: .stopped,
+                isInit: true,
+                prewarmed: false,
+                cleanupRequired: true,
+                id: "cleanup"
+            )
+        }
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateProcessStartState(
+                status: .stopped,
+                isInit: false,
+                prewarmed: false,
+                cleanupRequired: false,
+                id: "exec"
+            )
+        }
+    }
+
+    @Test
     func reachablePreparedRuntimeShutdownFailureRemainsRetryable() {
         #expect(
             ContainersService.preparedRuntimeShutdownFailureDisposition(

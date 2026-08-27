@@ -2820,6 +2820,25 @@ public actor ContainersService {
         }
     }
 
+    static func validateProcessStartState(
+        status: RuntimeStatus,
+        isInit: Bool,
+        prewarmed: Bool,
+        cleanupRequired: Bool,
+        id: String
+    ) throws {
+        if isInit {
+            guard !prewarmed, !cleanupRequired else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container \(id) must complete foreground bootstrap before init start"
+                )
+            }
+            return
+        }
+        try validateForegroundProcessStatus(status, id: id)
+    }
+
     /// Start a process in a container. This can either be a process created via
     /// createProcess, or the init process of the container which requires
     /// id == processID.
@@ -2858,6 +2877,13 @@ public actor ContainersService {
         if state.snapshot.status == .running && isInit {
             return
         }
+        try Self.validateProcessStartState(
+            status: state.snapshot.status,
+            isInit: isInit,
+            prewarmed: state.prewarmed,
+            cleanupRequired: state.prewarmCleanupRequired,
+            id: id
+        )
 
         let client = try state.getClient()
         let oomKillCountBaseline: UInt64?

@@ -373,9 +373,6 @@ public actor RuntimeService {
 
                 try await self.initializeWaiters(for: id)
                 try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
-                if Self.shouldStartSocketForwarders(config: config, hasInterfaces: !container.interfaces.isEmpty) {
-                    try await self.startSocketForwarders(attachment: attachments[0], publishedPorts: config.publishedPorts)
-                }
                 await self.setState(.booted)
             } catch {
                 do {
@@ -408,6 +405,18 @@ public actor RuntimeService {
             let containerInfo = try await self.getContainer()
             let containerId = containerInfo.container.id
             if id == containerId {
+                if !containerInfo.config.publishedPorts.isEmpty,
+                    await self.socketForwarders.isEmpty,
+                    Self.shouldStartSocketForwarders(
+                        config: containerInfo.config,
+                        hasInterfaces: !containerInfo.container.interfaces.isEmpty
+                    )
+                {
+                    try await self.startSocketForwarders(
+                        attachment: containerInfo.attachments[0],
+                        publishedPorts: containerInfo.config.publishedPorts
+                    )
+                }
                 try await self.startInitProcess(lock: lock)
                 await self.setState(.running)
             } else {
