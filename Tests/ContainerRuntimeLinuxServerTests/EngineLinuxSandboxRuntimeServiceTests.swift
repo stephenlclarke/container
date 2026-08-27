@@ -20,6 +20,7 @@ import ContainerXPC
 import Containerization
 import ContainerizationError
 import ContainerizationExtras
+import Darwin
 import Foundation
 import Logging
 import Testing
@@ -564,6 +565,31 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func monitoredWorkloadNaturalExitPublishesEOFToInitialOutput() async throws {
+        let sandbox = FakeEngineLinuxSandbox(terminalOnWait: true)
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let request = try workloadRequest(root: fixture.root, monitorTerminal: true)
+        let stdout = Pipe()
+
+        _ = try await service.startWorkload(
+            request,
+            stdio: [nil, stdout.fileHandleForWriting, nil]
+        )
+        await waitForTerminalObservation(service: service, request: request)
+
+        var descriptor = pollfd(
+            fd: stdout.fileHandleForReading.fileDescriptor,
+            events: Int16(POLLIN | POLLHUP),
+            revents: 0
+        )
+        try #require(poll(&descriptor, 1, 1_000) == 1)
+        #expect(try stdout.fileHandleForReading.readToEnd() == nil)
+    }
+
+    @Test
     func wireObservationsRoundTrip() throws {
         let bootReceipt = EngineLinuxSandboxBootReceiptV1(
             sandboxID: "engine-sandbox",
@@ -740,6 +766,8 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var configuredGuestDevices: [LinuxGuestDeviceRequest] = []
     private(set) var configuredStdout = false
     private(set) var configuredStderr = false
+    private var configuredStdoutWriter: (any Writer)?
+    private var configuredStderrWriter: (any Writer)?
     private(set) var dialedVsockPorts: [UInt32] = []
     private(set) var listenedVsockPorts: [UInt32] = []
     private(set) var lastWaitTimeoutInSeconds: Int64?
@@ -792,6 +820,8 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
         configuredGuestDevices = config.guestDevices
         configuredStdout = config.process.stdout != nil
         configuredStderr = config.process.stderr != nil
+        configuredStdoutWriter = config.process.stdout
+        configuredStderrWriter = config.process.stderr
         if failAdd {
             throw ContainerizationError(.internalError, message: "mount")
         }

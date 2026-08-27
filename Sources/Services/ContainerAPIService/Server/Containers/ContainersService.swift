@@ -4583,8 +4583,7 @@ public actor ContainersService {
 
         let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
-        let config = try bundle.configuration
-        let options = try getContainerCreationOptions(id: id)
+        let (config, options) = try Self.exitLifecycleInputs(at: path)
         var observedOOMKillCount: UInt64?
         if let client = state.client {
             observedOOMKillCount = try? await client.statistics().memoryOOMKillCount
@@ -6427,6 +6426,22 @@ public actor ContainersService {
             }
             return (config, runtimeConfig.options)
         }
+    }
+
+    static func exitLifecycleInputs(
+        at path: URL
+    ) throws -> (ContainerConfiguration, ContainerCreateOptions) {
+        let (configuration, persistedOptions) = try getContainerConfiguration(
+            at: path
+        )
+        if let persistedOptions {
+            return (configuration, persistedOptions)
+        }
+        let runtimeOptions =
+            try RuntimeConfiguration
+            .readRuntimeConfiguration(from: path)
+            .options
+        return (configuration, runtimeOptions ?? .default)
     }
 }
 
