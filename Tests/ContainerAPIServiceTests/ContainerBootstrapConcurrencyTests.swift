@@ -309,6 +309,50 @@ struct ContainerBootstrapConcurrencyTests {
         #expect(!ContainersService.shouldPrewarm(running))
     }
 
+    @Test("Boot prewarming excludes pending restart and removal lifecycle work")
+    func dedicatedPrewarmBootRecoveryEligibility() {
+        let snapshot = Self.snapshot(id: "recovered")
+        var lifecycle = ContainerLifecycleRecordV2(
+            containerID: snapshot.id,
+            canonicalName: snapshot.id,
+            immutableBundleKey: snapshot.id,
+            selectedProviderFingerprint: "container-runtime-linux",
+            snapshot: ContainerLifecycleSnapshotV2(state: .created)
+        )
+
+        #expect(
+            ContainersService.shouldPrewarmAtBoot(
+                snapshot,
+                lifecycle: lifecycle
+            )
+        )
+        #expect(
+            !ContainersService.shouldPrewarmAtBoot(
+                snapshot,
+                lifecycle: nil
+            )
+        )
+
+        lifecycle.snapshot.state = .restarting
+        lifecycle.snapshot.restarting = true
+        #expect(
+            !ContainersService.shouldPrewarmAtBoot(
+                snapshot,
+                lifecycle: lifecycle
+            )
+        )
+
+        lifecycle.snapshot.state = .created
+        lifecycle.snapshot.restarting = false
+        lifecycle.intent.removalRequested = true
+        #expect(
+            !ContainersService.shouldPrewarmAtBoot(
+                snapshot,
+                lifecycle: lifecycle
+            )
+        )
+    }
+
     @Test("Only runtime resource updates invalidate a prepared VM")
     func dedicatedPrewarmResourceInvalidation() {
         #expect(

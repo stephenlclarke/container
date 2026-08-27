@@ -458,9 +458,25 @@ public actor ContainersService {
     /// created but never started before the API server restarted.
     package func resumeEligibleDedicatedPrewarmingAtBoot() {
         let snapshots = containers.values.map(\.snapshot)
-        for snapshot in snapshots where Self.shouldPrewarm(snapshot) {
+        for snapshot in snapshots
+        where Self.shouldPrewarmAtBoot(
+            snapshot,
+            lifecycle: lifecycleRecords[snapshot.id]
+        ) {
             scheduleDedicatedPrewarm(snapshot: snapshot)
         }
+    }
+
+    static func shouldPrewarmAtBoot(
+        _ snapshot: ContainerSnapshot,
+        lifecycle: ContainerResource.ContainerLifecycleRecordV2?
+    ) -> Bool {
+        guard let lifecycle else {
+            return false
+        }
+        return shouldPrewarm(snapshot)
+            && lifecycle.snapshot.state == .created
+            && !lifecycle.intent.removalRequested
     }
 
     /// Completes every ready provider-generation transition before API routes
