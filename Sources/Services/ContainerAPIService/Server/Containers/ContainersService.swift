@@ -124,11 +124,13 @@ public actor ContainersService {
         var snapshot: ContainerSnapshot
         var prewarmed = false
         var prewarmCleanupRequired = false
+        var prewarmCleanupRequiresLoggingClose = false
         var client: ManagedRuntimeClient? = nil {
             didSet {
                 if client == nil {
                     prewarmed = false
                     prewarmCleanupRequired = false
+                    prewarmCleanupRequiresLoggingClose = false
                 }
             }
         }
@@ -881,12 +883,24 @@ public actor ContainersService {
                 continue
             }
 
-            let client = ManagedRuntimeClient.dedicated(
-                try await RuntimeClient.create(
-                    id: snapshot.id,
-                    runtime: snapshot.configuration.runtimeHandler
+            let client: ManagedRuntimeClient
+            do {
+                client = .dedicated(
+                    try await RuntimeClient.create(
+                        id: snapshot.id,
+                        runtime: snapshot.configuration.runtimeHandler
+                    )
                 )
-            )
+            } catch {
+                log.warning(
+                    "surviving prewarm is unreachable; stopping its runtime service",
+                    metadata: ["id": "\(snapshot.id)", "error": "\(error)"]
+                )
+                try Self.stopRuntimeServiceAndConfirmInactive(
+                    fullServiceLabel: label
+                )
+                continue
+            }
             try await lock.withLock(
                 logMetadata: [
                     "acquirer": "\(#function)",
@@ -1108,9 +1122,19 @@ public actor ContainersService {
         configuration: ContainerConfiguration,
         lifecycle: ContainerResource.ContainerLifecycleRecordV2?
     ) -> Bool {
-        configuration.effectiveIsolation == .dedicatedVM
-            && lifecycle?.snapshot.state == .created
-            && lifecycle?.intent.removalRequested == false
+        guard let lifecycle else {
+            return false
+        }
+        let snapshot = ContainerSnapshot(
+            configuration: configuration,
+            status: .stopped,
+            networks: [],
+            startedDate: lifecycle.snapshot.startedAt,
+            exitCode: lifecycle.snapshot.finishedAt == nil
+                ? nil : lifecycle.snapshot.exitCode,
+            exitedDate: lifecycle.snapshot.finishedAt
+        )
+        return shouldPrewarmAtBoot(snapshot, lifecycle: lifecycle)
     }
 
     static func quarantinedContainerNamesAtBoot(
@@ -2393,51 +2417,56 @@ public actor ContainersService {
                 await Self.runtimeBootstrapLimiter.releasePermit()
                 runtimeBootstrapPermitHeld = false
             }
-            var dedicatedRuntimeServiceConfirmedInactive = true
+            var runtimeAndLoggingCleanupFinished = false
+            var loggingCleanupDeferredToTombstone = false
             if let bootstrappedClient, !bootstrappedClient.isDedicated {
-                try? await bootstrappedClient.shutdown()
+                do {
+                    try await bootstrappedClient.shutdown()
+                    try await self.remoteLogDriverPlane?.abortBootstrap(
+                        containerID: id
+                    )
+                    runtimeAndLoggingCleanupFinished = true
+                } catch {
+                    log.warning(
+                        "failed to clean shared runtime after bootstrap failure",
+                        metadata: ["id": "\(id)", "error": "\(error)"]
+                    )
+                }
             } else if plan.configuration.effectiveIsolation == .dedicatedVM {
                 let label = Self.fullLaunchdServiceLabel(
                     runtimeName: plan.configuration.runtimeHandler,
                     instanceId: id
                 )
-                do {
+                if let bootstrappedClient {
+                    loggingCleanupDeferredToTombstone = true
+                    try await retainDedicatedBootstrapCleanupTombstone(
+                        id: id,
+                        client: bootstrappedClient,
+                        plannedContainerGeneration: plan.containerGeneration
+                    )
+                    do {
+                        _ = try await discardDedicatedPrewarm(id: id)
+                        runtimeAndLoggingCleanupFinished = true
+                    } catch let cleanupError {
+                        log.error(
+                            "failed bootstrap cleanup retained a retryable runtime tombstone",
+                            metadata: [
+                                "id": "\(id)",
+                                "label": "\(label)",
+                                "error": "\(cleanupError)",
+                            ]
+                        )
+                    }
+                } else {
                     try Self.stopRuntimeServiceAndConfirmInactive(
                         fullServiceLabel: label
                     )
-                } catch let cleanupError {
-                    dedicatedRuntimeServiceConfirmedInactive = false
-                    log.error(
-                        "failed to stop runtime service after bootstrap failure",
-                        metadata: [
-                            "id": "\(id)",
-                            "label": "\(label)",
-                            "error": "\(cleanupError)",
-                        ]
-                    )
-                    if let bootstrappedClient {
-                        do {
-                            try await retainDedicatedBootstrapCleanupTombstone(
-                                id: id,
-                                client: bootstrappedClient,
-                                plannedContainerGeneration: plan.containerGeneration
-                            )
-                        } catch let retentionError {
-                            log.critical(
-                                "failed to retain live runtime after bootstrap cleanup failure",
-                                metadata: [
-                                    "id": "\(id)",
-                                    "cleanupError": "\(cleanupError)",
-                                    "retentionError": "\(retentionError)",
-                                ]
-                            )
-                            throw retentionError
-                        }
-                    }
                 }
             }
             var loggingCleanupError: (any Error)?
-            if dedicatedRuntimeServiceConfirmedInactive {
+            if !runtimeAndLoggingCleanupFinished,
+                !loggingCleanupDeferredToTombstone
+            {
                 do {
                     try await self.remoteLogDriverPlane?.abortBootstrap(
                         containerID: id
@@ -2540,20 +2569,36 @@ public actor ContainersService {
         disposition == .confirmInactiveService
     }
 
+    enum PreparedLoggingCleanup: Equatable {
+        case abortBootstrap
+        case closeActivatedRun
+    }
+
+    static func preparedLoggingCleanup(
+        requiresClose: Bool
+    ) -> PreparedLoggingCleanup {
+        requiresClose ? .closeActivatedRun : .abortBootstrap
+    }
+
     @discardableResult
     private func discardDedicatedPrewarm(id: String) async throws -> Bool {
         let discarded = try await self.lock.withLock(
             logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
-        ) { context -> (ManagedRuntimeClient, ContainerConfiguration, UUID)? in
+        ) { context -> (ManagedRuntimeClient, ContainerConfiguration, UUID, Bool)? in
             let state = try await self.getContainerState(id: id, context: context)
             guard state.prewarmed || state.prewarmCleanupRequired,
                 let client = state.client
             else {
                 return nil
             }
-            return (client, state.snapshot.configuration, state.generation)
+            return (
+                client,
+                state.snapshot.configuration,
+                state.generation,
+                state.prewarmCleanupRequiresLoggingClose
+            )
         }
-        guard let (client, configuration, generation) = discarded else {
+        guard let (client, configuration, generation, loggingRequiresClose) = discarded else {
             return false
         }
 
@@ -2612,7 +2657,14 @@ public actor ContainersService {
 
         var firstError: (any Error)?
         do {
-            try await remoteLogDriverPlane?.abortBootstrap(containerID: id)
+            switch Self.preparedLoggingCleanup(
+                requiresClose: loggingRequiresClose
+            ) {
+            case .abortBootstrap:
+                try await remoteLogDriverPlane?.abortBootstrap(containerID: id)
+            case .closeActivatedRun:
+                try await remoteLogDriverPlane?.close(containerID: id)
+            }
         } catch {
             firstError = error
         }
@@ -2689,6 +2741,7 @@ public actor ContainersService {
             state.client = client
             state.prewarmed = false
             state.prewarmCleanupRequired = true
+            state.prewarmCleanupRequiresLoggingClose = false
             await self.setContainerState(id, state, context: context)
         }
     }
@@ -3106,6 +3159,7 @@ public actor ContainersService {
                     recoveredState.client = client
                     recoveredState.prewarmed = false
                     recoveredState.prewarmCleanupRequired = true
+                    recoveredState.prewarmCleanupRequiresLoggingClose = true
                 }
                 let stateAfterRollback = recoveredState
                 await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(id)"]) { context in
@@ -6664,7 +6718,11 @@ public actor ContainersService {
                 return (nil, nil)
             }
 
-            let client = state.client
+            let preserveCleanupTombstone = Self.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: state.prewarmCleanupRequired,
+                clientExists: state.client != nil
+            )
+            let client = preserveCleanupTombstone ? nil : state.client
             let label =
                 client?.isDedicated == true
                 ? Self.fullLaunchdServiceLabel(
@@ -6676,7 +6734,9 @@ public actor ContainersService {
             state.snapshot.status = .stopped
             state.snapshot.networks = []
             state.snapshot.health = nil
-            state.client = nil
+            if !preserveCleanupTombstone {
+                state.client = nil
+            }
             do {
                 try await self.commitLifecycle(
                     id: id,
@@ -6726,6 +6786,13 @@ public actor ContainersService {
         if let label = cleanup.1 {
             try? ServiceManager.deregister(fullServiceLabel: label)
         }
+    }
+
+    static func restartFailurePreservesCleanupTombstone(
+        cleanupRequired: Bool,
+        clientExists: Bool
+    ) -> Bool {
+        cleanupRequired && clientExists
     }
 
     private func scheduleRestartStabilityReset(

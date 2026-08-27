@@ -400,6 +400,24 @@ struct ContainerLoadAtBootTests {
                 lifecycle: removing
             )
         )
+
+        var sshConfiguration = testConfiguration(id: id)
+        sshConfiguration.ssh = true
+        #expect(
+            !ContainersService.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                configuration: sshConfiguration,
+                lifecycle: created
+            )
+        )
+
+        var customRuntimeConfiguration = testConfiguration(id: id)
+        customRuntimeConfiguration.runtimeHandler = "custom-runtime"
+        #expect(
+            !ContainersService.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                configuration: customRuntimeConfiguration,
+                lifecycle: created
+            )
+        )
     }
 
     @Test

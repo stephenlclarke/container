@@ -182,6 +182,40 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func failedStartRetriesActivatedLoggingWithClose() {
+        #expect(
+            ContainersService.preparedLoggingCleanup(requiresClose: true)
+                == .closeActivatedRun
+        )
+        #expect(
+            ContainersService.preparedLoggingCleanup(requiresClose: false)
+                == .abortBootstrap
+        )
+    }
+
+    @Test
+    func automaticRestartFailurePreservesCleanupTombstone() {
+        #expect(
+            ContainersService.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: true,
+                clientExists: true
+            )
+        )
+        #expect(
+            !ContainersService.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: false,
+                clientExists: true
+            )
+        )
+        #expect(
+            !ContainersService.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: true,
+                clientExists: false
+            )
+        )
+    }
+
+    @Test
     func createAndUpdateShareTheBootableMemoryFloor() throws {
         try ContainersService.validateBootableMemory(
             ContainersService.minimumBootableMemoryInBytes
