@@ -352,6 +352,40 @@ public struct ContainerConfiguration: Sendable, Codable {
 
     /// Resources like cpu, memory, and storage quota.
     public struct Resources: Sendable, Codable {
+        /// Opt-in policy for adapting a dedicated VM's live workload-memory
+        /// target while preserving its configured boot-time maximum.
+        public struct AdaptiveMemoryReclamation: Sendable, Codable, Equatable {
+            public static let defaultHeadroomInBytes: UInt64 = 128.mib()
+            public static let defaultHysteresisInBytes: UInt64 = 64.mib()
+            public static let defaultSampleIntervalInNanoseconds: UInt64 = 2_000_000_000
+            public static let defaultCooldownInNanoseconds: UInt64 = 30_000_000_000
+
+            /// Lowest live workload-memory target the controller may request.
+            public var floorInBytes: UInt64
+            /// Free workload memory retained above observed usage.
+            public var headroomInBytes: UInt64
+            /// Minimum difference required before a target is reduced.
+            public var hysteresisInBytes: UInt64
+            /// Delay between runtime statistics samples.
+            public var sampleIntervalInNanoseconds: UInt64
+            /// Minimum delay between successful target changes.
+            public var cooldownInNanoseconds: UInt64
+
+            public init(
+                floorInBytes: UInt64,
+                headroomInBytes: UInt64 = Self.defaultHeadroomInBytes,
+                hysteresisInBytes: UInt64 = Self.defaultHysteresisInBytes,
+                sampleIntervalInNanoseconds: UInt64 = Self.defaultSampleIntervalInNanoseconds,
+                cooldownInNanoseconds: UInt64 = Self.defaultCooldownInNanoseconds
+            ) {
+                self.floorInBytes = floorInBytes
+                self.headroomInBytes = headroomInBytes
+                self.hysteresisInBytes = hysteresisInBytes
+                self.sampleIntervalInNanoseconds = sampleIntervalInNanoseconds
+                self.cooldownInNanoseconds = cooldownInNanoseconds
+            }
+        }
+
         /// Number of CPU cores allocated.
         public var cpus: Int = 4
         /// Optional CFS CPU quota in microseconds. When set, this can express
@@ -367,6 +401,9 @@ public struct ContainerConfiguration: Sendable, Codable {
         /// Optional live workload-memory target. This does not change the
         /// configured boot-time maximum in `memoryInBytes`.
         public var memoryTargetInBytes: UInt64?
+        /// Optional adaptive controller for the live workload-memory target.
+        /// A missing policy keeps automatic reclamation disabled.
+        public var adaptiveMemoryReclamation: AdaptiveMemoryReclamation?
         /// Storage quota/size in bytes.
         public var storage: UInt64?
         /// Additional CPU cores allocated for VM overhead (guest agent, etc).
@@ -382,6 +419,10 @@ public struct ContainerConfiguration: Sendable, Codable {
             self.cpuSet = try c.decodeIfPresent(String.self, forKey: .cpuSet)
             self.memoryInBytes = try c.decodeIfPresent(UInt64.self, forKey: .memoryInBytes) ?? 1024.mib()
             self.memoryTargetInBytes = try c.decodeIfPresent(UInt64.self, forKey: .memoryTargetInBytes)
+            self.adaptiveMemoryReclamation = try c.decodeIfPresent(
+                AdaptiveMemoryReclamation.self,
+                forKey: .adaptiveMemoryReclamation
+            )
             self.storage = try c.decodeIfPresent(UInt64.self, forKey: .storage)
             self.cpuOverhead = try c.decodeIfPresent(Int.self, forKey: .cpuOverhead) ?? 1
         }

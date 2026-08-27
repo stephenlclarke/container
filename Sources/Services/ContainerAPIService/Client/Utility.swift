@@ -181,6 +181,28 @@ public struct Utility {
             requestedPlatform: requestedPlatform,
             management: management
         )
+        let resources = try Parser.resources(
+            cpus: resource.cpus,
+            memory: resource.memory,
+            cpuPeriod: resource.cpuPeriod,
+            cpuQuota: resource.cpuQuota,
+            cpuSet: resource.cpuSet,
+            memoryReclaimFloor: resource.memoryReclaimFloor,
+            memoryReclaimHeadroom: resource.memoryReclaimHeadroom,
+            memoryReclaimHysteresis: resource.memoryReclaimHysteresis,
+            memoryReclaimInterval: resource.memoryReclaimInterval,
+            memoryReclaimCooldown: resource.memoryReclaimCooldown,
+            defaultCPUs: containerSystemConfig.container.cpus,
+            defaultMemory: containerSystemConfig.container.memory
+        )
+        if requestedIsolation == .sharedVM,
+            resources.adaptiveMemoryReclamation != nil
+        {
+            throw ContainerizationError(
+                .unsupported,
+                message: "adaptive memory reclamation requires --isolation dedicated-vm"
+            )
+        }
         let scheme = try RequestScheme(registry.scheme)
         let imageDownloadLimits = try imageDownloadLimits(
             maxConcurrentDownloads: imageFetch.maxConcurrentDownloads
@@ -295,15 +317,7 @@ public struct Utility {
             requestedIsolation == .sharedVM
             ? "engine-linux-sandbox" : nil
 
-        config.resources = try Parser.resources(
-            cpus: resource.cpus,
-            memory: resource.memory,
-            cpuPeriod: resource.cpuPeriod,
-            cpuQuota: resource.cpuQuota,
-            cpuSet: resource.cpuSet,
-            defaultCPUs: containerSystemConfig.container.cpus,
-            defaultMemory: containerSystemConfig.container.memory
-        )
+        config.resources = resources
         config.logging = try Self.loggingConfiguration(
             request: loggingRequest,
             legacyDriver: management.logDriver,
