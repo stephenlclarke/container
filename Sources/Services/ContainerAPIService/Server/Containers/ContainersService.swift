@@ -883,6 +883,23 @@ public actor ContainersService {
                 continue
             }
 
+            if let remoteLogDriverPlane {
+                let protectedOptions = try await validateLoggingForStart(
+                    containerID: snapshot.id,
+                    configuration: snapshot.configuration.logging
+                )
+                let path = try Self.containerPath(
+                    root: containerRoot,
+                    id: snapshot.id
+                )
+                try await remoteLogDriverPlane
+                    .reconcilePreparedBootstrapForCleanup(
+                        containerID: snapshot.id,
+                        bundle: ContainerResource.Bundle(path: path),
+                        configuration: snapshot.configuration,
+                        authenticatedProtectedOptions: protectedOptions
+                    )
+            }
             let client: ManagedRuntimeClient
             do {
                 client = .dedicated(
@@ -900,23 +917,6 @@ public actor ContainersService {
                     fullServiceLabel: label
                 )
                 continue
-            }
-            if let remoteLogDriverPlane {
-                let protectedOptions = try await validateLoggingForStart(
-                    containerID: snapshot.id,
-                    configuration: snapshot.configuration.logging
-                )
-                let path = try Self.containerPath(
-                    root: containerRoot,
-                    id: snapshot.id
-                )
-                try await remoteLogDriverPlane
-                    .reconcilePreparedBootstrapForCleanup(
-                        containerID: snapshot.id,
-                        bundle: ContainerResource.Bundle(path: path),
-                        configuration: snapshot.configuration,
-                        authenticatedProtectedOptions: protectedOptions
-                    )
             }
             try await lock.withLock(
                 logMetadata: [
