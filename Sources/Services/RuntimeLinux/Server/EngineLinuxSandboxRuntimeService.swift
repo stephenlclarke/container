@@ -437,6 +437,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         interface: any Interface
     ) {
         configuration.interfaces = [interface]
+        configuration.workloadNetworkBridge = WorkloadNetworkBridge(
+            name: EngineLinuxSandboxNetworkingV1.workloadBridgeName
+        )
     }
 
     private static func reserveSealedEgressNetwork(

@@ -509,13 +509,15 @@ public struct Utility {
             return
         }
 
-        guard
-            management.networks == [NetworkClient.hostNetworkName]
-                || management.networks == [NetworkClient.noNetworkName]
-        else {
+        let networkSelection = try networkSelection(management.networks)
+        if case .attachments(let attachments) = networkSelection,
+            !attachments.isEmpty,
+            !(attachments.count == 1
+                && attachments[0].name == NetworkClient.defaultNetworkName)
+        {
             throw ContainerizationError(
                 .unsupported,
-                message: "--isolation shared-vm currently requires --network host or --network none"
+                message: "--isolation shared-vm currently supports only --network default, --network host, or --network none"
             )
         }
         guard management.kernel == nil, management.kernelArgs.isEmpty, management.initImage == nil else {

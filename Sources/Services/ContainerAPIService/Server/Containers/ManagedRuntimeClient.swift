@@ -14,11 +14,15 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerAPIClient
+import ContainerNetworkClient
 import ContainerResource
 import ContainerRuntimeClient
+import ContainerXPC
 import Containerization
 import ContainerizationError
 import ContainerizationOS
+import CryptoKit
 import Foundation
 
 enum ManagedRuntimeClient: Sendable {
@@ -337,6 +341,74 @@ enum ManagedRuntimeClient: Sendable {
     }
 }
 
+protocol SharedSandboxNetworkAllocating: Sendable {
+    func allocate(
+        configurations: [AttachmentConfiguration],
+        bootstrapInfos: [NetworkBootstrapInfo]
+    ) async throws -> [Attachment]
+}
+
+private actor DefaultSharedSandboxNetworkAllocator:
+    SharedSandboxNetworkAllocating
+{
+    private struct Binding: Sendable {
+        let client: ContainerNetworkClient.NetworkClient
+        let session: XPCClientSession
+    }
+
+    private var bindings: [Binding] = []
+
+    func allocate(
+        configurations: [AttachmentConfiguration],
+        bootstrapInfos: [NetworkBootstrapInfo]
+    ) async throws -> [Attachment] {
+        guard configurations.count == bootstrapInfos.count else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "shared-vm network configuration and plugin counts do not match"
+            )
+        }
+
+        var pendingBindings: [Binding] = []
+        var attachments: [Attachment] = []
+        do {
+            for (configuration, info) in zip(
+                configurations,
+                bootstrapInfos
+            ) {
+                let client = ContainerNetworkClient.NetworkClient(
+                    id: configuration.network,
+                    plugin: info.plugin
+                )
+                let session = client.connect()
+                pendingBindings.append(
+                    Binding(client: client, session: session)
+                )
+                let (attachment, _) = try await client.allocate(
+                    hostname: configuration.options.hostname,
+                    aliases: configuration.options.aliases,
+                    macAddress: configuration.options.macAddress,
+                    requestedIPv4Address:
+                        configuration.options.requestedIPv4Address,
+                    requestedIPv6Address:
+                        configuration.options.requestedIPv6Address,
+                    retainOnDisconnect: true,
+                    on: session
+                )
+                attachments.append(attachment)
+            }
+        } catch {
+            for binding in pendingBindings {
+                binding.session.close()
+            }
+            throw error
+        }
+
+        bindings.append(contentsOf: pendingBindings)
+        return attachments
+    }
+}
+
 actor SharedSandboxRuntimeClient {
     private static let initProcessPlan = "sha256:container-shared-vm-v1"
 
@@ -345,8 +417,10 @@ actor SharedSandboxRuntimeClient {
     private let containerConfiguration: ContainerConfiguration
     private let authority: any EngineLinuxSandboxWorkloadAuthorityV1
     private let configurationProvider: any EngineLinuxSandboxConfigurationProvidingV1
+    private let networkAllocator: any SharedSandboxNetworkAllocating
     private var sandboxConfiguration: EngineLinuxSandboxRuntimeConfigurationV1?
     private var workload: EngineWorkloadRecordV1?
+    private var networkAttachments: [Attachment] = []
 
     init(
         id: String,
@@ -354,13 +428,16 @@ actor SharedSandboxRuntimeClient {
         containerConfiguration: ContainerConfiguration,
         authority: any EngineLinuxSandboxWorkloadAuthorityV1,
         configurationProvider:
-            any EngineLinuxSandboxConfigurationProvidingV1
+            any EngineLinuxSandboxConfigurationProvidingV1,
+        networkAllocator: any SharedSandboxNetworkAllocating =
+            DefaultSharedSandboxNetworkAllocator()
     ) {
         self.id = id
         self.workloadRoot = workloadRoot
         self.containerConfiguration = containerConfiguration
         self.authority = authority
         self.configurationProvider = configurationProvider
+        self.networkAllocator = networkAllocator
     }
 
     func bootstrap(
@@ -368,12 +445,6 @@ actor SharedSandboxRuntimeClient {
         networkBootstrapInfos: [NetworkBootstrapInfo],
         dynamicEnv: [String: String]
     ) async throws {
-        guard networkBootstrapInfos.isEmpty else {
-            throw ContainerizationError(
-                .unsupported,
-                message: "shared-vm workloads do not support bridged network bootstrap"
-            )
-        }
         guard workload == nil else {
             throw ContainerizationError(
                 .invalidState,
@@ -389,12 +460,35 @@ actor SharedSandboxRuntimeClient {
                 message: "shared-vm workload does not match its durable sandbox identity"
             )
         }
+        let networkConfigurations = try Self.networkConfigurations(
+            for: containerConfiguration
+        )
+        let attachments = try await networkAllocator.allocate(
+            configurations: networkConfigurations,
+            bootstrapInfos: networkBootstrapInfos
+        )
+        guard attachments.count == networkConfigurations.count else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "shared-vm network allocator returned an unexpected attachment count"
+            )
+        }
+        let networkEndpoints = try zip(networkConfigurations, attachments)
+            .enumerated()
+            .map { index, pair in
+                try Self.networkEndpoint(
+                    containerID: id,
+                    interfaceIndex: index,
+                    configuration: pair.0,
+                    attachment: pair.1
+                )
+            }
         let running = try await authority.startWorkload(
             planDigest: Self.initProcessPlan,
             configuration: configuration,
             workloadRoot: workloadRoot,
             dynamicEnvironment: dynamicEnv,
-            networkEndpoints: [],
+            networkEndpoints: networkEndpoints,
             stdio: stdio,
             controllers: [],
             monitorTerminal: false
@@ -410,13 +504,112 @@ actor SharedSandboxRuntimeClient {
         }
         sandboxConfiguration = configuration
         workload = running
+        networkAttachments = attachments
     }
 
     func state() async throws -> SandboxSnapshot {
         guard case .state(let status) = try await control(.state) else {
             throw invalidResponse("state")
         }
-        return SandboxSnapshot(status: status, networks: [], containers: [])
+        return SandboxSnapshot(
+            status: status,
+            networks: networkAttachments,
+            containers: []
+        )
+    }
+
+    static func networkConfigurations(
+        for configuration: ContainerConfiguration
+    ) throws -> [AttachmentConfiguration] {
+        guard !configuration.hostNetwork else {
+            return []
+        }
+        guard configuration.networks.count <= 1,
+            configuration.networks.allSatisfy({
+                $0.network == ContainerAPIClient.NetworkClient.defaultNetworkName
+            })
+        else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "shared-vm isolation currently supports only the built-in default network"
+            )
+        }
+        return configuration.networks
+    }
+
+    static func networkEndpoint(
+        containerID: String,
+        interfaceIndex: Int,
+        configuration: AttachmentConfiguration,
+        attachment: Attachment
+    ) throws -> WorkloadNetworkEndpoint {
+        guard let macAddress = attachment.macAddress else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "shared-vm network attachment has no MAC address"
+            )
+        }
+
+        var addresses = configuration.options.additionalIPAddresses.map {
+            InterfaceIPAssignment(address: $0)
+        }
+        if let address = attachment.ipv4Address {
+            addresses.insert(
+                InterfaceIPAssignment(
+                    address: .v4(address.address, address.prefix)
+                ),
+                at: 0
+            )
+        }
+        if let address = attachment.ipv6Address {
+            addresses.append(
+                InterfaceIPAssignment(
+                    address: .v6(address.address, address.prefix)
+                )
+            )
+        }
+
+        var routes: [InterfaceRoute] = []
+        if interfaceIndex == 0 {
+            if attachment.ipv4Address != nil,
+                let gateway = attachment.ipv4Gateway
+            {
+                routes.append(InterfaceRoute(nextHop: .v4(gateway)))
+            }
+            if attachment.ipv6Address != nil,
+                let gateway = attachment.ipv6Gateway
+            {
+                routes.append(InterfaceRoute(nextHop: .v6(gateway)))
+            }
+        }
+
+        return WorkloadNetworkEndpoint(
+            hostInterfaceName: hostInterfaceName(
+                containerID: containerID,
+                interfaceIndex: interfaceIndex
+            ),
+            bridgeInterfaceName:
+                EngineLinuxSandboxNetworkingV1.workloadBridgeName,
+            interface: InterfaceConfiguration(
+                name: configuration.options.guestInterfaceName
+                    ?? "eth\(interfaceIndex)",
+                hardwareAddress: macAddress,
+                addresses: addresses,
+                routes: routes,
+                mtu: configuration.options.mtu ?? attachment.mtu ?? 1280
+            )
+        )
+    }
+
+    static func hostInterfaceName(
+        containerID: String,
+        interfaceIndex: Int
+    ) -> String {
+        let material = Data("\(containerID)\u{0}\(interfaceIndex)".utf8)
+        let digest = SHA256.hash(data: material)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "cw" + digest.prefix(13)
     }
 
     func createProcess(

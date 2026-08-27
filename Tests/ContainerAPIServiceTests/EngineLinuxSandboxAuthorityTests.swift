@@ -18,6 +18,7 @@ import ContainerResource
 import ContainerRuntimeClient
 import Containerization
 import ContainerizationError
+import ContainerizationExtras
 import Foundation
 import Testing
 
@@ -85,6 +86,103 @@ struct EngineLinuxSandboxAuthorityTests {
         #expect(await runtime.workloadStopCount == 1)
         try await client.shutdown()
         #expect(await runtime.workloadStopCount == 1)
+    }
+
+    @Test
+    func managedSharedClientProjectsDefaultNetworkIntoWorkloadEndpoint() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let runtimeConfiguration =
+            try RuntimeConfiguration
+            .readRuntimeConfiguration(from: fixture.workloadRoot)
+        var containerConfiguration = try #require(
+            runtimeConfiguration.containerConfiguration
+        )
+        containerConfiguration.requestedIsolation = .sharedVM
+        containerConfiguration.effectiveIsolation = .sharedVM
+        containerConfiguration.sandboxID = fixture.sandboxConfiguration.sandboxID
+        containerConfiguration.networks = [
+            AttachmentConfiguration(
+                network: "default",
+                options: AttachmentOptions(
+                    hostname: "workload.test.",
+                    aliases: ["workload"],
+                    mtu: 1400,
+                    guestInterfaceName: "service0",
+                    additionalIPAddresses: [try CIDR("192.0.2.8/32")]
+                )
+            )
+        ]
+        let attachment = ContainerResource.Attachment(
+            network: "default",
+            hostname: "workload.test.",
+            aliases: ["workload"],
+            ipv4Address: try CIDRv4("192.168.64.8/24"),
+            ipv4Gateway: try IPv4Address("192.168.64.1"),
+            ipv6Address: try CIDRv6("fd00::8/64"),
+            ipv6Gateway: try IPv6Address("fd00::1"),
+            macAddress: try MACAddress("f2:00:00:00:00:08"),
+            mtu: 1280
+        )
+        let networkAllocator = FakeSharedSandboxNetworkAllocator(
+            attachments: [attachment]
+        )
+        let client = SharedSandboxRuntimeClient(
+            id: containerConfiguration.id,
+            workloadRoot: fixture.workloadRoot,
+            containerConfiguration: containerConfiguration,
+            authority: authority,
+            configurationProvider: StaticSandboxConfigurationProvider(
+                configuration: fixture.sandboxConfiguration
+            ),
+            networkAllocator: networkAllocator
+        )
+
+        try await client.bootstrap(
+            stdio: [],
+            networkBootstrapInfos: [
+                NetworkBootstrapInfo(plugin: "container-network-vmnet")
+            ],
+            dynamicEnv: [:]
+        )
+
+        let request = try #require(await runtime.lastWorkloadStart)
+        let endpoint = try #require(request.networkEndpoints.first)
+        #expect(request.networkEndpoints.count == 1)
+        #expect(endpoint.hostInterfaceName.utf8.count == 15)
+        #expect(endpoint.hostInterfaceName.hasPrefix("cw"))
+        #expect(
+            endpoint.hostInterfaceName
+                == SharedSandboxRuntimeClient.hostInterfaceName(
+                    containerID: containerConfiguration.id,
+                    interfaceIndex: 0
+                )
+        )
+        #expect(
+            endpoint.bridgeInterfaceName
+                == EngineLinuxSandboxNetworkingV1.workloadBridgeName
+        )
+        #expect(endpoint.interface.name == "service0")
+        #expect(endpoint.interface.mtu == 1400)
+        #expect(
+            endpoint.interface.addresses.map(\.address.description)
+                == ["192.168.64.8/24", "192.0.2.8/32", "fd00::8/64"]
+        )
+        #expect(
+            endpoint.interface.routes.map { $0.nextHop?.description }
+                == ["192.168.64.1", "fd00::1"]
+        )
+        #expect(try await client.state().networks.count == 1)
+        #expect(await networkAllocator.configurationCount == 1)
+        #expect(await networkAllocator.plugins == ["container-network-vmnet"])
     }
 
     @Test
@@ -742,6 +840,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
     private(set) var bootCount = 0
     private(set) var bootObservationCount = 0
     private(set) var workloadStartCount = 0
+    private(set) var lastWorkloadStart: EngineLinuxSandboxWorkloadStartRequestV1?
     private(set) var workloadObservationCount = 0
     private(set) var workloadStopCount = 0
     private(set) var pauseCount = 0
@@ -820,6 +919,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         _ request: EngineLinuxSandboxWorkloadStartRequestV1,
         stdio: [FileHandle?]
     ) async throws -> WorkloadProcessReceiptV1 {
+        lastWorkloadStart = request
         if let workloadReceipt,
             workloadReceipt.containerID == request.context.containerID,
             workloadReceipt.operationGeneration == request.context.operationGeneration,
@@ -983,6 +1083,27 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         serviceDialCount += 1
         lastServiceDial = request
         return Pipe().fileHandleForReading
+    }
+}
+
+private actor FakeSharedSandboxNetworkAllocator:
+    SharedSandboxNetworkAllocating
+{
+    private let attachments: [ContainerResource.Attachment]
+    private(set) var configurationCount = 0
+    private(set) var plugins: [String] = []
+
+    init(attachments: [ContainerResource.Attachment]) {
+        self.attachments = attachments
+    }
+
+    func allocate(
+        configurations: [AttachmentConfiguration],
+        bootstrapInfos: [NetworkBootstrapInfo]
+    ) async throws -> [ContainerResource.Attachment] {
+        configurationCount = configurations.count
+        plugins = bootstrapInfos.map(\.plugin)
+        return attachments
     }
 }
 
