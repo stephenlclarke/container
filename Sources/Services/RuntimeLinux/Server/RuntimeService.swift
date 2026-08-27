@@ -38,6 +38,18 @@ import SystemPackage
 import struct ContainerizationOCI.Mount
 import struct ContainerizationOCI.Process
 
+private final class StartedSocketForwarders: Sendable {
+    private let storage = Mutex<[SocketForwarderResult]>([])
+
+    func append(_ forwarder: SocketForwarderResult) {
+        storage.withLock { $0.append(forwarder) }
+    }
+
+    func snapshot() -> [SocketForwarderResult] {
+        storage.withLock { $0 }
+    }
+}
+
 /// An XPC service that manages the lifecycle of a single VM-backed container.
 public actor RuntimeService {
     private let connection: xpc_connection_t
@@ -1338,81 +1350,92 @@ public actor RuntimeService {
         }
         LocalNetworkPrivacy.triggerLocalNetworkPrivacyAlert()
 
-        var forwarders: [SocketForwarderResult] = []
+        let startedForwarders = StartedSocketForwarders()
         guard !publishedPorts.hasOverlaps() else {
             throw ContainerizationError(.invalidArgument, message: "host ports for different publish port specs may not overlap")
         }
 
-        try await withThrowingTaskGroup(of: SocketForwarderResult.self) { group in
-            for publishedPort in publishedPorts {
-                for index in 0..<publishedPort.count {
-                    let hostPort = publishedPort.hostPort + index
-                    let hostBinding = try HostPortBinding.resolve(hostAddress: publishedPort.hostAddress, hostPort: hostPort)
-                    let proxyAddress = hostBinding.proxyAddress
-                    let containerIPAddress: String
-                    switch publishedPort.hostAddress {
-                    case .v4(_):
-                        guard let ipv4Address = attachment.ipv4Address else {
-                            throw ContainerizationError(
-                                .invalidArgument,
-                                message: "IPv4 published port requires an IPv4 network attachment"
-                            )
-                        }
-                        containerIPAddress = ipv4Address.address.description
-                    case .v6(_):
-                        guard let ipv6Address = attachment.ipv6Address else {
-                            throw ContainerizationError(.invalidState, message: "cannot configure IPv6 port forwarding for container with unknown IPv6 address")
-                        }
-                        containerIPAddress = ipv6Address.address.description
-                    }
-                    let serverAddress = try SocketAddress(ipAddress: containerIPAddress, port: Int(publishedPort.containerPort + index))
-                    log.info(
-                        "creating forwarder for",
-                        metadata: [
-                            "proxy": "\(proxyAddress)",
-                            "server": "\(serverAddress)",
-                            "protocol": "\(publishedPort.proto)",
-                        ])
-                    group.addTask {
-                        let forwarder: SocketForwarder
-                        switch publishedPort.proto {
-                        case .tcp:
-                            forwarder = try TCPForwarder(
-                                proxyAddress: proxyAddress,
-                                serverAddress: serverAddress,
-                                eventLoopGroup: self.eventLoopGroup,
-                                boundInterface: hostBinding.boundInterface,
-                                log: self.log
-                            )
-                        case .udp:
-                            forwarder = try UDPForwarder(
-                                proxyAddress: proxyAddress,
-                                serverAddress: serverAddress,
-                                eventLoopGroup: self.eventLoopGroup,
-                                boundInterface: hostBinding.boundInterface,
-                                log: self.log
-                            )
-                        }
-                        do {
-                            return try await forwarder.run().get()
-                        } catch let error as IOError where error.errnoCode == EACCES {
-                            if let port = proxyAddress.port, port < 1024 {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for publishedPort in publishedPorts {
+                    for index in 0..<publishedPort.count {
+                        let hostPort = publishedPort.hostPort + index
+                        let hostBinding = try HostPortBinding.resolve(hostAddress: publishedPort.hostAddress, hostPort: hostPort)
+                        let proxyAddress = hostBinding.proxyAddress
+                        let containerIPAddress: String
+                        switch publishedPort.hostAddress {
+                        case .v4(_):
+                            guard let ipv4Address = attachment.ipv4Address else {
                                 throw ContainerizationError(
                                     .invalidArgument,
-                                    message: "Permission denied while binding to host port \(port). Binding to ports below 1024 requires root privileges."
+                                    message: "IPv4 published port requires an IPv4 network attachment"
                                 )
                             }
-                            throw error
+                            containerIPAddress = ipv4Address.address.description
+                        case .v6(_):
+                            guard let ipv6Address = attachment.ipv6Address else {
+                                throw ContainerizationError(.invalidState, message: "cannot configure IPv6 port forwarding for container with unknown IPv6 address")
+                            }
+                            containerIPAddress = ipv6Address.address.description
+                        }
+                        let serverAddress = try SocketAddress(ipAddress: containerIPAddress, port: Int(publishedPort.containerPort + index))
+                        log.info(
+                            "creating forwarder for",
+                            metadata: [
+                                "proxy": "\(proxyAddress)",
+                                "server": "\(serverAddress)",
+                                "protocol": "\(publishedPort.proto)",
+                            ])
+                        group.addTask {
+                            let forwarder: SocketForwarder
+                            switch publishedPort.proto {
+                            case .tcp:
+                                forwarder = try TCPForwarder(
+                                    proxyAddress: proxyAddress,
+                                    serverAddress: serverAddress,
+                                    eventLoopGroup: self.eventLoopGroup,
+                                    boundInterface: hostBinding.boundInterface,
+                                    log: self.log
+                                )
+                            case .udp:
+                                forwarder = try UDPForwarder(
+                                    proxyAddress: proxyAddress,
+                                    serverAddress: serverAddress,
+                                    eventLoopGroup: self.eventLoopGroup,
+                                    boundInterface: hostBinding.boundInterface,
+                                    log: self.log
+                                )
+                            }
+                            do {
+                                let result = try await forwarder.run().get()
+                                startedForwarders.append(result)
+                            } catch let error as IOError where error.errnoCode == EACCES {
+                                if let port = proxyAddress.port, port < 1024 {
+                                    throw ContainerizationError(
+                                        .invalidArgument,
+                                        message: "Permission denied while binding to host port \(port). Binding to ports below 1024 requires root privileges."
+                                    )
+                                }
+                                throw error
+                            }
                         }
                     }
                 }
+                try await group.waitForAll()
             }
-            for try await result in group {
-                forwarders.append(result)
+        } catch {
+            // A throwing task group does not guarantee that successful child
+            // results are consumed before another child fails. Record each
+            // bound listener at the point it starts so every partial success
+            // can be closed before the init-start error reaches the API.
+            for forwarder in startedForwarders.snapshot() {
+                forwarder.close()
+                try? await forwarder.wait()
             }
+            throw error
         }
 
-        self.socketForwarders = forwarders
+        self.socketForwarders = startedForwarders.snapshot()
     }
 
     private func startDNSProxy(

@@ -2897,11 +2897,11 @@ public actor ContainersService {
             oomKillCountBaseline = nil
         }
         let preStartState = state
-        try await client.startProcess(processID)
 
         var startedInitProcess: StartedInitProcess?
         var startedExecProcess: StartedExecProcess?
         if !isInit {
+            try await client.startProcess(processID)
             if execConfiguration != nil {
                 startedExecProcess = StartedExecProcess(
                     snapshot: state.snapshot,
@@ -2911,6 +2911,10 @@ public actor ContainersService {
             }
         } else {
             do {
+                // Deferred prewarm side effects such as published-port
+                // binding can fail inside this RPC. Keep the RPC within the
+                // established init-start rollback.
+                try await client.startProcess(processID)
                 try await self.remoteLogDriverPlane?.activate(
                     containerID: id
                 )
