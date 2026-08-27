@@ -202,12 +202,19 @@ public actor EngineLinuxSandboxAuthorityV1:
         let monitorTerminal: Bool
     }
 
+    private struct ReadinessInFlight {
+        let id: UUID
+        let configurationDigest: String
+        let task: Task<EngineLinuxSandboxRecordV1, any Error>
+    }
+
     private let root: URL
     private let sandboxID: String
     private let ledger: EngineWorkloadLedgerV1
     private let resolver: WorkloadPlanResolverV1
     private let launcher: any EngineLinuxSandboxLaunchingV1
     private var runtime: (any EngineLinuxSandboxRuntimeClientV1)?
+    private var readinessInFlight: ReadinessInFlight?
     private var manager: EngineLinuxSandboxManagerV1?
     private var activeConfigurationDigest: String?
 
@@ -279,14 +286,54 @@ public actor EngineLinuxSandboxAuthorityV1:
             )
         }
 
-        let requestedDigest = try Self.digest(configuration)
-        let snapshot = await ledger.snapshot()
+        let requestedDigest = try Self.configurationDigest(configuration)
         if let activeConfigurationDigest, activeConfigurationDigest != requestedDigest {
             throw ContainerizationError(
                 .invalidState,
                 message: "active Engine Linux sandbox configuration cannot change"
             )
         }
+
+        if let readinessInFlight {
+            guard readinessInFlight.configurationDigest == requestedDigest else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "active Engine Linux sandbox configuration cannot change"
+                )
+            }
+            return try await readinessInFlight.task.value
+        }
+
+        let readiness = ReadinessInFlight(
+            id: UUID(),
+            configurationDigest: requestedDigest,
+            task: Task {
+                try await self.ensureReadyUncoalesced(
+                    configuration: configuration,
+                    requestedDigest: requestedDigest
+                )
+            }
+        )
+        readinessInFlight = readiness
+        do {
+            let ready = try await readiness.task.value
+            if readinessInFlight?.id == readiness.id {
+                readinessInFlight = nil
+            }
+            return ready
+        } catch {
+            if readinessInFlight?.id == readiness.id {
+                readinessInFlight = nil
+            }
+            throw error
+        }
+    }
+
+    private func ensureReadyUncoalesced(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        requestedDigest: String
+    ) async throws -> EngineLinuxSandboxRecordV1 {
+        let snapshot = await ledger.snapshot()
 
         var replaceStoppedHelper = false
         if activeConfigurationDigest == nil,
@@ -992,6 +1039,29 @@ public actor EngineLinuxSandboxAuthorityV1:
             && receipt.processGeneration == context.candidateProcessGeneration
             && receipt.sandboxGeneration == context.sandboxGeneration
             && receipt.requestDigest == context.requestDigest
+    }
+
+    /// Keeps pre-snapshot-root and explicit snapshot-root configurations equivalent.
+    static func configurationDigest(
+        _ configuration: EngineLinuxSandboxRuntimeConfigurationV1
+    ) throws -> String {
+        // `snapshotRoot` was added after the durable sandbox ledger shipped.
+        // Omitting it here preserves the exact legacy encoding while validation
+        // guarantees every explicit value resolves to the derived legacy root.
+        let normalized = EngineLinuxSandboxRuntimeConfigurationV1(
+            path: configuration.path,
+            snapshotRoot: nil,
+            sandboxID: configuration.sandboxID,
+            initialFilesystem: configuration.initialFilesystem,
+            kernel: configuration.kernel,
+            cpus: configuration.cpus,
+            memoryInBytes: configuration.memoryInBytes,
+            nestedVirtualization: configuration.nestedVirtualization,
+            rosetta: configuration.rosetta
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return digest(try encoder.encode(normalized))
     }
 
     private static func digest<T: Encodable>(_ value: T) throws -> String {

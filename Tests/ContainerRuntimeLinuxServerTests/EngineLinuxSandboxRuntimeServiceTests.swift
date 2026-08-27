@@ -29,6 +29,22 @@ import Testing
 
 struct EngineLinuxSandboxRuntimeServiceTests {
     @Test
+    func sandboxPreexposesTheSnapshotRootThroughVZ() throws {
+        var configuration = LinuxPod.Configuration()
+        let root = URL(fileURLWithPath: "/tmp/container-state/snapshots")
+
+        EngineLinuxSandboxRuntimeServiceV1.configurePreexposedSnapshotRoot(
+            &configuration,
+            root: root
+        )
+
+        let share = try #require(
+            configuration.extensions.first as? VZPreexposedDirectoryShare
+        )
+        #expect(share.roots == [root])
+    }
+
+    @Test
     func sealedEgressNetworkInstallsTheReservedVmnetInterface() throws {
         var configuration = LinuxPod.Configuration()
         let interface = NATInterface(
@@ -206,6 +222,33 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             ]
         )
         #expect(await sandbox.configuredGuestDevices.isEmpty)
+    }
+
+    @Test
+    func concurrentWorkloadStartsSerializeMaterialization() async throws {
+        let sandbox = FakeEngineLinuxSandbox(delayStartContainer: true)
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let firstFixture = try WorkloadBundleFixture(id: "workload-1")
+        let secondFixture = try WorkloadBundleFixture(id: "workload-2")
+        defer {
+            firstFixture.remove()
+            secondFixture.remove()
+        }
+
+        async let first = service.startWorkload(
+            workloadRequest(root: firstFixture.root, id: "workload-1"),
+            stdio: []
+        )
+        async let second = service.startWorkload(
+            workloadRequest(root: secondFixture.root, id: "workload-2"),
+            stdio: []
+        )
+        _ = try await (first, second)
+
+        #expect(await sandbox.addCount == 2)
+        #expect(await sandbox.startCount == 2)
+        #expect(await sandbox.maximumConcurrentStartCount == 1)
     }
 
     @Test
@@ -708,6 +751,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
 
     private func workloadRequest(
         root: URL,
+        id: String = "workload-1",
         configurationDigest: String? = nil,
         monitorTerminal: Bool = false
     ) throws -> EngineLinuxSandboxWorkloadStartRequestV1 {
@@ -716,11 +760,11 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             ?? EngineLinuxSandboxWorkloadIntegrityV1.configurationDigest(at: root)
         return .init(
             context: WorkloadStartContextV1(
-                containerID: "workload-1",
+                containerID: id,
                 operationGeneration: 2,
                 candidateProcessGeneration: 3,
                 sandboxGeneration: 1,
-                requestDigest: "workload-digest"
+                requestDigest: "\(id)-digest"
             ),
             workloadRoot: root,
             workloadConfigurationDigest: digest,
@@ -764,6 +808,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var stopCount = 0
     private(set) var addCount = 0
     private(set) var startCount = 0
+    private(set) var maximumConcurrentStartCount = 0
     private(set) var stopContainerCount = 0
     private(set) var removeCount = 0
     private(set) var configuredArguments: [String] = []
@@ -779,17 +824,21 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private var workloads: [String: LinuxSandboxWorkloadSnapshot] = [:]
     private let terminalOnWait: Bool
     private let failAdd: Bool
+    private let delayStartContainer: Bool
     private let serviceListenerWaitsForConnection: Bool
+    private var activeStartCount = 0
 
     init(
         state: LinuxSandboxRuntimeState = .absent,
         terminalOnWait: Bool = false,
         failAdd: Bool = false,
+        delayStartContainer: Bool = false,
         serviceListenerWaitsForConnection: Bool = false
     ) {
         self.state = state
         self.terminalOnWait = terminalOnWait
         self.failAdd = failAdd
+        self.delayStartContainer = delayStartContainer
         self.serviceListenerWaitsForConnection = serviceListenerWaitsForConnection
     }
 
@@ -837,9 +886,18 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
         _ = rootfs
     }
 
-    func startContainer(_ containerID: String) throws {
+    func startContainer(_ containerID: String) async throws {
         guard workloads[containerID]?.state == .created else {
             throw ContainerizationError(.invalidState, message: "fake workload is not created")
+        }
+        activeStartCount += 1
+        maximumConcurrentStartCount = max(
+            maximumConcurrentStartCount,
+            activeStartCount
+        )
+        defer { activeStartCount -= 1 }
+        if delayStartContainer {
+            try await Task.sleep(for: .milliseconds(50))
         }
         startCount += 1
         workloads[containerID] = LinuxSandboxWorkloadSnapshot(
@@ -1052,13 +1110,16 @@ private struct WorkloadBundleFixture {
     let sandboxRoot: URL
     let root: URL
 
-    init(endpoint: Endpoint = .reverseVsock) throws {
+    init(
+        id: String = "workload-1",
+        endpoint: Endpoint = .reverseVsock
+    ) throws {
         sandboxRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("engine-sandbox-\(UUID())", isDirectory: true)
         root =
             sandboxRoot
             .appendingPathComponent("workloads", isDirectory: true)
-            .appendingPathComponent("workload-1", isDirectory: true)
+            .appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(
             at: root,
             withIntermediateDirectories: true,
@@ -1095,7 +1156,7 @@ private struct WorkloadBundleFixture {
             rlimits: []
         )
         var configuration = ContainerConfiguration(
-            id: "workload-1",
+            id: id,
             image: image,
             process: process
         )
