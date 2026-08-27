@@ -184,6 +184,27 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func unsupportedPostStartProcessSnapshotKeepsTheStartedContainer() {
+        let unsupported = ContainerizationError(
+            .unknown,
+            message: "unimplemented: \"Requested RPC isn't implemented by this server.\""
+        )
+        let wrapped = ContainerizationError(
+            .internalError,
+            message: "failed to get processes for container example",
+            cause: unsupported
+        )
+
+        #expect(ContainersService.isRecoverablePostStartProcessSnapshotError(unsupported))
+        #expect(ContainersService.isRecoverablePostStartProcessSnapshotError(wrapped))
+        #expect(
+            !ContainersService.isRecoverablePostStartProcessSnapshotError(
+                ContainerizationError(.timeout, message: "process snapshot timed out")
+            )
+        )
+    }
+
+    @Test
     func failedDedicatedStartCleanupRemainsRetryable() {
         #expect(
             ContainersService.failedStartCleanupRequiresTombstone(
