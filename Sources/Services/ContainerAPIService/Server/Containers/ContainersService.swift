@@ -3764,6 +3764,10 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        try Self.validateForegroundProcessStatus(
+            state.snapshot.status,
+            id: id
+        )
         let client = try state.getClient()
         return try await client.dial(port)
     }
