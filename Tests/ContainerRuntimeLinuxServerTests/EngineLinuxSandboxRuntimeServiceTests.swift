@@ -45,6 +45,10 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         #expect(try #require(storedInterface.ipv4Address).description == "192.168.64.2/24")
         #expect(storedInterface.ipv4Gateway?.description == "192.168.64.1")
         #expect(storedInterface.mtu == 1280)
+        #expect(
+            configuration.workloadNetworkBridge?.name
+                == EngineLinuxSandboxNetworkingV1.workloadBridgeName
+        )
     }
 
     @Test

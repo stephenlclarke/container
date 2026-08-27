@@ -51,7 +51,7 @@ private enum PreparationTestError: Error {
 
 struct UtilityTests {
 
-    @Test("Shared VM accepts only explicit host or no networking")
+    @Test("Shared VM accepts host, none, and the built-in default network")
     func sharedVMNetworkCompatibility() throws {
         var management = isolationManagement(
             networks: [NetworkClient.noNetworkName]
@@ -64,6 +64,20 @@ struct UtilityTests {
         )
 
         management.networks = []
+        try Utility.validateIsolationCompatibility(
+            requestedIsolation: .sharedVM,
+            requestedPlatform: .current,
+            management: management
+        )
+
+        management.networks = ["default,mtu=1400"]
+        try Utility.validateIsolationCompatibility(
+            requestedIsolation: .sharedVM,
+            requestedPlatform: .current,
+            management: management
+        )
+
+        management.networks = ["project-network"]
         let error = #expect(throws: ContainerizationError.self) {
             try Utility.validateIsolationCompatibility(
                 requestedIsolation: .sharedVM,

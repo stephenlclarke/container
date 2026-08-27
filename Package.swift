@@ -66,7 +66,7 @@ let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSI
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:d81d12e1dca1133ede535483a809803e6b256555a73d17f207003279539454a4"
 let scVersion = "0.41.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "dadad2a73f3581d651842162def7dff6774d4027"
+let containerizationRevision = "56912c03bc70f8d9559877485bee9dc6ad28dae0"
 let containerEngineAPIRevision = "386a40c726ecd25d67a3e5933582aebbfbe4fa2f"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]

@@ -19,6 +19,12 @@ import Containerization
 import CryptoKit
 import Foundation
 
+/// Network names shared by the API authority and the Engine Linux runtime.
+public enum EngineLinuxSandboxNetworkingV1 {
+    /// Guest bridge joining private workload endpoints to the sealed VMNet uplink.
+    public static let workloadBridgeName = "cz-shared0"
+}
+
 /// Immutable materialization intent bound to one durable workload operation.
 ///
 /// The shared runtime reads the sealed bundle instead of accepting a second,
