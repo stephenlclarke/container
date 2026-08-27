@@ -238,6 +238,98 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func workloadControlIsGenerationFencedAndPreservesTypedResults() async throws {
+        let sandbox = FakeEngineLinuxSandbox(terminalOnWait: true)
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let start = try workloadRequest(root: fixture.root)
+        _ = try await service.startWorkload(start, stdio: [])
+
+        func request(
+            generation: UInt64 = 3,
+            action: EngineLinuxSandboxWorkloadControlRequestV1.Action
+        ) -> EngineLinuxSandboxWorkloadControlRequestV1 {
+            .init(
+                sandboxID: "engine-sandbox",
+                sandboxGeneration: 1,
+                workloadID: "workload-1",
+                workloadProcessGeneration: generation,
+                action: action
+            )
+        }
+
+        guard
+            case .state(.running) = try await service.controlWorkload(
+                request(action: .state)
+            )
+        else {
+            Issue.record("expected running workload state")
+            return
+        }
+        guard
+            case .none = try await service.controlWorkload(
+                request(action: .pause)
+            )
+        else {
+            Issue.record("expected an empty pause response")
+            return
+        }
+        guard
+            case .state(.paused) = try await service.controlWorkload(
+                request(action: .state)
+            )
+        else {
+            Issue.record("expected paused workload state")
+            return
+        }
+        guard
+            case .none = try await service.controlWorkload(
+                request(action: .resume)
+            )
+        else {
+            Issue.record("expected an empty resume response")
+            return
+        }
+        guard
+            case .statistics(let statistics) = try await service.controlWorkload(
+                request(action: .statistics)
+            )
+        else {
+            Issue.record("expected workload statistics")
+            return
+        }
+        #expect(statistics.id == "workload-1")
+        #expect(statistics.cpuUsageUsec == 3)
+        guard
+            case .processes(let processes) = try await service.controlWorkload(
+                request(action: .processes)
+            )
+        else {
+            Issue.record("expected workload processes")
+            return
+        }
+        #expect(processes.processIdentifiers == [123])
+        guard
+            case .exit(let status) = try await service.controlWorkload(
+                request(action: .wait(timeoutInSeconds: 7))
+            )
+        else {
+            Issue.record("expected workload exit status")
+            return
+        }
+        #expect(status.exitCode == 0)
+        #expect(await sandbox.lastWaitTimeoutInSeconds == 7)
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.controlWorkload(
+                request(generation: 4, action: .state)
+            )
+        }
+    }
+
+    @Test
     func changedWorkloadBundleIsRejectedBeforeMaterialization() async throws {
         let sandbox = FakeEngineLinuxSandbox()
         let service = try makeService(sandbox: sandbox)
@@ -650,6 +742,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var configuredStderr = false
     private(set) var dialedVsockPorts: [UInt32] = []
     private(set) var listenedVsockPorts: [UInt32] = []
+    private(set) var lastWaitTimeoutInSeconds: Int64?
     private var serviceListeners: [FakeEngineLinuxSandboxServiceListener] = []
     private var workloads: [String: LinuxSandboxWorkloadSnapshot] = [:]
     private let terminalOnWait: Bool
@@ -749,8 +842,93 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
                 message: "fake workload was not configured to terminate"
             )
         }
-        _ = timeoutInSeconds
+        lastWaitTimeoutInSeconds = timeoutInSeconds
+        workloads[containerID] = LinuxSandboxWorkloadSnapshot(
+            id: containerID,
+            state: .stopped,
+            initProcessID: nil
+        )
         return Containerization.ExitStatus(exitCode: 0)
+    }
+
+    func workloadStatus(_ containerID: String) throws -> RuntimeStatus {
+        guard let workload = workloads[containerID] else {
+            throw ContainerizationError(.notFound, message: "fake workload is absent")
+        }
+        return switch workload.state {
+        case .registered, .created, .stopped:
+            .stopped
+        case .running:
+            .running
+        case .paused:
+            .paused
+        case .recoveryRequired:
+            .unknown
+        }
+    }
+
+    func pauseWorkload(_ containerID: String) throws {
+        guard workloads[containerID]?.state == .running else {
+            throw ContainerizationError(.invalidState, message: "fake workload is not running")
+        }
+        workloads[containerID] = LinuxSandboxWorkloadSnapshot(
+            id: containerID,
+            state: .paused,
+            initProcessID: 123
+        )
+    }
+
+    func resumeWorkload(_ containerID: String) throws {
+        guard workloads[containerID]?.state == .paused else {
+            throw ContainerizationError(.invalidState, message: "fake workload is not paused")
+        }
+        workloads[containerID] = LinuxSandboxWorkloadSnapshot(
+            id: containerID,
+            state: .running,
+            initProcessID: 123
+        )
+    }
+
+    func signalWorkload(_ containerID: String, signal: String) throws {
+        guard workloads[containerID] != nil else {
+            throw ContainerizationError(.notFound, message: "fake workload is absent")
+        }
+        _ = signal
+    }
+
+    func resizeWorkload(
+        _ containerID: String,
+        width: UInt16,
+        height: UInt16
+    ) throws {
+        guard workloads[containerID] != nil else {
+            throw ContainerizationError(.notFound, message: "fake workload is absent")
+        }
+        _ = (width, height)
+    }
+
+    func workloadStatistics(_ containerID: String) throws -> ContainerStats {
+        guard workloads[containerID] != nil else {
+            throw ContainerizationError(.notFound, message: "fake workload is absent")
+        }
+        return ContainerStats(
+            id: containerID,
+            memoryUsageBytes: 1,
+            memoryLimitBytes: 2,
+            cpuUsageUsec: 3,
+            networkRxBytes: 4,
+            networkTxBytes: 5,
+            blockReadBytes: 6,
+            blockWriteBytes: 7,
+            numProcesses: 1
+        )
+    }
+
+    func workloadProcesses(_ containerID: String) throws -> ContainerProcesses {
+        guard workloads[containerID] != nil else {
+            throw ContainerizationError(.notFound, message: "fake workload is absent")
+        }
+        return ContainerProcesses(id: containerID, processIdentifiers: [123])
     }
 
     func dialVsock(port: UInt32) -> FileHandle {

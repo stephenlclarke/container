@@ -1152,6 +1152,21 @@ public struct Parser {
         }
     }
 
+    /// Parses the native virtual-machine isolation contract. Omission is kept
+    /// distinct from an explicit dedicated request for durable inspection.
+    public static func isolation(_ value: String?) throws -> ContainerIsolationMode? {
+        guard let value else {
+            return nil
+        }
+        guard let isolation = ContainerIsolationMode(rawValue: value) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "unsupported --isolation value '\(value)' (supported: dedicated-vm or shared-vm)"
+            )
+        }
+        return isolation
+    }
+
     private static func hostNamespace(_ value: String?, flag: String) throws -> Bool {
         guard let value else {
             return false

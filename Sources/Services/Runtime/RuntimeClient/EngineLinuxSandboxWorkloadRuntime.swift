@@ -104,6 +104,72 @@ public enum EngineLinuxSandboxWorkloadStopObservationV1: Codable, Equatable,
     case unknown
 }
 
+/// Generation-fenced control operation for one active workload in the shared
+/// Engine Linux sandbox.
+public struct EngineLinuxSandboxWorkloadControlRequestV1: Codable, Equatable,
+    Sendable
+{
+    public enum Action: Codable, Equatable, Sendable {
+        case state
+        case wait(timeoutInSeconds: Int64?)
+        case pause
+        case resume
+        case signal(String)
+        case resize(width: UInt16, height: UInt16)
+        case statistics
+        case processes
+    }
+
+    public let sandboxID: String
+    public let sandboxGeneration: UInt64
+    public let workloadID: String
+    public let workloadProcessGeneration: UInt64
+    public let action: Action
+
+    public init(
+        sandboxID: String,
+        sandboxGeneration: UInt64,
+        workloadID: String,
+        workloadProcessGeneration: UInt64,
+        action: Action
+    ) {
+        self.sandboxID = sandboxID
+        self.sandboxGeneration = sandboxGeneration
+        self.workloadID = workloadID
+        self.workloadProcessGeneration = workloadProcessGeneration
+        self.action = action
+    }
+}
+
+/// Result of a generation-fenced shared workload control operation.
+public struct EngineLinuxSandboxWorkloadExitStatusV1: Codable, Equatable,
+    Sendable
+{
+    public let exitCode: Int32
+    public let exitedAt: Date
+
+    public init(exitCode: Int32, exitedAt: Date) {
+        self.exitCode = exitCode
+        self.exitedAt = exitedAt
+    }
+
+    public init(_ status: ExitStatus) {
+        self.init(exitCode: status.exitCode, exitedAt: status.exitedAt)
+    }
+
+    public var exitStatus: ExitStatus {
+        ExitStatus(exitCode: exitCode, exitedAt: exitedAt)
+    }
+}
+
+public enum EngineLinuxSandboxWorkloadControlResponseV1: Codable, Sendable {
+    case none
+    case state(RuntimeStatus)
+    case exit(EngineLinuxSandboxWorkloadExitStatusV1)
+    case statistics(ContainerStats)
+    case processes(ContainerProcesses)
+}
+
 public protocol EngineLinuxSandboxWorkloadRuntimeV1: Sendable {
     func startWorkload(
         _ request: EngineLinuxSandboxWorkloadStartRequestV1,
@@ -121,6 +187,10 @@ public protocol EngineLinuxSandboxWorkloadRuntimeV1: Sendable {
     func observeWorkloadStop(
         _ request: EngineLinuxSandboxWorkloadStopRequestV1
     ) async throws -> EngineLinuxSandboxWorkloadStopObservationV1
+
+    func controlWorkload(
+        _ request: EngineLinuxSandboxWorkloadControlRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadControlResponseV1
 }
 
 /// Binds one sealed workload intent to the generic transaction resolver.

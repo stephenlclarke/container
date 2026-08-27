@@ -53,6 +53,40 @@ func makeTestConfiguration(
 }
 
 struct ContainerConfigurationResourcesTests {
+    @Test func defaultsMissingIsolationToDedicatedWithoutInventingARequest() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "requestedIsolation")
+        object.removeValue(forKey: "effectiveIsolation")
+        object.removeValue(forKey: "sandboxID")
+
+        let decoded = try JSONDecoder().decode(
+            ContainerConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.requestedIsolation == nil)
+        #expect(decoded.effectiveIsolation == .dedicatedVM)
+        #expect(decoded.sandboxID == nil)
+    }
+
+    @Test func roundTripsExplicitSharedIsolationAndSandboxIdentity() throws {
+        var config = makeTestConfiguration()
+        config.requestedIsolation = .sharedVM
+        config.effectiveIsolation = .sharedVM
+        config.sandboxID = "engine-linux-sandbox"
+
+        let decoded = try JSONDecoder().decode(
+            ContainerConfiguration.self,
+            from: JSONEncoder().encode(config)
+        )
+
+        #expect(decoded.requestedIsolation == .sharedVM)
+        #expect(decoded.effectiveIsolation == .sharedVM)
+        #expect(decoded.sandboxID == "engine-linux-sandbox")
+    }
+
     @Test func roundTripsInboundEngineSocketWithoutPersistingHostAuthorityPath() throws {
         var config = makeTestConfiguration()
         config.inboundSockets = [try .engineAPI()]

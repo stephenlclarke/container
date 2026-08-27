@@ -122,14 +122,14 @@ public actor ContainersService {
 
     struct ContainerState {
         var snapshot: ContainerSnapshot
-        var client: RuntimeClient? = nil
+        var client: ManagedRuntimeClient? = nil
         var restart = ContainerRestartTracker()
         var dockerStateError = ""
         /// Distinguishes a container from a later replacement that reuses its ID.
         /// Copies retain the generation so delayed commits can be fenced safely.
         let generation = UUID()
 
-        func getClient() throws -> RuntimeClient {
+        func getClient() throws -> ManagedRuntimeClient {
             guard let client else {
                 var message = "no runtime client exists"
                 if snapshot.status == .stopped {
@@ -191,7 +191,7 @@ public actor ContainersService {
     private struct StartedExecProcess {
         let snapshot: ContainerSnapshot
         let processID: String
-        let client: RuntimeClient
+        let client: ManagedRuntimeClient
     }
 
     private struct StartedInitProcess {
@@ -229,6 +229,8 @@ public actor ContainersService {
     private let logDriverCatalogProvider: any LogDriverCatalogProviding
     private let remoteLogDriverPlane: AuthorityRemoteLogDriverPlane?
     private let loggingProtectedOptionsStore: LoggingProtectedOptionsStore
+    private let sharedSandboxAuthority: (any EngineLinuxSandboxWorkloadAuthorityV1)?
+    private let sharedSandboxConfigurationProvider: (any EngineLinuxSandboxConfigurationProvidingV1)?
 
     private let lock: AsyncLock
     private var containers: [String: ContainerState]
@@ -323,7 +325,11 @@ public actor ContainersService {
         logDriverCatalogProvider: any LogDriverCatalogProviding = StaticLogDriverCatalogProvider(
             catalog: BuiltinLogDriverDescriptors.current
         ),
-        remoteLogDriverPlane: AuthorityRemoteLogDriverPlane? = nil
+        remoteLogDriverPlane: AuthorityRemoteLogDriverPlane? = nil,
+        sharedSandboxAuthority:
+            (any EngineLinuxSandboxWorkloadAuthorityV1)? = nil,
+        sharedSandboxConfigurationProvider:
+            (any EngineLinuxSandboxConfigurationProvidingV1)? = nil
     ) throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
         try FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
@@ -382,9 +388,43 @@ public actor ContainersService {
         self.eventBroadcaster = ContainerEventBroadcaster()
         self.runtimePlugins = pluginLoader.findPlugins().filter { $0.hasType(.runtime) }
         self.loggingProtectedOptionsStore = loggingProtectedOptionsStore
+        self.sharedSandboxAuthority = sharedSandboxAuthority
+        self.sharedSandboxConfigurationProvider =
+            sharedSandboxConfigurationProvider
         self.containers = containers
         self.lifecycleRecords = lifecycleRecords
         self.quarantinedContainerNames = quarantinedContainerNames
+    }
+
+    /// Reclaims ordinary shared workloads before recovered public lifecycle
+    /// state or restart policy can become reachable through API routes.
+    package func reconcileSharedWorkloadsAtBoot() async throws {
+        let workloadIDs = containers.compactMap { id, state in
+            state.snapshot.configuration.effectiveIsolation == .sharedVM
+                ? id : nil
+        }.sorted()
+        guard !workloadIDs.isEmpty else {
+            return
+        }
+        guard let sharedSandboxAuthority,
+            let sharedSandboxConfigurationProvider
+        else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "shared-vm workloads exist but the shared sandbox authority is unavailable"
+            )
+        }
+        let configuration =
+            try await sharedSandboxConfigurationProvider
+            .sandboxConfiguration()
+        for id in workloadIDs {
+            _ =
+                try await sharedSandboxAuthority
+                .reclaimEffectlessWorkloadAtBoot(
+                    configuration: configuration,
+                    workloadID: id
+                )
+        }
     }
 
     /// Completes every ready provider-generation transition before API routes
@@ -889,35 +929,37 @@ public actor ContainersService {
                 continue
             }
 
-            let label = Self.fullLaunchdServiceLabel(
-                runtimeName: config.runtimeHandler,
-                instanceId: config.id
-            )
-            for attempt in 1...Self.bootServiceDeregistrationAttempts {
-                do {
-                    try deregisterService(label)
-                    break
-                } catch {
-                    guard attempt < Self.bootServiceDeregistrationAttempts else {
-                        log.error(
-                            "failed to stop surviving runtime service; refusing authority startup",
+            if config.effectiveIsolation == .dedicatedVM {
+                let label = Self.fullLaunchdServiceLabel(
+                    runtimeName: config.runtimeHandler,
+                    instanceId: config.id
+                )
+                for attempt in 1...Self.bootServiceDeregistrationAttempts {
+                    do {
+                        try deregisterService(label)
+                        break
+                    } catch {
+                        guard attempt < Self.bootServiceDeregistrationAttempts else {
+                            log.error(
+                                "failed to stop surviving runtime service; refusing authority startup",
+                                metadata: [
+                                    "id": "\(config.id)",
+                                    "label": "\(label)",
+                                    "attempts": "\(attempt)",
+                                    "error": "\(error)",
+                                ])
+                            throw error
+                        }
+                        log.warning(
+                            "failed to stop surviving runtime service; retrying",
                             metadata: [
                                 "id": "\(config.id)",
                                 "label": "\(label)",
-                                "attempts": "\(attempt)",
+                                "attempt": "\(attempt)",
                                 "error": "\(error)",
                             ])
-                        throw error
+                        waitBeforeDeregistrationRetry()
                     }
-                    log.warning(
-                        "failed to stop surviving runtime service; retrying",
-                        metadata: [
-                            "id": "\(config.id)",
-                            "label": "\(label)",
-                            "attempt": "\(attempt)",
-                            "error": "\(error)",
-                        ])
-                    waitBeforeDeregistrationRetry()
                 }
             }
 
@@ -1938,6 +1980,7 @@ public actor ContainersService {
 
         var runtimeClientToken: UUID?
         var runtimeBootstrapPermitHeld = false
+        var bootstrappedClient: ManagedRuntimeClient?
         do {
             let authenticatedProtectedOptions =
                 try await self
@@ -1982,46 +2025,71 @@ public actor ContainersService {
             }
             timings.finish("logging-prepare")
 
-            guard
-                let runtimePlugin = self.runtimePlugins.first(where: {
-                    $0.name == plan.configuration.runtimeHandler
-                })
-            else {
-                throw ContainerizationError(
-                    .notFound,
-                    message:
-                        "unable to locate runtime plugin \(plan.configuration.runtimeHandler)"
+            let runtimeClient: ManagedRuntimeClient
+            switch plan.configuration.effectiveIsolation {
+            case .dedicatedVM:
+                guard
+                    let runtimePlugin = self.runtimePlugins.first(where: {
+                        $0.name == plan.configuration.runtimeHandler
+                    })
+                else {
+                    throw ContainerizationError(
+                        .notFound,
+                        message:
+                            "unable to locate runtime plugin \(plan.configuration.runtimeHandler)"
+                    )
+                }
+                try Self.registerService(
+                    plugin: runtimePlugin,
+                    loader: self.pluginLoader,
+                    configuration: plan.configuration,
+                    path: plan.path,
+                    debug: self.debugHelpers
                 )
-            }
-            try Self.registerService(
-                plugin: runtimePlugin,
-                loader: self.pluginLoader,
-                configuration: plan.configuration,
-                path: plan.path,
-                debug: self.debugHelpers
-            )
-            timings.finish("launchd-registration")
-
-            let runtimeClient = try await RuntimeClient.create(
-                id: id,
-                runtime: plan.configuration.runtimeHandler
-            )
-            timings.finish("runtime-client")
-            let bootstrapWaitStartedAt = ProcessInfo.processInfo.systemUptime
-            do {
-                try await Self.runtimeBootstrapLimiter.acquirePermit()
-            } catch {
-                let admissionFinishedAt = ProcessInfo.processInfo.systemUptime
-                timings.finish(
-                    Self.runtimeBootstrapPhases(
-                        waitStartedAt: bootstrapWaitStartedAt,
-                        bootstrapStartedAt: nil,
-                        bootstrapFinishedAt: admissionFinishedAt
+                timings.finish("launchd-registration")
+                runtimeClient = .dedicated(
+                    try await RuntimeClient.create(
+                        id: id,
+                        runtime: plan.configuration.runtimeHandler
                     )
                 )
-                throw error
+            case .sharedVM:
+                guard let sharedSandboxAuthority,
+                    let sharedSandboxConfigurationProvider
+                else {
+                    throw ContainerizationError(
+                        .unsupported,
+                        message: "shared-vm isolation is not available from this API server"
+                    )
+                }
+                runtimeClient = .shared(
+                    SharedSandboxRuntimeClient(
+                        id: id,
+                        workloadRoot: plan.path,
+                        containerConfiguration: plan.configuration,
+                        authority: sharedSandboxAuthority,
+                        configurationProvider: sharedSandboxConfigurationProvider
+                    )
+                )
             }
-            runtimeBootstrapPermitHeld = true
+            timings.finish("runtime-client")
+            let bootstrapWaitStartedAt = ProcessInfo.processInfo.systemUptime
+            if runtimeClient.isDedicated {
+                do {
+                    try await Self.runtimeBootstrapLimiter.acquirePermit()
+                } catch {
+                    let admissionFinishedAt = ProcessInfo.processInfo.systemUptime
+                    timings.finish(
+                        Self.runtimeBootstrapPhases(
+                            waitStartedAt: bootstrapWaitStartedAt,
+                            bootstrapStartedAt: nil,
+                            bootstrapFinishedAt: admissionFinishedAt
+                        )
+                    )
+                    throw error
+                }
+                runtimeBootstrapPermitHeld = true
+            }
             let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
             do {
                 try await runtimeClient.bootstrap(
@@ -2048,8 +2116,11 @@ public actor ContainersService {
                     bootstrapFinishedAt: bootstrapFinishedAt
                 )
             )
-            await Self.runtimeBootstrapLimiter.releasePermit()
-            runtimeBootstrapPermitHeld = false
+            if runtimeBootstrapPermitHeld {
+                await Self.runtimeBootstrapLimiter.releasePermit()
+                runtimeBootstrapPermitHeld = false
+            }
+            bootstrappedClient = runtimeClient
             try await self.remoteLogDriverPlane?.bootstrapSucceeded(
                 containerID: id
             )
@@ -2106,33 +2177,35 @@ public actor ContainersService {
             )
             return true
         } catch {
-            let label = Self.fullLaunchdServiceLabel(
-                runtimeName: plan.configuration.runtimeHandler,
-                instanceId: id
-            )
-
             await self.exitMonitor.stopTracking(id: id)
             if let runtimeClientToken {
                 self.clearRuntimeClientToken(runtimeClientToken, id: id)
             }
-            do {
-                try Self.stopRuntimeServiceAndConfirmInactive(
-                    fullServiceLabel: label
+            if runtimeBootstrapPermitHeld {
+                await Self.runtimeBootstrapLimiter.releasePermit()
+                runtimeBootstrapPermitHeld = false
+            }
+            if let bootstrappedClient, !bootstrappedClient.isDedicated {
+                try? await bootstrappedClient.shutdown()
+            } else if plan.configuration.effectiveIsolation == .dedicatedVM {
+                let label = Self.fullLaunchdServiceLabel(
+                    runtimeName: plan.configuration.runtimeHandler,
+                    instanceId: id
                 )
-                if runtimeBootstrapPermitHeld {
-                    await Self.runtimeBootstrapLimiter.releasePermit()
-                    runtimeBootstrapPermitHeld = false
+                do {
+                    try Self.stopRuntimeServiceAndConfirmInactive(
+                        fullServiceLabel: label
+                    )
+                } catch let cleanupError {
+                    log.error(
+                        "failed to stop runtime service after bootstrap failure",
+                        metadata: [
+                            "id": "\(id)",
+                            "label": "\(label)",
+                            "error": "\(cleanupError)",
+                        ]
+                    )
                 }
-            } catch let cleanupError {
-                log.error(
-                    "failed to stop runtime service after bootstrap failure",
-                    metadata: [
-                        "id": "\(id)",
-                        "label": "\(label)",
-                        "bootstrap-permit-retained": "\(runtimeBootstrapPermitHeld)",
-                        "error": "\(cleanupError)",
-                    ]
-                )
             }
             try? await self.remoteLogDriverPlane?.abortBootstrap(
                 containerID: id
@@ -2493,11 +2566,13 @@ public actor ContainersService {
                 await self.exitMonitor.stopTracking(id: id)
                 try? await client.stop(options: ContainerStopOptions.default)
                 try? await client.shutdown()
-                let label = Self.fullLaunchdServiceLabel(
-                    runtimeName: state.snapshot.configuration.runtimeHandler,
-                    instanceId: id
-                )
-                try? ServiceManager.deregister(fullServiceLabel: label)
+                if client.isDedicated {
+                    let label = Self.fullLaunchdServiceLabel(
+                        runtimeName: state.snapshot.configuration.runtimeHandler,
+                        instanceId: id
+                    )
+                    try? ServiceManager.deregister(fullServiceLabel: label)
+                }
                 try? await self.remoteLogDriverPlane?.close(containerID: id)
                 let recoveredState = Self.recoveredContainerStateAfterFailedStart(
                     preStartState
@@ -2771,7 +2846,7 @@ public actor ContainersService {
         }
 
         // Stop should be idempotent.
-        let client: RuntimeClient
+        let client: ManagedRuntimeClient
         do {
             client = try currentState.getClient()
         } catch {
@@ -4503,18 +4578,13 @@ public actor ContainersService {
         await self.exitMonitor.stopTracking(id: id)
         self.stopHealthCheckMonitor(id: id)
 
-        // Shutdown and deregister the runtime service
-        self.log.info("shutting down runtime service", metadata: ["id": "\(id)"])
+        // Reclaim the workload and, for dedicated isolation, its runtime service.
+        self.log.info("cleaning up runtime workload", metadata: ["id": "\(id)"])
 
         let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
         let config = try bundle.configuration
         let options = try getContainerCreationOptions(id: id)
-        let label = Self.fullLaunchdServiceLabel(
-            runtimeName: config.runtimeHandler,
-            instanceId: id
-        )
-
         var observedOOMKillCount: UInt64?
         if let client = state.client {
             observedOOMKillCount = try? await client.statistics().memoryOOMKillCount
@@ -4539,16 +4609,22 @@ public actor ContainersService {
         // Deregister the service, launchd will terminate the process.
         // This may also fail if the service was already deregistered or
         // the process was killed externally.
-        do {
-            try ServiceManager.deregister(fullServiceLabel: label)
-            self.log.info("deregistered runtime service", metadata: ["id": "\(id)"])
-        } catch {
-            self.log.error(
-                "failed to deregister runtime service",
-                metadata: [
-                    "id": "\(id)",
-                    "error": "\(error)",
-                ])
+        if config.effectiveIsolation == .dedicatedVM {
+            let label = Self.fullLaunchdServiceLabel(
+                runtimeName: config.runtimeHandler,
+                instanceId: id
+            )
+            do {
+                try ServiceManager.deregister(fullServiceLabel: label)
+                self.log.info("deregistered runtime service", metadata: ["id": "\(id)"])
+            } catch {
+                self.log.error(
+                    "failed to deregister runtime service",
+                    metadata: [
+                        "id": "\(id)",
+                        "error": "\(error)",
+                    ])
+            }
         }
 
         do {
@@ -4940,11 +5016,13 @@ public actor ContainersService {
         // TODO: Change this so we don't have to reread the config
         // possibly store the container ID to service label mapping
         if let config = config {
-            let label = Self.fullLaunchdServiceLabel(
-                runtimeName: config.runtimeHandler,
-                instanceId: id
-            )
-            try? ServiceManager.deregister(fullServiceLabel: label)
+            if config.effectiveIsolation == .dedicatedVM {
+                let label = Self.fullLaunchdServiceLabel(
+                    runtimeName: config.runtimeHandler,
+                    instanceId: id
+                )
+                try? ServiceManager.deregister(fullServiceLabel: label)
+            }
             try await releaseNetworkAttachments(configuration: config)
         }
         try await self.remoteLogDriverPlane?.close(containerID: id)
@@ -5524,7 +5602,7 @@ public actor ContainersService {
     private func startHealthCheckMonitor(
         id: String,
         healthCheck: ContainerHealthCheck?,
-        client: RuntimeClient
+        client: ManagedRuntimeClient
     ) async {
         self.stopHealthCheckMonitor(id: id)
         guard let healthCheck else {
@@ -5599,7 +5677,7 @@ public actor ContainersService {
 
     private func restorePausedRuntimeAfterFailedRestart(
         id: String,
-        client: RuntimeClient,
+        client: ManagedRuntimeClient,
         restartError: any Error
     ) async throws {
         do {
@@ -5691,7 +5769,7 @@ public actor ContainersService {
     }
 
     /// Begins observing one started exec process so detached commands also emit `exec_die`.
-    private func scheduleExecExit(id: String, processID: String, client: RuntimeClient) {
+    private func scheduleExecExit(id: String, processID: String, client: ManagedRuntimeClient) {
         execExitTasks[id]?[processID]?.cancel()
         execExitTasks[id, default: [:]][processID] = Task { [weak self] in
             do {
@@ -5973,16 +6051,19 @@ public actor ContainersService {
         await self.exitMonitor.stopTracking(id: id)
         self.stopHealthCheckMonitor(id: id)
 
-        let cleanup = await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context -> (RuntimeClient?, String?) in
+        let cleanup = await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context -> (ManagedRuntimeClient?, String?) in
             guard var state = try? await self.getContainerState(id: id, context: context) else {
                 return (nil, nil)
             }
 
-            let label = Self.fullLaunchdServiceLabel(
-                runtimeName: state.snapshot.configuration.runtimeHandler,
-                instanceId: id
-            )
             let client = state.client
+            let label =
+                client?.isDedicated == true
+                ? Self.fullLaunchdServiceLabel(
+                    runtimeName: state.snapshot.configuration.runtimeHandler,
+                    instanceId: id
+                )
+                : nil
 
             state.snapshot.status = .stopped
             state.snapshot.networks = []
@@ -6152,7 +6233,7 @@ public actor ContainersService {
     private func runHealthCheckMonitor(
         id: String,
         healthCheck: ContainerHealthCheck,
-        client: RuntimeClient
+        client: ManagedRuntimeClient
     ) async {
         var tracker = ContainerHealthProbeTracker(retries: healthCheck.retries)
         let clock = ContinuousClock()
@@ -6193,7 +6274,7 @@ public actor ContainersService {
     private func runHealthProbe(
         id: String,
         healthCheck: ContainerHealthCheck,
-        client: RuntimeClient
+        client: ManagedRuntimeClient
     ) async -> Int32 {
         let processID = "\(id)-health-\(UUID().uuidString.lowercased())"
         do {
@@ -6223,7 +6304,7 @@ public actor ContainersService {
     private func waitForHealthProbe(
         processID: String,
         timeout: Duration,
-        client: RuntimeClient
+        client: ManagedRuntimeClient
     ) async throws -> Int32 {
         try await withThrowingTaskGroup(of: Int32.self) { group in
             group.addTask {

@@ -83,6 +83,8 @@ container run [<options>] <image> [<arguments> ...]
 *   `--rm, --remove`: Remove the container after it stops
 *   `--rosetta`: Enable Rosetta in the container
 *   `--runtime`: Set the runtime handler for the container (default: container-runtime-linux)
+*   `--isolation <mode>`: Select `dedicated-vm` (the default) or the
+    experimental `shared-vm` isolation mode
 *   `--ssh`: Forward SSH agent socket to container
 *   `--shm-size <shm-size>`: Size of `/dev/shm` (e.g. 64M, 1G)
 *   `--blkio <option>`: Block I/O cgroup tuning options (format: `weight=500` or `device=<path|major:minor>,read-bps=1048576`)
@@ -151,7 +153,23 @@ container run --init ubuntu:latest my-app
 
 # run a container with a custom init image for boot customization
 container run --init-image local/custom-init:latest ubuntu:latest
+
+# run a native workload in the shared Engine VM
+container run --isolation shared-vm --network none alpine:latest echo hello
 ```
+
+`shared-vm` is an experimental, explicit opt-in. Workloads share a VM kernel,
+so it is not a replacement for the security boundary provided by the default
+`dedicated-vm` mode. The initial lifecycle supports native Linux workloads
+with either `--network none` or `--network host`. Host networking shares the
+VM network namespace with other shared workloads.
+
+The shared mode supports the initial process streams and the container
+lifecycle (`state`, `wait`, `pause`, `resume`, `stats`, `top`, `stop`, and
+`remove`). Attach after start, exec, copy, runtime log following, health
+checks, published TCP/UDP ports, bridge/custom networking, custom VM assets,
+devices, GPUs, virtualization, privileged workloads, and live snapshots are
+rejected rather than silently falling back to a dedicated VM.
 
 ### `container attach`
 
@@ -325,6 +343,8 @@ container create [<options>] <image> [<arguments> ...]
 *   `--rm, --remove`: Remove the container after it stops
 *   `--rosetta`: Enable Rosetta in the container
 *   `--runtime`: Set the runtime handler for the container (default: container-runtime-linux)  
+*   `--isolation <mode>`: Select `dedicated-vm` (the default) or the
+    experimental `shared-vm` isolation mode
 *   `--ssh`: Forward SSH agent socket to container
 *   `--shm-size <shm-size>`: Size of `/dev/shm` (e.g. 64M, 1G)
 *   `--blkio <option>`: Block I/O cgroup tuning options (format: `weight=500` or `device=<path|major:minor>,read-bps=1048576`)

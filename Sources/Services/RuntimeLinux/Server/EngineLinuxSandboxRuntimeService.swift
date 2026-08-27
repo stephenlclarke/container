@@ -151,12 +151,107 @@ public protocol EngineLinuxSandboxInstanceV1: Sendable {
         _ containerID: String,
         timeoutInSeconds: Int64?
     ) async throws -> ExitStatus
+    func workloadStatus(_ containerID: String) async throws -> RuntimeStatus
+    func pauseWorkload(_ containerID: String) async throws
+    func resumeWorkload(_ containerID: String) async throws
+    func signalWorkload(_ containerID: String, signal: String) async throws
+    func resizeWorkload(
+        _ containerID: String,
+        width: UInt16,
+        height: UInt16
+    ) async throws
+    func workloadStatistics(_ containerID: String) async throws -> ContainerStats
+    func workloadProcesses(_ containerID: String) async throws -> ContainerProcesses
     func dialVsock(port: UInt32) async throws -> FileHandle
     func listenVsock(port: UInt32) async throws
         -> any EngineLinuxSandboxServiceListenerV1
 }
 
 extension LinuxPod: EngineLinuxSandboxInstanceV1 {
+    public func workloadStatus(_ containerID: String) async throws -> RuntimeStatus {
+        guard let workload = await snapshot().workloads.first(where: { $0.id == containerID }) else {
+            throw ContainerizationError(
+                .notFound,
+                message: "workload \(containerID) not found in shared sandbox"
+            )
+        }
+        return switch workload.state {
+        case .registered, .created, .stopped:
+            .stopped
+        case .running:
+            .running
+        case .paused:
+            .paused
+        case .recoveryRequired:
+            .unknown
+        }
+    }
+
+    public func pauseWorkload(_ containerID: String) async throws {
+        try await pauseContainer(containerID)
+    }
+
+    public func resumeWorkload(_ containerID: String) async throws {
+        try await resumeContainer(containerID)
+    }
+
+    public func signalWorkload(_ containerID: String, signal: String) async throws {
+        try await killContainer(containerID, signal: try Signal(signal))
+    }
+
+    public func resizeWorkload(
+        _ containerID: String,
+        width: UInt16,
+        height: UInt16
+    ) async throws {
+        try await resizeContainer(
+            containerID,
+            to: .init(width: width, height: height)
+        )
+    }
+
+    public func workloadStatistics(_ containerID: String) async throws -> ContainerStats {
+        guard let stats = try await statistics(containerIDs: [containerID]).first else {
+            throw ContainerizationError(
+                .notFound,
+                message: "statistics for workload \(containerID) were not returned"
+            )
+        }
+        return ContainerStats(
+            id: stats.id,
+            memoryUsageBytes: stats.memory?.usageBytes,
+            memoryLimitBytes: stats.memory?.limitBytes,
+            cpuUsageUsec: stats.cpu?.usageUsec,
+            networkRxBytes: stats.networks?.reduce(0) { $0 + $1.receivedBytes },
+            networkTxBytes: stats.networks?.reduce(0) { $0 + $1.transmittedBytes },
+            blockReadBytes: stats.blockIO?.devices.reduce(0) { $0 + $1.readBytes },
+            blockWriteBytes: stats.blockIO?.devices.reduce(0) { $0 + $1.writeBytes },
+            numProcesses: stats.process?.current,
+            memoryOOMKillCount: stats.memoryEvents?.oomKill
+        )
+    }
+
+    public func workloadProcesses(_ containerID: String) async throws -> ContainerProcesses {
+        let identifiers = try await processIdentifiers(containerID)
+        let rows = try await processes(containerID)
+        return ContainerProcesses(
+            id: containerID,
+            processIdentifiers: identifiers,
+            processes: rows.map {
+                ContainerResource.ContainerProcessInfo(
+                    uid: $0.uid,
+                    pid: $0.pid,
+                    ppid: $0.ppid,
+                    cpu: $0.cpu,
+                    startTime: $0.startTime,
+                    tty: $0.tty,
+                    time: $0.time,
+                    command: $0.command
+                )
+            }
+        )
+    }
+
     public func listenVsock(port: UInt32) async throws
         -> any EngineLinuxSandboxServiceListenerV1
     {
@@ -895,12 +990,13 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let receipt = EngineLinuxSandboxWorkloadStopReceiptV1(
             request: request
         )
-        if observed?.state == .stopped,
-            terminalWorkloadGenerations[id]
-                == request.workloadProcessGeneration
-        {
+        if observed?.state == .stopped {
             workloadStopRequests[id] = request
             workloadStopReceipts[id] = receipt
+            terminalWorkloadGenerations[id] = request.workloadProcessGeneration
+            workloadCaptures.removeValue(forKey: id)?.close()
+            workloadTerminalMonitors.removeValue(forKey: id)?.cancel()
+            await closeServiceListener(for: id)
             return receipt
         }
         guard observed?.state == .running || observed?.state == .paused else {
@@ -986,6 +1082,49 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             return .running
         }
         return .unknown
+    }
+
+    public func controlWorkload(
+        _ request: EngineLinuxSandboxWorkloadControlRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadControlResponseV1 {
+        try validate(request)
+        switch request.action {
+        case .state:
+            return .state(try await sandbox.workloadStatus(request.workloadID))
+        case .wait(let timeoutInSeconds):
+            return .exit(
+                EngineLinuxSandboxWorkloadExitStatusV1(
+                    try await sandbox.waitContainer(
+                        request.workloadID,
+                        timeoutInSeconds: timeoutInSeconds
+                    )
+                )
+            )
+        case .pause:
+            try await sandbox.pauseWorkload(request.workloadID)
+            return .none
+        case .resume:
+            try await sandbox.resumeWorkload(request.workloadID)
+            return .none
+        case .signal(let signal):
+            try await sandbox.signalWorkload(request.workloadID, signal: signal)
+            return .none
+        case .resize(let width, let height):
+            try await sandbox.resizeWorkload(
+                request.workloadID,
+                width: width,
+                height: height
+            )
+            return .none
+        case .statistics:
+            return .statistics(
+                try await sandbox.workloadStatistics(request.workloadID)
+            )
+        case .processes:
+            return .processes(
+                try await sandbox.workloadProcesses(request.workloadID)
+            )
+        }
     }
 
     public func dialService(
@@ -1336,6 +1475,17 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     }
 
     @Sendable
+    public func controlWorkloadMessage(_ message: XPCMessage) async throws
+        -> XPCMessage
+    {
+        let request = try message.engineSandboxPayload(
+            EngineLinuxSandboxWorkloadControlRequestV1.self
+        )
+        let response = try await controlWorkload(request)
+        return try message.engineSandboxReply(response)
+    }
+
+    @Sendable
     public func dialServiceMessage(_ message: XPCMessage) async throws -> XPCMessage {
         let request = try message.engineSandboxPayload(
             EngineLinuxSandboxServiceDialRequestV1.self
@@ -1367,6 +1517,30 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             requestDigest: request.requestDigest,
             effectID: request.effectID
         )
+    }
+
+    private func validate(
+        _ request: EngineLinuxSandboxWorkloadControlRequestV1
+    ) throws {
+        guard
+            request.sandboxID == sandbox.id,
+            request.sandboxGeneration > 0,
+            !request.workloadID.isEmpty,
+            request.workloadID.utf8.count
+                <= EngineWorkloadLedgerLimitsV1.maximumIdentifierBytes,
+            request.workloadProcessGeneration > 0,
+            let bootReceipt,
+            bootReceipt.sandboxID == request.sandboxID,
+            bootReceipt.generation == request.sandboxGeneration,
+            let receipt = workloadReceipts[request.workloadID],
+            receipt.sandboxGeneration == request.sandboxGeneration,
+            receipt.processGeneration == request.workloadProcessGeneration
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "shared sandbox control request does not match the active workload generation"
+            )
+        }
     }
 
     private func validate(_ request: EngineLinuxSandboxWorkloadStartRequestV1) throws {
