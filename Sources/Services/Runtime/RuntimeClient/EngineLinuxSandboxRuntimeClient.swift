@@ -88,6 +88,15 @@ extension RuntimeClient: EngineLinuxSandboxWorkloadRuntimeV1 {
             request: request
         )
     }
+
+    public func controlWorkload(
+        _ request: EngineLinuxSandboxWorkloadControlRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadControlResponseV1 {
+        try await engineSandboxCall(
+            route: .engineSandboxControlWorkload,
+            request: request
+        )
+    }
 }
 
 extension RuntimeClient: EngineLinuxSandboxServiceRuntimeV1 {

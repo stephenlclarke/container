@@ -72,6 +72,14 @@ public struct ContainerConfiguration: Sendable, Codable {
     public var healthCheck: ContainerHealthCheck?
     /// Name of the runtime that supports the container.
     public var runtimeHandler: String = "container-runtime-linux"
+    /// Isolation explicitly requested by the caller. Nil preserves omission
+    /// separately from the effective compatibility default.
+    public var requestedIsolation: ContainerIsolationMode?
+    /// Isolation selected by the engine after validating the request.
+    public var effectiveIsolation: ContainerIsolationMode = .dedicatedVM
+    /// Stable authority-owned sandbox identity when the selected isolation
+    /// places this container in a shared virtual machine.
+    public var sandboxID: String?
     /// Configure exposing virtualization support in the container.
     public var virtualization: Bool = false
     /// Enable SSH agent socket forwarding from host to container.
@@ -140,6 +148,9 @@ public struct ContainerConfiguration: Sendable, Codable {
         case logging
         case healthCheck
         case runtimeHandler
+        case requestedIsolation
+        case effectiveIsolation
+        case sandboxID
         case virtualization
         case ssh
         case readOnly
@@ -196,6 +207,9 @@ public struct ContainerConfiguration: Sendable, Codable {
         logging = try container.decodeIfPresent(ContainerLogConfiguration.self, forKey: .logging) ?? .default
         healthCheck = try container.decodeIfPresent(ContainerHealthCheck.self, forKey: .healthCheck)
         runtimeHandler = try container.decodeIfPresent(String.self, forKey: .runtimeHandler) ?? "container-runtime-linux"
+        requestedIsolation = try container.decodeIfPresent(ContainerIsolationMode.self, forKey: .requestedIsolation)
+        effectiveIsolation = try container.decodeIfPresent(ContainerIsolationMode.self, forKey: .effectiveIsolation) ?? .dedicatedVM
+        sandboxID = try container.decodeIfPresent(String.self, forKey: .sandboxID)
         virtualization = try container.decodeIfPresent(Bool.self, forKey: .virtualization) ?? false
         ssh = try container.decodeIfPresent(Bool.self, forKey: .ssh) ?? false
         readOnly = try container.decodeIfPresent(Bool.self, forKey: .readOnly) ?? false
@@ -270,6 +284,9 @@ public struct ContainerConfiguration: Sendable, Codable {
         try container.encode(logging, forKey: .logging)
         try container.encodeIfPresent(healthCheck, forKey: .healthCheck)
         try container.encode(runtimeHandler, forKey: .runtimeHandler)
+        try container.encodeIfPresent(requestedIsolation, forKey: .requestedIsolation)
+        try container.encode(effectiveIsolation, forKey: .effectiveIsolation)
+        try container.encodeIfPresent(sandboxID, forKey: .sandboxID)
         try container.encode(virtualization, forKey: .virtualization)
         try container.encode(ssh, forKey: .ssh)
         try container.encode(readOnly, forKey: .readOnly)

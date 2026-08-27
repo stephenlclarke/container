@@ -17,6 +17,7 @@
 import ContainerPersistence
 import ContainerResource
 import ContainerizationError
+import ContainerizationOCI
 import Foundation
 import Testing
 
@@ -49,6 +50,125 @@ private enum PreparationTestError: Error {
 }
 
 struct UtilityTests {
+
+    @Test("Shared VM accepts only explicit host or no networking")
+    func sharedVMNetworkCompatibility() throws {
+        var management = isolationManagement(
+            networks: [NetworkClient.noNetworkName]
+        )
+
+        try Utility.validateIsolationCompatibility(
+            requestedIsolation: .sharedVM,
+            requestedPlatform: .current,
+            management: management
+        )
+
+        management.networks = []
+        let error = #expect(throws: ContainerizationError.self) {
+            try Utility.validateIsolationCompatibility(
+                requestedIsolation: .sharedVM,
+                requestedPlatform: .current,
+                management: management
+            )
+        }
+        #expect(error?.code == .unsupported)
+    }
+
+    @Test("Dedicated VM retains existing configuration compatibility")
+    func dedicatedVMCompatibilityIsUnrestricted() throws {
+        let management = isolationManagement(
+            networks: [],
+            kernel: "/tmp/custom-kernel",
+            virtualization: true
+        )
+
+        try Utility.validateIsolationCompatibility(
+            requestedIsolation: .dedicatedVM,
+            requestedPlatform: .current,
+            management: management
+        )
+    }
+
+    @Test("Shared VM rejects namespace and privilege escapes")
+    func sharedVMRejectsNamespaceAndPrivilegeEscapes() throws {
+        var management = isolationManagement(
+            networks: [NetworkClient.noNetworkName]
+        )
+        management.userNamespace = "host"
+
+        let namespaceError = #expect(throws: ContainerizationError.self) {
+            try Utility.validateIsolationCompatibility(
+                requestedIsolation: .sharedVM,
+                requestedPlatform: .current,
+                management: management
+            )
+        }
+        #expect(namespaceError?.code == .unsupported)
+
+        let privileged = ProcessConfiguration(
+            executable: "/bin/true",
+            arguments: [],
+            environment: [],
+            workingDirectory: "/",
+            terminal: false,
+            user: .id(uid: 0, gid: 0),
+            supplementalGroups: [],
+            rlimits: [],
+            privileged: true
+        )
+        let privilegeError = #expect(throws: ContainerizationError.self) {
+            try Utility.validateSharedProcessCompatibility(
+                requestedIsolation: .sharedVM,
+                process: privileged
+            )
+        }
+        #expect(privilegeError?.code == .unsupported)
+    }
+
+    private func isolationManagement(
+        networks: [String],
+        kernel: String? = nil,
+        virtualization: Bool = false
+    ) -> Flags.Management {
+        Flags.Management(
+            arch: Arch.hostArchitecture().rawValue,
+            capAdd: [],
+            capDrop: [],
+            cidfile: "",
+            detach: false,
+            dns: .init(
+                domain: nil,
+                nameservers: [],
+                options: [],
+                searchDomains: []
+            ),
+            dnsDisabled: false,
+            entrypoint: nil,
+            initImage: nil,
+            kernel: kernel,
+            kernelArgs: [],
+            labels: [],
+            maskedPaths: [],
+            mounts: [],
+            name: nil,
+            networks: networks,
+            os: "linux",
+            platform: nil,
+            publishPorts: [],
+            publishSockets: [],
+            readOnly: false,
+            readonlyPaths: [],
+            remove: false,
+            rosetta: false,
+            runtime: nil,
+            ssh: false,
+            shmSize: nil,
+            tmpFs: [],
+            useInit: false,
+            virtualization: virtualization,
+            volumes: []
+        )
+    }
 
     @Test("A v2 logging request bypasses the legacy driver projection")
     func loggingV2UsesLegacyCompatibilityPlaceholder() throws {

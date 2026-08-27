@@ -571,6 +571,14 @@ extension APIServer {
                 pluginLoader: pluginLoader,
                 log: log
             )
+            let sharedSandboxConfigurationProvider =
+                providerSandboxAuthority.map { _ in
+                    EngineLinuxSandboxConfigurationProviderV1(
+                        appRoot: appRootURL,
+                        kernelService: kernelService,
+                        containerSystemConfig: containerSystemConfig
+                    )
+                }
             let journaldService = await initializeJournaldService(
                 appRoot: appRootURL,
                 installRoot: installRootURL,
@@ -617,8 +625,12 @@ extension APIServer {
                 containerSystemConfig: containerSystemConfig,
                 log: log,
                 debugHelpers: debug,
-                remoteLogDriverPlane: remoteLogDriverPlane
+                remoteLogDriverPlane: remoteLogDriverPlane,
+                sharedSandboxAuthority: providerSandboxAuthority,
+                sharedSandboxConfigurationProvider:
+                    sharedSandboxConfigurationProvider
             )
+            try await service.reconcileSharedWorkloadsAtBoot()
             try await service.reconcileLoggingProviderUpgrades()
             let harness = ContainersHarness(service: service, log: log)
 

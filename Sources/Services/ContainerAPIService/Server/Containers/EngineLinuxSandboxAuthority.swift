@@ -23,6 +23,56 @@ import CryptoKit
 import Foundation
 import Logging
 
+public protocol EngineLinuxSandboxWorkloadAuthorityV1: Sendable {
+    func startWorkload(
+        planDigest: String,
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadRoot: URL,
+        dynamicEnvironment: [String: String],
+        networkEndpoints: [WorkloadNetworkEndpoint],
+        stdio: [FileHandle?],
+        controllers: [any WorkloadEffectControllerV1],
+        monitorTerminal: Bool
+    ) async throws -> EngineWorkloadRecordV1
+
+    func controlWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64,
+        action: EngineLinuxSandboxWorkloadControlRequestV1.Action
+    ) async throws -> EngineLinuxSandboxWorkloadControlResponseV1
+
+    func pauseWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) async throws -> EngineWorkloadRecordV1
+
+    func resumeWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) async throws -> EngineWorkloadRecordV1
+
+    func dialService(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64,
+        port: UInt32
+    ) async throws -> FileHandle
+
+    func stopWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) async throws -> EngineWorkloadRecordV1
+
+    func reclaimEffectlessWorkloadAtBoot(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String
+    ) async throws -> EngineWorkloadRecordV1?
+}
+
 public protocol EngineLinuxSandboxLaunchingV1: Sendable {
     func launch(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1
@@ -139,7 +189,9 @@ actor EngineLinuxSandboxLedgerPersistenceDiagnosticsV1:
 /// The authority owns helper launch/reuse, the durable workload ledger, exact
 /// sandbox reconciliation, and the common workload transaction resolver. It
 /// accepts specialized controllers but does not interpret their policy.
-public actor EngineLinuxSandboxAuthorityV1 {
+public actor EngineLinuxSandboxAuthorityV1:
+    EngineLinuxSandboxWorkloadAuthorityV1
+{
     public static let ledgerFilename = "engine-workload-ledger-v1.json"
 
     private struct WorkloadRequestDigestMaterial: Codable {
@@ -424,6 +476,216 @@ public actor EngineLinuxSandboxAuthorityV1 {
         )
     }
 
+    /// Applies one generation-fenced lifecycle or observation operation to an
+    /// active workload without granting access to the shared sandbox itself.
+    public func controlWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64,
+        action: EngineLinuxSandboxWorkloadControlRequestV1.Action
+    ) async throws -> EngineLinuxSandboxWorkloadControlResponseV1 {
+        switch action {
+        case .pause, .resume:
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "shared workload pause and resume require a durable lifecycle transaction"
+            )
+        default:
+            break
+        }
+        let ready = try await ensureReady(configuration: configuration)
+        guard
+            let workload = await ledger.workload(containerID: workloadID),
+            workload.state == .running || workload.state == .paused,
+            workload.activeProcessGeneration == workloadProcessGeneration,
+            workload.activeSandboxGeneration == ready.generation
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "Engine Linux sandbox workload is not active for the requested generation"
+            )
+        }
+        guard let runtime else {
+            throw ContainerizationError(
+                .internalError,
+                message: "Engine Linux sandbox runtime was not initialized"
+            )
+        }
+        return try await runtime.controlWorkload(
+            EngineLinuxSandboxWorkloadControlRequestV1(
+                sandboxID: sandboxID,
+                sandboxGeneration: ready.generation,
+                workloadID: workloadID,
+                workloadProcessGeneration: workloadProcessGeneration,
+                action: action
+            )
+        )
+    }
+
+    public func pauseWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) async throws -> EngineWorkloadRecordV1 {
+        let ready = try await ensureReady(configuration: configuration)
+        guard let runtime else {
+            throw ContainerizationError(
+                .internalError,
+                message: "Engine Linux sandbox runtime was not initialized"
+            )
+        }
+        guard let current = await ledger.workload(containerID: workloadID),
+            current.activeProcessGeneration == workloadProcessGeneration,
+            current.activeSandboxGeneration == ready.generation
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "Engine Linux sandbox workload is not active for the requested generation"
+            )
+        }
+        let requestDigest = Self.digest(
+            "pause:\(workloadID):\(workloadProcessGeneration):\(ready.generation)"
+        )
+        let mutation = EngineWorkloadMutationRequestV1(
+            containerID: workloadID,
+            idempotencyKey: "pause-\(workloadID)-\(workloadProcessGeneration)",
+            requestDigest: requestDigest,
+            expectedTransitionRevision: current.transitionRevision
+        )
+        let pausing: EngineWorkloadRecordV1
+        switch try await ledger.beginPause(mutation) {
+        case .reserved(let record), .replay(let record):
+            pausing = record
+        }
+        if pausing.state == .paused {
+            return pausing
+        }
+        guard pausing.state == .pausing,
+            let operationGeneration = pausing.operation?.operationGeneration
+        else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        let request = EngineLinuxSandboxWorkloadControlRequestV1(
+            sandboxID: sandboxID,
+            sandboxGeneration: ready.generation,
+            workloadID: workloadID,
+            workloadProcessGeneration: workloadProcessGeneration,
+            action: .pause
+        )
+        do {
+            guard case .none = try await runtime.controlWorkload(request) else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+        } catch {
+            if case .state(.paused)? = try? await runtime.controlWorkload(
+                EngineLinuxSandboxWorkloadControlRequestV1(
+                    sandboxID: sandboxID,
+                    sandboxGeneration: ready.generation,
+                    workloadID: workloadID,
+                    workloadProcessGeneration: workloadProcessGeneration,
+                    action: .state
+                )
+            ) {
+                return try await ledger.commitPause(
+                    containerID: workloadID,
+                    operationGeneration: operationGeneration
+                )
+            }
+            _ = try? await ledger.markOperationRecoveryRequired(
+                containerID: workloadID,
+                operationGeneration: operationGeneration,
+                reason: "shared workload pause outcome is unknown"
+            )
+            throw error
+        }
+        return try await ledger.commitPause(
+            containerID: workloadID,
+            operationGeneration: operationGeneration
+        )
+    }
+
+    public func resumeWorkload(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String,
+        workloadProcessGeneration: UInt64
+    ) async throws -> EngineWorkloadRecordV1 {
+        let ready = try await ensureReady(configuration: configuration)
+        guard let runtime else {
+            throw ContainerizationError(
+                .internalError,
+                message: "Engine Linux sandbox runtime was not initialized"
+            )
+        }
+        guard let current = await ledger.workload(containerID: workloadID),
+            current.activeProcessGeneration == workloadProcessGeneration,
+            current.activeSandboxGeneration == ready.generation
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "Engine Linux sandbox workload is not active for the requested generation"
+            )
+        }
+        let requestDigest = Self.digest(
+            "resume:\(workloadID):\(workloadProcessGeneration):\(ready.generation)"
+        )
+        let mutation = EngineWorkloadMutationRequestV1(
+            containerID: workloadID,
+            idempotencyKey: "resume-\(workloadID)-\(workloadProcessGeneration)",
+            requestDigest: requestDigest,
+            expectedTransitionRevision: current.transitionRevision
+        )
+        let resuming: EngineWorkloadRecordV1
+        switch try await ledger.beginResume(mutation) {
+        case .reserved(let record), .replay(let record):
+            resuming = record
+        }
+        if resuming.state == .running {
+            return resuming
+        }
+        guard resuming.state == .resuming,
+            let operationGeneration = resuming.operation?.operationGeneration
+        else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        let request = EngineLinuxSandboxWorkloadControlRequestV1(
+            sandboxID: sandboxID,
+            sandboxGeneration: ready.generation,
+            workloadID: workloadID,
+            workloadProcessGeneration: workloadProcessGeneration,
+            action: .resume
+        )
+        do {
+            guard case .none = try await runtime.controlWorkload(request) else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+        } catch {
+            if case .state(.running)? = try? await runtime.controlWorkload(
+                EngineLinuxSandboxWorkloadControlRequestV1(
+                    sandboxID: sandboxID,
+                    sandboxGeneration: ready.generation,
+                    workloadID: workloadID,
+                    workloadProcessGeneration: workloadProcessGeneration,
+                    action: .state
+                )
+            ) {
+                return try await ledger.commitResume(
+                    containerID: workloadID,
+                    operationGeneration: operationGeneration
+                )
+            }
+            _ = try? await ledger.markOperationRecoveryRequired(
+                containerID: workloadID,
+                operationGeneration: operationGeneration,
+                reason: "shared workload resume outcome is unknown"
+            )
+            throw error
+        }
+        return try await ledger.commitResume(
+            containerID: workloadID,
+            operationGeneration: operationGeneration
+        )
+    }
+
     /// Stops only the exact active workload generation after all controller
     /// effects have been released. A durable stop reservation precedes the
     /// runtime call, and a lost response is reconciled before the ledger can
@@ -546,6 +808,64 @@ public actor EngineLinuxSandboxAuthorityV1 {
         return try await ledger.commitStop(
             containerID: workloadID,
             operationGeneration: operation.operationGeneration
+        )
+    }
+
+    /// Reconciles an ordinary shared workload that survived the API authority.
+    /// Protected service workloads retain controller effects and are therefore
+    /// deliberately outside this boot-cleanup boundary.
+    public func reclaimEffectlessWorkloadAtBoot(
+        configuration: EngineLinuxSandboxRuntimeConfigurationV1,
+        workloadID: String
+    ) async throws -> EngineWorkloadRecordV1? {
+        guard var workload = await ledger.workload(containerID: workloadID) else {
+            return nil
+        }
+        guard workload.activeEffects.isEmpty,
+            workload.operation?.effects.isEmpty ?? true
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "Engine Linux sandbox boot cleanup cannot reclaim a controller-owned workload"
+            )
+        }
+        switch workload.state {
+        case .created, .stopped, .removed:
+            return workload
+        case .pausing:
+            guard let processGeneration = workload.activeProcessGeneration else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+            workload = try await pauseWorkload(
+                configuration: configuration,
+                workloadID: workloadID,
+                workloadProcessGeneration: processGeneration
+            )
+        case .resuming:
+            guard let processGeneration = workload.activeProcessGeneration else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+            workload = try await resumeWorkload(
+                configuration: configuration,
+                workloadID: workloadID,
+                workloadProcessGeneration: processGeneration
+            )
+        case .running, .paused, .stopping:
+            break
+        case .recoveryRequired:
+            guard workload.operation?.kind == .stop else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+        case .starting, .removing:
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        guard let processGeneration = workload.activeProcessGeneration else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        return try await stopWorkload(
+            configuration: configuration,
+            workloadID: workloadID,
+            workloadProcessGeneration: processGeneration
         )
     }
 

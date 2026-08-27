@@ -262,6 +262,7 @@ public struct Flags {
             restartWindow: String? = nil,
             rosetta: Bool,
             runtime: String?,
+            isolation: String? = nil,
             ssh: Bool,
             engineAPISocket: Bool = false,
             shmSize: String?,
@@ -331,6 +332,7 @@ public struct Flags {
             self.restartWindow = restartWindow
             self.rosetta = rosetta
             self.runtime = runtime
+            self.isolation = isolation
             self.ssh = ssh
             self.engineAPISocket = engineAPISocket
             self.shmSize = shmSize
@@ -570,6 +572,15 @@ public struct Flags {
 
         @Option(name: .long, help: "Set the runtime handler for the container (default: container-runtime-linux)")
         public var runtime: String?
+
+        @Option(
+            name: .long,
+            help: .init(
+                "Select virtual-machine isolation (dedicated-vm or shared-vm; default: dedicated-vm)",
+                valueName: "mode"
+            )
+        )
+        public var isolation: String?
 
         @Flag(name: .long, help: "Forward SSH agent socket to container")
         public var ssh = false

@@ -25,6 +25,325 @@ import Testing
 
 struct EngineLinuxSandboxAuthorityTests {
     @Test
+    func managedSharedClientUsesAuthorityWithoutDedicatedFallback() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let runtimeConfiguration = try RuntimeConfiguration.readRuntimeConfiguration(
+            from: fixture.workloadRoot
+        )
+        let containerConfiguration = try #require(
+            runtimeConfiguration.containerConfiguration
+        )
+        var sharedConfiguration = containerConfiguration
+        sharedConfiguration.requestedIsolation = .sharedVM
+        sharedConfiguration.effectiveIsolation = .sharedVM
+        sharedConfiguration.sandboxID = fixture.sandboxConfiguration.sandboxID
+        let client = ManagedRuntimeClient.shared(
+            SharedSandboxRuntimeClient(
+                id: sharedConfiguration.id,
+                workloadRoot: fixture.workloadRoot,
+                containerConfiguration: sharedConfiguration,
+                authority: authority,
+                configurationProvider: StaticSandboxConfigurationProvider(
+                    configuration: fixture.sandboxConfiguration
+                )
+            )
+        )
+
+        #expect(!client.isDedicated)
+        try await client.bootstrap(
+            stdio: [],
+            networkBootstrapInfos: [],
+            dynamicEnv: ["TEST": "1"]
+        )
+        try await client.startProcess(sharedConfiguration.id)
+        #expect(try await client.state().status == .running)
+        try await client.pause()
+        #expect(try await client.state().status == .paused)
+        try await client.resume()
+        #expect(try await client.statistics().id == containerConfiguration.id)
+
+        let error = await #expect(throws: ContainerizationError.self) {
+            try await client.createProcess(
+                "exec-1",
+                config: sharedConfiguration.initProcess,
+                stdio: []
+            )
+        }
+        #expect(error?.code == .unsupported)
+        #expect(await runtime.workloadStartCount == 1)
+
+        try await client.stop(options: .default)
+        #expect(await runtime.workloadStopCount == 1)
+        try await client.shutdown()
+        #expect(await runtime.workloadStopCount == 1)
+    }
+
+    @Test
+    func managedSharedClientReclaimsNaturallyExitedWorkloadOnShutdown() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let runtimeConfiguration = try RuntimeConfiguration.readRuntimeConfiguration(
+            from: fixture.workloadRoot
+        )
+        let containerConfiguration = try #require(
+            runtimeConfiguration.containerConfiguration
+        )
+        var sharedConfiguration = containerConfiguration
+        sharedConfiguration.requestedIsolation = .sharedVM
+        sharedConfiguration.effectiveIsolation = .sharedVM
+        sharedConfiguration.sandboxID = fixture.sandboxConfiguration.sandboxID
+        let client = ManagedRuntimeClient.shared(
+            SharedSandboxRuntimeClient(
+                id: sharedConfiguration.id,
+                workloadRoot: fixture.workloadRoot,
+                containerConfiguration: sharedConfiguration,
+                authority: authority,
+                configurationProvider: StaticSandboxConfigurationProvider(
+                    configuration: fixture.sandboxConfiguration
+                )
+            )
+        )
+
+        try await client.bootstrap(
+            stdio: [],
+            networkBootstrapInfos: []
+        )
+        _ = try await client.wait(sharedConfiguration.id)
+        try await client.shutdown()
+
+        #expect(await runtime.workloadStopCount == 1)
+        let workload = try #require(
+            (await authority.snapshot()).workloads.first
+        )
+        #expect(workload.state == .stopped)
+        #expect(workload.activeProcessGeneration == nil)
+    }
+
+    @Test
+    func managedSharedStopUsesGuestDeadlineBeforeForcedSignal() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime(waitTimesOut: true)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let runtimeConfiguration = try RuntimeConfiguration.readRuntimeConfiguration(
+            from: fixture.workloadRoot
+        )
+        var containerConfiguration = try #require(
+            runtimeConfiguration.containerConfiguration
+        )
+        containerConfiguration.requestedIsolation = .sharedVM
+        containerConfiguration.effectiveIsolation = .sharedVM
+        containerConfiguration.sandboxID = fixture.sandboxConfiguration.sandboxID
+        let client = ManagedRuntimeClient.shared(
+            SharedSandboxRuntimeClient(
+                id: containerConfiguration.id,
+                workloadRoot: fixture.workloadRoot,
+                containerConfiguration: containerConfiguration,
+                authority: authority,
+                configurationProvider: StaticSandboxConfigurationProvider(
+                    configuration: fixture.sandboxConfiguration
+                )
+            )
+        )
+
+        try await client.bootstrap(
+            stdio: [],
+            networkBootstrapInfos: []
+        )
+        try await client.stop(
+            options: ContainerStopOptions(
+                timeoutInSeconds: 1,
+                signal: "SIGTERM"
+            )
+        )
+
+        #expect(await runtime.signals == ["SIGTERM", "SIGKILL"])
+        #expect(await runtime.waitTimeouts == [1, nil])
+        #expect(await runtime.workloadStopCount == 1)
+    }
+
+    @Test
+    func managedSharedClientRejectsMismatchedDurableSandboxIdentity() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let runtimeConfiguration = try RuntimeConfiguration.readRuntimeConfiguration(
+            from: fixture.workloadRoot
+        )
+        var containerConfiguration = try #require(
+            runtimeConfiguration.containerConfiguration
+        )
+        containerConfiguration.effectiveIsolation = .sharedVM
+        containerConfiguration.sandboxID = "different-sandbox"
+        let client = ManagedRuntimeClient.shared(
+            SharedSandboxRuntimeClient(
+                id: containerConfiguration.id,
+                workloadRoot: fixture.workloadRoot,
+                containerConfiguration: containerConfiguration,
+                authority: authority,
+                configurationProvider: StaticSandboxConfigurationProvider(
+                    configuration: fixture.sandboxConfiguration
+                )
+            )
+        )
+
+        let error = await #expect(throws: ContainerizationError.self) {
+            try await client.bootstrap(
+                stdio: [],
+                networkBootstrapInfos: []
+            )
+        }
+
+        #expect(error?.code == .invalidState)
+        #expect(await runtime.workloadStartCount == 0)
+    }
+
+    @Test
+    func genericSharedControlCannotBypassDurablePauseTransaction() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:pause-bypass-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+
+        let error = await #expect(throws: ContainerizationError.self) {
+            _ = try await authority.controlWorkload(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: running.containerID,
+                workloadProcessGeneration: try #require(
+                    running.activeProcessGeneration
+                ),
+                action: .pause
+            )
+        }
+
+        #expect(error?.code == .invalidArgument)
+        #expect(await runtime.pauseCount == 0)
+    }
+
+    @Test
+    func sharedWorkloadPauseAndResumeAreDurableAndIdempotent() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:pause-resume-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+        let processGeneration = try #require(
+            running.activeProcessGeneration
+        )
+
+        let paused = try await authority.pauseWorkload(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: processGeneration
+        )
+        #expect(paused.state == .paused)
+        #expect(
+            try await authority.pauseWorkload(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: running.containerID,
+                workloadProcessGeneration: processGeneration
+            ) == paused
+        )
+        #expect(await runtime.pauseCount == 1)
+
+        let resumed = try await authority.resumeWorkload(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: processGeneration
+        )
+        #expect(resumed.state == .running)
+        #expect(
+            try await authority.resumeWorkload(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: running.containerID,
+                workloadProcessGeneration: processGeneration
+            ) == resumed
+        )
+        #expect(await runtime.resumeCount == 1)
+    }
+
+    @Test
+    func authorityBootReclaimsEffectlessSharedWorkload() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:boot-reclaim-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot
+        )
+
+        let reclaimed = try #require(
+            try await authority.reclaimEffectlessWorkloadAtBoot(
+                configuration: fixture.sandboxConfiguration,
+                workloadID: running.containerID
+            )
+        )
+
+        #expect(reclaimed.state == .stopped)
+        #expect(reclaimed.activeProcessGeneration == nil)
+        #expect(await runtime.workloadStopCount == 1)
+    }
+
+    @Test
     func durableAuthorityReconcilesSandboxAndStartsWorkloadOnce() async throws {
         let fixture = try EngineSandboxAuthorityFixture()
         defer { fixture.remove() }
@@ -413,21 +732,31 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
     }
 
     private let failFirstStopResponse: Bool
+    private let waitTimesOut: Bool
     private var bootReceipt: EngineLinuxSandboxBootReceiptV1?
     private var workloadReceipt: WorkloadProcessReceiptV1?
     private var workloadStopReceipt: EngineLinuxSandboxWorkloadStopReceiptV1?
     private var workloadTerminal = false
+    private var workloadStatus = RuntimeStatus.running
     private var didFailStopResponse = false
     private(set) var bootCount = 0
     private(set) var bootObservationCount = 0
     private(set) var workloadStartCount = 0
     private(set) var workloadObservationCount = 0
     private(set) var workloadStopCount = 0
+    private(set) var pauseCount = 0
+    private(set) var resumeCount = 0
     private(set) var serviceDialCount = 0
     private(set) var lastServiceDial: EngineLinuxSandboxServiceDialRequestV1?
+    private(set) var signals: [String] = []
+    private(set) var waitTimeouts: [Int64?] = []
 
-    init(failFirstStopResponse: Bool = false) {
+    init(
+        failFirstStopResponse: Bool = false,
+        waitTimesOut: Bool = false
+    ) {
         self.failFirstStopResponse = failFirstStopResponse
+        self.waitTimesOut = waitTimesOut
     }
 
     func boot(
@@ -511,6 +840,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         )
         workloadReceipt = receipt
         workloadTerminal = false
+        workloadStatus = .running
         _ = stdio
         return receipt
     }
@@ -546,6 +876,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         workloadStopCount += 1
         workloadStopReceipt = receipt
         workloadTerminal = true
+        workloadStatus = .stopped
         if failFirstStopResponse, !didFailStopResponse {
             didFailStopResponse = true
             throw Failure.lostStopResponse
@@ -564,6 +895,76 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         return workloadTerminal ? .absent : .running
     }
 
+    func controlWorkload(
+        _ request: EngineLinuxSandboxWorkloadControlRequestV1
+    ) async throws -> EngineLinuxSandboxWorkloadControlResponseV1 {
+        guard
+            let workloadReceipt,
+            workloadReceipt.containerID == request.workloadID,
+            workloadReceipt.processGeneration
+                == request.workloadProcessGeneration,
+            workloadReceipt.sandboxGeneration == request.sandboxGeneration,
+            !workloadTerminal
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "fake workload control generation is not active"
+            )
+        }
+        switch request.action {
+        case .state:
+            return .state(workloadStatus)
+        case .wait(let timeoutInSeconds):
+            waitTimeouts.append(timeoutInSeconds)
+            if waitTimesOut, timeoutInSeconds != nil {
+                throw ContainerizationError(
+                    .timeout,
+                    message: "fake workload wait timed out"
+                )
+            }
+            return .exit(
+                .init(
+                    exitCode: 0,
+                    exitedAt: Date(timeIntervalSince1970: 0)
+                )
+            )
+        case .statistics:
+            return .statistics(
+                ContainerStats(
+                    id: request.workloadID,
+                    memoryUsageBytes: 1,
+                    memoryLimitBytes: 2,
+                    cpuUsageUsec: 3,
+                    networkRxBytes: 4,
+                    networkTxBytes: 5,
+                    blockReadBytes: 6,
+                    blockWriteBytes: 7,
+                    numProcesses: 1
+                )
+            )
+        case .processes:
+            return .processes(
+                ContainerProcesses(
+                    id: request.workloadID,
+                    processIdentifiers: [123]
+                )
+            )
+        case .pause:
+            pauseCount += 1
+            workloadStatus = .paused
+            return .none
+        case .resume:
+            resumeCount += 1
+            workloadStatus = .running
+            return .none
+        case .signal(let signal):
+            signals.append(signal)
+            return .none
+        case .resize:
+            return .none
+        }
+    }
+
     func markWorkloadTerminal() {
         workloadTerminal = true
     }
@@ -573,6 +974,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         workloadReceipt = nil
         workloadStopReceipt = nil
         workloadTerminal = false
+        workloadStatus = .running
     }
 
     func dialService(
@@ -581,6 +983,18 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         serviceDialCount += 1
         lastServiceDial = request
         return Pipe().fileHandleForReading
+    }
+}
+
+private struct StaticSandboxConfigurationProvider:
+    EngineLinuxSandboxConfigurationProvidingV1
+{
+    let configuration: EngineLinuxSandboxRuntimeConfigurationV1
+
+    func sandboxConfiguration() async throws
+        -> EngineLinuxSandboxRuntimeConfigurationV1
+    {
+        configuration
     }
 }
 

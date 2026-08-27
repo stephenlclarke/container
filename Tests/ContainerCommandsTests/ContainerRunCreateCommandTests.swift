@@ -23,6 +23,24 @@ import Testing
 
 struct ContainerRunCreateCommandTests {
     @Test
+    func runParsesExplicitSharedVMIsolation() throws {
+        let command = try Application.ContainerRun.parse([
+            "--isolation", "shared-vm",
+            "--network", "none",
+            "alpine", "true",
+        ])
+
+        #expect(command.managementFlags.isolation == "shared-vm")
+    }
+
+    @Test
+    func createLeavesIsolationUnspecifiedWhenFlagIsOmitted() throws {
+        let command = try Application.ContainerCreate.parse(["alpine", "true"])
+
+        #expect(command.managementFlags.isolation == nil)
+    }
+
+    @Test
     func createBuildsPresentDaemonDefaultLoggingRequestWhenFlagsAreOmitted() throws {
         let command = try Application.ContainerCreate.parse(["alpine", "true"])
 

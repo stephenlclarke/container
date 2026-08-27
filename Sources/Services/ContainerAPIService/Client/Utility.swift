@@ -169,11 +169,17 @@ public struct Utility {
         progressUpdate: ProgressUpdateHandler?,
         log: Logger
     ) async throws -> (ContainerConfiguration, Kernel, String?) {
+        let requestedIsolation = try Parser.isolation(management.isolation)
         let requestedPlatform = try DefaultPlatform.resolveWithDefaults(
             platform: management.platform,
             os: management.os,
             arch: management.arch,
             log: log
+        )
+        try validateIsolationCompatibility(
+            requestedIsolation: requestedIsolation,
+            requestedPlatform: requestedPlatform,
+            management: management
         )
         let scheme = try RequestScheme(registry.scheme)
         let imageDownloadLimits = try imageDownloadLimits(
@@ -276,9 +282,18 @@ public struct Utility {
             managementFlags: management,
             config: imageConfig
         )
+        try validateSharedProcessCompatibility(
+            requestedIsolation: requestedIsolation,
+            process: pc
+        )
 
         var config = ContainerConfiguration(id: id, image: description, process: pc)
         config.platform = requestedPlatform
+        config.requestedIsolation = requestedIsolation
+        config.effectiveIsolation = requestedIsolation ?? .dedicatedVM
+        config.sandboxID =
+            requestedIsolation == .sharedVM
+            ? "engine-linux-sandbox" : nil
 
         config.resources = try Parser.resources(
             cpus: resource.cpus,
@@ -304,6 +319,12 @@ public struct Utility {
             disabled: management.noHealthCheck,
             baseProcess: pc
         )
+        if requestedIsolation == .sharedVM, config.healthCheck != nil {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm does not yet support health checks"
+            )
+        }
 
         let tmpfs = try Parser.tmpfsMounts(management.tmpFs)
         let volumesOrFs = try Parser.volumes(management.volumes)
@@ -439,7 +460,12 @@ public struct Utility {
         config.hostCgroupNamespace = try Parser.hostCgroupNamespace(management.cgroupNamespace)
         config.hostIPCNamespace = try Parser.hostIPCNamespace(management.ipc)
         config.hostUTSNamespace = try Parser.hostUTSNamespace(management.uts)
-        config.privateUserNamespace = try Parser.privateUserNamespace(management.userNamespace)
+        let privateUserNamespace = try Parser.privateUserNamespace(
+            management.userNamespace
+        )
+        config.privateUserNamespace =
+            requestedIsolation == .sharedVM
+            ? true : privateUserNamespace
         config.unconfinedSystemPaths = try Parser.unconfinedSystemPaths(management.securityOpts)
 
         let caps = try Parser.capabilities(capAdd: management.capAdd, capDrop: management.capDrop)
@@ -455,6 +481,100 @@ public struct Utility {
         }
 
         return (config, kernel, management.initImage)
+    }
+
+    /// The first shared-VM vertical deliberately admits only configurations
+    /// whose isolation can be enforced by the existing LinuxPod mapper. Reject
+    /// unsupported VM-wide settings before image or kernel preparation begins.
+    static func validateIsolationCompatibility(
+        requestedIsolation: ContainerIsolationMode?,
+        requestedPlatform: Platform,
+        management: Flags.Management
+    ) throws {
+        guard requestedIsolation == .sharedVM else {
+            return
+        }
+
+        guard
+            management.networks == [NetworkClient.hostNetworkName]
+                || management.networks == [NetworkClient.noNetworkName]
+        else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm currently requires --network host or --network none"
+            )
+        }
+        guard management.kernel == nil, management.kernelArgs.isEmpty, management.initImage == nil else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm does not support custom kernel or init VM assets"
+            )
+        }
+        guard !management.virtualization, management.devices.isEmpty, management.gpus.isEmpty else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm does not support VM-wide virtualization or device options"
+            )
+        }
+        guard management.deviceCgroupRules.isEmpty else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm does not support device cgroup overrides"
+            )
+        }
+        guard management.publishPorts.isEmpty else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm does not yet support published TCP or UDP ports"
+            )
+        }
+        guard management.pid != "host",
+            management.cgroupNamespace != "host",
+            management.ipc != "host",
+            management.uts != "host",
+            management.userNamespace != "host"
+        else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm requires private PID, cgroup, IPC, UTS, and user namespaces"
+            )
+        }
+        guard try !Parser.unconfinedSystemPaths(management.securityOpts) else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm does not support unconfined system paths"
+            )
+        }
+        guard management.runtime == nil || management.runtime == "container-runtime-linux" else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm requires the container-runtime-linux runtime"
+            )
+        }
+        guard requestedPlatform.os == Platform.current.os,
+            requestedPlatform.architecture == Platform.current.architecture,
+            !management.rosetta
+        else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm currently requires the native Linux platform"
+            )
+        }
+    }
+
+    static func validateSharedProcessCompatibility(
+        requestedIsolation: ContainerIsolationMode?,
+        process: ProcessConfiguration
+    ) throws {
+        guard requestedIsolation == .sharedVM else {
+            return
+        }
+        guard !process.privileged else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "--isolation shared-vm does not support privileged workloads"
+            )
+        }
     }
 
     /// Keeps the legacy configuration field readable for old API callers

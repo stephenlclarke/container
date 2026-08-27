@@ -140,6 +140,36 @@ struct ContainerLoadAtBootTests {
     }
 
     @Test
+    func sharedWorkloadDoesNotOwnAPerContainerRuntimeServiceAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "shared-workload"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        var configuration = testConfiguration(id: id)
+        configuration.requestedIsolation = .sharedVM
+        configuration.effectiveIsolation = .sharedVM
+        configuration.sandboxID = "engine-linux-sandbox"
+        try bundle.set(configuration: configuration)
+
+        var deregisteredLabels = [String]()
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log,
+            deregisterService: { deregisteredLabels.append($0) }
+        )
+
+        #expect(states[id] != nil)
+        #expect(deregisteredLabels.isEmpty)
+    }
+
+    @Test
     func transientRuntimeStopFailureRetriesBeforeLoadingContainer() throws {
         let fixture = try Fixture(includeRuntime: true)
         defer { fixture.remove() }
