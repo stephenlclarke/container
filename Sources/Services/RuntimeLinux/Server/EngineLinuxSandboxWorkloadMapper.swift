@@ -29,8 +29,7 @@ enum EngineLinuxSandboxWorkloadMapper {
         runtimeData: Data?,
         dynamicEnvironment: [String: String],
         networkEndpoints: [WorkloadNetworkEndpoint],
-        stdio: [FileHandle?],
-        loggingCapture: ContainerLogRuntimeCapture,
+        io: EngineLinuxSandboxWorkloadIO,
         log: Logger
     ) throws {
         workload.cpus = config.resources.cpus
@@ -175,16 +174,14 @@ enum EngineLinuxSandboxWorkloadMapper {
         try configureProcess(
             &workload,
             from: config,
-            stdio: stdio,
-            loggingCapture: loggingCapture
+            io: io
         )
     }
 
     private static func configureProcess(
         _ workload: inout LinuxPod.ContainerConfiguration,
         from config: ContainerConfiguration,
-        stdio: [FileHandle?],
-        loggingCapture: ContainerLogRuntimeCapture
+        io: EngineLinuxSandboxWorkloadIO
     ) throws {
         let process = config.initProcess
         workload.process.arguments = [process.executable] + process.arguments
@@ -241,14 +238,33 @@ enum EngineLinuxSandboxWorkloadMapper {
             )
         }
 
-        let handles = normalizedStdio(stdio)
-        workload.process.stdin = handles[0].map(AttachableInput.init)
-        workload.process.stdout = AttachableOutput(
+        workload.process.stdin = io.stdin
+        workload.process.stdout = io.stdout
+        workload.process.stderr = io.stderr
+    }
+}
+
+struct EngineLinuxSandboxWorkloadIO: @unchecked Sendable {
+    let stdin: AttachableInput?
+    let stdout: AttachableOutput
+    let stderr: AttachableOutput?
+
+    init(
+        stdio: [FileHandle?],
+        loggingCapture: ContainerLogRuntimeCapture,
+        terminal: Bool
+    ) {
+        var handles = Array(stdio.prefix(3))
+        while handles.count < 3 {
+            handles.append(nil)
+        }
+        stdin = handles[0].map(AttachableInput.init)
+        stdout = AttachableOutput(
             initial: handles[1],
             persistent: loggingCapture.stdout
         )
-        workload.process.stderr =
-            process.terminal
+        stderr =
+            terminal
             ? nil
             : AttachableOutput(
                 initial: handles[2],
@@ -256,11 +272,9 @@ enum EngineLinuxSandboxWorkloadMapper {
             )
     }
 
-    private static func normalizedStdio(_ stdio: [FileHandle?]) -> [FileHandle?] {
-        var handles = Array(stdio.prefix(3))
-        while handles.count < 3 {
-            handles.append(nil)
-        }
-        return handles
+    func close() {
+        stdin?.close()
+        try? stdout.close()
+        try? stderr?.close()
     }
 }

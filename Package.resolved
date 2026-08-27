@@ -1,5 +1,5 @@
 {
-  "originHash" : "ed7c9ec9c3fc2b178a7976db936c456db25ff89d5448e7a5ebdee64e46708d94",
+  "originHash" : "2ba9682459ee13ddbee3928502b56c2a2738ab282a0963d9fd41c25d9dbbb5ca",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -41,7 +41,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
-        "revision" : "050cf2484a50fcc0931ee53f544e027bf4012e05"
+        "revision" : "c60ba717b990bd9086fd0dd6d073b57004a6dcf8"
       }
     },
     {

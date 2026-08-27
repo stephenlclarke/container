@@ -342,6 +342,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     private var workloadStopRequests: [String: EngineLinuxSandboxWorkloadStopRequestV1] = [:]
     private var workloadStopReceipts: [String: EngineLinuxSandboxWorkloadStopReceiptV1] = [:]
     private var workloadCaptures: [String: ContainerLogRuntimeCapture] = [:]
+    private var workloadIO: [String: EngineLinuxSandboxWorkloadIO] = [:]
     private var workloadTerminalMonitors: [String: Task<Void, Never>] = [:]
     private var terminalWorkloadGenerations: [String: UInt64] = [:]
     private var serviceListeners: [String: ServiceListenerSlot] = [:]
@@ -596,6 +597,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         case .absent:
             shutdownReceipt = receipt
             bootReceipt = nil
+            closeWorkloadIO()
             closeWorkloadCaptures()
             cancelWorkloadTerminalMonitors()
             await closeServiceListeners()
@@ -628,6 +630,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             let applied = try await task.value
             shutdownReceipt = applied
             bootReceipt = nil
+            closeWorkloadIO()
             closeWorkloadCaptures()
             cancelWorkloadTerminalMonitors()
             await closeServiceListeners()
@@ -721,7 +724,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         case .registered?, .created?:
             guard
                 workloadRequests[id] == request,
-                workloadCaptures[id] != nil
+                workloadCaptures[id] != nil,
+                workloadIO[id] != nil
             else {
                 throw unattributedState("prepared workload \(id) has no matching materialization intent")
             }
@@ -731,10 +735,12 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
 
         let isNewMaterialization = observed == nil || observed?.state == .stopped
         let capture: ContainerLogRuntimeCapture?
+        let io: EngineLinuxSandboxWorkloadIO?
         let runtimeConfiguration: RuntimeConfiguration?
         let containerConfiguration: ContainerConfiguration?
         if isNewMaterialization {
             if observed?.state == .stopped {
+                workloadIO.removeValue(forKey: id)?.close()
                 workloadCaptures.removeValue(forKey: id)?.close()
                 await closeServiceListener(for: id)
                 workloadRequests[id] = nil
@@ -763,14 +769,21 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 )
             }
             let loggingPlan = try ContainerLogRuntimePlan(configuration: loadedContainerConfiguration)
-            capture = try loggingPlan.activate(
+            let activatedCapture = try loggingPlan.activate(
                 bundle: loadedBundle,
+                terminal: loadedContainerConfiguration.initProcess.terminal
+            )
+            capture = activatedCapture
+            io = EngineLinuxSandboxWorkloadIO(
+                stdio: stdio,
+                loggingCapture: activatedCapture,
                 terminal: loadedContainerConfiguration.initProcess.terminal
             )
             runtimeConfiguration = loadedRuntimeConfiguration
             containerConfiguration = loadedContainerConfiguration
         } else {
             capture = nil
+            io = nil
             runtimeConfiguration = nil
             containerConfiguration = nil
         }
@@ -809,7 +822,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 if let runtimeConfiguration,
                     let containerConfiguration,
                     let rootfs = runtimeConfiguration.containerRootFilesystem,
-                    let capture
+                    let io
                 {
                     try await sandbox.addContainer(
                         id,
@@ -821,8 +834,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                             runtimeData: runtimeConfiguration.runtimeData,
                             dynamicEnvironment: request.dynamicEnvironment,
                             networkEndpoints: request.networkEndpoints,
-                            stdio: stdio,
-                            loggingCapture: capture,
+                            io: io,
                             log: log
                         )
                     }
@@ -865,6 +877,10 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 workloadCaptures[id]?.close()
                 workloadCaptures[id] = capture
             }
+            if let io {
+                workloadIO[id]?.close()
+                workloadIO[id] = io
+            }
             if request.monitorTerminal {
                 startWorkloadTerminalMonitor(id: id, receipt: applied.receipt)
             }
@@ -879,7 +895,12 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                     workloadRequests[id] = request
                     workloadCaptures[id]?.close()
                     workloadCaptures[id] = capture
+                    if let io {
+                        workloadIO[id]?.close()
+                        workloadIO[id] = io
+                    }
                 } else {
+                    io?.close()
                     capture.close()
                 }
             }
@@ -994,6 +1015,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             workloadStopRequests[id] = request
             workloadStopReceipts[id] = receipt
             terminalWorkloadGenerations[id] = request.workloadProcessGeneration
+            workloadIO.removeValue(forKey: id)?.close()
             workloadCaptures.removeValue(forKey: id)?.close()
             workloadTerminalMonitors.removeValue(forKey: id)?.cancel()
             await closeServiceListener(for: id)
@@ -1030,6 +1052,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             workloadStopRequests[id] = request
             workloadStopReceipts[id] = applied
             terminalWorkloadGenerations[id] = request.workloadProcessGeneration
+            workloadIO.removeValue(forKey: id)?.close()
             workloadCaptures.removeValue(forKey: id)?.close()
             workloadTerminalMonitors.removeValue(forKey: id)?.cancel()
             await closeServiceListener(for: id)
@@ -1657,6 +1680,13 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         workloadCaptures.removeAll()
     }
 
+    private func closeWorkloadIO() {
+        for io in workloadIO.values {
+            io.close()
+        }
+        workloadIO.removeAll()
+    }
+
     private func startWorkloadTerminalMonitor(
         id: String,
         receipt: WorkloadProcessReceiptV1
@@ -1704,6 +1734,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 "status": "\(status)",
             ]
         )
+        workloadIO.removeValue(forKey: id)?.close()
         workloadCaptures.removeValue(forKey: id)?.close()
         await closeServiceListener(for: id)
         do {
@@ -1726,6 +1757,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             return
         }
         terminalWorkloadGenerations[id] = receipt.processGeneration
+        workloadIO.removeValue(forKey: id)?.close()
         workloadCaptures.removeValue(forKey: id)?.close()
         await closeServiceListener(for: id)
         workloadTerminalMonitors[id] = nil

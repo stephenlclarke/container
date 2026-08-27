@@ -84,6 +84,76 @@ struct ContainerLoadAtBootTests {
     }
 
     @Test
+    func exitLifecycleInputsLoadRuntimeOnlyConfiguration() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "shared-natural-exit"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        var configuration = testConfiguration(id: id)
+        configuration.requestedIsolation = .sharedVM
+        configuration.effectiveIsolation = .sharedVM
+        let options = ContainerCreateOptions(
+            autoRemove: true,
+            restartPolicy: .no
+        )
+        try RuntimeConfiguration(
+            path: bundlePath,
+            initialFilesystem: .virtiofs(
+                source: "/path/to/initfs",
+                destination: "/",
+                options: ["ro"]
+            ),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/path/to/kernel"),
+                platform: .linuxArm
+            ),
+            containerConfiguration: configuration,
+            options: options
+        ).writeRuntimeConfiguration()
+
+        let (loadedConfiguration, loadedOptions) =
+            try ContainersService.exitLifecycleInputs(at: bundlePath)
+
+        #expect(loadedConfiguration.id == id)
+        #expect(loadedConfiguration.effectiveIsolation == .sharedVM)
+        #expect(loadedOptions.autoRemove)
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: bundlePath.appendingPathComponent("config.json").path
+            )
+        )
+    }
+
+    @Test
+    func exitLifecycleInputsLoadMaterializedBundle() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "dedicated-natural-exit"
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        let configuration = testConfiguration(id: id)
+        let options = ContainerCreateOptions(
+            autoRemove: true,
+            restartPolicy: .no
+        )
+        try bundle.set(configuration: configuration)
+        try bundle.writeDurably(filename: "options.json", value: options)
+
+        let (loadedConfiguration, loadedOptions) =
+            try ContainersService.exitLifecycleInputs(at: bundlePath)
+
+        #expect(loadedConfiguration.id == id)
+        #expect(loadedConfiguration.effectiveIsolation == .dedicatedVM)
+        #expect(loadedOptions.autoRemove)
+    }
+
+    @Test
     func persistedTransientLifecycleIsDurablyNormalizedAtBoot() throws {
         let fixture = try Fixture(includeRuntime: true)
         defer { fixture.remove() }
