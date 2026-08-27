@@ -107,6 +107,30 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func recoveredRunningPrewarmIsStoppedBeforeDiscard() {
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .stopped)
+                == .discard
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .stopping)
+                == .discard
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .running)
+                == .stop
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .paused)
+                == .resumeAndStop
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .unknown)
+                == .reject
+        )
+    }
+
+    @Test
     func emptyPostStartProcessSnapshotDefersToTheExitMonitor() {
         #expect(ContainersService.reportedInitPID([]) == 0)
         #expect(ContainersService.reportedInitPID([-1, 42, 7]) == 7)

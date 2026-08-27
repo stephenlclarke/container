@@ -918,6 +918,22 @@ public actor ContainersService {
                 )
                 continue
             }
+            switch Self.recoveredPrewarmRuntimeAction(
+                for: try await client.state().status
+            ) {
+            case .discard:
+                break
+            case .stop:
+                try await client.stop(options: ContainerStopOptions.default)
+            case .resumeAndStop:
+                try await client.resume()
+                try await client.stop(options: ContainerStopOptions.default)
+            case .reject:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "surviving prewarm has an unknown runtime state"
+                )
+            }
             try await lock.withLock(
                 logMetadata: [
                     "acquirer": "\(#function)",
@@ -940,6 +956,28 @@ public actor ContainersService {
                 await self.setContainerState(snapshot.id, state, context: context)
             }
             _ = try await discardDedicatedPrewarm(id: snapshot.id)
+        }
+    }
+
+    enum RecoveredPrewarmRuntimeAction: Equatable {
+        case discard
+        case stop
+        case resumeAndStop
+        case reject
+    }
+
+    static func recoveredPrewarmRuntimeAction(
+        for status: RuntimeStatus
+    ) -> RecoveredPrewarmRuntimeAction {
+        switch status {
+        case .stopped, .stopping:
+            return .discard
+        case .running:
+            return .stop
+        case .paused:
+            return .resumeAndStop
+        case .unknown:
+            return .reject
         }
     }
 
