@@ -82,6 +82,9 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         let readerTasks: [Task<Void, Never>]
         var authorityWriteHandles: [FileHandle]
         var activation: LoggingSessionActivationV1?
+        var abortPipesFinished = false
+        var abortWriterClosed = false
+        var abortConfigurationUnregistered = false
     }
 
     private struct ReaderRun: Sendable {
@@ -1174,35 +1177,28 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 
     package func abortBootstrap(containerID: String) async throws {
-        guard let run = runs.removeValue(forKey: containerID) else {
+        guard var run = runs[containerID] else {
             return
         }
-        var firstError: (any Error)?
-        do {
+        if !run.abortPipesFinished {
             try await finishPipes(run)
-        } catch {
-            firstError = error
+            run.abortPipesFinished = true
+            runs[containerID] = run
         }
-        do {
+        if !run.abortWriterClosed {
             _ = try await run.controller.closePreparedWriter(
                 run.request,
                 using: run.provider
             )
-        } catch {
-            if firstError == nil {
-                firstError = error
-            }
+            run.abortWriterClosed = true
+            runs[containerID] = run
         }
-        do {
+        if !run.abortConfigurationUnregistered {
             _ = try await providers.configurations.unregister(run.request)
-        } catch {
-            if firstError == nil {
-                firstError = error
-            }
+            run.abortConfigurationUnregistered = true
+            runs[containerID] = run
         }
-        if let firstError {
-            throw firstError
-        }
+        runs.removeValue(forKey: containerID)
     }
 
     package func close(containerID: String) async throws {

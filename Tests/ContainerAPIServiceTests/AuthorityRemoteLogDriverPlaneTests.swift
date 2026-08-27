@@ -133,13 +133,23 @@ private struct AuthorityRecordingAWSLogsClientFactory: AWSLogsClientFactory {
     }
 }
 
+private enum AuthorityRecordingGCPLoggingServiceError: Error {
+    case closeFailed
+}
+
 private final class AuthorityRecordingGCPLoggingService:
     DockerGCPLoggingServicing, @unchecked Sendable
 {
     private let lock = NSLock()
+    private var remainingCloseFailures: Int
     private(set) var starts = 0
     private(set) var lines = [Data]()
+    private(set) var closeAttempts = 0
     private(set) var closes = 0
+
+    init(closeFailures: Int = 0) {
+        self.remainingCloseFailures = closeFailures
+    }
 
     func startGCPLoggingSession(
         sessionID: String,
@@ -169,11 +179,23 @@ private final class AuthorityRecordingGCPLoggingService:
         sessionID: String,
         timeout: Duration
     ) throws {
-        lock.withLock { closes += 1 }
+        try lock.withLock {
+            closeAttempts += 1
+            if remainingCloseFailures > 0 {
+                remainingCloseFailures -= 1
+                throw AuthorityRecordingGCPLoggingServiceError.closeFailed
+            }
+            closes += 1
+        }
     }
 
-    func snapshot() -> (starts: Int, lines: [Data], closes: Int) {
-        lock.withLock { (starts, lines, closes) }
+    func snapshot() -> (
+        starts: Int,
+        lines: [Data],
+        closeAttempts: Int,
+        closes: Int
+    ) {
+        lock.withLock { (starts, lines, closeAttempts, closes) }
     }
 }
 
@@ -855,6 +877,70 @@ struct AuthorityRemoteLogDriverPlaneTests {
             let snapshot = service.snapshot()
             #expect(snapshot.starts == 1)
             #expect(snapshot.lines == [Data("gcp-plane-output".utf8)])
+            #expect(snapshot.closes == 1)
+        }
+    }
+
+    @Test
+    func failedBootstrapAbortRetainsTheRunForCleanupRetry() async throws {
+        try await withTemporaryRoot { root in
+            let service = AuthorityRecordingGCPLoggingService(
+                closeFailures: 1
+            )
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityUnavailableAWSLogsClientFactory(),
+                gcpLoggingServiceFactory: { _ in service }
+            )
+            let id = "gcplogs-abort-retry"
+            let bundle = ContainerResource.Bundle(
+                path: root.appendingPathComponent(id, isDirectory: true)
+            )
+            try FileManager.default.createDirectory(
+                at: bundle.path,
+                withIntermediateDirectories: true
+            )
+            let configuration = try gcpLogsConfiguration(id: id)
+
+            _ = try await plane.prepareBootstrap(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                stdio: [nil, nil, nil]
+            )
+            try await plane.bootstrapSucceeded(containerID: id)
+
+            await #expect(throws: (any Error).self) {
+                try await plane.abortBootstrap(containerID: id)
+            }
+            await #expect(
+                throws: AuthorityRemoteLogDriverPlaneError.runAlreadyPrepared(
+                    id
+                )
+            ) {
+                _ = try await plane.prepareBootstrap(
+                    containerID: id,
+                    bundle: bundle,
+                    configuration: configuration,
+                    authenticatedProtectedOptions: [:],
+                    stdio: [nil, nil, nil]
+                )
+            }
+
+            try await plane.abortBootstrap(containerID: id)
+            _ = try await plane.prepareBootstrap(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                stdio: [nil, nil, nil]
+            )
+            try await plane.bootstrapSucceeded(containerID: id)
+            try await plane.abortBootstrap(containerID: id)
+
+            let snapshot = service.snapshot()
+            #expect(snapshot.closeAttempts == 2)
             #expect(snapshot.closes == 1)
         }
     }

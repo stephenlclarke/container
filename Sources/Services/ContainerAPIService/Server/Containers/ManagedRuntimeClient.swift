@@ -33,16 +33,24 @@ enum ManagedRuntimeClient: Sendable {
     func bootstrap(
         stdio: [FileHandle?],
         networkBootstrapInfos: [NetworkBootstrapInfo],
-        dynamicEnv: [String: String] = [:]
+        dynamicEnv: [String: String] = [:],
+        prewarming: Bool = false
     ) async throws {
         switch self {
         case .dedicated(let client):
             try await client.bootstrap(
                 stdio: stdio,
                 networkBootstrapInfos: networkBootstrapInfos,
-                dynamicEnv: dynamicEnv
+                dynamicEnv: dynamicEnv,
+                prewarming: prewarming
             )
         case .shared(let client):
+            guard !prewarming else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "shared-vm workloads cannot use dedicated runtime prewarming"
+                )
+            }
             try await client.bootstrap(
                 stdio: stdio,
                 networkBootstrapInfos: networkBootstrapInfos,
@@ -71,10 +79,24 @@ enum ManagedRuntimeClient: Sendable {
         }
     }
 
-    func attach(stdio: [FileHandle?]) async throws {
+    func attach(
+        stdio: [FileHandle?],
+        closeStdin: Bool = false
+    ) async throws {
         switch self {
-        case .dedicated(let client): try await client.attach(stdio: stdio)
-        case .shared(let client): try await client.attach(stdio: stdio)
+        case .dedicated(let client):
+            try await client.attach(
+                stdio: stdio,
+                closeStdin: closeStdin
+            )
+        case .shared(let client):
+            guard !closeStdin else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "shared-vm workloads do not have deferred dedicated stdin"
+                )
+            }
+            try await client.attach(stdio: stdio)
         }
     }
 

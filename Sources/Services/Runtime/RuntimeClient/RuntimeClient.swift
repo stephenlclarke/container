@@ -85,7 +85,8 @@ extension RuntimeClient {
     public func bootstrap(
         stdio: [FileHandle?],
         networkBootstrapInfos: [NetworkBootstrapInfo],
-        dynamicEnv: [String: String] = [:]
+        dynamicEnv: [String: String] = [:],
+        prewarming: Bool = false
     ) async throws {
         let request = XPCMessage(route: RuntimeRoutes.bootstrap.rawValue)
 
@@ -108,6 +109,7 @@ extension RuntimeClient {
         do {
             let dynamicEnv = try JSONEncoder().encode(dynamicEnv)
             request.set(key: RuntimeKeys.dynamicEnv.rawValue, value: dynamicEnv)
+            request.set(key: RuntimeKeys.prewarming.rawValue, value: prewarming)
 
             let infosData = try JSONEncoder().encode(networkBootstrapInfos)
             request.set(key: RuntimeKeys.networkBootstrapInfos.rawValue, value: infosData)
@@ -170,8 +172,15 @@ extension RuntimeClient {
     }
 
     /// Attach client standard streams to the already-running init process.
-    public func attach(stdio: [FileHandle?]) async throws {
+    public func attach(
+        stdio: [FileHandle?],
+        closeStdin: Bool = false
+    ) async throws {
         let request = XPCMessage(route: RuntimeRoutes.attach.rawValue)
+        request.set(
+            key: RuntimeKeys.closeStdin.rawValue,
+            value: closeStdin
+        )
         for (i, handle) in stdio.enumerated() {
             let key: RuntimeKeys = try {
                 switch i {

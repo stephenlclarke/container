@@ -195,6 +195,7 @@ public actor RuntimeService {
             }
 
             let dynamicEnv = try message.dynamicEnv()
+            let prewarming = message.bool(key: RuntimeKeys.prewarming.rawValue)
 
             let bundle = ContainerResource.Bundle(path: self.root)
             let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: self.root)
@@ -305,7 +306,10 @@ public actor RuntimeService {
             }
 
             let stdio = message.stdio()
-            let stdin = stdio[0].map(AttachableInput.init)
+            let stdin = Self.attachableInput(
+                initial: stdio[0],
+                prewarming: prewarming
+            )
             let stdout = AttachableOutput(
                 initial: stdio[1],
                 persistent: loggingCapture.stdout
@@ -413,7 +417,7 @@ public actor RuntimeService {
         }
     }
 
-    /// Adds client-owned standard streams to the already-running init process.
+    /// Adds client-owned standard streams to the booted or running init process.
     /// The process itself keeps stable server-owned relays, so ending one
     /// client session does not close the process's standard input or output.
     @Sendable
@@ -423,18 +427,27 @@ public actor RuntimeService {
 
         return try await self.lock.withLock { [self] _ in
             let runtimeState = await self.state
-            guard runtimeState == .running || runtimeState == .paused else {
+            guard Self.acceptsAttach(in: runtimeState) else {
                 throw ContainerizationError(
                     .invalidState,
-                    message: "cannot attach: container is not running"
+                    message: "cannot attach: container is not booted, running, or paused"
                 )
             }
 
             let stdio = message.stdio()
-            guard stdio.contains(where: { $0 != nil }) else {
+            let closeStdin = message.bool(
+                key: RuntimeKeys.closeStdin.rawValue
+            )
+            guard stdio.contains(where: { $0 != nil }) || closeStdin else {
                 throw ContainerizationError(
                     .invalidArgument,
                     message: "attach requires at least one standard stream"
+                )
+            }
+            guard !closeStdin || stdio[0] == nil else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "attach cannot provide and close stdin together"
                 )
             }
 
@@ -452,7 +465,9 @@ public actor RuntimeService {
                 )
             }
 
-            if let stdin = stdio[0] {
+            if closeStdin {
+                container.io.input?.close()
+            } else if let stdin = stdio[0] {
                 container.io.input?.add(stdin)
             }
             if let stdout = stdio[1] {
@@ -462,6 +477,42 @@ public actor RuntimeService {
                 container.io.stderr?.add(stderr)
             }
             return message.reply()
+        }
+    }
+
+    static func attachableInput(
+        initial: FileHandle?,
+        prewarming: Bool
+    ) -> AttachableInput? {
+        if prewarming {
+            return AttachableInput(initial: initial)
+        }
+        return initial.map(AttachableInput.init)
+    }
+
+    static func acceptsAttach(in state: State) -> Bool {
+        state == .booted || state == .running || state == .paused
+    }
+
+    enum ShutdownDisposition: Equatable {
+        case immediate
+        case cleanBootedContainer
+        case reject
+    }
+
+    private enum ContainerStopFailurePolicy {
+        case logAndContinue
+        case propagateAfterCleanup
+    }
+
+    static func shutdownDisposition(in state: State) -> ShutdownDisposition {
+        switch state {
+        case .created, .stopped, .stopping, .shuttingDown:
+            return .immediate
+        case .booted:
+            return .cleanBootedContainer
+        case .running, .paused:
+            return .reject
         }
     }
 
@@ -603,12 +654,18 @@ public actor RuntimeService {
         self.log.debug("enter", metadata: ["func": "\(#function)"])
         defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
 
-        return try await self.lock.withLock { _ in
-            switch await self.state {
-            case .created, .stopped, .stopping:
+        return try await self.lock.withLock { [self] _ in
+            switch Self.shutdownDisposition(in: await self.state) {
+            case .immediate:
                 await self.setState(.shuttingDown)
-
-            default:
+            case .cleanBootedContainer:
+                let containerInfo = try await self.getContainer()
+                try await self.cleanUpContainer(
+                    containerInfo: containerInfo,
+                    stopFailurePolicy: .propagateAfterCleanup
+                )
+                await self.setState(.shuttingDown)
+            case .reject:
                 throw ContainerizationError(
                     .invalidState,
                     message: "cannot shutdown: container is not stopped"
@@ -1962,17 +2019,23 @@ public actor RuntimeService {
         return code
     }
 
-    private func cleanUpContainer(containerInfo: ContainerInfo, exitStatus: ExitStatus? = nil) async throws {
+    private func cleanUpContainer(
+        containerInfo: ContainerInfo,
+        exitStatus: ExitStatus? = nil,
+        stopFailurePolicy: ContainerStopFailurePolicy = .logAndContinue
+    ) async throws {
         let container = containerInfo.container
         let id = container.id
 
         try? containerInfo.io.close()
         await self.stopDNSProxy()
 
+        var stopFailure: (any Error)?
         do {
             try await container.stop()
         } catch {
             self.log.error("failed to stop container during cleanup", metadata: ["error": "\(error)"])
+            stopFailure = error
         }
 
         await self.stopSocketForwarders()
@@ -1982,6 +2045,12 @@ public actor RuntimeService {
 
         let status = exitStatus ?? ExitStatus(exitCode: 255)
         self.releaseWaiters(for: id, status: status)
+
+        if case .propagateAfterCleanup = stopFailurePolicy,
+            let stopFailure
+        {
+            throw stopFailure
+        }
     }
 }
 

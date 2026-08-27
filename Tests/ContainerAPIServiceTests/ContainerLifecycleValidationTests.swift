@@ -24,6 +24,41 @@ import Testing
 
 struct ContainerLifecycleValidationTests {
     @Test
+    func foregroundProcessAccessRequiresRunningOrPausedContainer() throws {
+        try ContainersService.validateForegroundProcessStatus(
+            .running,
+            id: "running"
+        )
+        try ContainersService.validateForegroundProcessStatus(
+            .paused,
+            id: "paused"
+        )
+
+        let error = #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateForegroundProcessStatus(
+                .stopped,
+                id: "prepared"
+            )
+        }
+        #expect(error?.code == .invalidState)
+        #expect(error?.message == "container prepared is not running or paused")
+    }
+
+    @Test
+    func reachablePreparedRuntimeShutdownFailureRemainsRetryable() {
+        #expect(
+            ContainersService.preparedRuntimeShutdownFailureDisposition(
+                runtimeIsReachable: true
+            ) == .retainForRetry
+        )
+        #expect(
+            ContainersService.preparedRuntimeShutdownFailureDisposition(
+                runtimeIsReachable: false
+            ) == .confirmInactiveService
+        )
+    }
+
+    @Test
     func emptyPostStartProcessSnapshotDefersToTheExitMonitor() {
         #expect(ContainersService.reportedInitPID([]) == 0)
         #expect(ContainersService.reportedInitPID([-1, 42, 7]) == 7)

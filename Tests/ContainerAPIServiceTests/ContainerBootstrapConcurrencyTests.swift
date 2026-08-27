@@ -247,6 +247,106 @@ struct ContainerBootstrapConcurrencyTests {
         )
     }
 
+    @Test("Only never-started dedicated containers without caller-owned SSH state prewarm")
+    func dedicatedPrewarmEligibility() {
+        let eligible = Self.snapshot(id: "eligible")
+        #expect(ContainersService.shouldPrewarm(eligible))
+
+        var shared = Self.snapshot(id: "shared")
+        shared.configuration.effectiveIsolation = .sharedVM
+        #expect(!ContainersService.shouldPrewarm(shared))
+
+        var ssh = Self.snapshot(id: "ssh")
+        ssh.configuration.ssh = true
+        #expect(!ContainersService.shouldPrewarm(ssh))
+
+        var customRuntime = Self.snapshot(id: "custom-runtime")
+        customRuntime.configuration.runtimeHandler = "example-runtime"
+        #expect(!ContainersService.shouldPrewarm(customRuntime))
+
+        var started = Self.snapshot(id: "started")
+        started.startedDate = Date()
+        #expect(!ContainersService.shouldPrewarm(started))
+
+        var running = Self.snapshot(id: "running")
+        running.status = .running
+        #expect(!ContainersService.shouldPrewarm(running))
+    }
+
+    @Test("Only runtime resource updates invalidate a prepared VM")
+    func dedicatedPrewarmResourceInvalidation() {
+        #expect(
+            ContainersService.resourceUpdateInvalidatesPrewarm(
+                prewarmed: true,
+                memoryBytes: 512 * 1024 * 1024,
+                nanoCPUs: nil
+            )
+        )
+        #expect(
+            ContainersService.resourceUpdateInvalidatesPrewarm(
+                prewarmed: true,
+                memoryBytes: nil,
+                nanoCPUs: 1_000_000_000
+            )
+        )
+        #expect(
+            !ContainersService.resourceUpdateInvalidatesPrewarm(
+                prewarmed: true,
+                memoryBytes: nil,
+                nanoCPUs: nil
+            )
+        )
+        #expect(
+            !ContainersService.resourceUpdateInvalidatesPrewarm(
+                prewarmed: false,
+                memoryBytes: 512 * 1024 * 1024,
+                nanoCPUs: 1_000_000_000
+            )
+        )
+    }
+
+    @Test("A changed container name rebuilds a prepared VM")
+    func dedicatedPrewarmRenameInvalidation() {
+        #expect(
+            ContainersService.renameInvalidatesPrewarm(
+                prewarmed: true,
+                currentName: "before",
+                newName: "after"
+            )
+        )
+        #expect(
+            !ContainersService.renameInvalidatesPrewarm(
+                prewarmed: true,
+                currentName: "same",
+                newName: "same"
+            )
+        )
+        #expect(
+            !ContainersService.renameInvalidatesPrewarm(
+                prewarmed: false,
+                currentName: "before",
+                newName: "after"
+            )
+        )
+    }
+
+    @Test("Empty and nil standard-input arrays finish deferred stdin")
+    func dedicatedPrewarmStdinCompletion() {
+        let pipe = Pipe()
+        defer {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
+
+        #expect(ContainersService.deferredStdinNeedsEOF([]))
+        #expect(ContainersService.deferredStdinNeedsEOF([nil]))
+        #expect(
+            !ContainersService.deferredStdinNeedsEOF([
+                pipe.fileHandleForReading
+            ])
+        )
+    }
+
     private static func snapshot(id: String) -> ContainerSnapshot {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",
