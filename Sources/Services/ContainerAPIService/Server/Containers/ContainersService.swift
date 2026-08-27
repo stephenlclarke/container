@@ -901,6 +901,23 @@ public actor ContainersService {
                 )
                 continue
             }
+            if let remoteLogDriverPlane {
+                let protectedOptions = try await validateLoggingForStart(
+                    containerID: snapshot.id,
+                    configuration: snapshot.configuration.logging
+                )
+                let path = try Self.containerPath(
+                    root: containerRoot,
+                    id: snapshot.id
+                )
+                try await remoteLogDriverPlane
+                    .reconcilePreparedBootstrapForCleanup(
+                        containerID: snapshot.id,
+                        bundle: ContainerResource.Bundle(path: path),
+                        configuration: snapshot.configuration,
+                        authenticatedProtectedOptions: protectedOptions
+                    )
+            }
             try await lock.withLock(
                 logMetadata: [
                     "acquirer": "\(#function)",
@@ -4902,6 +4919,10 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        try Self.validateForegroundProcessStatus(
+            state.snapshot.status,
+            id: id
+        )
         let client = try state.getClient()
         return try await client.statistics()
     }

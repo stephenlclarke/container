@@ -1021,6 +1021,72 @@ struct AuthorityRemoteLogDriverPlaneTests {
     }
 
     @Test
+    func recoveredPreparedBootstrapIsReconciledBeforeCleanup() async throws {
+        try await withTemporaryRoot { root in
+            let service = AuthorityRecordingGCPLoggingService()
+            let factory: AuthorityGCPLoggingServiceFactory = { _ in service }
+            let originalPlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityUnavailableAWSLogsClientFactory(),
+                gcpLoggingServiceFactory: factory
+            )
+            let id = "gcplogs-recovered-prewarm"
+            let bundle = ContainerResource.Bundle(
+                path: root.appendingPathComponent(id, isDirectory: true)
+            )
+            try FileManager.default.createDirectory(
+                at: bundle.path,
+                withIntermediateDirectories: true
+            )
+            let configuration = try gcpLogsConfiguration(id: id)
+
+            _ = try await originalPlane.prepareBootstrap(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                stdio: [nil, nil, nil]
+            )
+            try await originalPlane.bootstrapSucceeded(containerID: id)
+
+            let recoveredPlane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory: AuthorityUnavailableAWSLogsClientFactory(),
+                gcpLoggingServiceFactory: factory
+            )
+            try await recoveredPlane.reconcilePreparedBootstrapForCleanup(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:]
+            )
+
+            let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+                fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                    "provider-lifecycle-1-v1.json"
+                )
+            )
+            let ledger = try await ContainerLogLifecycleLedgerV1.open(
+                owningControllerID: controllerID(id: id, leaseGeneration: 1),
+                persistence: persistence
+            )
+            let snapshot = await ledger.snapshot()
+            #expect(snapshot.writerOperations.count == 1)
+            #expect(snapshot.writerOperations[0].result == .candidateClosed)
+
+            _ = try await recoveredPlane.prepareBootstrap(
+                containerID: id,
+                bundle: bundle,
+                configuration: configuration,
+                authenticatedProtectedOptions: [:],
+                stdio: [nil, nil, nil]
+            )
+            try await recoveredPlane.bootstrapSucceeded(containerID: id)
+            try await recoveredPlane.abortBootstrap(containerID: id)
+        }
+    }
+
+    @Test
     func dockerLogInfoUsesCanonicalDockerIdentityWhenAvailable() throws {
         var configuration = try gcpLogsConfiguration(id: "native-resource-id")
         let dockerID = String(repeating: "a", count: 64)

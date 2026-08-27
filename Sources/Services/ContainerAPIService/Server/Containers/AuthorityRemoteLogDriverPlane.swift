@@ -955,6 +955,68 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         return writersTerminal && readersTerminal && cleanupsTerminal
     }
 
+    /// Finishes a durable prepared writer recovered after authority restart.
+    /// This cleanup-only path does not manufacture a replacement writer.
+    package func reconcilePreparedBootstrapForCleanup(
+        containerID: String,
+        bundle: ContainerResource.Bundle,
+        configuration: ContainerConfiguration,
+        authenticatedProtectedOptions: [String: String]
+    ) async throws {
+        guard let resolved = configuration.logging.resolved,
+            resolved.providerIdentity.kind != .core
+        else {
+            return
+        }
+        guard runs[containerID] == nil,
+            configuration.id == containerID
+        else {
+            throw AuthorityRemoteLogDriverPlaneError.incompleteConfiguration
+        }
+
+        let selection = try await providers.registry.selection(for: resolved)
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                "provider-lifecycle-\(resolved.leaseGeneration)-v1.json"
+            )
+        )
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: Self.controllerID(
+                containerID: containerID,
+                leaseGeneration: resolved.leaseGeneration
+            ),
+            persistence: persistence
+        )
+        let controller = ContainerLogLifecycleControllerV1(
+            ledger: ledger,
+            protectedEffects: protectedEffects
+        )
+        let options = try Self.mergedOptions(
+            resolved: resolved,
+            protected: authenticatedProtectedOptions
+        )
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+        try await reconcilePriorRuns(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options,
+            semanticDigest: try Self.semanticDigest(
+                containerID: containerID,
+                configuration: configuration.logging
+            )
+        )
+        let snapshot = await ledger.snapshot()
+        for record in snapshot.writerOperations {
+            _ = try await providers.configurations.unregister(record.request)
+        }
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+    }
+
     /// Prepares one provider session and substitutes authority-owned pipes for
     /// runtime stdout/stderr. Core drivers return the caller's handles intact.
     package func prepareBootstrap(
