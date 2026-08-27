@@ -528,9 +528,9 @@ public actor RuntimeService {
 
     static func shutdownDisposition(in state: State) -> ShutdownDisposition {
         switch state {
-        case .created, .stopped, .stopping, .shuttingDown:
+        case .created, .stopped, .shuttingDown:
             return .immediate
-        case .booted:
+        case .booted, .stopping:
             return .cleanBootedContainer
         case .running, .paused:
             return .reject

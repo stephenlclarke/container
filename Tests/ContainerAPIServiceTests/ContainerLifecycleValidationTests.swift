@@ -160,6 +160,28 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func failedDedicatedStartCleanupRemainsRetryable() {
+        #expect(
+            ContainersService.failedStartCleanupRequiresTombstone(
+                cleanupSucceeded: false,
+                clientIsDedicated: true
+            )
+        )
+        #expect(
+            !ContainersService.failedStartCleanupRequiresTombstone(
+                cleanupSucceeded: true,
+                clientIsDedicated: true
+            )
+        )
+        #expect(
+            !ContainersService.failedStartCleanupRequiresTombstone(
+                cleanupSucceeded: false,
+                clientIsDedicated: false
+            )
+        )
+    }
+
+    @Test
     func createAndUpdateShareTheBootableMemoryFloor() throws {
         try ContainersService.validateBootableMemory(
             ContainersService.minimumBootableMemoryInBytes

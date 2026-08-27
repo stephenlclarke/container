@@ -857,11 +857,59 @@ public actor ContainersService {
         }
     }
 
-    public func setNetworksService(_ service: NetworksService) async {
+    public func setNetworksService(_ service: NetworksService) async throws {
         self.networksService = service
+        try await reconcileSurvivingDedicatedPrewarmsAtBoot()
         await resumeInterruptedRemovals()
         resumeInterruptedRestarts()
         resumeEligibleDedicatedPrewarmingAtBoot()
+    }
+
+    private func reconcileSurvivingDedicatedPrewarmsAtBoot() async throws {
+        let candidates = containers.values.map(\.snapshot).filter { snapshot in
+            Self.shouldPrewarmAtBoot(
+                snapshot,
+                lifecycle: lifecycleRecords[snapshot.id]
+            )
+        }
+        for snapshot in candidates.sorted(by: { $0.id < $1.id }) {
+            let label = Self.fullLaunchdServiceLabel(
+                runtimeName: snapshot.configuration.runtimeHandler,
+                instanceId: snapshot.id
+            )
+            guard try ServiceManager.isRegistered(fullServiceLabel: label) else {
+                continue
+            }
+
+            let client = ManagedRuntimeClient.dedicated(
+                try await RuntimeClient.create(
+                    id: snapshot.id,
+                    runtime: snapshot.configuration.runtimeHandler
+                )
+            )
+            try await lock.withLock(
+                logMetadata: [
+                    "acquirer": "\(#function)",
+                    "id": "\(snapshot.id)",
+                ]
+            ) { context in
+                var state = try await self.getContainerState(
+                    id: snapshot.id,
+                    context: context
+                )
+                guard state.client == nil else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "container \(snapshot.id) already owns a runtime during boot recovery"
+                    )
+                }
+                state.client = client
+                state.prewarmed = false
+                state.prewarmCleanupRequired = true
+                await self.setContainerState(snapshot.id, state, context: context)
+            }
+            _ = try await discardDedicatedPrewarm(id: snapshot.id)
+        }
     }
 
     private func resumeInterruptedRemovals() async {
@@ -982,7 +1030,14 @@ public actor ContainersService {
                 continue
             }
 
-            if config.effectiveIsolation == .dedicatedVM {
+            let bundle = ContainerResource.Bundle(path: dir)
+            let durableLifecycle = try? bundle.lifecycleRecordV2
+            if config.effectiveIsolation == .dedicatedVM,
+                !Self.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                    configuration: config,
+                    lifecycle: durableLifecycle
+                )
+            {
                 let label = Self.fullLaunchdServiceLabel(
                     runtimeName: config.runtimeHandler,
                     instanceId: config.id
@@ -1023,7 +1078,6 @@ public actor ContainersService {
                         message: "failed to find runtime plugin \(config.runtimeHandler)"
                     )
                 }
-                let bundle = ContainerResource.Bundle(path: dir)
                 let lifecycle = try bundle.lifecycleState
                 let dockerState = try bundle.dockerState
                 let state = ContainerState(
@@ -1048,6 +1102,15 @@ public actor ContainersService {
             }
         }
         return results
+    }
+
+    static func shouldDeferDedicatedRuntimeCleanupAtBoot(
+        configuration: ContainerConfiguration,
+        lifecycle: ContainerResource.ContainerLifecycleRecordV2?
+    ) -> Bool {
+        configuration.effectiveIsolation == .dedicatedVM
+            && lifecycle?.snapshot.state == .created
+            && lifecycle?.intent.removalRequested == false
     }
 
     static func quarantinedContainerNamesAtBoot(
@@ -3012,27 +3075,43 @@ public actor ContainersService {
                     healthCheck: startedInitProcess?.snapshot.configuration.healthCheck,
                     client: client
                 )
-            } catch {
+            } catch let startError {
                 self.stopHealthCheckMonitor(id: id)
                 self.clearRuntimeClientToken(id: id)
                 await self.exitMonitor.stopTracking(id: id)
-                try? await client.stop(options: ContainerStopOptions.default)
-                try? await client.shutdown()
-                if client.isDedicated {
-                    let label = Self.fullLaunchdServiceLabel(
-                        runtimeName: state.snapshot.configuration.runtimeHandler,
-                        instanceId: id
+                var cleanupSucceeded = false
+                do {
+                    try await self.cleanUpRuntimeAfterFailedInitStart(
+                        id: id,
+                        configuration: state.snapshot.configuration,
+                        client: client
                     )
-                    try? ServiceManager.deregister(fullServiceLabel: label)
+                    cleanupSucceeded = true
+                } catch let cleanupError {
+                    log.warning(
+                        "failed init-start cleanup will be retried before the next lifecycle operation",
+                        metadata: [
+                            "id": "\(id)",
+                            "error": "\(cleanupError)",
+                        ]
+                    )
                 }
-                try? await self.remoteLogDriverPlane?.close(containerID: id)
-                let recoveredState = Self.recoveredContainerStateAfterFailedStart(
+                var recoveredState = Self.recoveredContainerStateAfterFailedStart(
                     preStartState
                 )
-                await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(id)"]) { context in
-                    await self.setContainerState(id, recoveredState, context: context)
+                if Self.failedStartCleanupRequiresTombstone(
+                    cleanupSucceeded: cleanupSucceeded,
+                    clientIsDedicated: client.isDedicated
+                ) {
+                    recoveredState.client = client
+                    recoveredState.prewarmed = false
+                    recoveredState.prewarmCleanupRequired = true
                 }
-                throw error
+                let stateAfterRollback = recoveredState
+                await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(id)"]) { context in
+                    await self.setContainerState(id, stateAfterRollback, context: context)
+                }
+                throw startError
             }
         }
 
@@ -3063,6 +3142,40 @@ public actor ContainersService {
                 )[0]
             )
         }
+    }
+
+    private func cleanUpRuntimeAfterFailedInitStart(
+        id: String,
+        configuration: ContainerConfiguration,
+        client: ManagedRuntimeClient
+    ) async throws {
+        do {
+            try await client.stop(options: ContainerStopOptions.default)
+        } catch {
+            // A failed stop leaves RuntimeService in `.stopping`. Shutdown
+            // performs the authoritative cleanup for that state below.
+            log.debug(
+                "failed init-start stop will be completed by shutdown",
+                metadata: ["id": "\(id)", "error": "\(error)"]
+            )
+        }
+        try await client.shutdown()
+        if client.isDedicated {
+            try Self.stopRuntimeServiceAndConfirmInactive(
+                fullServiceLabel: Self.fullLaunchdServiceLabel(
+                    runtimeName: configuration.runtimeHandler,
+                    instanceId: id
+                )
+            )
+        }
+        try await self.remoteLogDriverPlane?.close(containerID: id)
+    }
+
+    static func failedStartCleanupRequiresTombstone(
+        cleanupSucceeded: Bool,
+        clientIsDedicated: Bool
+    ) -> Bool {
+        !cleanupSucceeded && clientIsDedicated
     }
 
     static func reportedInitPID(_ processIdentifiers: [Int32]) -> Int32 {

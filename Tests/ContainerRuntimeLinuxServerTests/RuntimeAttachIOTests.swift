@@ -56,7 +56,10 @@ struct RuntimeAttachIOTests {
             RuntimeService.shutdownDisposition(in: .booted)
                 == .cleanBootedContainer
         )
-        #expect(RuntimeService.shutdownDisposition(in: .stopping) == .immediate)
+        #expect(
+            RuntimeService.shutdownDisposition(in: .stopping)
+                == .cleanBootedContainer
+        )
         #expect(RuntimeService.shutdownDisposition(in: .stopped) == .immediate)
         #expect(RuntimeService.shutdownDisposition(in: .running) == .reject)
         #expect(RuntimeService.shutdownDisposition(in: .paused) == .reject)
