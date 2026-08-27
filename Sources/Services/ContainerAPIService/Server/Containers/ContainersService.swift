@@ -3127,11 +3127,12 @@ public actor ContainersService {
                     initPID = Self.reportedInitPID(
                         try await client.processes().processIdentifiers
                     )
-                } catch  where Self.isPostStartProcessExitRace(error) {
+                } catch  where Self.isRecoverablePostStartProcessSnapshotError(error) {
                     // A short-lived init can exit between the successful start
-                    // reply and this process snapshot. The exit monitor is
-                    // already registered, so keep the successful start and let
-                    // that monitor publish the terminal state.
+                    // reply and this process snapshot. Older vminit images can
+                    // also lack the optional process metadata RPC. The exit
+                    // monitor is already registered, so keep the successful
+                    // start and publish an unknown PID in either case.
                     initPID = 0
                 }
                 let startedDate = Date()
@@ -3321,6 +3322,26 @@ public actor ContainersService {
             return false
         }
         return isPostStartProcessExitRace(cause)
+    }
+
+    static func isRecoverablePostStartProcessSnapshotError(_ error: any Error) -> Bool {
+        if isPostStartProcessExitRace(error) {
+            return true
+        }
+        guard let error = error as? ContainerizationError else {
+            return false
+        }
+        if error.code == .unsupported
+            || (error.code == .unknown
+                && error.message.contains("unimplemented:")
+                && error.message.contains("Requested RPC isn't implemented by this server."))
+        {
+            return true
+        }
+        guard let cause = error.cause else {
+            return false
+        }
+        return isRecoverablePostStartProcessSnapshotError(cause)
     }
 
     /// Send a signal to the container.
