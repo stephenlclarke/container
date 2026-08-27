@@ -375,6 +375,9 @@ public actor RuntimeService {
 
             do {
                 try await container.create()
+                if let memoryTargetInBytes = config.resources.memoryTargetInBytes {
+                    try await container.setMemoryTarget(memoryTargetInBytes)
+                }
                 if config.dns != nil {
                     try await self.startDNSProxy(
                         container: container,
@@ -910,6 +913,36 @@ public actor RuntimeService {
                 throw ContainerizationError(
                     .invalidState,
                     message: "cannot resume: container is not paused"
+                )
+            }
+        }
+
+        return message.reply()
+    }
+
+    /// Request a live workload-memory target without restarting the sandbox.
+    @Sendable
+    public func setMemoryTarget(_ message: XPCMessage) async throws -> XPCMessage {
+        self.log.debug("enter", metadata: ["func": "\(#function)"])
+        defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
+
+        let memoryInBytes = message.uint64(key: RuntimeKeys.memoryTargetInBytes.rawValue)
+        guard memoryInBytes > 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "memory target must be positive"
+            )
+        }
+
+        try await self.lock.withLock { _ in
+            switch await self.state {
+            case .booted, .running, .paused:
+                let ctr = try await self.getContainer()
+                try await ctr.container.setMemoryTarget(memoryInBytes)
+            default:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot set memory target: container is not booted, running, or paused"
                 )
             }
         }

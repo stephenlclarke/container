@@ -306,6 +306,23 @@ public struct ContainerClient: Sendable {
         }
     }
 
+    /// Request a live workload-memory target without restarting the container.
+    public func setMemoryTarget(id: String, memoryInBytes: UInt64) async throws {
+        do {
+            let request = XPCMessage(route: .containerSetMemoryTarget)
+            request.set(key: .id, value: id)
+            request.set(key: .memoryTargetInBytes, value: memoryInBytes)
+
+            try await xpcClient.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to set memory target for container \(id)",
+                cause: error
+            )
+        }
+    }
+
     /// Returns the authoritative lifecycle v2 record.
     public func lifecycle(id: String) async throws -> ContainerLifecycleRecordV2 {
         let request = XPCMessage(route: .containerLifecycle)

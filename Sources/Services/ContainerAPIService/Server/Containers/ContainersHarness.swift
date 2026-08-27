@@ -140,6 +140,19 @@ public struct ContainersHarness: Sendable {
     }
 
     @Sendable
+    public func setMemoryTarget(_ message: XPCMessage) async throws -> XPCMessage {
+        guard let id = message.string(key: .id) else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "id cannot be empty"
+            )
+        }
+        let memoryInBytes = message.uint64(key: .memoryTargetInBytes)
+        try await service.setMemoryTarget(id: id, memoryInBytes: memoryInBytes)
+        return message.reply()
+    }
+
+    @Sendable
     public func lifecycle(_ message: XPCMessage) async throws -> XPCMessage {
         guard let id = message.string(key: .id) else {
             throw ContainerizationError(

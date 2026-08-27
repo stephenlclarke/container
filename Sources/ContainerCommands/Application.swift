@@ -68,6 +68,7 @@ public struct Application: AsyncLoggableCommand {
                     ContainerList.self,
                     ContainerLogs.self,
                     ContainerPause.self,
+                    ContainerResize.self,
                     ContainerRun.self,
                     ContainerStart.self,
                     ContainerStats.self,

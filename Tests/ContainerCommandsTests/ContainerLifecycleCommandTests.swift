@@ -24,6 +24,7 @@ struct ContainerLifecycleCommandTests {
     @Test func pauseAndUnpauseAreReachableViaHelp() {
         #expect(HelpCommand.resolveSubcommand(path: ["pause"]) != nil)
         #expect(HelpCommand.resolveSubcommand(path: ["unpause"]) != nil)
+        #expect(HelpCommand.resolveSubcommand(path: ["resize"]) != nil)
     }
 
     @Test func pauseSelectionRequiresContainersOrAll() {
@@ -53,6 +54,14 @@ struct ContainerLifecycleCommandTests {
         }
         #expect(throws: ContainerizationError.self) {
             try Application.ContainerUnpause.validateSelection(containerIds: ["api"], all: true)
+        }
+    }
+
+    @Test func resizeParsesMemoryTargets() throws {
+        #expect(try Application.ContainerResize.memoryInBytes("512M") == 512 * 1024 * 1024)
+        #expect(try Application.ContainerResize.memoryInBytes("2G") == 2 * 1024 * 1024 * 1024)
+        #expect(throws: (any Error).self) {
+            try Application.ContainerResize.memoryInBytes("invalid")
         }
     }
 }

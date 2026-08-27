@@ -810,7 +810,10 @@ extension ContainerDockerLoggingBackend:
             "Runtime": configuration.runtimeHandler,
             "Isolation": "",
             "CpuShares": boundedInt64(runtime?.cpuShares ?? 0),
-            "Memory": boundedInt64(configuration.resources.memoryInBytes),
+            "Memory": boundedInt64(
+                configuration.resources.memoryTargetInBytes
+                    ?? configuration.resources.memoryInBytes
+            ),
             "NanoCpus": nanoCPUs(configuration.resources),
             "CgroupParent": runtime?.cgroupParent ?? "",
             "BlkioWeight": 0,

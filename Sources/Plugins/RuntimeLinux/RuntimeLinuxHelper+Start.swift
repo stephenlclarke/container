@@ -102,6 +102,7 @@ extension RuntimeLinuxHelper {
                         RuntimeRoutes.stop.rawValue: XPCServer.route(server.stop),
                         RuntimeRoutes.pause.rawValue: XPCServer.route(server.pause),
                         RuntimeRoutes.resume.rawValue: XPCServer.route(server.resume),
+                        RuntimeRoutes.setMemoryTarget.rawValue: XPCServer.route(server.setMemoryTarget),
                         RuntimeRoutes.kill.rawValue: XPCServer.route(server.kill),
                         RuntimeRoutes.resize.rawValue: XPCServer.route(server.resize),
                         RuntimeRoutes.wait.rawValue: XPCServer.route(server.wait),

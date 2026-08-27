@@ -33,6 +33,8 @@ public enum RuntimeRoutes: String {
     case pause = "com.apple.container.runtime/pause"
     /// Resume a paused sandbox.
     case resume = "com.apple.container.runtime/resume"
+    /// Request a live workload-memory target for the sandbox.
+    case setMemoryTarget = "com.apple.container.runtime/setMemoryTarget"
     /// Return the current state of the sandbox.
     case state = "com.apple.container.runtime/state"
     /// Get resource usage statistics for the sandbox.

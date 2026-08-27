@@ -273,6 +273,32 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func liveMemoryTargetUsesPortableBoundsAndAlignment() throws {
+        try ContainersService.validateLiveMemoryTarget(
+            ContainersService.minimumLiveMemoryTargetInBytes,
+            maximum: 1024 * 1024 * 1024
+        )
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateLiveMemoryTarget(
+                ContainersService.minimumLiveMemoryTargetInBytes - 1,
+                maximum: 1024 * 1024 * 1024
+            )
+        }
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateLiveMemoryTarget(
+                ContainersService.minimumLiveMemoryTargetInBytes + 1,
+                maximum: 1024 * 1024 * 1024
+            )
+        }
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateLiveMemoryTarget(
+                2 * 1024 * 1024 * 1024,
+                maximum: 1024 * 1024 * 1024
+            )
+        }
+    }
+
+    @Test
     func nanoCPUsRequireARepresentablePositiveQuota() throws {
         #expect(throws: ContainerizationError.self) {
             try ContainersService.cpuQuotaInMicroseconds(nanoCPUs: 0)

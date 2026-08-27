@@ -353,6 +353,21 @@ extension RuntimeClient {
         }
     }
 
+    public func setMemoryTarget(_ memoryInBytes: UInt64) async throws {
+        let request = XPCMessage(route: RuntimeRoutes.setMemoryTarget.rawValue)
+        request.set(key: RuntimeKeys.memoryTargetInBytes.rawValue, value: memoryInBytes)
+
+        do {
+            try await self.client.send(request)
+        } catch {
+            throw ContainerizationError(
+                .internalError,
+                message: "failed to set memory target for container \(self.id)",
+                cause: error
+            )
+        }
+    }
+
     public func kill(_ id: String, signal: String) async throws {
         let request = XPCMessage(route: RuntimeRoutes.kill.rawValue)
         request.set(key: RuntimeKeys.id.rawValue, value: id)
