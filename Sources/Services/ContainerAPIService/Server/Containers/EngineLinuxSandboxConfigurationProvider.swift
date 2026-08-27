@@ -33,6 +33,7 @@ public actor EngineLinuxSandboxConfigurationProviderV1:
     EngineLinuxSandboxConfigurationProvidingV1
 {
     private let root: URL
+    private let snapshotRoot: URL
     private let kernelService: KernelService
     private let containerSystemConfig: ContainerSystemConfig
     private var cached: EngineLinuxSandboxRuntimeConfigurationV1?
@@ -44,6 +45,10 @@ public actor EngineLinuxSandboxConfigurationProviderV1:
     ) {
         self.root = appRoot.appendingPathComponent(
             "engine-linux-sandbox",
+            isDirectory: true
+        )
+        self.snapshotRoot = appRoot.appendingPathComponent(
+            "snapshots",
             isDirectory: true
         )
         self.kernelService = kernelService
@@ -83,6 +88,7 @@ public actor EngineLinuxSandboxConfigurationProviderV1:
 
         let configuration = EngineLinuxSandboxRuntimeConfigurationV1(
             path: root,
+            snapshotRoot: snapshotRoot,
             sandboxID: "engine-linux-sandbox",
             initialFilesystem: initialFilesystem,
             kernel: kernel,

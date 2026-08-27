@@ -24,6 +24,8 @@ public struct EngineLinuxSandboxRuntimeConfigurationV1: Codable, Sendable {
     public static let filename = "engine-linux-sandbox-configuration-v1.json"
 
     public let path: URL
+    /// Root containing prepared image snapshots attached to the sandbox.
+    public let snapshotRoot: URL?
     public let sandboxID: String
     public let initialFilesystem: Filesystem
     public let kernel: Kernel
@@ -34,6 +36,7 @@ public struct EngineLinuxSandboxRuntimeConfigurationV1: Codable, Sendable {
 
     public init(
         path: URL,
+        snapshotRoot: URL? = nil,
         sandboxID: String,
         initialFilesystem: Filesystem,
         kernel: Kernel,
@@ -43,6 +46,7 @@ public struct EngineLinuxSandboxRuntimeConfigurationV1: Codable, Sendable {
         rosetta: Bool = false
     ) {
         self.path = path
+        self.snapshotRoot = snapshotRoot
         self.sandboxID = sandboxID
         self.initialFilesystem = initialFilesystem
         self.kernel = kernel
@@ -54,6 +58,15 @@ public struct EngineLinuxSandboxRuntimeConfigurationV1: Codable, Sendable {
 
     public var configurationURL: URL {
         path.appendingPathComponent(Self.filename)
+    }
+
+    /// Prepared-image snapshot root used by current and legacy configurations.
+    public var effectiveSnapshotRoot: URL {
+        snapshotRoot
+            ?? path.deletingLastPathComponent().appendingPathComponent(
+                "snapshots",
+                isDirectory: true
+            )
     }
 
     public func write() throws {
@@ -107,6 +120,23 @@ public struct EngineLinuxSandboxRuntimeConfigurationV1: Codable, Sendable {
             throw ContainerizationError(
                 .invalidArgument,
                 message: "Engine Linux sandbox capacity must be positive"
+            )
+        }
+        let configuredSnapshotRoot =
+            effectiveSnapshotRoot
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        let expectedSnapshotRoot = path.deletingLastPathComponent()
+            .appendingPathComponent("snapshots", isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+        guard
+            configuredSnapshotRoot.isFileURL,
+            configuredSnapshotRoot.path == expectedSnapshotRoot.path
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "Engine Linux sandbox snapshot root must be the app-root snapshots directory"
             )
         }
     }

@@ -18,6 +18,7 @@ import ContainerResource
 import ContainerRuntimeClient
 import ContainerRuntimeLinuxClient
 import Containerization
+import ContainerizationError
 import ContainerizationOCI
 import Foundation
 import Testing
@@ -102,6 +103,8 @@ struct RuntimeConfigurationTests {
 
         let configuration = EngineLinuxSandboxRuntimeConfigurationV1(
             path: bundlePath,
+            snapshotRoot: bundlePath.deletingLastPathComponent()
+                .appendingPathComponent("snapshots", isDirectory: true),
             sandboxID: "engine-sandbox",
             initialFilesystem: .virtiofs(
                 source: "/path/to/initfs",
@@ -122,6 +125,11 @@ struct RuntimeConfigurationTests {
         let decoded = try EngineLinuxSandboxRuntimeConfigurationV1.read(from: bundlePath)
 
         #expect(decoded.path == bundlePath)
+        #expect(
+            decoded.effectiveSnapshotRoot
+                == bundlePath.deletingLastPathComponent()
+                .appendingPathComponent("snapshots", isDirectory: true)
+        )
         #expect(decoded.sandboxID == "engine-sandbox")
         #expect(decoded.cpus == 6)
         #expect(decoded.memoryInBytes == 4.gib())
@@ -131,6 +139,32 @@ struct RuntimeConfigurationTests {
             atPath: configuration.configurationURL.path
         )
         #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    }
+
+    @Test
+    func engineLinuxSandboxConfigurationRejectsSnapshotRootOutsideAppRoot() {
+        let bundlePath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("test-engine-sandbox-\(UUID())")
+        let configuration = EngineLinuxSandboxRuntimeConfigurationV1(
+            path: bundlePath,
+            snapshotRoot: URL(fileURLWithPath: "/tmp/unrelated-snapshots"),
+            sandboxID: "engine-sandbox",
+            initialFilesystem: .virtiofs(
+                source: "/path/to/initfs",
+                destination: "/",
+                options: ["ro"]
+            ),
+            kernel: Kernel(
+                path: URL(fileURLWithPath: "/path/to/kernel"),
+                platform: .linuxArm
+            ),
+            cpus: 1,
+            memoryInBytes: 512.mib()
+        )
+
+        #expect(throws: ContainerizationError.self) {
+            try configuration.validate()
+        }
     }
 
     @Test

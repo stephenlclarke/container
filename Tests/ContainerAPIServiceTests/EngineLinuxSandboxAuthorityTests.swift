@@ -19,12 +19,106 @@ import ContainerRuntimeClient
 import Containerization
 import ContainerizationError
 import ContainerizationExtras
+import CryptoKit
 import Foundation
 import Testing
 
 @testable import ContainerAPIService
 
 struct EngineLinuxSandboxAuthorityTests {
+    @Test
+    func concurrentEnsureReadyCoalescesRuntimeLaunch() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(
+            runtime: runtime,
+            launchDelay: .milliseconds(100)
+        )
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<10 {
+                group.addTask {
+                    _ = try await authority.ensureReady(
+                        configuration: fixture.sandboxConfiguration
+                    )
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        #expect(await launcher.launchCount == 1)
+        #expect(await runtime.bootCount == 1)
+    }
+
+    @Test
+    func legacyAndExplicitSnapshotRootsShareConfigurationIdentity() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let launcher = FakeAuthorityLauncher(runtime: runtime)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: launcher,
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let legacy = fixture.sandboxConfiguration
+        let explicit = EngineLinuxSandboxRuntimeConfigurationV1(
+            path: legacy.path,
+            snapshotRoot: URL(
+                fileURLWithPath: legacy.effectiveSnapshotRoot.path,
+                isDirectory: false
+            ),
+            sandboxID: legacy.sandboxID,
+            initialFilesystem: legacy.initialFilesystem,
+            kernel: legacy.kernel,
+            cpus: legacy.cpus,
+            memoryInBytes: legacy.memoryInBytes,
+            nestedVirtualization: legacy.nestedVirtualization,
+            rosetta: legacy.rosetta
+        )
+
+        _ = try await authority.ensureReady(configuration: legacy)
+        _ = try await authority.ensureReady(configuration: explicit)
+
+        #expect(await launcher.launchCount == 1)
+    }
+
+    @Test
+    func snapshotRootConfigurationPreservesLegacyLedgerDigest() throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let configuration = fixture.sandboxConfiguration
+        let legacy = LegacySandboxRuntimeConfiguration(
+            path: configuration.path,
+            sandboxID: configuration.sandboxID,
+            initialFilesystem: configuration.initialFilesystem,
+            kernel: configuration.kernel,
+            cpus: configuration.cpus,
+            memoryInBytes: configuration.memoryInBytes,
+            nestedVirtualization: configuration.nestedVirtualization,
+            rosetta: configuration.rosetta
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let digest = SHA256.hash(data: try encoder.encode(legacy))
+        let expected = "sha256:" + digest.map { String(format: "%02x", $0) }.joined()
+
+        #expect(
+            try EngineLinuxSandboxAuthorityV1.configurationDigest(configuration)
+                == expected
+        )
+    }
+
     @Test
     func managedSharedClientUsesAuthorityWithoutDedicatedFallback() async throws {
         let fixture = try EngineSandboxAuthorityFixture()
@@ -781,6 +875,17 @@ struct EngineLinuxSandboxAuthorityTests {
     }
 }
 
+private struct LegacySandboxRuntimeConfiguration: Codable {
+    let path: URL
+    let sandboxID: String
+    let initialFilesystem: Filesystem
+    let kernel: Kernel
+    let cpus: Int
+    let memoryInBytes: UInt64
+    let nestedVirtualization: Bool
+    let rosetta: Bool
+}
+
 private enum LedgerPersistenceTestError: Error, Equatable {
     case injectedFailure
 }
@@ -803,11 +908,13 @@ private actor FailingLedgerPersistence: EngineWorkloadLedgerPersistenceV1 {
 
 private actor FakeAuthorityLauncher: EngineLinuxSandboxLaunchingV1 {
     private let runtime: FakeAuthorityRuntime
+    private let launchDelay: Duration?
     private(set) var launchCount = 0
     private(set) var stopCount = 0
 
-    init(runtime: FakeAuthorityRuntime) {
+    init(runtime: FakeAuthorityRuntime, launchDelay: Duration? = nil) {
         self.runtime = runtime
+        self.launchDelay = launchDelay
     }
 
     func launch(
@@ -815,6 +922,9 @@ private actor FakeAuthorityLauncher: EngineLinuxSandboxLaunchingV1 {
     ) async throws -> any EngineLinuxSandboxRuntimeClientV1 {
         try configuration.write()
         launchCount += 1
+        if let launchDelay {
+            try await Task.sleep(for: launchDelay)
+        }
         return runtime
     }
 

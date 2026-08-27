@@ -133,6 +133,72 @@ private actor ContainerizationEngineLinuxSandboxServiceListenerV1:
     }
 }
 
+/// Serializes the root filesystem materialization performed by LinuxPod.
+///
+/// LinuxPod mounts and prepares workload-local files such as `/etc/hostname`
+/// and `/etc/group` while starting a container. Those guest operations are not
+/// safe to overlap inside one shared VM: concurrent callers can observe EIO or
+/// a transient read-only mount. Admission remains asynchronous and FIFO so XPC
+/// callers do not block a thread while another workload is materialized.
+private actor EngineLinuxSandboxWorkloadMaterializationGate {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+
+    private var occupied = false
+    private var waiters: [Waiter] = []
+
+    func withPermit<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        try await acquire()
+        defer { release() }
+        return try await operation()
+    }
+
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        guard occupied else {
+            occupied = true
+            return
+        }
+
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                waiters.append(Waiter(id: waiterID, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancel(waiterID) }
+        }
+
+        do {
+            try Task.checkCancellation()
+        } catch {
+            release()
+            throw error
+        }
+    }
+
+    private func release() {
+        precondition(occupied, "shared workload materialization permit released without an owner")
+        guard !waiters.isEmpty else {
+            occupied = false
+            return
+        }
+        waiters.removeFirst().continuation.resume()
+    }
+
+    private func cancel(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+    }
+}
+
 /// Narrow lifecycle surface needed by the Engine-owned runtime service.
 public protocol EngineLinuxSandboxInstanceV1: Sendable {
     var id: String { get }
@@ -331,6 +397,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
     private let runtimeFingerprint: String
     private let log: Logger
     private let sealedEgressNetworkBinding: SealedEgressNetworkBinding?
+    private let workloadMaterializationGate =
+        EngineLinuxSandboxWorkloadMaterializationGate()
     private var bootReceipt: EngineLinuxSandboxBootReceiptV1?
     private var shutdownReceipt: EngineLinuxSandboxShutdownReceiptV1?
     private var bootInFlight: BootInFlight?
@@ -413,6 +481,10 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 sandboxConfiguration.bootLog = .file(
                     path: configuration.path.appendingPathComponent("boot.log")
                 )
+                Self.configurePreexposedSnapshotRoot(
+                    &sandboxConfiguration,
+                    root: configuration.effectiveSnapshotRoot
+                )
                 Self.configureSealedEgressNetwork(
                     &sandboxConfiguration,
                     interface: egressNetwork.interface
@@ -439,6 +511,16 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         configuration.interfaces = [interface]
         configuration.workloadNetworkBridge = WorkloadNetworkBridge(
             name: EngineLinuxSandboxNetworkingV1.workloadBridgeName
+        )
+    }
+
+    /// Keeps workload rootfs images reachable through one immutable VZ share.
+    static func configurePreexposedSnapshotRoot(
+        _ configuration: inout LinuxPod.Configuration,
+        root: URL
+    ) {
+        configuration.extensions.append(
+            VZPreexposedDirectoryShare(roots: [root])
         )
     }
 
@@ -807,62 +889,66 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         )
         let sandbox = self.sandbox
         let log = self.log
+        let workloadMaterializationGate = self.workloadMaterializationGate
+        let replacesStoppedWorkload = observed?.state == .stopped
         let task = Task<WorkloadStartResult, any Error> {
-            var serviceListener: ServiceListenerSlot?
-            do {
-                if let sealedServicePort {
-                    let listener = try await sandbox.listenVsock(port: sealedServicePort)
-                    serviceListener = ServiceListenerSlot(
-                        sandboxGeneration: receipt.sandboxGeneration,
-                        workloadProcessGeneration: receipt.processGeneration,
-                        port: sealedServicePort,
-                        listener: listener
-                    )
-                }
-                if observed?.state == .stopped {
-                    try await sandbox.removeContainer(id)
-                }
-                if let runtimeConfiguration,
-                    let containerConfiguration,
-                    let rootfs = runtimeConfiguration.containerRootFilesystem,
-                    let io
-                {
-                    try await sandbox.addContainer(
-                        id,
-                        rootfs: rootfs.asMount
-                    ) { workload in
-                        try EngineLinuxSandboxWorkloadMapper.configure(
-                            &workload,
-                            from: containerConfiguration,
-                            runtimeData: runtimeConfiguration.runtimeData,
-                            dynamicEnvironment: request.dynamicEnvironment,
-                            networkEndpoints: request.networkEndpoints,
-                            io: io,
-                            log: log
+            try await workloadMaterializationGate.withPermit {
+                var serviceListener: ServiceListenerSlot?
+                do {
+                    if let sealedServicePort {
+                        let listener = try await sandbox.listenVsock(port: sealedServicePort)
+                        serviceListener = ServiceListenerSlot(
+                            sandboxGeneration: receipt.sandboxGeneration,
+                            workloadProcessGeneration: receipt.processGeneration,
+                            port: sealedServicePort,
+                            listener: listener
                         )
                     }
-                }
-                try await sandbox.startContainer(id)
-                let observation = await sandbox.snapshot()
-                guard
-                    let workload = observation.workloads.first(where: { $0.id == id }),
-                    workload.state == .running,
-                    workload.initProcessID != nil
-                else {
-                    throw ContainerizationError(
-                        .internalError,
-                        message: "workload start returned without a running process observation"
+                    if replacesStoppedWorkload {
+                        try await sandbox.removeContainer(id)
+                    }
+                    if let runtimeConfiguration,
+                        let containerConfiguration,
+                        let rootfs = runtimeConfiguration.containerRootFilesystem,
+                        let io
+                    {
+                        try await sandbox.addContainer(
+                            id,
+                            rootfs: rootfs.asMount
+                        ) { workload in
+                            try EngineLinuxSandboxWorkloadMapper.configure(
+                                &workload,
+                                from: containerConfiguration,
+                                runtimeData: runtimeConfiguration.runtimeData,
+                                dynamicEnvironment: request.dynamicEnvironment,
+                                networkEndpoints: request.networkEndpoints,
+                                io: io,
+                                log: log
+                            )
+                        }
+                    }
+                    try await sandbox.startContainer(id)
+                    let observation = await sandbox.snapshot()
+                    guard
+                        let workload = observation.workloads.first(where: { $0.id == id }),
+                        workload.state == .running,
+                        workload.initProcessID != nil
+                    else {
+                        throw ContainerizationError(
+                            .internalError,
+                            message: "workload start returned without a running process observation"
+                        )
+                    }
+                    return WorkloadStartResult(
+                        receipt: receipt,
+                        serviceListener: serviceListener
                     )
+                } catch {
+                    if let serviceListener {
+                        await serviceListener.listener.close()
+                    }
+                    throw error
                 }
-                return WorkloadStartResult(
-                    receipt: receipt,
-                    serviceListener: serviceListener
-                )
-            } catch {
-                if let serviceListener {
-                    await serviceListener.listener.close()
-                }
-                throw error
             }
         }
         workloadStartInFlight[id] = WorkloadStartInFlight(request: request, task: task)
