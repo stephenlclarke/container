@@ -82,9 +82,9 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         let readerTasks: [Task<Void, Never>]
         var authorityWriteHandles: [FileHandle]
         var activation: LoggingSessionActivationV1?
-        var abortPipesFinished = false
-        var abortWriterClosed = false
-        var abortConfigurationUnregistered = false
+        var cleanupPipesFinished = false
+        var cleanupWriterClosed = false
+        var cleanupConfigurationUnregistered = false
     }
 
     private struct ReaderRun: Sendable {
@@ -1180,67 +1180,51 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         guard var run = runs[containerID] else {
             return
         }
-        if !run.abortPipesFinished {
+        if !run.cleanupPipesFinished {
             try await finishPipes(run)
-            run.abortPipesFinished = true
+            run.cleanupPipesFinished = true
             runs[containerID] = run
         }
-        if !run.abortWriterClosed {
+        if !run.cleanupWriterClosed {
             _ = try await run.controller.closePreparedWriter(
                 run.request,
                 using: run.provider
             )
-            run.abortWriterClosed = true
+            run.cleanupWriterClosed = true
             runs[containerID] = run
         }
-        if !run.abortConfigurationUnregistered {
+        if !run.cleanupConfigurationUnregistered {
             _ = try await providers.configurations.unregister(run.request)
-            run.abortConfigurationUnregistered = true
+            run.cleanupConfigurationUnregistered = true
             runs[containerID] = run
         }
         runs.removeValue(forKey: containerID)
     }
 
     package func close(containerID: String) async throws {
-        guard let run = runs.removeValue(forKey: containerID) else {
+        guard var run = runs[containerID] else {
             return
-        }
-        var firstError: (any Error)?
-        do {
-            try await finishPipes(run)
-        } catch {
-            firstError = error
         }
         guard let activation = run.activation else {
-            do {
-                _ = try await run.controller.closePreparedWriter(
-                    run.request,
-                    using: run.provider
-                )
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-            }
-            do {
-                _ = try await providers.configurations.unregister(run.request)
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-            }
-            if let firstError {
-                throw firstError
-            }
+            try await abortBootstrap(containerID: containerID)
             return
         }
-        do {
-            _ = try await run.controller.closeWriter(
-                activation,
-                using: run.provider
-            )
-        } catch {
+
+        if !run.cleanupPipesFinished {
+            try await finishPipes(run)
+            run.cleanupPipesFinished = true
+            runs[containerID] = run
+        }
+
+        if !run.cleanupWriterClosed {
             do {
+                _ = try await run.controller.closeWriter(
+                    activation,
+                    using: run.provider
+                )
+                run.cleanupWriterClosed = true
+                runs[containerID] = run
+            } catch {
                 let cleanupID =
                     "cleanup-"
                     + Self.sha256Hex(
@@ -1252,29 +1236,26 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                     using: run.provider
                 )
                 if case .detached(let cleanup) = outcome {
+                    let controller = run.controller
+                    let provider = run.provider
                     Task {
-                        try? await run.controller.runDetachedCleanup(
+                        try? await controller.runDetachedCleanup(
                             cleanup,
-                            using: run.provider
+                            using: provider
                         )
                     }
                 }
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
+                run.cleanupWriterClosed = true
+                runs[containerID] = run
             }
         }
-        do {
+
+        if !run.cleanupConfigurationUnregistered {
             _ = try await providers.configurations.unregister(run.request)
-        } catch {
-            if firstError == nil {
-                firstError = error
-            }
+            run.cleanupConfigurationUnregistered = true
+            runs[containerID] = run
         }
-        if let firstError {
-            throw firstError
-        }
+        runs.removeValue(forKey: containerID)
     }
 
     /// Opens a generation-fenced direct reader for a non-core provider. The
