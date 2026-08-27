@@ -299,6 +299,34 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func adaptiveMemoryReclamationRequiresSafeDedicatedBounds() throws {
+        var configuration = Self.snapshot(id: "adaptive").configuration
+        configuration.resources.memoryInBytes = 1024.mib()
+        configuration.resources.adaptiveMemoryReclamation = .init(
+            floorInBytes: 256.mib()
+        )
+        try ContainersService.validateAdaptiveMemoryReclamation(configuration)
+
+        configuration.effectiveIsolation = .sharedVM
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateAdaptiveMemoryReclamation(configuration)
+        }
+
+        configuration.effectiveIsolation = .dedicatedVM
+        configuration.resources.adaptiveMemoryReclamation?.floorInBytes = 256.mib() + 1
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateAdaptiveMemoryReclamation(configuration)
+        }
+
+        configuration.resources.adaptiveMemoryReclamation?.floorInBytes = 256.mib()
+        configuration.resources.adaptiveMemoryReclamation?.sampleIntervalInNanoseconds = 5
+        configuration.resources.adaptiveMemoryReclamation?.cooldownInNanoseconds = 4
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateAdaptiveMemoryReclamation(configuration)
+        }
+    }
+
+    @Test
     func nanoCPUsRequireARepresentablePositiveQuota() throws {
         #expect(throws: ContainerizationError.self) {
             try ContainersService.cpuQuotaInMicroseconds(nanoCPUs: 0)

@@ -191,6 +191,11 @@ public struct Parser {
         cpuPeriod: Int64? = nil,
         cpuQuota: Int64? = nil,
         cpuSet: String? = nil,
+        memoryReclaimFloor: String? = nil,
+        memoryReclaimHeadroom: String? = nil,
+        memoryReclaimHysteresis: String? = nil,
+        memoryReclaimInterval: String? = nil,
+        memoryReclaimCooldown: String? = nil,
         defaultCPUs: Int,
         defaultMemory: MemorySize,
     ) throws -> ContainerConfiguration.Resources {
@@ -266,7 +271,114 @@ public struct Parser {
             resource.memoryInBytes = try Parser.memoryStringAsBytes(memory)
         }
 
+        resource.adaptiveMemoryReclamation = try adaptiveMemoryReclamation(
+            floor: memoryReclaimFloor,
+            headroom: memoryReclaimHeadroom,
+            hysteresis: memoryReclaimHysteresis,
+            interval: memoryReclaimInterval,
+            cooldown: memoryReclaimCooldown,
+            maximumMemoryInBytes: resource.memoryInBytes
+        )
+
         return resource
+    }
+
+    private static func adaptiveMemoryReclamation(
+        floor: String?,
+        headroom: String?,
+        hysteresis: String?,
+        interval: String?,
+        cooldown: String?,
+        maximumMemoryInBytes: UInt64
+    ) throws -> ContainerConfiguration.Resources.AdaptiveMemoryReclamation? {
+        let tuningWasRequested = [headroom, hysteresis, interval, cooldown]
+            .contains { $0 != nil }
+        guard let floor else {
+            guard !tuningWasRequested else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "--memory-reclaim-floor is required when configuring adaptive memory reclamation"
+                )
+            }
+            return nil
+        }
+
+        let floorInBytes = try Parser.memoryStringAsBytes(floor)
+        let headroomInBytes =
+            try headroom.map(Parser.memoryStringAsBytes)
+            ?? ContainerConfiguration.Resources.AdaptiveMemoryReclamation.defaultHeadroomInBytes
+        let hysteresisInBytes =
+            try hysteresis.map(Parser.memoryStringAsBytes)
+            ?? ContainerConfiguration.Resources.AdaptiveMemoryReclamation.defaultHysteresisInBytes
+        let sampleIntervalInNanoseconds = try adaptiveMemoryDuration(
+            interval,
+            option: "--memory-reclaim-interval",
+            defaultValue: ContainerConfiguration.Resources.AdaptiveMemoryReclamation.defaultSampleIntervalInNanoseconds
+        )
+        let cooldownInNanoseconds = try adaptiveMemoryDuration(
+            cooldown,
+            option: "--memory-reclaim-cooldown",
+            defaultValue: ContainerConfiguration.Resources.AdaptiveMemoryReclamation.defaultCooldownInNanoseconds
+        )
+
+        guard floorInBytes.isMultiple(of: 1.mib()),
+            floorInBytes >= 4.mib(),
+            floorInBytes <= maximumMemoryInBytes
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--memory-reclaim-floor must be a multiple of 1 MiB between 4 MiB and --memory"
+            )
+        }
+        guard headroomInBytes > 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--memory-reclaim-headroom must be positive"
+            )
+        }
+        guard cooldownInNanoseconds >= sampleIntervalInNanoseconds else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "--memory-reclaim-cooldown must be at least --memory-reclaim-interval"
+            )
+        }
+
+        return ContainerConfiguration.Resources.AdaptiveMemoryReclamation(
+            floorInBytes: floorInBytes,
+            headroomInBytes: headroomInBytes,
+            hysteresisInBytes: hysteresisInBytes,
+            sampleIntervalInNanoseconds: sampleIntervalInNanoseconds,
+            cooldownInNanoseconds: cooldownInNanoseconds
+        )
+    }
+
+    private static func adaptiveMemoryDuration(
+        _ value: String?,
+        option: String,
+        defaultValue: UInt64
+    ) throws -> UInt64 {
+        guard let value else {
+            return defaultValue
+        }
+        guard let seconds = ContainerLogTimestampParser.parseDuration(value),
+            seconds.isFinite,
+            seconds > 0
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid \(option) duration '\(value)'"
+            )
+        }
+        let nanoseconds = seconds * 1_000_000_000
+        guard nanoseconds >= 1,
+            nanoseconds < Double(UInt64.max)
+        else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "invalid \(option) duration '\(value)'"
+            )
+        }
+        return UInt64(nanoseconds.rounded())
     }
 
     /// Parses an optional Linux CPU-set expression. The cgroup controller is

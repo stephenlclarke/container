@@ -253,6 +253,8 @@ public actor ContainersService {
     private var prewarmTaskTokens: [String: UUID] = [:]
     private var explicitExitCauses: [String: ExplicitExitCause] = [:]
     private var healthCheckTasks: [String: Task<Void, Never>] = [:]
+    private var adaptiveMemoryReclamationTasks: [String: Task<Void, Never>] = [:]
+    private var adaptiveMemoryReclamationTaskTokens: [String: UUID] = [:]
     private var restartTasks: [String: Task<Void, Never>] = [:]
     private var restartTaskTokens: [String: UUID] = [:]
     private var restartStabilityTasks: [String: Task<Void, Never>] = [:]
@@ -1749,6 +1751,7 @@ public actor ContainersService {
         initImage: String? = nil,
         runtimeData: Data? = nil
     ) async throws {
+        try Self.validateAdaptiveMemoryReclamation(configuration)
         let loggingPlan: ContainerLoggingCreatePlan
         do {
             loggingPlan = try await prepareLoggingForCreate(
@@ -3184,8 +3187,15 @@ public actor ContainersService {
                     healthCheck: startedInitProcess?.snapshot.configuration.healthCheck,
                     client: client
                 )
+                if let startedInitProcess {
+                    self.startAdaptiveMemoryReclamation(
+                        snapshot: startedInitProcess.snapshot,
+                        client: client
+                    )
+                }
             } catch let startError {
                 self.stopHealthCheckMonitor(id: id)
+                self.stopAdaptiveMemoryReclamation(id: id)
                 self.clearRuntimeClientToken(id: id)
                 await self.exitMonitor.stopTracking(id: id)
                 var cleanupSucceeded = false
@@ -3684,6 +3694,15 @@ public actor ContainersService {
                 memoryInBytes,
                 maximum: state.snapshot.configuration.resources.memoryInBytes
             )
+            if let floor = state.snapshot.configuration.resources
+                .adaptiveMemoryReclamation?.floorInBytes,
+                memoryInBytes < floor
+            {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "live memory target cannot be below the adaptive reclamation floor"
+                )
+            }
             let client = try state.getClient()
             guard client.isDedicated else {
                 throw ContainerizationError(
@@ -3805,6 +3824,7 @@ public actor ContainersService {
                 } catch {
                     let recoveryError = error
                     await self.stopHealthCheckMonitor(id: id)
+                    await self.stopAdaptiveMemoryReclamation(id: id)
                     state.snapshot.status = .unknown
                     state.snapshot.health = nil
                     _ = try? await self.commitLifecycle(
@@ -3824,6 +3844,7 @@ public actor ContainersService {
                 throw persistenceError
             }
             await self.stopHealthCheckMonitor(id: id)
+            await self.stopAdaptiveMemoryReclamation(id: id)
             await self.setContainerState(id, state, context: context)
             return state.snapshot
         }
@@ -3904,6 +3925,10 @@ public actor ContainersService {
             await self.startHealthCheckMonitor(
                 id: id,
                 healthCheck: state.snapshot.configuration.healthCheck,
+                client: client
+            )
+            await self.startAdaptiveMemoryReclamation(
+                snapshot: state.snapshot,
                 client: client
             )
             return state.snapshot
@@ -5417,6 +5442,7 @@ public actor ContainersService {
         self.runtimeClientTokens.removeValue(forKey: id)
         await self.exitMonitor.stopTracking(id: id)
         self.stopHealthCheckMonitor(id: id)
+        self.stopAdaptiveMemoryReclamation(id: id)
 
         // Reclaim the workload and, for dedicated isolation, its runtime service.
         self.log.info("cleaning up runtime workload", metadata: ["id": "\(id)"])
@@ -5955,6 +5981,7 @@ public actor ContainersService {
 
     private func cleanUp(id: String, context: AsyncLock.Context) async throws {
         self.stopHealthCheckMonitor(id: id)
+        self.stopAdaptiveMemoryReclamation(id: id)
         self.cancelRestartTasks(id: id)
         self.cancelExecTasks(id: id)
         try await self._cleanUp(id: id)
@@ -6462,6 +6489,133 @@ public actor ContainersService {
         healthCheckTasks.removeValue(forKey: id)
     }
 
+    private func startAdaptiveMemoryReclamation(
+        snapshot: ContainerSnapshot,
+        client: ManagedRuntimeClient
+    ) {
+        let id = snapshot.id
+        stopAdaptiveMemoryReclamation(id: id)
+        do {
+            try Self.validateAdaptiveMemoryReclamation(snapshot.configuration)
+        } catch {
+            log.warning(
+                "ignoring invalid adaptive memory reclamation policy",
+                metadata: [
+                    "id": "\(id)",
+                    "error": "\(error)",
+                ]
+            )
+            return
+        }
+        guard snapshot.status == .running,
+            client.isDedicated,
+            let policy = snapshot.configuration.resources.adaptiveMemoryReclamation,
+            let generation = containers[id]?.generation
+        else {
+            return
+        }
+
+        let token = UUID()
+        adaptiveMemoryReclamationTaskTokens[id] = token
+        adaptiveMemoryReclamationTasks[id] = Task { [weak self] in
+            await self?.runAdaptiveMemoryReclamation(
+                id: id,
+                generation: generation,
+                token: token,
+                policy: policy,
+                client: client
+            )
+        }
+    }
+
+    private func stopAdaptiveMemoryReclamation(id: String) {
+        adaptiveMemoryReclamationTasks[id]?.cancel()
+        adaptiveMemoryReclamationTasks.removeValue(forKey: id)
+        adaptiveMemoryReclamationTaskTokens.removeValue(forKey: id)
+    }
+
+    private func runAdaptiveMemoryReclamation(
+        id: String,
+        generation: UUID,
+        token: UUID,
+        policy: ContainerConfiguration.Resources.AdaptiveMemoryReclamation,
+        client: ManagedRuntimeClient
+    ) async {
+        defer {
+            if adaptiveMemoryReclamationTaskTokens[id] == token {
+                adaptiveMemoryReclamationTasks.removeValue(forKey: id)
+                adaptiveMemoryReclamationTaskTokens.removeValue(forKey: id)
+            }
+        }
+
+        var controller = AdaptiveMemoryReclamationController(
+            policy: policy,
+            now: ProcessInfo.processInfo.systemUptime
+        )
+        while adaptiveMemoryReclamationTaskTokens[id] == token {
+            do {
+                try await Task.sleep(
+                    for: Self.duration(
+                        fromNanoseconds: policy.sampleIntervalInNanoseconds
+                    )
+                )
+                let shouldContinue = try await withLifecycleMutation(id: id) {
+                    guard self.adaptiveMemoryReclamationTaskTokens[id] == token,
+                        let state = self.containers[id],
+                        state.generation == generation,
+                        state.snapshot.status == .running,
+                        state.snapshot.configuration.resources.adaptiveMemoryReclamation == policy
+                    else {
+                        return false
+                    }
+
+                    let statistics = try await client.statistics()
+                    guard let usageInBytes = statistics.memoryUsageBytes else {
+                        controller.recordSamplingFailure()
+                        return true
+                    }
+                    let resources = state.snapshot.configuration.resources
+                    let currentTargetInBytes =
+                        resources.memoryTargetInBytes ?? resources.memoryInBytes
+                    guard
+                        let target = controller.observe(
+                            usageInBytes: usageInBytes,
+                            currentTargetInBytes: currentTargetInBytes,
+                            maximumInBytes: resources.memoryInBytes,
+                            now: ProcessInfo.processInfo.systemUptime
+                        )
+                    else {
+                        return true
+                    }
+                    try await self.setMemoryTargetImpl(
+                        id: id,
+                        memoryInBytes: target
+                    )
+                    controller.recordAdjustment(
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
+                    return true
+                }
+                guard shouldContinue else {
+                    return
+                }
+            } catch is CancellationError {
+                return
+            } catch let error as ContainerizationError where error.code == .notFound {
+                return
+            } catch {
+                controller.recordSamplingFailure()
+                log.debug(
+                    "adaptive memory reclamation sample failed",
+                    metadata: [
+                        "id": "\(id)",
+                        "error": "\(error)",
+                    ]
+                )
+            }
+        }
+    }
+
     private func markContainerManuallyStopped(id: String) async throws -> ContainerState {
         let state = try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
             var state = try await self.getContainerState(id: id, context: context)
@@ -6889,6 +7043,7 @@ public actor ContainersService {
         runtimeClientTokens.removeValue(forKey: id)
         await self.exitMonitor.stopTracking(id: id)
         self.stopHealthCheckMonitor(id: id)
+        self.stopAdaptiveMemoryReclamation(id: id)
 
         let cleanup = await lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context -> (ManagedRuntimeClient?, String?) in
             guard var state = try? await self.getContainerState(id: id, context: context) else {
@@ -7855,6 +8010,42 @@ extension ContainersService {
     static let minimumLiveMemoryTargetInBytes: UInt64 = 4.mib()
     static let dockerCPUPeriodInMicroseconds: UInt64 = 100_000
 
+    static func validateAdaptiveMemoryReclamation(
+        _ configuration: ContainerConfiguration
+    ) throws {
+        guard let policy = configuration.resources.adaptiveMemoryReclamation else {
+            return
+        }
+        guard configuration.effectiveIsolation == .dedicatedVM else {
+            throw ContainerizationError(
+                .unsupported,
+                message: "adaptive memory reclamation requires dedicated-vm isolation"
+            )
+        }
+        try validateLiveMemoryTarget(
+            policy.floorInBytes,
+            maximum: configuration.resources.memoryInBytes
+        )
+        guard policy.headroomInBytes > 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "adaptive memory reclamation headroom must be positive"
+            )
+        }
+        guard policy.sampleIntervalInNanoseconds > 0 else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "adaptive memory reclamation sample interval must be positive"
+            )
+        }
+        guard policy.cooldownInNanoseconds >= policy.sampleIntervalInNanoseconds else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "adaptive memory reclamation cooldown must be at least its sample interval"
+            )
+        }
+    }
+
     static func validateBootableMemory(_ memoryInBytes: UInt64) throws {
         guard memoryInBytes >= minimumBootableMemoryInBytes else {
             throw ContainerizationError(
@@ -8072,6 +8263,7 @@ extension ContainersService {
                     newOptions.restartPolicy,
                     autoRemove: newOptions.autoRemove
                 )
+                try Self.validateAdaptiveMemoryReclamation(configuration)
                 let lifecycle = try await self.lifecycleRecord(id: id)
                 let publicState = lifecycle.snapshot.state
                 let cancelPendingRestart = Self.shouldCancelPendingRestart(

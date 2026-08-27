@@ -128,13 +128,23 @@ public struct Flags {
             memory: String?,
             cpuPeriod: Int64? = nil,
             cpuQuota: Int64? = nil,
-            cpuSet: String? = nil
+            cpuSet: String? = nil,
+            memoryReclaimFloor: String? = nil,
+            memoryReclaimHeadroom: String? = nil,
+            memoryReclaimHysteresis: String? = nil,
+            memoryReclaimInterval: String? = nil,
+            memoryReclaimCooldown: String? = nil
         ) {
             self.cpus = cpus
             self.memory = memory
             self.cpuPeriod = cpuPeriod
             self.cpuQuota = cpuQuota
             self.cpuSet = cpuSet
+            self.memoryReclaimFloor = memoryReclaimFloor
+            self.memoryReclaimHeadroom = memoryReclaimHeadroom
+            self.memoryReclaimHysteresis = memoryReclaimHysteresis
+            self.memoryReclaimInterval = memoryReclaimInterval
+            self.memoryReclaimCooldown = memoryReclaimCooldown
         }
 
         @Option(name: .shortAndLong, help: "CPU limit (0 for unlimited; supports fractional values such as 0.25)")
@@ -163,6 +173,36 @@ public struct Flags {
             help: "Amount of memory (byte granularity), with optional K, M, G, T, or P suffix"
         )
         public var memory: String?
+
+        @Option(
+            name: .customLong("memory-reclaim-floor"),
+            help: "Enable adaptive dedicated-VM memory reclamation with this minimum workload-memory target"
+        )
+        public var memoryReclaimFloor: String?
+
+        @Option(
+            name: .customLong("memory-reclaim-headroom"),
+            help: "Free workload memory retained above observed usage (default: 128M)"
+        )
+        public var memoryReclaimHeadroom: String?
+
+        @Option(
+            name: .customLong("memory-reclaim-hysteresis"),
+            help: "Minimum reduction before lowering the live target (default: 64M)"
+        )
+        public var memoryReclaimHysteresis: String?
+
+        @Option(
+            name: .customLong("memory-reclaim-interval"),
+            help: "Statistics sampling interval for adaptive reclamation (default: 2s)"
+        )
+        public var memoryReclaimInterval: String?
+
+        @Option(
+            name: .customLong("memory-reclaim-cooldown"),
+            help: "Minimum delay between adaptive target changes (default: 30s)"
+        )
+        public var memoryReclaimCooldown: String?
     }
 
     public struct DNS: ParsableArguments {

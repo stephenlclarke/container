@@ -196,6 +196,43 @@ struct ContainerConfigurationResourcesTests {
         #expect(decoded.resources.memoryTargetInBytes == nil)
     }
 
+    @Test func roundTripsAdaptiveMemoryReclamationPolicy() throws {
+        var config = makeTestConfiguration()
+        config.resources.adaptiveMemoryReclamation = .init(
+            floorInBytes: 256.mib(),
+            headroomInBytes: 96.mib(),
+            hysteresisInBytes: 32.mib(),
+            sampleIntervalInNanoseconds: 3_000_000_000,
+            cooldownInNanoseconds: 20_000_000_000
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ContainerConfiguration.self,
+            from: JSONEncoder().encode(config)
+        )
+
+        #expect(
+            decoded.resources.adaptiveMemoryReclamation
+                == config.resources.adaptiveMemoryReclamation
+        )
+    }
+
+    @Test func decodesMissingAdaptiveMemoryReclamationAsDisabled() throws {
+        let config = makeTestConfiguration()
+        let data = try JSONEncoder().encode(config)
+        var obj = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var resources = try #require(obj["resources"] as? [String: Any])
+        resources.removeValue(forKey: "adaptiveMemoryReclamation")
+        obj["resources"] = resources
+
+        let decoded = try JSONDecoder().decode(
+            ContainerConfiguration.self,
+            from: JSONSerialization.data(withJSONObject: obj)
+        )
+
+        #expect(decoded.resources.adaptiveMemoryReclamation == nil)
+    }
+
     @Test func roundTripsCPUPeriod() throws {
         var config = makeTestConfiguration()
         config.resources.cpuPeriodInMicroseconds = 200_000

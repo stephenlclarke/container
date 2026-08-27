@@ -2441,6 +2441,94 @@ struct ParserTest {
         #expect(result.memoryInBytes == 209_715_201)
     }
 
+    @Test func testResourcesAdaptiveMemoryReclamationIsOptIn() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: "2g",
+            memoryReclaimFloor: "256m",
+            defaultCPUs: 2,
+            defaultMemory: MemorySize("2g")
+        )
+
+        let policy = try #require(result.adaptiveMemoryReclamation)
+        #expect(policy.floorInBytes == 256.mib())
+        #expect(policy.headroomInBytes == 128.mib())
+        #expect(policy.hysteresisInBytes == 64.mib())
+        #expect(policy.sampleIntervalInNanoseconds == 2_000_000_000)
+        #expect(policy.cooldownInNanoseconds == 30_000_000_000)
+    }
+
+    @Test func testResourceFlagsParseAdaptiveMemoryReclamationOptions() throws {
+        let flags = try Flags.Resource.parse([
+            "--memory-reclaim-floor", "256m",
+            "--memory-reclaim-headroom", "96m",
+            "--memory-reclaim-hysteresis", "32m",
+            "--memory-reclaim-interval", "3s",
+            "--memory-reclaim-cooldown", "20s",
+        ])
+
+        #expect(flags.memoryReclaimFloor == "256m")
+        #expect(flags.memoryReclaimHeadroom == "96m")
+        #expect(flags.memoryReclaimHysteresis == "32m")
+        #expect(flags.memoryReclaimInterval == "3s")
+        #expect(flags.memoryReclaimCooldown == "20s")
+    }
+
+    @Test func testResourcesParsesAdaptiveMemoryReclamationTuning() throws {
+        let result = try Parser.resources(
+            cpus: nil,
+            memory: "2g",
+            memoryReclaimFloor: "256m",
+            memoryReclaimHeadroom: "96m",
+            memoryReclaimHysteresis: "32m",
+            memoryReclaimInterval: "3s",
+            memoryReclaimCooldown: "20s",
+            defaultCPUs: 2,
+            defaultMemory: MemorySize("2g")
+        )
+
+        let policy = try #require(result.adaptiveMemoryReclamation)
+        #expect(policy.headroomInBytes == 96.mib())
+        #expect(policy.hysteresisInBytes == 32.mib())
+        #expect(policy.sampleIntervalInNanoseconds == 3_000_000_000)
+        #expect(policy.cooldownInNanoseconds == 20_000_000_000)
+    }
+
+    @Test func testResourcesRejectsAdaptiveTuningWithoutOptInFloor() {
+        #expect(throws: (any Error).self) {
+            _ = try Parser.resources(
+                cpus: nil,
+                memory: "2g",
+                memoryReclaimHeadroom: "96m",
+                defaultCPUs: 2,
+                defaultMemory: MemorySize("2g")
+            )
+        }
+    }
+
+    @Test func testResourcesRejectsInvalidAdaptiveMemoryBoundsAndTiming() {
+        for (floor, interval, cooldown) in [
+            ("255000001b", "2s", "30s"),
+            ("3g", "2s", "30s"),
+            ("256m", "0s", "30s"),
+            ("256m", "0.0000000001s", "30s"),
+            ("256m", "18446744073.709551616s", "18446744073.709551616s"),
+            ("256m", "30s", "2s"),
+        ] {
+            #expect(throws: (any Error).self) {
+                _ = try Parser.resources(
+                    cpus: nil,
+                    memory: "2g",
+                    memoryReclaimFloor: floor,
+                    memoryReclaimInterval: interval,
+                    memoryReclaimCooldown: cooldown,
+                    defaultCPUs: 2,
+                    defaultMemory: MemorySize("2g")
+                )
+            }
+        }
+    }
+
     @Test func testSysctlsParsesNameValuePairs() throws {
         let result = try Parser.sysctls([
             "net.ipv4.ip_forward=1",
