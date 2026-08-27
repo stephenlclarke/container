@@ -8,7 +8,11 @@ on:
     inputs:
       release:
         type: boolean
-        description: "Publish this build for release"
+        description: "Build the project in release configuration"
+        default: false
+      release_artifacts:
+        type: boolean
+        description: "Generate installer, debug symbols, and API documentation for a version release"
         default: false
       coverage:
         type: boolean
@@ -84,6 +88,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Require a version tag for release artifacts
+        if: ${{ inputs.release_artifacts && !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          echo "Release artifacts may only be generated for a version tag" >&2
+          exit 1
+
       - name: Download pinned Linux service workloads
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -138,7 +148,14 @@ jobs:
             echo "BUILD_CONFIGURATION=release" >> "$GITHUB_ENV"
           fi
 
-      - name: Make the container project and docs
+      - name: Build the container project
+        if: ${{ !inputs.release_artifacts }}
+        env:
+          CONTAINER_SERVICE_WORKLOADS_PREBUILT: "true"
+        run: make build
+
+      - name: Build version release artifacts
+        if: ${{ inputs.release_artifacts }}
         env:
           CONTAINER_SERVICE_WORKLOADS_PREBUILT: "true"
         run: |
@@ -156,6 +173,7 @@ jobs:
           fi
 
       - name: Create package
+        if: ${{ inputs.release_artifacts }}
         run: |
           mkdir -p outputs
           mv "bin/${BUILD_CONFIGURATION}/container-installer-unsigned.pkg" outputs
@@ -256,6 +274,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Save documentation artifact
+        if: ${{ inputs.release_artifacts }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: api-docs
@@ -263,6 +282,7 @@ jobs:
           retention-days: 14
 
       - name: Save package artifacts
+        if: ${{ inputs.release_artifacts }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: container-package
@@ -270,10 +290,10 @@ jobs:
 
   uploadPages:
     # Separate upload step required because upload-pages-artifact needs
-    # gtar which is not on the macOS runner. Only the explicit docs workflow
+    # gtar which is not on the macOS runner. Only the version release workflow
     # publishes this artifact; normal CI must not require GitHub Pages.
     name: Upload artifact for GitHub Pages
-    if: ${{ inputs.publish_pages }}
+    if: ${{ inputs.release_artifacts && inputs.publish_pages }}
     needs: buildAndTest
     timeout-minutes: 5
     runs-on: ubuntu-latest

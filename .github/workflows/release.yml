@@ -14,17 +14,27 @@ jobs:
     uses: ./.github/workflows/common.yml
     with:
       release: true
+      release_artifacts: true
+      publish_pages: true
     secrets: inherit
     permissions:
       contents: read
       packages: read
       pages: write
 
+  codeql:
+    name: Analyze release
+    uses: ./.github/workflows/codeql.yml
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+
   release:
     if: startsWith(github.ref, 'refs/tags/')
     name: Publish release
     timeout-minutes: 30
-    needs: build
+    needs: [build, codeql]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -56,3 +66,19 @@ jobs:
           files: |
             outputs/container-package/*.zip
             outputs/container-package/*.pkg
+
+  deployDocs:
+    name: Deploy release documentation
+    needs: [build, codeql]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5

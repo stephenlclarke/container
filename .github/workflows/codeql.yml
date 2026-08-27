@@ -1,19 +1,7 @@
 name: CodeQL
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
-    types:
-      - opened
-      - synchronize
-      - reopened
-  schedule:
-    - cron: "23 3 * * 1"
-  workflow_dispatch:
+  workflow_call:
 
 permissions:
   actions: read
@@ -27,6 +15,7 @@ concurrency:
 jobs:
   analyze:
     name: Analyze Swift
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     runs-on: macos-26
     timeout-minutes: 120
     steps:
