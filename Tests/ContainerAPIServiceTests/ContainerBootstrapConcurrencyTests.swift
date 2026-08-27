@@ -274,8 +274,8 @@ struct ContainerBootstrapConcurrencyTests {
         )
     }
 
-    @Test("Only never-started dedicated containers without caller-owned SSH state prewarm")
-    func dedicatedPrewarmEligibility() {
+    @Test("Only never-started dedicated containers without caller-owned host endpoints prewarm")
+    func dedicatedPrewarmEligibility() throws {
         let eligible = Self.snapshot(id: "eligible")
         #expect(ContainersService.shouldPrewarm(eligible))
 
@@ -286,6 +286,15 @@ struct ContainerBootstrapConcurrencyTests {
         var ssh = Self.snapshot(id: "ssh")
         ssh.configuration.ssh = true
         #expect(!ContainersService.shouldPrewarm(ssh))
+
+        var publishedSocket = Self.snapshot(id: "published-socket")
+        publishedSocket.configuration.publishedSockets = [
+            try PublishSocket(
+                containerPath: "/run/service.sock",
+                hostPath: "/tmp/service.sock"
+            )
+        ]
+        #expect(!ContainersService.shouldPrewarm(publishedSocket))
 
         var customRuntime = Self.snapshot(id: "custom-runtime")
         customRuntime.configuration.runtimeHandler = "example-runtime"

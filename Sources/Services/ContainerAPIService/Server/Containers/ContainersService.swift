@@ -1745,6 +1745,7 @@ public actor ContainersService {
             && snapshot.configuration.effectiveIsolation == .dedicatedVM
             && snapshot.configuration.runtimeHandler == "container-runtime-linux"
             && !snapshot.configuration.ssh
+            && snapshot.configuration.publishedSockets.isEmpty
     }
 
     private func scheduleDedicatedPrewarm(snapshot: ContainerSnapshot) {
