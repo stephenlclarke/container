@@ -22,6 +22,52 @@ import Testing
 @testable import ContainerRuntimeLinuxServer
 
 struct RuntimeAttachIOTests {
+    @Test("Prewarming keeps stdin attachable before the first client arrives")
+    func prewarmingCreatesDeferredInputRelay() {
+        let ordinary = RuntimeService.attachableInput(
+            initial: nil,
+            prewarming: false
+        )
+        let prewarmed = RuntimeService.attachableInput(
+            initial: nil,
+            prewarming: true
+        )
+
+        #expect(ordinary == nil)
+        #expect(prewarmed != nil)
+        prewarmed?.close()
+    }
+
+    @Test("Attach is accepted after prewarm and during the live lifecycle")
+    func attachableRuntimeStates() {
+        #expect(!RuntimeService.acceptsAttach(in: .created))
+        #expect(RuntimeService.acceptsAttach(in: .booted))
+        #expect(RuntimeService.acceptsAttach(in: .running))
+        #expect(RuntimeService.acceptsAttach(in: .paused))
+        #expect(!RuntimeService.acceptsAttach(in: .stopping))
+        #expect(!RuntimeService.acceptsAttach(in: .stopped))
+        #expect(!RuntimeService.acceptsAttach(in: .shuttingDown))
+    }
+
+    @Test("Shutdown cleans a booted prewarm before the helper exits")
+    func runtimeShutdownDisposition() {
+        #expect(RuntimeService.shutdownDisposition(in: .created) == .immediate)
+        #expect(
+            RuntimeService.shutdownDisposition(in: .booted)
+                == .cleanBootedContainer
+        )
+        #expect(
+            RuntimeService.shutdownDisposition(in: .stopping)
+                == .cleanBootedContainer
+        )
+        #expect(RuntimeService.shutdownDisposition(in: .stopped) == .immediate)
+        #expect(RuntimeService.shutdownDisposition(in: .running) == .reject)
+        #expect(RuntimeService.shutdownDisposition(in: .paused) == .reject)
+        #expect(
+            RuntimeService.shutdownDisposition(in: .shuttingDown) == .immediate
+        )
+    }
+
     @Test
     func outputForwardsToInitialAndReattachedClients() throws {
         let initial = Pipe()
@@ -91,6 +137,16 @@ struct RuntimeAttachIOTests {
         input.close()
         let finished = await iterator.next()
         #expect(finished == nil)
+    }
+
+    @Test("Closing deferred stdin delivers EOF before process start")
+    func deferredInputCanFinishWithoutAClientHandle() async {
+        let input = AttachableInput()
+        var iterator = input.stream().makeAsyncIterator()
+
+        input.close()
+
+        #expect(await iterator.next() == nil)
     }
 }
 

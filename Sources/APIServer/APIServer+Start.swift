@@ -118,7 +118,7 @@ extension APIServer {
                     log: log,
                     routes: &routes
                 )
-                await containersService.setNetworksService(networkService)
+                try await containersService.setNetworksService(networkService)
                 initializeHealthCheckService(log: log, routes: &routes)
                 try initializeDiskUsageService(
                     containersService: containersService,

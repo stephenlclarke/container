@@ -82,6 +82,9 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         let readerTasks: [Task<Void, Never>]
         var authorityWriteHandles: [FileHandle]
         var activation: LoggingSessionActivationV1?
+        var cleanupPipesFinished = false
+        var cleanupWriterClosed = false
+        var cleanupConfigurationUnregistered = false
     }
 
     private struct ReaderRun: Sendable {
@@ -952,6 +955,68 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         return writersTerminal && readersTerminal && cleanupsTerminal
     }
 
+    /// Finishes a durable prepared writer recovered after authority restart.
+    /// This cleanup-only path does not manufacture a replacement writer.
+    package func reconcilePreparedBootstrapForCleanup(
+        containerID: String,
+        bundle: ContainerResource.Bundle,
+        configuration: ContainerConfiguration,
+        authenticatedProtectedOptions: [String: String]
+    ) async throws {
+        guard let resolved = configuration.logging.resolved,
+            resolved.providerIdentity.kind != .core
+        else {
+            return
+        }
+        guard runs[containerID] == nil,
+            configuration.id == containerID
+        else {
+            throw AuthorityRemoteLogDriverPlaneError.incompleteConfiguration
+        }
+
+        let selection = try await providers.registry.selection(for: resolved)
+        let persistence = try FileContainerLogLifecycleLedgerPersistenceV1(
+            fileURL: bundle.containerLoggingV2.appendingPathComponent(
+                "provider-lifecycle-\(resolved.leaseGeneration)-v1.json"
+            )
+        )
+        let ledger = try await ContainerLogLifecycleLedgerV1.open(
+            owningControllerID: Self.controllerID(
+                containerID: containerID,
+                leaseGeneration: resolved.leaseGeneration
+            ),
+            persistence: persistence
+        )
+        let controller = ContainerLogLifecycleControllerV1(
+            ledger: ledger,
+            protectedEffects: protectedEffects
+        )
+        let options = try Self.mergedOptions(
+            resolved: resolved,
+            protected: authenticatedProtectedOptions
+        )
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+        try await reconcilePriorRuns(
+            ledger: ledger,
+            controller: controller,
+            configuration: configuration,
+            options: options,
+            semanticDigest: try Self.semanticDigest(
+                containerID: containerID,
+                configuration: configuration.logging
+            )
+        )
+        let snapshot = await ledger.snapshot()
+        for record in snapshot.writerOperations {
+            _ = try await providers.configurations.unregister(record.request)
+        }
+        try await controller.reconcilePendingEffectRemovals(
+            using: selection.provider
+        )
+    }
+
     /// Prepares one provider session and substitutes authority-owned pipes for
     /// runtime stdout/stderr. Core drivers return the caller's handles intact.
     package func prepareBootstrap(
@@ -1174,77 +1239,54 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
     }
 
     package func abortBootstrap(containerID: String) async throws {
-        guard let run = runs.removeValue(forKey: containerID) else {
+        guard var run = runs[containerID] else {
             return
         }
-        var firstError: (any Error)?
-        do {
+        if !run.cleanupPipesFinished {
             try await finishPipes(run)
-        } catch {
-            firstError = error
+            run.cleanupPipesFinished = true
+            runs[containerID] = run
         }
-        do {
+        if !run.cleanupWriterClosed {
             _ = try await run.controller.closePreparedWriter(
                 run.request,
                 using: run.provider
             )
-        } catch {
-            if firstError == nil {
-                firstError = error
-            }
+            run.cleanupWriterClosed = true
+            runs[containerID] = run
         }
-        do {
+        if !run.cleanupConfigurationUnregistered {
             _ = try await providers.configurations.unregister(run.request)
-        } catch {
-            if firstError == nil {
-                firstError = error
-            }
+            run.cleanupConfigurationUnregistered = true
+            runs[containerID] = run
         }
-        if let firstError {
-            throw firstError
-        }
+        runs.removeValue(forKey: containerID)
     }
 
     package func close(containerID: String) async throws {
-        guard let run = runs.removeValue(forKey: containerID) else {
+        guard var run = runs[containerID] else {
             return
-        }
-        var firstError: (any Error)?
-        do {
-            try await finishPipes(run)
-        } catch {
-            firstError = error
         }
         guard let activation = run.activation else {
-            do {
-                _ = try await run.controller.closePreparedWriter(
-                    run.request,
-                    using: run.provider
-                )
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-            }
-            do {
-                _ = try await providers.configurations.unregister(run.request)
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
-            }
-            if let firstError {
-                throw firstError
-            }
+            try await abortBootstrap(containerID: containerID)
             return
         }
-        do {
-            _ = try await run.controller.closeWriter(
-                activation,
-                using: run.provider
-            )
-        } catch {
+
+        if !run.cleanupPipesFinished {
+            try await finishPipes(run)
+            run.cleanupPipesFinished = true
+            runs[containerID] = run
+        }
+
+        if !run.cleanupWriterClosed {
             do {
+                _ = try await run.controller.closeWriter(
+                    activation,
+                    using: run.provider
+                )
+                run.cleanupWriterClosed = true
+                runs[containerID] = run
+            } catch {
                 let cleanupID =
                     "cleanup-"
                     + Self.sha256Hex(
@@ -1256,29 +1298,26 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
                     using: run.provider
                 )
                 if case .detached(let cleanup) = outcome {
+                    let controller = run.controller
+                    let provider = run.provider
                     Task {
-                        try? await run.controller.runDetachedCleanup(
+                        try? await controller.runDetachedCleanup(
                             cleanup,
-                            using: run.provider
+                            using: provider
                         )
                     }
                 }
-            } catch {
-                if firstError == nil {
-                    firstError = error
-                }
+                run.cleanupWriterClosed = true
+                runs[containerID] = run
             }
         }
-        do {
+
+        if !run.cleanupConfigurationUnregistered {
             _ = try await providers.configurations.unregister(run.request)
-        } catch {
-            if firstError == nil {
-                firstError = error
-            }
+            run.cleanupConfigurationUnregistered = true
+            runs[containerID] = run
         }
-        if let firstError {
-            throw firstError
-        }
+        runs.removeValue(forKey: containerID)
     }
 
     /// Opens a generation-fenced direct reader for a non-core provider. The

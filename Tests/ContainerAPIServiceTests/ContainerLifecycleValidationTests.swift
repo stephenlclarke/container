@@ -24,6 +24,113 @@ import Testing
 
 struct ContainerLifecycleValidationTests {
     @Test
+    func foregroundProcessAccessRequiresRunningOrPausedContainer() throws {
+        try ContainersService.validateForegroundProcessStatus(
+            .running,
+            id: "running"
+        )
+        try ContainersService.validateForegroundProcessStatus(
+            .paused,
+            id: "paused"
+        )
+
+        let error = #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateForegroundProcessStatus(
+                .stopped,
+                id: "prepared"
+            )
+        }
+        #expect(error?.code == .invalidState)
+        #expect(error?.message == "container prepared is not running or paused")
+    }
+
+    @Test
+    func preparedInitProcessCannotBypassForegroundBootstrap() throws {
+        try ContainersService.validateProcessStartState(
+            status: .stopped,
+            isInit: true,
+            prewarmed: false,
+            cleanupRequired: false,
+            id: "cold"
+        )
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateProcessStartState(
+                status: .stopped,
+                isInit: true,
+                prewarmed: true,
+                cleanupRequired: false,
+                id: "prepared"
+            )
+        }
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateProcessStartState(
+                status: .stopped,
+                isInit: true,
+                prewarmed: false,
+                cleanupRequired: true,
+                id: "cleanup"
+            )
+        }
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validateProcessStartState(
+                status: .stopped,
+                isInit: false,
+                prewarmed: false,
+                cleanupRequired: false,
+                id: "exec"
+            )
+        }
+    }
+
+    @Test
+    func reachablePreparedRuntimeShutdownFailureRemainsRetryable() {
+        #expect(
+            ContainersService.preparedRuntimeShutdownFailureDisposition(
+                runtimeIsReachable: true
+            ) == .retainForRetry
+        )
+        #expect(
+            ContainersService.preparedRuntimeShutdownFailureDisposition(
+                runtimeIsReachable: false
+            ) == .confirmInactiveService
+        )
+        #expect(
+            !ContainersService.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+                .retainForRetry
+            )
+        )
+        #expect(
+            ContainersService.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+                .confirmInactiveService
+            )
+        )
+    }
+
+    @Test
+    func recoveredRunningPrewarmIsStoppedBeforeDiscard() {
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .stopped)
+                == .discard
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .stopping)
+                == .discard
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .running)
+                == .stop
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .paused)
+                == .resumeAndStop
+        )
+        #expect(
+            ContainersService.recoveredPrewarmRuntimeAction(for: .unknown)
+                == .reject
+        )
+    }
+
+    @Test
     func emptyPostStartProcessSnapshotDefersToTheExitMonitor() {
         #expect(ContainersService.reportedInitPID([]) == 0)
         #expect(ContainersService.reportedInitPID([-1, 42, 7]) == 7)
@@ -77,6 +184,62 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func failedDedicatedStartCleanupRemainsRetryable() {
+        #expect(
+            ContainersService.failedStartCleanupRequiresTombstone(
+                cleanupSucceeded: false,
+                clientIsDedicated: true
+            )
+        )
+        #expect(
+            !ContainersService.failedStartCleanupRequiresTombstone(
+                cleanupSucceeded: true,
+                clientIsDedicated: true
+            )
+        )
+        #expect(
+            !ContainersService.failedStartCleanupRequiresTombstone(
+                cleanupSucceeded: false,
+                clientIsDedicated: false
+            )
+        )
+    }
+
+    @Test
+    func failedStartRetriesActivatedLoggingWithClose() {
+        #expect(
+            ContainersService.preparedLoggingCleanup(requiresClose: true)
+                == .closeActivatedRun
+        )
+        #expect(
+            ContainersService.preparedLoggingCleanup(requiresClose: false)
+                == .abortBootstrap
+        )
+    }
+
+    @Test
+    func automaticRestartFailurePreservesCleanupTombstone() {
+        #expect(
+            ContainersService.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: true,
+                clientExists: true
+            )
+        )
+        #expect(
+            !ContainersService.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: false,
+                clientExists: true
+            )
+        )
+        #expect(
+            !ContainersService.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: true,
+                clientExists: false
+            )
+        )
+    }
+
+    @Test
     func createAndUpdateShareTheBootableMemoryFloor() throws {
         try ContainersService.validateBootableMemory(
             ContainersService.minimumBootableMemoryInBytes
@@ -118,6 +281,28 @@ struct ContainerLifecycleValidationTests {
                 autoRemove: true
             )
         }
+    }
+
+    @Test
+    func invalidResourceUpdateIsRejectedBeforePrewarmInvalidation() throws {
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.validatedResourceUpdateInvalidatesPrewarm(
+                prewarmed: true,
+                memoryBytes: 512 * 1024 * 1024,
+                nanoCPUs: nil,
+                restartPolicy: ContainerRestartPolicy(mode: .always),
+                autoRemove: true
+            )
+        }
+        #expect(
+            try ContainersService.validatedResourceUpdateInvalidatesPrewarm(
+                prewarmed: true,
+                memoryBytes: 512 * 1024 * 1024,
+                nanoCPUs: nil,
+                restartPolicy: .no,
+                autoRemove: true
+            )
+        )
     }
 
     @Test

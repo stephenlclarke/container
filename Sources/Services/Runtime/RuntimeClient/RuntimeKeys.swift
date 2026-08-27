@@ -64,6 +64,14 @@ public enum RuntimeKeys: String {
     /// Special-case environment variables recomputed on each container start
     case dynamicEnv
 
+    /// Whether bootstrap is preparing a dedicated runtime before its first
+    /// client-owned standard streams arrive.
+    case prewarming
+
+    /// Whether the first foreground client has no stdin and the deferred
+    /// prewarming relay must therefore receive end-of-file.
+    case closeStdin
+
     /// Per-network connection info passed to the runtime so it can allocate directly.
     case networkBootstrapInfos
 

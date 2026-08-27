@@ -38,6 +38,18 @@ import SystemPackage
 import struct ContainerizationOCI.Mount
 import struct ContainerizationOCI.Process
 
+private final class StartedSocketForwarders: Sendable {
+    private let storage = Mutex<[SocketForwarderResult]>([])
+
+    func append(_ forwarder: SocketForwarderResult) {
+        storage.withLock { $0.append(forwarder) }
+    }
+
+    func snapshot() -> [SocketForwarderResult] {
+        storage.withLock { $0 }
+    }
+}
+
 /// An XPC service that manages the lifecycle of a single VM-backed container.
 public actor RuntimeService {
     private let connection: xpc_connection_t
@@ -195,6 +207,7 @@ public actor RuntimeService {
             }
 
             let dynamicEnv = try message.dynamicEnv()
+            let prewarming = message.bool(key: RuntimeKeys.prewarming.rawValue)
 
             let bundle = ContainerResource.Bundle(path: self.root)
             let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: self.root)
@@ -305,7 +318,10 @@ public actor RuntimeService {
             }
 
             let stdio = message.stdio()
-            let stdin = stdio[0].map(AttachableInput.init)
+            let stdin = Self.attachableInput(
+                initial: stdio[0],
+                prewarming: prewarming
+            )
             let stdout = AttachableOutput(
                 initial: stdio[1],
                 persistent: loggingCapture.stdout
@@ -369,9 +385,6 @@ public actor RuntimeService {
 
                 try await self.initializeWaiters(for: id)
                 try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
-                if Self.shouldStartSocketForwarders(config: config, hasInterfaces: !container.interfaces.isEmpty) {
-                    try await self.startSocketForwarders(attachment: attachments[0], publishedPorts: config.publishedPorts)
-                }
                 await self.setState(.booted)
             } catch {
                 do {
@@ -404,6 +417,18 @@ public actor RuntimeService {
             let containerInfo = try await self.getContainer()
             let containerId = containerInfo.container.id
             if id == containerId {
+                if !containerInfo.config.publishedPorts.isEmpty,
+                    await self.socketForwarders.isEmpty,
+                    Self.shouldStartSocketForwarders(
+                        config: containerInfo.config,
+                        hasInterfaces: !containerInfo.container.interfaces.isEmpty
+                    )
+                {
+                    try await self.startSocketForwarders(
+                        attachment: containerInfo.attachments[0],
+                        publishedPorts: containerInfo.config.publishedPorts
+                    )
+                }
                 try await self.startInitProcess(lock: lock)
                 await self.setState(.running)
             } else {
@@ -413,7 +438,7 @@ public actor RuntimeService {
         }
     }
 
-    /// Adds client-owned standard streams to the already-running init process.
+    /// Adds client-owned standard streams to the booted or running init process.
     /// The process itself keeps stable server-owned relays, so ending one
     /// client session does not close the process's standard input or output.
     @Sendable
@@ -423,18 +448,27 @@ public actor RuntimeService {
 
         return try await self.lock.withLock { [self] _ in
             let runtimeState = await self.state
-            guard runtimeState == .running || runtimeState == .paused else {
+            guard Self.acceptsAttach(in: runtimeState) else {
                 throw ContainerizationError(
                     .invalidState,
-                    message: "cannot attach: container is not running"
+                    message: "cannot attach: container is not booted, running, or paused"
                 )
             }
 
             let stdio = message.stdio()
-            guard stdio.contains(where: { $0 != nil }) else {
+            let closeStdin = message.bool(
+                key: RuntimeKeys.closeStdin.rawValue
+            )
+            guard stdio.contains(where: { $0 != nil }) || closeStdin else {
                 throw ContainerizationError(
                     .invalidArgument,
                     message: "attach requires at least one standard stream"
+                )
+            }
+            guard !closeStdin || stdio[0] == nil else {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "attach cannot provide and close stdin together"
                 )
             }
 
@@ -452,7 +486,9 @@ public actor RuntimeService {
                 )
             }
 
-            if let stdin = stdio[0] {
+            if closeStdin {
+                container.io.input?.close()
+            } else if let stdin = stdio[0] {
                 container.io.input?.add(stdin)
             }
             if let stdout = stdio[1] {
@@ -462,6 +498,42 @@ public actor RuntimeService {
                 container.io.stderr?.add(stderr)
             }
             return message.reply()
+        }
+    }
+
+    static func attachableInput(
+        initial: FileHandle?,
+        prewarming: Bool
+    ) -> AttachableInput? {
+        if prewarming {
+            return AttachableInput(initial: initial)
+        }
+        return initial.map(AttachableInput.init)
+    }
+
+    static func acceptsAttach(in state: State) -> Bool {
+        state == .booted || state == .running || state == .paused
+    }
+
+    enum ShutdownDisposition: Equatable {
+        case immediate
+        case cleanBootedContainer
+        case reject
+    }
+
+    private enum ContainerStopFailurePolicy {
+        case logAndContinue
+        case propagateAfterCleanup
+    }
+
+    static func shutdownDisposition(in state: State) -> ShutdownDisposition {
+        switch state {
+        case .created, .stopped, .shuttingDown:
+            return .immediate
+        case .booted, .stopping:
+            return .cleanBootedContainer
+        case .running, .paused:
+            return .reject
         }
     }
 
@@ -603,12 +675,18 @@ public actor RuntimeService {
         self.log.debug("enter", metadata: ["func": "\(#function)"])
         defer { self.log.debug("exit", metadata: ["func": "\(#function)"]) }
 
-        return try await self.lock.withLock { _ in
-            switch await self.state {
-            case .created, .stopped, .stopping:
+        return try await self.lock.withLock { [self] _ in
+            switch Self.shutdownDisposition(in: await self.state) {
+            case .immediate:
                 await self.setState(.shuttingDown)
-
-            default:
+            case .cleanBootedContainer:
+                let containerInfo = try await self.getContainer()
+                try await self.cleanUpContainer(
+                    containerInfo: containerInfo,
+                    stopFailurePolicy: .propagateAfterCleanup
+                )
+                await self.setState(.shuttingDown)
+            case .reject:
                 throw ContainerizationError(
                     .invalidState,
                     message: "cannot shutdown: container is not stopped"
@@ -1272,81 +1350,92 @@ public actor RuntimeService {
         }
         LocalNetworkPrivacy.triggerLocalNetworkPrivacyAlert()
 
-        var forwarders: [SocketForwarderResult] = []
+        let startedForwarders = StartedSocketForwarders()
         guard !publishedPorts.hasOverlaps() else {
             throw ContainerizationError(.invalidArgument, message: "host ports for different publish port specs may not overlap")
         }
 
-        try await withThrowingTaskGroup(of: SocketForwarderResult.self) { group in
-            for publishedPort in publishedPorts {
-                for index in 0..<publishedPort.count {
-                    let hostPort = publishedPort.hostPort + index
-                    let hostBinding = try HostPortBinding.resolve(hostAddress: publishedPort.hostAddress, hostPort: hostPort)
-                    let proxyAddress = hostBinding.proxyAddress
-                    let containerIPAddress: String
-                    switch publishedPort.hostAddress {
-                    case .v4(_):
-                        guard let ipv4Address = attachment.ipv4Address else {
-                            throw ContainerizationError(
-                                .invalidArgument,
-                                message: "IPv4 published port requires an IPv4 network attachment"
-                            )
-                        }
-                        containerIPAddress = ipv4Address.address.description
-                    case .v6(_):
-                        guard let ipv6Address = attachment.ipv6Address else {
-                            throw ContainerizationError(.invalidState, message: "cannot configure IPv6 port forwarding for container with unknown IPv6 address")
-                        }
-                        containerIPAddress = ipv6Address.address.description
-                    }
-                    let serverAddress = try SocketAddress(ipAddress: containerIPAddress, port: Int(publishedPort.containerPort + index))
-                    log.info(
-                        "creating forwarder for",
-                        metadata: [
-                            "proxy": "\(proxyAddress)",
-                            "server": "\(serverAddress)",
-                            "protocol": "\(publishedPort.proto)",
-                        ])
-                    group.addTask {
-                        let forwarder: SocketForwarder
-                        switch publishedPort.proto {
-                        case .tcp:
-                            forwarder = try TCPForwarder(
-                                proxyAddress: proxyAddress,
-                                serverAddress: serverAddress,
-                                eventLoopGroup: self.eventLoopGroup,
-                                boundInterface: hostBinding.boundInterface,
-                                log: self.log
-                            )
-                        case .udp:
-                            forwarder = try UDPForwarder(
-                                proxyAddress: proxyAddress,
-                                serverAddress: serverAddress,
-                                eventLoopGroup: self.eventLoopGroup,
-                                boundInterface: hostBinding.boundInterface,
-                                log: self.log
-                            )
-                        }
-                        do {
-                            return try await forwarder.run().get()
-                        } catch let error as IOError where error.errnoCode == EACCES {
-                            if let port = proxyAddress.port, port < 1024 {
+        do {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                for publishedPort in publishedPorts {
+                    for index in 0..<publishedPort.count {
+                        let hostPort = publishedPort.hostPort + index
+                        let hostBinding = try HostPortBinding.resolve(hostAddress: publishedPort.hostAddress, hostPort: hostPort)
+                        let proxyAddress = hostBinding.proxyAddress
+                        let containerIPAddress: String
+                        switch publishedPort.hostAddress {
+                        case .v4(_):
+                            guard let ipv4Address = attachment.ipv4Address else {
                                 throw ContainerizationError(
                                     .invalidArgument,
-                                    message: "Permission denied while binding to host port \(port). Binding to ports below 1024 requires root privileges."
+                                    message: "IPv4 published port requires an IPv4 network attachment"
                                 )
                             }
-                            throw error
+                            containerIPAddress = ipv4Address.address.description
+                        case .v6(_):
+                            guard let ipv6Address = attachment.ipv6Address else {
+                                throw ContainerizationError(.invalidState, message: "cannot configure IPv6 port forwarding for container with unknown IPv6 address")
+                            }
+                            containerIPAddress = ipv6Address.address.description
+                        }
+                        let serverAddress = try SocketAddress(ipAddress: containerIPAddress, port: Int(publishedPort.containerPort + index))
+                        log.info(
+                            "creating forwarder for",
+                            metadata: [
+                                "proxy": "\(proxyAddress)",
+                                "server": "\(serverAddress)",
+                                "protocol": "\(publishedPort.proto)",
+                            ])
+                        group.addTask {
+                            let forwarder: SocketForwarder
+                            switch publishedPort.proto {
+                            case .tcp:
+                                forwarder = try TCPForwarder(
+                                    proxyAddress: proxyAddress,
+                                    serverAddress: serverAddress,
+                                    eventLoopGroup: self.eventLoopGroup,
+                                    boundInterface: hostBinding.boundInterface,
+                                    log: self.log
+                                )
+                            case .udp:
+                                forwarder = try UDPForwarder(
+                                    proxyAddress: proxyAddress,
+                                    serverAddress: serverAddress,
+                                    eventLoopGroup: self.eventLoopGroup,
+                                    boundInterface: hostBinding.boundInterface,
+                                    log: self.log
+                                )
+                            }
+                            do {
+                                let result = try await forwarder.run().get()
+                                startedForwarders.append(result)
+                            } catch let error as IOError where error.errnoCode == EACCES {
+                                if let port = proxyAddress.port, port < 1024 {
+                                    throw ContainerizationError(
+                                        .invalidArgument,
+                                        message: "Permission denied while binding to host port \(port). Binding to ports below 1024 requires root privileges."
+                                    )
+                                }
+                                throw error
+                            }
                         }
                     }
                 }
+                try await group.waitForAll()
             }
-            for try await result in group {
-                forwarders.append(result)
+        } catch {
+            // A throwing task group does not guarantee that successful child
+            // results are consumed before another child fails. Record each
+            // bound listener at the point it starts so every partial success
+            // can be closed before the init-start error reaches the API.
+            for forwarder in startedForwarders.snapshot() {
+                forwarder.close()
+                try? await forwarder.wait()
             }
+            throw error
         }
 
-        self.socketForwarders = forwarders
+        self.socketForwarders = startedForwarders.snapshot()
     }
 
     private func startDNSProxy(
@@ -1962,17 +2051,23 @@ public actor RuntimeService {
         return code
     }
 
-    private func cleanUpContainer(containerInfo: ContainerInfo, exitStatus: ExitStatus? = nil) async throws {
+    private func cleanUpContainer(
+        containerInfo: ContainerInfo,
+        exitStatus: ExitStatus? = nil,
+        stopFailurePolicy: ContainerStopFailurePolicy = .logAndContinue
+    ) async throws {
         let container = containerInfo.container
         let id = container.id
 
         try? containerInfo.io.close()
         await self.stopDNSProxy()
 
+        var stopFailure: (any Error)?
         do {
             try await container.stop()
         } catch {
             self.log.error("failed to stop container during cleanup", metadata: ["error": "\(error)"])
+            stopFailure = error
         }
 
         await self.stopSocketForwarders()
@@ -1982,6 +2077,12 @@ public actor RuntimeService {
 
         let status = exitStatus ?? ExitStatus(exitCode: 255)
         self.releaseWaiters(for: id, status: status)
+
+        if case .propagateAfterCleanup = stopFailurePolicy,
+            let stopFailure
+        {
+            throw stopFailure
+        }
     }
 }
 

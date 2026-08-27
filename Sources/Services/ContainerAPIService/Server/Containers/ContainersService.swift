@@ -122,7 +122,18 @@ public actor ContainersService {
 
     struct ContainerState {
         var snapshot: ContainerSnapshot
-        var client: ManagedRuntimeClient? = nil
+        var prewarmed = false
+        var prewarmCleanupRequired = false
+        var prewarmCleanupRequiresLoggingClose = false
+        var client: ManagedRuntimeClient? = nil {
+            didSet {
+                if client == nil {
+                    prewarmed = false
+                    prewarmCleanupRequired = false
+                    prewarmCleanupRequiresLoggingClose = false
+                }
+            }
+        }
         var restart = ContainerRestartTracker()
         var dockerStateError = ""
         /// Distinguishes a container from a later replacement that reuses its ID.
@@ -238,6 +249,8 @@ public actor ContainersService {
     private var lifecycleRecords: [String: ContainerResource.ContainerLifecycleRecordV2]
     private let quarantinedContainerNames: Set<String>
     private var runtimeClientTokens: [String: UUID] = [:]
+    private var prewarmTasks: [String: Task<Void, Never>] = [:]
+    private var prewarmTaskTokens: [String: UUID] = [:]
     private var explicitExitCauses: [String: ExplicitExitCause] = [:]
     private var healthCheckTasks: [String: Task<Void, Never>] = [:]
     private var restartTasks: [String: Task<Void, Never>] = [:]
@@ -286,6 +299,22 @@ public actor ContainersService {
     ) async rethrows -> T {
         await acquireLifecycleMutation(id: id)
         defer { releaseLifecycleMutation(id: id) }
+        return try await operation()
+    }
+
+    private func withLifecycleMutations<T>(
+        ids: [String],
+        operation: () async throws -> T
+    ) async rethrows -> T {
+        let orderedIDs = Array(Set(ids)).sorted()
+        for id in orderedIDs {
+            await acquireLifecycleMutation(id: id)
+        }
+        defer {
+            for id in orderedIDs.reversed() {
+                releaseLifecycleMutation(id: id)
+            }
+        }
         return try await operation()
     }
 
@@ -425,6 +454,31 @@ public actor ContainersService {
                     workloadID: id
                 )
         }
+    }
+
+    /// Resumes best-effort preparation for durable containers that were
+    /// created but never started before the API server restarted.
+    package func resumeEligibleDedicatedPrewarmingAtBoot() {
+        let snapshots = containers.values.map(\.snapshot)
+        for snapshot in snapshots
+        where Self.shouldPrewarmAtBoot(
+            snapshot,
+            lifecycle: lifecycleRecords[snapshot.id]
+        ) {
+            scheduleDedicatedPrewarm(snapshot: snapshot)
+        }
+    }
+
+    static func shouldPrewarmAtBoot(
+        _ snapshot: ContainerSnapshot,
+        lifecycle: ContainerResource.ContainerLifecycleRecordV2?
+    ) -> Bool {
+        guard let lifecycle else {
+            return false
+        }
+        return shouldPrewarm(snapshot)
+            && lifecycle.snapshot.state == .created
+            && !lifecycle.intent.removalRequested
     }
 
     /// Completes every ready provider-generation transition before API routes
@@ -805,10 +859,126 @@ public actor ContainersService {
         }
     }
 
-    public func setNetworksService(_ service: NetworksService) async {
+    public func setNetworksService(_ service: NetworksService) async throws {
         self.networksService = service
+        try await reconcileSurvivingDedicatedPrewarmsAtBoot()
         await resumeInterruptedRemovals()
         resumeInterruptedRestarts()
+        resumeEligibleDedicatedPrewarmingAtBoot()
+    }
+
+    private func reconcileSurvivingDedicatedPrewarmsAtBoot() async throws {
+        let candidates = containers.values.map(\.snapshot).filter { snapshot in
+            Self.shouldPrewarmAtBoot(
+                snapshot,
+                lifecycle: lifecycleRecords[snapshot.id]
+            )
+        }
+        for snapshot in candidates.sorted(by: { $0.id < $1.id }) {
+            let label = Self.fullLaunchdServiceLabel(
+                runtimeName: snapshot.configuration.runtimeHandler,
+                instanceId: snapshot.id
+            )
+            guard try ServiceManager.isRegistered(fullServiceLabel: label) else {
+                continue
+            }
+
+            if let remoteLogDriverPlane {
+                let protectedOptions = try await validateLoggingForStart(
+                    containerID: snapshot.id,
+                    configuration: snapshot.configuration.logging
+                )
+                let path = try Self.containerPath(
+                    root: containerRoot,
+                    id: snapshot.id
+                )
+                try await remoteLogDriverPlane
+                    .reconcilePreparedBootstrapForCleanup(
+                        containerID: snapshot.id,
+                        bundle: ContainerResource.Bundle(path: path),
+                        configuration: snapshot.configuration,
+                        authenticatedProtectedOptions: protectedOptions
+                    )
+            }
+            let client: ManagedRuntimeClient
+            do {
+                client = .dedicated(
+                    try await RuntimeClient.create(
+                        id: snapshot.id,
+                        runtime: snapshot.configuration.runtimeHandler
+                    )
+                )
+            } catch {
+                log.warning(
+                    "surviving prewarm is unreachable; stopping its runtime service",
+                    metadata: ["id": "\(snapshot.id)", "error": "\(error)"]
+                )
+                try Self.stopRuntimeServiceAndConfirmInactive(
+                    fullServiceLabel: label
+                )
+                continue
+            }
+            switch Self.recoveredPrewarmRuntimeAction(
+                for: try await client.state().status
+            ) {
+            case .discard:
+                break
+            case .stop:
+                try await client.stop(options: ContainerStopOptions.default)
+            case .resumeAndStop:
+                try await client.resume()
+                try await client.stop(options: ContainerStopOptions.default)
+            case .reject:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "surviving prewarm has an unknown runtime state"
+                )
+            }
+            try await lock.withLock(
+                logMetadata: [
+                    "acquirer": "\(#function)",
+                    "id": "\(snapshot.id)",
+                ]
+            ) { context in
+                var state = try await self.getContainerState(
+                    id: snapshot.id,
+                    context: context
+                )
+                guard state.client == nil else {
+                    throw ContainerizationError(
+                        .invalidState,
+                        message: "container \(snapshot.id) already owns a runtime during boot recovery"
+                    )
+                }
+                state.client = client
+                state.prewarmed = false
+                state.prewarmCleanupRequired = true
+                await self.setContainerState(snapshot.id, state, context: context)
+            }
+            _ = try await discardDedicatedPrewarm(id: snapshot.id)
+        }
+    }
+
+    enum RecoveredPrewarmRuntimeAction: Equatable {
+        case discard
+        case stop
+        case resumeAndStop
+        case reject
+    }
+
+    static func recoveredPrewarmRuntimeAction(
+        for status: RuntimeStatus
+    ) -> RecoveredPrewarmRuntimeAction {
+        switch status {
+        case .stopped, .stopping:
+            return .discard
+        case .running:
+            return .stop
+        case .paused:
+            return .resumeAndStop
+        case .unknown:
+            return .reject
+        }
     }
 
     private func resumeInterruptedRemovals() async {
@@ -929,7 +1099,14 @@ public actor ContainersService {
                 continue
             }
 
-            if config.effectiveIsolation == .dedicatedVM {
+            let bundle = ContainerResource.Bundle(path: dir)
+            let durableLifecycle = try? bundle.lifecycleRecordV2
+            if config.effectiveIsolation == .dedicatedVM,
+                !Self.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                    configuration: config,
+                    lifecycle: durableLifecycle
+                )
+            {
                 let label = Self.fullLaunchdServiceLabel(
                     runtimeName: config.runtimeHandler,
                     instanceId: config.id
@@ -970,7 +1147,6 @@ public actor ContainersService {
                         message: "failed to find runtime plugin \(config.runtimeHandler)"
                     )
                 }
-                let bundle = ContainerResource.Bundle(path: dir)
                 let lifecycle = try bundle.lifecycleState
                 let dockerState = try bundle.dockerState
                 let state = ContainerState(
@@ -995,6 +1171,25 @@ public actor ContainersService {
             }
         }
         return results
+    }
+
+    static func shouldDeferDedicatedRuntimeCleanupAtBoot(
+        configuration: ContainerConfiguration,
+        lifecycle: ContainerResource.ContainerLifecycleRecordV2?
+    ) -> Bool {
+        guard let lifecycle else {
+            return false
+        }
+        let snapshot = ContainerSnapshot(
+            configuration: configuration,
+            status: .stopped,
+            networks: [],
+            startedDate: lifecycle.snapshot.startedAt,
+            exitCode: lifecycle.snapshot.finishedAt == nil
+                ? nil : lifecycle.snapshot.exitCode,
+            exitedDate: lifecycle.snapshot.finishedAt
+        )
+        return shouldPrewarmAtBoot(snapshot, lifecycle: lifecycle)
     }
 
     static func quarantinedContainerNamesAtBoot(
@@ -1699,6 +1894,76 @@ public actor ContainersService {
         }
 
         await publishContainerEvent(action: "create", snapshot: createdSnapshot)
+        scheduleDedicatedPrewarm(snapshot: createdSnapshot)
+    }
+
+    static func shouldPrewarm(_ snapshot: ContainerSnapshot) -> Bool {
+        snapshot.status == .stopped
+            && snapshot.startedDate == nil
+            && snapshot.configuration.effectiveIsolation == .dedicatedVM
+            && snapshot.configuration.runtimeHandler == "container-runtime-linux"
+            && !snapshot.configuration.ssh
+            && snapshot.configuration.publishedSockets.isEmpty
+    }
+
+    private func scheduleDedicatedPrewarm(snapshot: ContainerSnapshot) {
+        guard Self.shouldPrewarm(snapshot), prewarmTasks[snapshot.id] == nil else {
+            return
+        }
+        let id = snapshot.id
+        let token = UUID()
+        prewarmTaskTokens[id] = token
+        prewarmTasks[id] = Task { [weak self] in
+            await self?.runDedicatedPrewarm(id: id, token: token)
+        }
+    }
+
+    private func rescheduleDedicatedPrewarm(snapshot: ContainerSnapshot) {
+        let id = snapshot.id
+        prewarmTasks[id]?.cancel()
+        prewarmTasks.removeValue(forKey: id)
+        prewarmTaskTokens.removeValue(forKey: id)
+        scheduleDedicatedPrewarm(snapshot: snapshot)
+    }
+
+    private func runDedicatedPrewarm(id: String, token: UUID) async {
+        defer {
+            if prewarmTaskTokens[id] == token {
+                prewarmTasks.removeValue(forKey: id)
+                prewarmTaskTokens.removeValue(forKey: id)
+            }
+        }
+
+        do {
+            try Task.checkCancellation()
+            try await withLifecycleMutation(id: id) {
+                guard self.prewarmTaskTokens[id] == token else {
+                    return
+                }
+                _ = try await self.bootstrap(
+                    id: id,
+                    stdio: [FileHandle?](repeating: nil, count: 3),
+                    dynamicEnv: [:],
+                    onlyIfNeverStarted: true,
+                    prewarming: true
+                )
+            }
+        } catch is CancellationError {
+            return
+        } catch let error as ContainerizationError where error.code == .notFound {
+            // Deletion can win the lifecycle mutation before this background
+            // task begins. The container is already gone, so there is nothing
+            // to recover or report.
+            return
+        } catch {
+            log.warning(
+                "dedicated container prewarming failed; first start will retry cold",
+                metadata: [
+                    "id": "\(id)",
+                    "error": "\(error)",
+                ]
+            )
+        }
     }
 
     static func validateLoggingConfigurationForCreate(_ logging: ContainerLogConfiguration) throws {
@@ -1873,6 +2138,9 @@ public actor ContainersService {
     /// Bootstrap the init process of the container.
     public func bootstrap(id: String, stdio: [FileHandle?], dynamicEnv: [String: String]) async throws {
         try await withLifecycleMutation(id: id) {
+            if try await self.consumeDedicatedPrewarm(id: id, stdio: stdio) {
+                return
+            }
             _ = try await self.bootstrap(
                 id: id,
                 stdio: stdio,
@@ -1894,7 +2162,10 @@ public actor ContainersService {
         dynamicEnv: [String: String]
     ) async throws -> Bool {
         try await withLifecycleMutation(id: id) {
-            try await self.bootstrap(
+            if try await self.consumeDedicatedPrewarm(id: id, stdio: stdio) {
+                return true
+            }
+            return try await self.bootstrap(
                 id: id,
                 stdio: stdio,
                 dynamicEnv: dynamicEnv,
@@ -1907,7 +2178,8 @@ public actor ContainersService {
         id: String,
         stdio: [FileHandle?],
         dynamicEnv: [String: String],
-        onlyIfNeverStarted: Bool
+        onlyIfNeverStarted: Bool,
+        prewarming: Bool = false
     ) async throws -> Bool {
         log.debug(
             "ContainersService: enter",
@@ -1932,6 +2204,10 @@ public actor ContainersService {
             logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
         ) { context -> ContainerBootstrapPlan? in
             let state = try await self.getContainerState(id: id, context: context)
+
+            if prewarming, !Self.shouldPrewarm(state.snapshot) {
+                return nil
+            }
 
             // We've already bootstrapped this container. Ideally we should be able to
             // return some sort of error code from the sandbox svc to check here, but this
@@ -1982,6 +2258,12 @@ public actor ContainersService {
         var runtimeBootstrapPermitHeld = false
         var bootstrappedClient: ManagedRuntimeClient?
         do {
+            // A prior bootstrap may have stopped its runtime but failed part
+            // way through retryable logging cleanup. Finish that cleanup
+            // before preparing a replacement run for the same container.
+            try await self.remoteLogDriverPlane?.abortBootstrap(
+                containerID: id
+            )
             let authenticatedProtectedOptions =
                 try await self
                 .validateLoggingForStart(
@@ -2091,11 +2373,16 @@ public actor ContainersService {
                 runtimeBootstrapPermitHeld = true
             }
             let bootstrapStartedAt = ProcessInfo.processInfo.systemUptime
+            // The runtime may have booted even if its XPC reply is lost. Keep
+            // the client before the ambiguous RPC so failed cleanup can be
+            // retained as a retryable tombstone.
+            bootstrappedClient = runtimeClient
             do {
                 try await runtimeClient.bootstrap(
                     stdio: runtimeStdio,
                     networkBootstrapInfos: networkBootstrapInfos,
-                    dynamicEnv: dynamicEnv
+                    dynamicEnv: dynamicEnv,
+                    prewarming: prewarming
                 )
             } catch {
                 let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
@@ -2120,7 +2407,6 @@ public actor ContainersService {
                 await Self.runtimeBootstrapLimiter.releasePermit()
                 runtimeBootstrapPermitHeld = false
             }
-            bootstrappedClient = runtimeClient
             try await self.remoteLogDriverPlane?.bootstrapSucceeded(
                 containerID: id
             )
@@ -2167,6 +2453,7 @@ public actor ContainersService {
                 }
 
                 state.client = runtimeClient
+                state.prewarmed = prewarming
                 await self.setRuntimeClientToken(token, id: id)
                 await self.setContainerState(id, state, context: context)
             }
@@ -2176,7 +2463,7 @@ public actor ContainersService {
                 metadata: timings.metadata(id: id, outcome: "success")
             )
             return true
-        } catch {
+        } catch let bootstrapError {
             await self.exitMonitor.stopTracking(id: id)
             if let runtimeClientToken {
                 self.clearRuntimeClientToken(runtimeClientToken, id: id)
@@ -2185,37 +2472,285 @@ public actor ContainersService {
                 await Self.runtimeBootstrapLimiter.releasePermit()
                 runtimeBootstrapPermitHeld = false
             }
+            var runtimeAndLoggingCleanupFinished = false
+            var loggingCleanupDeferredToTombstone = false
             if let bootstrappedClient, !bootstrappedClient.isDedicated {
-                try? await bootstrappedClient.shutdown()
+                do {
+                    try await bootstrappedClient.shutdown()
+                    try await self.remoteLogDriverPlane?.abortBootstrap(
+                        containerID: id
+                    )
+                    runtimeAndLoggingCleanupFinished = true
+                } catch {
+                    log.warning(
+                        "failed to clean shared runtime after bootstrap failure",
+                        metadata: ["id": "\(id)", "error": "\(error)"]
+                    )
+                }
             } else if plan.configuration.effectiveIsolation == .dedicatedVM {
                 let label = Self.fullLaunchdServiceLabel(
                     runtimeName: plan.configuration.runtimeHandler,
                     instanceId: id
                 )
-                do {
+                if let bootstrappedClient {
+                    loggingCleanupDeferredToTombstone = true
+                    try await retainDedicatedBootstrapCleanupTombstone(
+                        id: id,
+                        client: bootstrappedClient,
+                        plannedContainerGeneration: plan.containerGeneration
+                    )
+                    do {
+                        _ = try await discardDedicatedPrewarm(id: id)
+                        runtimeAndLoggingCleanupFinished = true
+                    } catch let cleanupError {
+                        log.error(
+                            "failed bootstrap cleanup retained a retryable runtime tombstone",
+                            metadata: [
+                                "id": "\(id)",
+                                "label": "\(label)",
+                                "error": "\(cleanupError)",
+                            ]
+                        )
+                    }
+                } else {
                     try Self.stopRuntimeServiceAndConfirmInactive(
                         fullServiceLabel: label
                     )
-                } catch let cleanupError {
-                    log.error(
-                        "failed to stop runtime service after bootstrap failure",
-                        metadata: [
-                            "id": "\(id)",
-                            "label": "\(label)",
-                            "error": "\(cleanupError)",
-                        ]
+                }
+            }
+            var loggingCleanupError: (any Error)?
+            if !runtimeAndLoggingCleanupFinished,
+                !loggingCleanupDeferredToTombstone
+            {
+                do {
+                    try await self.remoteLogDriverPlane?.abortBootstrap(
+                        containerID: id
+                    )
+                } catch {
+                    loggingCleanupError = error
+                    log.warning(
+                        "failed to abort logging after bootstrap failure; retaining it for retry",
+                        metadata: ["id": "\(id)", "error": "\(error)"]
                     )
                 }
             }
-            try? await self.remoteLogDriverPlane?.abortBootstrap(
-                containerID: id
-            )
             log.debug(
                 "container bootstrap timings",
                 metadata: timings.metadata(id: id, outcome: "failure")
             )
-            throw error
+            if let loggingCleanupError {
+                throw loggingCleanupError
+            }
+            throw bootstrapError
         }
+    }
+
+    private func consumeDedicatedPrewarm(
+        id: String,
+        stdio: [FileHandle?]
+    ) async throws -> Bool {
+        let prepared = try await self.lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
+        ) { context -> (ManagedRuntimeClient, UUID, Bool)? in
+            let state = try await self.getContainerState(id: id, context: context)
+            guard state.prewarmed || state.prewarmCleanupRequired,
+                let client = state.client
+            else {
+                return nil
+            }
+            return (client, state.generation, state.prewarmCleanupRequired)
+        }
+        guard let (client, generation, cleanupRequired) = prepared else {
+            return false
+        }
+
+        if cleanupRequired {
+            try await discardDedicatedPrewarm(id: id)
+            return false
+        }
+
+        do {
+            _ = try await client.state()
+            try await client.attach(
+                stdio: stdio,
+                closeStdin: Self.deferredStdinNeedsEOF(stdio)
+            )
+        } catch {
+            log.warning(
+                "discarding unusable dedicated prewarm; retrying cold",
+                metadata: [
+                    "id": "\(id)",
+                    "error": "\(error)",
+                ]
+            )
+            try await discardDedicatedPrewarm(id: id)
+            return false
+        }
+
+        try await self.lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]
+        ) { context in
+            var state = try await self.getContainerState(id: id, context: context)
+            guard state.generation == generation, state.prewarmed else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container \(id) changed while consuming its prewarmed runtime"
+                )
+            }
+            state.prewarmed = false
+            await self.setContainerState(id, state, context: context)
+        }
+        return true
+    }
+
+    static func deferredStdinNeedsEOF(_ stdio: [FileHandle?]) -> Bool {
+        stdio.first.map { $0 == nil } ?? true
+    }
+
+    enum PreparedRuntimeShutdownFailureDisposition: Equatable {
+        case retainForRetry
+        case confirmInactiveService
+    }
+
+    static func preparedRuntimeShutdownFailureDisposition(
+        runtimeIsReachable: Bool
+    ) -> PreparedRuntimeShutdownFailureDisposition {
+        runtimeIsReachable ? .retainForRetry : .confirmInactiveService
+    }
+
+    static func preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+        _ disposition: PreparedRuntimeShutdownFailureDisposition?
+    ) -> Bool {
+        disposition == .confirmInactiveService
+    }
+
+    enum PreparedLoggingCleanup: Equatable {
+        case abortBootstrap
+        case closeActivatedRun
+    }
+
+    static func preparedLoggingCleanup(
+        requiresClose: Bool
+    ) -> PreparedLoggingCleanup {
+        requiresClose ? .closeActivatedRun : .abortBootstrap
+    }
+
+    @discardableResult
+    private func discardDedicatedPrewarm(id: String) async throws -> Bool {
+        let discarded = try await self.lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
+        ) { context -> (ManagedRuntimeClient, ContainerConfiguration, UUID, Bool)? in
+            let state = try await self.getContainerState(id: id, context: context)
+            guard state.prewarmed || state.prewarmCleanupRequired,
+                let client = state.client
+            else {
+                return nil
+            }
+            return (
+                client,
+                state.snapshot.configuration,
+                state.generation,
+                state.prewarmCleanupRequiresLoggingClose
+            )
+        }
+        guard let (client, configuration, generation, loggingRequiresClose) = discarded else {
+            return false
+        }
+
+        // Retain the prepared client as a cleanup tombstone until every
+        // external resource is confirmed inactive. A later lifecycle retry
+        // must not mistake a surviving mounted VM for an ordinary stopped
+        // container.
+        await exitMonitor.stopTracking(id: id)
+        clearRuntimeClientToken(id: id)
+        let label = Self.fullLaunchdServiceLabel(
+            runtimeName: configuration.runtimeHandler,
+            instanceId: id
+        )
+        var shutdownFailureDisposition: PreparedRuntimeShutdownFailureDisposition?
+        do {
+            try await client.shutdown()
+        } catch let shutdownError {
+            let runtimeIsReachable: Bool
+            do {
+                _ = try await client.state()
+                runtimeIsReachable = true
+            } catch {
+                runtimeIsReachable = false
+            }
+            let disposition = Self.preparedRuntimeShutdownFailureDisposition(
+                runtimeIsReachable: runtimeIsReachable
+            )
+            shutdownFailureDisposition = disposition
+            switch disposition {
+            case .retainForRetry:
+                log.warning(
+                    "prewarmed runtime cleanup failed; retaining it for retry",
+                    metadata: ["id": "\(id)", "error": "\(shutdownError)"]
+                )
+                throw shutdownError
+            case .confirmInactiveService:
+                log.debug(
+                    "prewarmed runtime was already unavailable during cleanup",
+                    metadata: ["id": "\(id)", "error": "\(shutdownError)"]
+                )
+            }
+        }
+
+        let stopServiceBeforeLogging =
+            Self.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
+                shutdownFailureDisposition
+            )
+        if stopServiceBeforeLogging {
+            // A runtime that no longer answers RPC may still own the logging
+            // pipe descriptors. Stop the helper before waiting for EOF so an
+            // unreachable prepared runtime cannot deadlock cleanup.
+            try Self.stopRuntimeServiceAndConfirmInactive(
+                fullServiceLabel: label
+            )
+        }
+
+        var firstError: (any Error)?
+        do {
+            switch Self.preparedLoggingCleanup(
+                requiresClose: loggingRequiresClose
+            ) {
+            case .abortBootstrap:
+                try await remoteLogDriverPlane?.abortBootstrap(containerID: id)
+            case .closeActivatedRun:
+                try await remoteLogDriverPlane?.close(containerID: id)
+            }
+        } catch {
+            firstError = error
+        }
+        if !stopServiceBeforeLogging {
+            do {
+                try Self.stopRuntimeServiceAndConfirmInactive(
+                    fullServiceLabel: label
+                )
+            } catch {
+                if firstError == nil {
+                    firstError = error
+                }
+            }
+        }
+        if let firstError {
+            throw firstError
+        }
+
+        try await self.lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]
+        ) { context in
+            var state = try await self.getContainerState(id: id, context: context)
+            guard state.generation == generation,
+                state.prewarmed || state.prewarmCleanupRequired
+            else {
+                return
+            }
+            state.client = nil
+            await self.setContainerState(id, state, context: context)
+        }
+        return true
     }
 
     static func bootstrapCommitIsCurrent(
@@ -2226,6 +2761,44 @@ public actor ContainersService {
     ) -> Bool {
         plannedContainerGeneration == currentContainerGeneration
             && plannedOperationGeneration == currentOperationGeneration
+    }
+
+    static func bootstrapCleanupTombstoneMayCommit(
+        plannedContainerGeneration: UUID,
+        currentContainerGeneration: UUID,
+        currentClientExists: Bool
+    ) -> Bool {
+        plannedContainerGeneration == currentContainerGeneration
+            && !currentClientExists
+    }
+
+    private func retainDedicatedBootstrapCleanupTombstone(
+        id: String,
+        client: ManagedRuntimeClient,
+        plannedContainerGeneration: UUID
+    ) async throws {
+        try await self.lock.withLock(
+            logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+        ) { context in
+            var state = try await self.getContainerState(id: id, context: context)
+            guard
+                Self.bootstrapCleanupTombstoneMayCommit(
+                    plannedContainerGeneration: plannedContainerGeneration,
+                    currentContainerGeneration: state.generation,
+                    currentClientExists: state.client != nil
+                )
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container \(id) changed before failed bootstrap cleanup could be retained"
+                )
+            }
+            state.client = client
+            state.prewarmed = false
+            state.prewarmCleanupRequired = true
+            state.prewarmCleanupRequiresLoggingClose = false
+            await self.setContainerState(id, state, context: context)
+        }
     }
 
     static func runtimeBootstrapPhases(
@@ -2365,6 +2938,10 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        try Self.validateForegroundProcessStatus(
+            state.snapshot.status,
+            id: id
+        )
         let client = try state.getClient()
         try await client.attach(stdio: stdio)
     }
@@ -2396,6 +2973,10 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        try Self.validateForegroundProcessStatus(
+            state.snapshot.status,
+            id: id
+        )
         let client = try state.getClient()
         try await client.createProcess(
             processID,
@@ -2413,6 +2994,37 @@ public actor ContainersService {
                 configuration: config
             )
         )
+    }
+
+    static func validateForegroundProcessStatus(
+        _ status: RuntimeStatus,
+        id: String
+    ) throws {
+        guard status == .running || status == .paused else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "container \(id) is not running or paused"
+            )
+        }
+    }
+
+    static func validateProcessStartState(
+        status: RuntimeStatus,
+        isInit: Bool,
+        prewarmed: Bool,
+        cleanupRequired: Bool,
+        id: String
+    ) throws {
+        if isInit {
+            guard !prewarmed, !cleanupRequired else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "container \(id) must complete foreground bootstrap before init start"
+                )
+            }
+            return
+        }
+        try validateForegroundProcessStatus(status, id: id)
     }
 
     /// Start a process in a container. This can either be a process created via
@@ -2453,6 +3065,13 @@ public actor ContainersService {
         if state.snapshot.status == .running && isInit {
             return
         }
+        try Self.validateProcessStartState(
+            status: state.snapshot.status,
+            isInit: isInit,
+            prewarmed: state.prewarmed,
+            cleanupRequired: state.prewarmCleanupRequired,
+            id: id
+        )
 
         let client = try state.getClient()
         let oomKillCountBaseline: UInt64?
@@ -2466,11 +3085,11 @@ public actor ContainersService {
             oomKillCountBaseline = nil
         }
         let preStartState = state
-        try await client.startProcess(processID)
 
         var startedInitProcess: StartedInitProcess?
         var startedExecProcess: StartedExecProcess?
         if !isInit {
+            try await client.startProcess(processID)
             if execConfiguration != nil {
                 startedExecProcess = StartedExecProcess(
                     snapshot: state.snapshot,
@@ -2480,6 +3099,10 @@ public actor ContainersService {
             }
         } else {
             do {
+                // Deferred prewarm side effects such as published-port
+                // binding can fail inside this RPC. Keep the RPC within the
+                // established init-start rollback.
+                try await client.startProcess(processID)
                 try await self.remoteLogDriverPlane?.activate(
                     containerID: id
                 )
@@ -2560,27 +3183,44 @@ public actor ContainersService {
                     healthCheck: startedInitProcess?.snapshot.configuration.healthCheck,
                     client: client
                 )
-            } catch {
+            } catch let startError {
                 self.stopHealthCheckMonitor(id: id)
                 self.clearRuntimeClientToken(id: id)
                 await self.exitMonitor.stopTracking(id: id)
-                try? await client.stop(options: ContainerStopOptions.default)
-                try? await client.shutdown()
-                if client.isDedicated {
-                    let label = Self.fullLaunchdServiceLabel(
-                        runtimeName: state.snapshot.configuration.runtimeHandler,
-                        instanceId: id
+                var cleanupSucceeded = false
+                do {
+                    try await self.cleanUpRuntimeAfterFailedInitStart(
+                        id: id,
+                        configuration: state.snapshot.configuration,
+                        client: client
                     )
-                    try? ServiceManager.deregister(fullServiceLabel: label)
+                    cleanupSucceeded = true
+                } catch let cleanupError {
+                    log.warning(
+                        "failed init-start cleanup will be retried before the next lifecycle operation",
+                        metadata: [
+                            "id": "\(id)",
+                            "error": "\(cleanupError)",
+                        ]
+                    )
                 }
-                try? await self.remoteLogDriverPlane?.close(containerID: id)
-                let recoveredState = Self.recoveredContainerStateAfterFailedStart(
+                var recoveredState = Self.recoveredContainerStateAfterFailedStart(
                     preStartState
                 )
-                await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(id)"]) { context in
-                    await self.setContainerState(id, recoveredState, context: context)
+                if Self.failedStartCleanupRequiresTombstone(
+                    cleanupSucceeded: cleanupSucceeded,
+                    clientIsDedicated: client.isDedicated
+                ) {
+                    recoveredState.client = client
+                    recoveredState.prewarmed = false
+                    recoveredState.prewarmCleanupRequired = true
+                    recoveredState.prewarmCleanupRequiresLoggingClose = true
                 }
-                throw error
+                let stateAfterRollback = recoveredState
+                await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(id)"]) { context in
+                    await self.setContainerState(id, stateAfterRollback, context: context)
+                }
+                throw startError
             }
         }
 
@@ -2611,6 +3251,40 @@ public actor ContainersService {
                 )[0]
             )
         }
+    }
+
+    private func cleanUpRuntimeAfterFailedInitStart(
+        id: String,
+        configuration: ContainerConfiguration,
+        client: ManagedRuntimeClient
+    ) async throws {
+        do {
+            try await client.stop(options: ContainerStopOptions.default)
+        } catch {
+            // A failed stop leaves RuntimeService in `.stopping`. Shutdown
+            // performs the authoritative cleanup for that state below.
+            log.debug(
+                "failed init-start stop will be completed by shutdown",
+                metadata: ["id": "\(id)", "error": "\(error)"]
+            )
+        }
+        try await client.shutdown()
+        if client.isDedicated {
+            try Self.stopRuntimeServiceAndConfirmInactive(
+                fullServiceLabel: Self.fullLaunchdServiceLabel(
+                    runtimeName: configuration.runtimeHandler,
+                    instanceId: id
+                )
+            )
+        }
+        try await self.remoteLogDriverPlane?.close(containerID: id)
+    }
+
+    static func failedStartCleanupRequiresTombstone(
+        cleanupSucceeded: Bool,
+        clientIsDedicated: Bool
+    ) -> Bool {
+        !cleanupSucceeded && clientIsDedicated
     }
 
     static func reportedInitPID(_ processIdentifiers: [Int32]) -> Int32 {
@@ -2935,6 +3609,37 @@ public actor ContainersService {
             && (lifecycleState == .restarting || restartScheduled)
     }
 
+    static func resourceUpdateInvalidatesPrewarm(
+        prewarmed: Bool,
+        memoryBytes: Int64?,
+        nanoCPUs: Int64?
+    ) -> Bool {
+        prewarmed && (memoryBytes != nil || nanoCPUs != nil)
+    }
+
+    static func validatedResourceUpdateInvalidatesPrewarm(
+        prewarmed: Bool,
+        memoryBytes: Int64?,
+        nanoCPUs: Int64?,
+        restartPolicy: ContainerRestartPolicy,
+        autoRemove: Bool
+    ) throws -> Bool {
+        try validateRestartPolicy(restartPolicy, autoRemove: autoRemove)
+        return resourceUpdateInvalidatesPrewarm(
+            prewarmed: prewarmed,
+            memoryBytes: memoryBytes,
+            nanoCPUs: nanoCPUs
+        )
+    }
+
+    static func renameInvalidatesPrewarm(
+        prewarmed: Bool,
+        currentName: String,
+        newName: String
+    ) -> Bool {
+        prewarmed && currentName != newName
+    }
+
     /// Pause a running container.
     public func pause(id: String) async throws {
         try await withLifecycleMutation(id: id) {
@@ -3114,6 +3819,10 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        try Self.validateForegroundProcessStatus(
+            state.snapshot.status,
+            id: id
+        )
         let client = try state.getClient()
         return try await client.dial(port)
     }
@@ -4248,6 +4957,10 @@ public actor ContainersService {
         }
 
         let state = try self._getContainerState(id: id)
+        try Self.validateForegroundProcessStatus(
+            state.snapshot.status,
+            id: id
+        )
         let client = try state.getClient()
         return try await client.statistics()
     }
@@ -4305,6 +5018,7 @@ public actor ContainersService {
             )
         }
 
+        _ = try await discardDedicatedPrewarm(id: id)
         let state = try self._getContainerState(id: id)
         let events: [ContainerEvent]
         switch state.snapshot.status {
@@ -4469,6 +5183,18 @@ public actor ContainersService {
     /// `noFreeze` is meaningful only with `live`: it requests a best-effort
     /// APFS copy-on-write snapshot without freezing guest writes.
     public func exportRootfs(id: String, archive: URL, live: Bool = false, noFreeze: Bool = false) async throws {
+        try await withLifecycleMutation(id: id) {
+            _ = try await self.discardDedicatedPrewarm(id: id)
+            try await self.exportRootfsImpl(
+                id: id,
+                archive: archive,
+                live: live,
+                noFreeze: noFreeze
+            )
+        }
+    }
+
+    private func exportRootfsImpl(id: String, archive: URL, live: Bool, noFreeze: Bool) async throws {
         self.log.debug("\(#function)")
 
         try Utility.validEntityName(id)
@@ -6055,7 +6781,11 @@ public actor ContainersService {
                 return (nil, nil)
             }
 
-            let client = state.client
+            let preserveCleanupTombstone = Self.restartFailurePreservesCleanupTombstone(
+                cleanupRequired: state.prewarmCleanupRequired,
+                clientExists: state.client != nil
+            )
+            let client = preserveCleanupTombstone ? nil : state.client
             let label =
                 client?.isDedicated == true
                 ? Self.fullLaunchdServiceLabel(
@@ -6067,7 +6797,9 @@ public actor ContainersService {
             state.snapshot.status = .stopped
             state.snapshot.networks = []
             state.snapshot.health = nil
-            state.client = nil
+            if !preserveCleanupTombstone {
+                state.client = nil
+            }
             do {
                 try await self.commitLifecycle(
                     id: id,
@@ -6117,6 +6849,13 @@ public actor ContainersService {
         if let label = cleanup.1 {
             try? ServiceManager.deregister(fullServiceLabel: label)
         }
+    }
+
+    static func restartFailurePreservesCleanupTombstone(
+        cleanupRequired: Bool,
+        clientExists: Bool
+    ) -> Bool {
+        cleanupRequired && clientExists
     }
 
     private func scheduleRestartStabilityReset(
@@ -6451,6 +7190,23 @@ extension ContainersService: LoggingHandoffContainerPromoting {
         history: [LoggingHandoffPromotedHistorySegmentV1],
         authorization: LoggingHandoffPromotionAuthorizationV1
     ) async throws {
+        try await withLifecycleMutation(id: container.containerID) {
+            _ = try await self.discardDedicatedPrewarm(
+                id: container.containerID
+            )
+            try await self.promoteContainerLoggingImpl(
+                container: container,
+                history: history,
+                authorization: authorization
+            )
+        }
+    }
+
+    private func promoteContainerLoggingImpl(
+        container: LoggingHandoffStagedContainerV1,
+        history: [LoggingHandoffPromotedHistorySegmentV1],
+        authorization: LoggingHandoffPromotionAuthorizationV1
+    ) async throws {
         if let reference = container.configuration.resolved?
             .protectedOptionReference
         {
@@ -6556,6 +7312,23 @@ extension ContainersService: LoggingHandoffContainerPromoting {
     }
 
     func activateContainerLogging(
+        container: LoggingHandoffStagedContainerV1,
+        promotionReceipt: LoggingHandoffControllerPromotionReceiptV1,
+        authorization: LoggingHandoffActivationAuthorizationV1
+    ) async throws {
+        try await withLifecycleMutation(id: container.containerID) {
+            _ = try await self.discardDedicatedPrewarm(
+                id: container.containerID
+            )
+            try await self.activateContainerLoggingImpl(
+                container: container,
+                promotionReceipt: promotionReceipt,
+                authorization: authorization
+            )
+        }
+    }
+
+    private func activateContainerLoggingImpl(
         container: LoggingHandoffStagedContainerV1,
         promotionReceipt: LoggingHandoffControllerPromotionReceiptV1,
         authorization: LoggingHandoffActivationAuthorizationV1
@@ -6757,12 +7530,19 @@ extension ContainersService {
         }
 
         do {
-            _ = try await bootstrap(
+            let stdio = [FileHandle?](repeating: nil, count: 3)
+            let consumedPrewarm = try await consumeDedicatedPrewarm(
                 id: id,
-                stdio: [FileHandle?](repeating: nil, count: 3),
-                dynamicEnv: [:],
-                onlyIfNeverStarted: false
+                stdio: stdio
             )
+            if !consumedPrewarm {
+                _ = try await bootstrap(
+                    id: id,
+                    stdio: stdio,
+                    dynamicEnv: [:],
+                    onlyIfNeverStarted: false
+                )
+            }
             try await startProcessImpl(id: id, processID: id)
         } catch {
             if let stoppedRestartRollback {
@@ -6818,46 +7598,76 @@ extension ContainersService {
                 message: "invalid container name \(newName)"
             )
         }
-        let renamed = try await lock.withLock(
-            logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
-        ) { context -> (snapshot: ContainerSnapshot, oldName: String) in
+        let invalidatedPrewarm = try await lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-prewarm", "id": "\(id)"]
+        ) { context in
             guard !(await self.hasContainer(named: newName, excluding: id)) else {
                 throw ContainerizationError(
                     .exists,
                     message: "container name already exists: \(newName)"
                 )
             }
-            var state = try await self.getContainerState(id: id, context: context)
-            let oldConfiguration = state.snapshot.configuration
-            let oldName = oldConfiguration.dockerName ?? oldConfiguration.id
-            guard oldName != newName else {
-                return (state.snapshot, oldName)
-            }
-            var configuration = oldConfiguration
-            configuration.dockerName = newName
-            let bundle = ContainerResource.Bundle(
-                path: try Self.containerPath(root: self.containerRoot, id: id)
+            let state = try await self.getContainerState(id: id, context: context)
+            let configuration = state.snapshot.configuration
+            return Self.renameInvalidatesPrewarm(
+                prewarmed: state.prewarmed || state.prewarmCleanupRequired,
+                currentName: configuration.dockerName ?? configuration.id,
+                newName: newName
             )
-            try Self.persistContainerConfiguration(
-                configuration,
-                at: bundle.path
-            )
-            state.snapshot.configuration = configuration
-            do {
-                var record = try await self.lifecycleRecord(id: id)
-                record.canonicalName = newName
-                try Self.advanceLifecycleRevisions(&record.snapshot)
-                try bundle.setDurably(lifecycleRecordV2: record)
-                await self.setLifecycleRecord(record, id: id)
-            } catch {
-                try? Self.persistContainerConfiguration(
-                    oldConfiguration,
+        }
+        if invalidatedPrewarm {
+            try await discardDedicatedPrewarm(id: id)
+        }
+        let renamed: (snapshot: ContainerSnapshot, oldName: String)
+        do {
+            renamed = try await lock.withLock(
+                logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+            ) { context -> (snapshot: ContainerSnapshot, oldName: String) in
+                guard !(await self.hasContainer(named: newName, excluding: id)) else {
+                    throw ContainerizationError(
+                        .exists,
+                        message: "container name already exists: \(newName)"
+                    )
+                }
+                var state = try await self.getContainerState(id: id, context: context)
+                let oldConfiguration = state.snapshot.configuration
+                let oldName = oldConfiguration.dockerName ?? oldConfiguration.id
+                guard oldName != newName else {
+                    return (state.snapshot, oldName)
+                }
+                var configuration = oldConfiguration
+                configuration.dockerName = newName
+                let bundle = ContainerResource.Bundle(
+                    path: try Self.containerPath(root: self.containerRoot, id: id)
+                )
+                try Self.persistContainerConfiguration(
+                    configuration,
                     at: bundle.path
                 )
-                throw error
+                state.snapshot.configuration = configuration
+                do {
+                    var record = try await self.lifecycleRecord(id: id)
+                    record.canonicalName = newName
+                    try Self.advanceLifecycleRevisions(&record.snapshot)
+                    try bundle.setDurably(lifecycleRecordV2: record)
+                    await self.setLifecycleRecord(record, id: id)
+                } catch {
+                    try? Self.persistContainerConfiguration(
+                        oldConfiguration,
+                        at: bundle.path
+                    )
+                    throw error
+                }
+                await self.setContainerState(id, state, context: context)
+                return (state.snapshot, oldName)
             }
-            await self.setContainerState(id, state, context: context)
-            return (state.snapshot, oldName)
+        } catch {
+            if invalidatedPrewarm,
+                let snapshot = try? self._getContainerState(id: id).snapshot
+            {
+                rescheduleDedicatedPrewarm(snapshot: snapshot)
+            }
+            throw error
         }
         await publishEvent(
             Self.containerEvent(
@@ -6866,6 +7676,9 @@ extension ContainersService {
                 additionalAttributes: ["oldName": renamed.oldName]
             )
         )
+        if invalidatedPrewarm {
+            rescheduleDedicatedPrewarm(snapshot: renamed.snapshot)
+        }
     }
 
     package func updateDockerContainer(
@@ -7005,87 +7818,134 @@ extension ContainersService {
         nanoCPUs: Int64?,
         restartPolicy: ContainerRestartPolicy?
     ) async throws -> [String] {
-        let restartScheduled = restartTasks[id] != nil
-        let update = try await lock.withLock(
-            logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
-        ) { context -> (warnings: [String], cancelPendingRestart: Bool) in
-            var state = try await self.getContainerState(id: id, context: context)
-            if state.snapshot.status == .running || state.snapshot.status == .paused,
-                memoryBytes != nil || nanoCPUs != nil
-            {
+        let updatedMemoryInBytes: UInt64?
+        if let memoryBytes {
+            guard memoryBytes > 0 else {
                 throw ContainerizationError(
-                    .unsupported,
-                    message: "live resource update is not supported by this runtime provider"
+                    .invalidArgument,
+                    message: "memory must be positive"
                 )
             }
-            var configuration = state.snapshot.configuration
-            if let memoryBytes {
-                guard memoryBytes > 0 else {
-                    throw ContainerizationError(.invalidArgument, message: "memory must be positive")
-                }
-                let memoryInBytes = UInt64(memoryBytes)
-                try Self.validateBootableMemory(memoryInBytes)
-                configuration.resources.memoryInBytes = memoryInBytes
-            }
-            if let nanoCPUs {
-                let period = Self.dockerCPUPeriodInMicroseconds
-                configuration.resources.cpuPeriodInMicroseconds = period
-                configuration.resources.cpuQuotaInMicroseconds = try Self.cpuQuotaInMicroseconds(
-                    nanoCPUs: nanoCPUs,
-                    periodInMicroseconds: period
-                )
-            }
-            let bundle = ContainerResource.Bundle(
-                path: try Self.containerPath(root: self.containerRoot, id: id)
+            let memoryInBytes = UInt64(memoryBytes)
+            try Self.validateBootableMemory(memoryInBytes)
+            updatedMemoryInBytes = memoryInBytes
+        } else {
+            updatedMemoryInBytes = nil
+        }
+        let updatedCPUQuotaInMicroseconds: Int64?
+        if let nanoCPUs {
+            updatedCPUQuotaInMicroseconds = try Self.cpuQuotaInMicroseconds(
+                nanoCPUs: nanoCPUs,
+                periodInMicroseconds: Self.dockerCPUPeriodInMicroseconds
             )
-            let oldConfiguration = state.snapshot.configuration
+        } else {
+            updatedCPUQuotaInMicroseconds = nil
+        }
+
+        let invalidatedPrewarm = try await lock.withLock(
+            logMetadata: ["acquirer": "\(#function)-prewarm", "id": "\(id)"]
+        ) { context in
+            let state = try await self.getContainerState(id: id, context: context)
             let oldOptions = try await self.getContainerCreationOptions(id: id)
-            let newOptions = ContainerCreateOptions(
-                autoRemove: oldOptions.autoRemove,
-                rootFsOverride: oldOptions.rootFsOverride,
-                restartPolicy: restartPolicy ?? oldOptions.restartPolicy
+            return try Self.validatedResourceUpdateInvalidatesPrewarm(
+                prewarmed: state.prewarmed || state.prewarmCleanupRequired,
+                memoryBytes: memoryBytes,
+                nanoCPUs: nanoCPUs,
+                restartPolicy: restartPolicy ?? oldOptions.restartPolicy,
+                autoRemove: oldOptions.autoRemove
             )
-            try Self.validateRestartPolicy(
-                newOptions.restartPolicy,
-                autoRemove: newOptions.autoRemove
-            )
-            let lifecycle = try await self.lifecycleRecord(id: id)
-            let publicState = lifecycle.snapshot.state
-            let cancelPendingRestart = Self.shouldCancelPendingRestart(
-                lifecycleState: publicState,
-                restartScheduled: restartScheduled,
-                manualRestartSuppressed: lifecycle.intent.manualRestartSuppressed,
-                updatedPolicy: newOptions.restartPolicy,
-                exitCode: state.snapshot.exitCode,
-                restartConsecutiveFailureCount: state.restart.consecutiveFailures
-            )
-            do {
-                try Self.persistContainerConfiguration(
-                    configuration,
-                    options: newOptions,
-                    at: bundle.path
+        }
+        if invalidatedPrewarm {
+            try await discardDedicatedPrewarm(id: id)
+        }
+
+        let restartScheduled = restartTasks[id] != nil
+        let update: (warnings: [String], cancelPendingRestart: Bool, snapshot: ContainerSnapshot)
+        do {
+            update = try await lock.withLock(
+                logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
+            ) { context -> (warnings: [String], cancelPendingRestart: Bool, snapshot: ContainerSnapshot) in
+                var state = try await self.getContainerState(id: id, context: context)
+                if state.snapshot.status == .running || state.snapshot.status == .paused,
+                    memoryBytes != nil || nanoCPUs != nil
+                {
+                    throw ContainerizationError(
+                        .unsupported,
+                        message: "live resource update is not supported by this runtime provider"
+                    )
+                }
+                var configuration = state.snapshot.configuration
+                if let memoryInBytes = updatedMemoryInBytes {
+                    configuration.resources.memoryInBytes = memoryInBytes
+                }
+                if let cpuQuotaInMicroseconds = updatedCPUQuotaInMicroseconds {
+                    configuration.resources.cpuPeriodInMicroseconds =
+                        Self.dockerCPUPeriodInMicroseconds
+                    configuration.resources.cpuQuotaInMicroseconds =
+                        cpuQuotaInMicroseconds
+                }
+                let bundle = ContainerResource.Bundle(
+                    path: try Self.containerPath(root: self.containerRoot, id: id)
                 )
-                state.snapshot.configuration = configuration
-                try await self.commitLifecycle(
-                    id: id,
-                    from: state,
-                    publicState: cancelPendingRestart ? .exited : publicState,
-                    intent: { $0.restartPolicy = newOptions.restartPolicy }
+                let oldConfiguration = state.snapshot.configuration
+                let oldOptions = try await self.getContainerCreationOptions(id: id)
+                let newOptions = ContainerCreateOptions(
+                    autoRemove: oldOptions.autoRemove,
+                    rootFsOverride: oldOptions.rootFsOverride,
+                    restartPolicy: restartPolicy ?? oldOptions.restartPolicy
                 )
-            } catch {
-                try? Self.persistContainerConfiguration(
-                    oldConfiguration,
-                    options: oldOptions,
-                    at: bundle.path
+                try Self.validateRestartPolicy(
+                    newOptions.restartPolicy,
+                    autoRemove: newOptions.autoRemove
                 )
-                throw error
+                let lifecycle = try await self.lifecycleRecord(id: id)
+                let publicState = lifecycle.snapshot.state
+                let cancelPendingRestart = Self.shouldCancelPendingRestart(
+                    lifecycleState: publicState,
+                    restartScheduled: restartScheduled,
+                    manualRestartSuppressed: lifecycle.intent.manualRestartSuppressed,
+                    updatedPolicy: newOptions.restartPolicy,
+                    exitCode: state.snapshot.exitCode,
+                    restartConsecutiveFailureCount: state.restart.consecutiveFailures
+                )
+                do {
+                    try Self.persistContainerConfiguration(
+                        configuration,
+                        options: newOptions,
+                        at: bundle.path
+                    )
+                    state.snapshot.configuration = configuration
+                    try await self.commitLifecycle(
+                        id: id,
+                        from: state,
+                        publicState: cancelPendingRestart ? .exited : publicState,
+                        intent: { $0.restartPolicy = newOptions.restartPolicy }
+                    )
+                } catch {
+                    try? Self.persistContainerConfiguration(
+                        oldConfiguration,
+                        options: oldOptions,
+                        at: bundle.path
+                    )
+                    throw error
+                }
+                await self.setContainerState(id, state, context: context)
+                await self.publishContainerEvent(action: "update", snapshot: state.snapshot)
+                return ([], cancelPendingRestart, state.snapshot)
             }
-            await self.setContainerState(id, state, context: context)
-            await self.publishContainerEvent(action: "update", snapshot: state.snapshot)
-            return ([], cancelPendingRestart)
+        } catch {
+            if invalidatedPrewarm,
+                let snapshot = try? self._getContainerState(id: id).snapshot
+            {
+                rescheduleDedicatedPrewarm(snapshot: snapshot)
+            }
+            throw error
         }
         if update.cancelPendingRestart {
             cancelRestartTasks(id: id)
+        }
+        if invalidatedPrewarm {
+            rescheduleDedicatedPrewarm(snapshot: update.snapshot)
         }
         return update.warnings
     }
@@ -7354,6 +8214,23 @@ extension ContainersService {
     }
 
     private func loggingHandoffExportContainers(
+        _ request: ProviderHandoffPartExportRequestV1,
+        historyDirectoryURL: URL
+    ) async throws -> LoggingHandoffExportPayloadV2 {
+        try await withLifecycleMutations(
+            ids: request.selectedResourceIDs
+        ) {
+            for containerID in Set(request.selectedResourceIDs) {
+                _ = try await self.discardDedicatedPrewarm(id: containerID)
+            }
+            return try await self.loggingHandoffExportContainersImpl(
+                request,
+                historyDirectoryURL: historyDirectoryURL
+            )
+        }
+    }
+
+    private func loggingHandoffExportContainersImpl(
         _ request: ProviderHandoffPartExportRequestV1,
         historyDirectoryURL: URL
     ) async throws -> LoggingHandoffExportPayloadV2 {

@@ -171,6 +171,15 @@ checks, published TCP/UDP ports, bridge/custom networking, custom VM assets,
 devices, GPUs, virtualization, privileged workloads, and live snapshots are
 rejected rather than silently falling back to a dedicated VM.
 
+After `container create`, an eligible never-started `dedicated-vm` container
+using the built-in runtime may prepare its private VM in the background. The
+init process does not start until `container start` or `container run`, and the
+first foreground client still supplies its standard streams. SSH forwarding
+and custom runtime handlers retain cold foreground bootstrap because their
+start-time inputs cannot be safely anticipated. This optimization never
+changes the selected isolation mode or makes two dedicated containers share a
+VM.
+
 ### `container attach`
 
 Attaches standard streams to the init process of a running container. The

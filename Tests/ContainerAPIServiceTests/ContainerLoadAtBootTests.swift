@@ -341,7 +341,7 @@ struct ContainerLoadAtBootTests {
     }
 
     @Test
-    func terminalLifecycleStillReconcilesSurvivingRuntimeService() throws {
+    func createdLifecycleDefersSurvivingRuntimeServiceForCleanReconciliation() throws {
         let fixture = try Fixture(includeRuntime: true)
         defer { fixture.remove() }
 
@@ -375,8 +375,49 @@ struct ContainerLoadAtBootTests {
         )
 
         #expect(records[id] == created)
-        #expect(deregisteredLabels.count == 1)
-        #expect(deregisteredLabels[0].hasSuffix(".container-runtime-linux.\(id)"))
+        #expect(deregisteredLabels.isEmpty)
+        #expect(
+            ContainersService.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                configuration: testConfiguration(id: id),
+                lifecycle: created
+            )
+        )
+
+        var restarting = created
+        restarting.snapshot.state = .restarting
+        #expect(
+            !ContainersService.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                configuration: testConfiguration(id: id),
+                lifecycle: restarting
+            )
+        )
+
+        var removing = created
+        removing.intent.removalRequested = true
+        #expect(
+            !ContainersService.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                configuration: testConfiguration(id: id),
+                lifecycle: removing
+            )
+        )
+
+        var sshConfiguration = testConfiguration(id: id)
+        sshConfiguration.ssh = true
+        #expect(
+            !ContainersService.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                configuration: sshConfiguration,
+                lifecycle: created
+            )
+        )
+
+        var customRuntimeConfiguration = testConfiguration(id: id)
+        customRuntimeConfiguration.runtimeHandler = "custom-runtime"
+        #expect(
+            !ContainersService.shouldDeferDedicatedRuntimeCleanupAtBoot(
+                configuration: customRuntimeConfiguration,
+                lifecycle: created
+            )
+        )
     }
 
     @Test
