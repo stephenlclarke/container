@@ -52,7 +52,8 @@ container machine stop dev
 container machine rm dev             # deletes its storage too
 ```
 
-`container machine` has the alias `m`, so `m ls` and `m run` work.
+`container machine` has the alias `m`, so `container m ls` and
+`container m run` work.
 
 ## Sizing and the home mount
 
