@@ -53,6 +53,13 @@ The final signed regression exported a valid Alpine root filesystem after prepar
 
 Omitted isolation remains `dedicated-vm`, and every dedicated container keeps a private VM. `shared-vm` remains an explicit experimental opt-in and is never selected as a fallback. SSH forwarding and custom runtime plugins retain cold foreground bootstrap because their start-time input contracts cannot safely be anticipated. Background failure is recoverable and does not make container creation fail.
 
+## Upstream submission status
+
+The benchmarked implementation was merged in the support fork as
+[`stephenlclarke/container#150`](https://github.com/stephenlclarke/container/pull/150).
+As of 28 August 2026, no Apple upstream pull request contains dedicated-container
+prewarming.
+
 ## Links
 
 - Closes [`stephenlclarke/container#149`](https://github.com/stephenlclarke/container/issues/149).

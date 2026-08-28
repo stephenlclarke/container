@@ -39,6 +39,13 @@ The signed release-mode proof recorded background bootstrap durations of 1.025 a
 
 A follow-up signed regression proof confirmed that a stdin-reading process receives EOF when started without an input handle. Killing the prepared runtime helper before start also caused a cold replacement to be created and the workload to complete successfully. The final signed proof exported a valid Alpine root filesystem from a prepared container, confirmed that export and deletion stopped their runtime helpers, and showed that Docker restart reused the prepared helper while delivering deferred stdin EOF. Signed XPC regressions also confirmed that exec creation and ordinary attach are rejected while a prepared container remains publicly stopped without discarding its prepared helper. A clean-shutdown export stopped the booted helper before reading a valid Alpine archive, and focused regressions confirmed that reachable shutdown failures remain retryable, already-completed shutdown resumes deregistration, rename rebuilds logging metadata, and logging-abort retry retains and resumes its incomplete run.
 
+## Pull-request provenance
+
+The implementation and benchmark evidence were merged in
+[`stephenlclarke/container#150`](https://github.com/stephenlclarke/container/pull/150).
+As of 28 August 2026, no Apple upstream pull request contains dedicated-container
+prewarming.
+
 ## Related work
 
 - Tracking issue: [`stephenlclarke/container#149`](https://github.com/stephenlclarke/container/issues/149).
