@@ -557,8 +557,8 @@ struct ParserTest {
         case .filesystem(let fs):
             #expect(fs.destination == "/foo")
             #expect(fs.options.contains("mode=1777"))
-        case .volume:
-            #expect(Bool(false), "Expected filesystem mount, got volume")
+        case .volume, .image:
+            #expect(Bool(false), "Expected filesystem mount, got another mount type")
         }
     }
 
@@ -571,8 +571,8 @@ struct ParserTest {
             #expect(fs.source == "tmpfs")
             #expect(fs.destination == "/tmpfsmount1")
             #expect(fs.options.contains("size=536870912"))
-        case .volume:
-            #expect(Bool(false), "Expected filesystem mount, got volume")
+        case .volume, .image:
+            #expect(Bool(false), "Expected filesystem mount, got another mount type")
         }
     }
 
