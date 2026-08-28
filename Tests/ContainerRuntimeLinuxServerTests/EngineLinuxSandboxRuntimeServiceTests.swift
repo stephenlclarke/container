@@ -229,7 +229,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
-    func concurrentWorkloadStartsSerializeMaterialization() async throws {
+    func potentiallySharedWorkloadStartsSerializeMaterialization() async throws {
         let sandbox = FakeEngineLinuxSandbox(delayStartContainer: true)
         let service = try makeService(sandbox: sandbox)
         _ = try await service.boot(bootRequest())
@@ -253,6 +253,57 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         #expect(await sandbox.addCount == 2)
         #expect(await sandbox.startCount == 2)
         #expect(await sandbox.maximumConcurrentStartCount == 1)
+    }
+
+    @Test
+    func privateBlockWorkloadStartsUseBoundedAdmission() async throws {
+        let sandbox = FakeEngineLinuxSandbox(delayStartContainer: true)
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engine-sandbox-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: fixtureRoot,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
+        let imageRootfs = fixtureRoot.appendingPathComponent("image-rootfs.ext4")
+        try Data("sealed-image".utf8).write(to: imageRootfs)
+        let rootfs = Filesystem.block(
+            format: "ext4",
+            source: imageRootfs.path,
+            destination: "/",
+            options: []
+        )
+        let ids = (1...5).map { "workload-\($0)" }
+        let fixtures = try ids.map {
+            try WorkloadBundleFixture(
+                id: $0,
+                sandboxRoot: fixtureRoot,
+                containerRootFilesystem: rootfs
+            )
+        }
+        let requests = try zip(ids, fixtures).map {
+            try workloadRequest(root: $0.1.root, id: $0.0)
+        }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for request in requests {
+                group.addTask {
+                    _ = try await service.startWorkload(request, stdio: [])
+                }
+            }
+            try await group.waitForAll()
+        }
+
+        #expect(await sandbox.addCount == 5)
+        #expect(await sandbox.startCount == 5)
+        #expect(await sandbox.maximumConcurrentStartCount == 4)
+        #expect(
+            await sandbox.configuredRootfsSharing.values.allSatisfy {
+                $0 == .privateToWorkload
+            }
+        )
     }
 
     @Test
@@ -904,6 +955,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var configuredStdout = false
     private(set) var configuredStderr = false
     private(set) var configuredRootfsSources: [String: String] = [:]
+    private(set) var configuredRootfsSharing: [String: LinuxPod.ContainerConfiguration.RootFilesystemSharing] = [:]
     private var configuredStdoutWriter: (any Writer)?
     private var configuredStderrWriter: (any Writer)?
     private(set) var dialedVsockPorts: [UInt32] = []
@@ -963,6 +1015,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
         configuredStdout = config.process.stdout != nil
         configuredStderr = config.process.stderr != nil
         configuredRootfsSources[id] = rootfs.source
+        configuredRootfsSharing[id] = config.rootFilesystemSharing
         configuredStdoutWriter = config.process.stdout
         configuredStderrWriter = config.process.stderr
         if failAdd {
@@ -1043,7 +1096,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
             .running
         case .paused:
             .paused
-        case .recoveryRequired:
+        case .starting, .recoveryRequired:
             .unknown
         }
     }

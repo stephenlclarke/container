@@ -133,62 +133,76 @@ private actor ContainerizationEngineLinuxSandboxServiceListenerV1:
     }
 }
 
-/// Serializes the root filesystem materialization performed by LinuxPod.
+private enum EngineLinuxSandboxWorkloadMaterializationAdmission {
+    case exclusive
+    case independentRootFilesystem
+}
+
+/// Bounds root filesystem materialization performed by LinuxPod.
 ///
-/// LinuxPod mounts and prepares workload-local files such as `/etc/hostname`
-/// and `/etc/group` while starting a container. Those guest operations are not
-/// safe to overlap inside one shared VM: concurrent callers can observe EIO or
-/// a transient read-only mount. Admission remains asynchronous and FIFO so XPC
-/// callers do not block a thread while another workload is materialized.
+/// Workloads with private roots may overlap enough guest process setup to keep
+/// the shared VM busy. Potentially shared roots retain exclusive admission.
+/// Admission remains asynchronous, FIFO, and cancellation-safe.
 private actor EngineLinuxSandboxWorkloadMaterializationGate {
+    private static let capacity = 4
+
     private struct Waiter {
         let id: UUID
+        let permits: Int
         let continuation: CheckedContinuation<Void, any Error>
     }
 
-    private var occupied = false
+    private var availablePermits = capacity
     private var waiters: [Waiter] = []
 
     func withPermit<T: Sendable>(
+        _ admission: EngineLinuxSandboxWorkloadMaterializationAdmission,
         _ operation: @Sendable () async throws -> T
     ) async throws -> T {
-        try await acquire()
-        defer { release() }
+        let permits = admission == .exclusive ? Self.capacity : 1
+        try await acquire(permits)
+        defer { release(permits) }
+        try Task.checkCancellation()
         return try await operation()
     }
 
-    private func acquire() async throws {
+    private func acquire(_ permits: Int) async throws {
         try Task.checkCancellation()
-        guard occupied else {
-            occupied = true
+        guard waiters.isEmpty, availablePermits >= permits else {
+            let waiterID = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Void, any Error>) in
+                    waiters.append(
+                        Waiter(
+                            id: waiterID,
+                            permits: permits,
+                            continuation: continuation
+                        )
+                    )
+                }
+            } onCancel: {
+                Task { await self.cancel(waiterID) }
+            }
+
+            do {
+                try Task.checkCancellation()
+            } catch {
+                release(permits)
+                throw error
+            }
             return
         }
-
-        let waiterID = UUID()
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Void, any Error>) in
-                waiters.append(Waiter(id: waiterID, continuation: continuation))
-            }
-        } onCancel: {
-            Task { await self.cancel(waiterID) }
-        }
-
-        do {
-            try Task.checkCancellation()
-        } catch {
-            release()
-            throw error
-        }
+        availablePermits -= permits
     }
 
-    private func release() {
-        precondition(occupied, "shared workload materialization permit released without an owner")
-        guard !waiters.isEmpty else {
-            occupied = false
-            return
-        }
-        waiters.removeFirst().continuation.resume()
+    private func release(_ permits: Int) {
+        availablePermits += permits
+        precondition(
+            availablePermits <= Self.capacity,
+            "shared workload materialization permits released without an owner"
+        )
+        admitWaiters()
     }
 
     private func cancel(_ id: UUID) {
@@ -196,6 +210,17 @@ private actor EngineLinuxSandboxWorkloadMaterializationGate {
             return
         }
         waiters.remove(at: index).continuation.resume(throwing: CancellationError())
+        admitWaiters()
+    }
+
+    private func admitWaiters() {
+        while let waiter = waiters.first,
+            waiter.permits <= availablePermits
+        {
+            waiters.removeFirst()
+            availablePermits -= waiter.permits
+            waiter.continuation.resume()
+        }
     }
 }
 
@@ -248,7 +273,7 @@ extension LinuxPod: EngineLinuxSandboxInstanceV1 {
             .running
         case .paused:
             .paused
-        case .recoveryRequired:
+        case .starting, .recoveryRequired:
             .unknown
         }
     }
@@ -850,6 +875,8 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             return receipt
         case .recoveryRequired?:
             throw unattributedState("workload \(id) requires recovery before start")
+        case .starting?:
+            throw unattributedState("workload \(id) has an untracked start in progress")
         case .registered?, .created?:
             guard
                 workloadRequests[id] == request,
@@ -936,7 +963,30 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         let workloadMaterializationGate = self.workloadMaterializationGate
         let replacesStoppedWorkload = observed?.state == .stopped
         let task = Task<WorkloadStartResult, any Error> {
-            try await workloadMaterializationGate.withPermit {
+            let workloadRootfs: Filesystem?
+            if let runtimeConfiguration,
+                let containerConfiguration,
+                let rootfs = runtimeConfiguration.containerRootFilesystem
+            {
+                workloadRootfs = try Self.materializeWorkloadRootFilesystem(
+                    rootfs,
+                    in: ContainerResource.Bundle(path: request.workloadRoot),
+                    readonly: containerConfiguration.readOnly
+                )
+            } else {
+                workloadRootfs = nil
+            }
+            let admission: EngineLinuxSandboxWorkloadMaterializationAdmission =
+                if let workloadRootfs,
+                    workloadRootfs.isBlock,
+                    !workloadRootfs.isVolume
+                {
+                    .independentRootFilesystem
+                } else {
+                    .exclusive
+                }
+
+            return try await workloadMaterializationGate.withPermit(admission) {
                 var serviceListener: ServiceListenerSlot?
                 do {
                     if let sealedServicePort {
@@ -953,14 +1003,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                     }
                     if let runtimeConfiguration,
                         let containerConfiguration,
-                        let rootfs = runtimeConfiguration.containerRootFilesystem,
+                        let workloadRootfs,
                         let io
                     {
-                        let workloadRootfs = try Self.materializeWorkloadRootFilesystem(
-                            rootfs,
-                            in: ContainerResource.Bundle(path: request.workloadRoot),
-                            readonly: containerConfiguration.readOnly
-                        )
                         try await sandbox.addContainer(
                             id,
                             rootfs: workloadRootfs.asMount
@@ -974,6 +1019,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                                 io: io,
                                 log: log
                             )
+                            workload.rootFilesystemSharing =
+                                admission == .independentRootFilesystem
+                                ? .privateToWorkload : .potentiallyShared
                         }
                     }
                     try await sandbox.startContainer(id)
@@ -1086,7 +1134,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 return .unknown
             }
             return .started(receipt)
-        case .recoveryRequired:
+        case .starting, .recoveryRequired:
             return .unknown
         }
     }
