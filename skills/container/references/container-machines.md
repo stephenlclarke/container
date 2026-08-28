@@ -6,8 +6,10 @@
 you work inside.
 
 The difference that matters: a container machine boots the image's init system, so it can run
-long-running services under a process supervisor, and it maps your macOS username and home
-directory into Linux. Your repos and dotfiles are present on both platforms at the same time.
+long-running services under a process supervisor, and it maps your macOS username into Linux.
+Your macOS home directory remains available at its host path (normally `/Users/<username>`),
+separate from the machine's Linux home at `/home/<username>`. Repos stored in the mounted host
+home are present on both platforms at the same time.
 Edit with your macOS editor; compile and run inside Linux; point macOS-native profilers,
 browsers, and GUI debuggers at the same files. There is no copy step between building
 something and inspecting it.
@@ -27,7 +29,8 @@ container machine run -n dev -- cat /proc/cpuinfo   # use -- when the command ta
 `container machine run` is the way in. It boots the container machine first if it is stopped.
 You do not SSH into a container machine.
 
-Inside, `whoami` returns your host username and `pwd` is your Mac home directory, mounted in.
+Inside, `whoami` returns your host username and `pwd` is the Linux home directory. The separate
+macOS home mount is available at its original host path, normally `/Users/<username>`.
 
 ## Setting a default
 
@@ -54,7 +57,7 @@ container machine rm dev             # deletes its storage too
 half of host memory. `--home-mount` takes `rw` (default), `ro`, or `none`.
 
 ```bash
-container machine create ubuntu:24.04 --name dev --cpus 8 --memory 16G --set-default
+container machine create alpine:latest --name dev --cpus 8 --memory 16G --set-default
 container machine set -n dev cpus=4 memory=8G
 container machine stop dev            # set takes effect on the next boot
 container machine run -n dev -- nproc
@@ -77,13 +80,13 @@ development stack: dependencies live where a process supervisor manages them.
 
 ## One container machine per target distro
 
-Each gets the same `$HOME` and the same dotfiles from your Mac, so testing across
-distributions costs almost nothing:
+Each machine gets its own Linux `$HOME`. The same mounted macOS home is available at
+`/Users/<username>` in every machine, so repositories and dotfiles stored there can be shared
+across init-enabled distribution images:
 
 ```bash
-container machine create alpine:latest  --name alpine
-container machine create ubuntu:24.04   --name ubuntu
-container machine create debian:bookworm --name debian
+container machine create alpine:latest --name alpine
+container machine create local/ubuntu-machine:latest --name ubuntu
 ```
 
 ## Custom images

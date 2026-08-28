@@ -38,9 +38,10 @@ trust that message when `container system status` also reports the service down.
 | `docker compose` | `container compose` via the matched [`container-compose`](https://github.com/stephenlclarke/container-compose) plugin |
 
 `run`, `build`, `exec`, `attach`, `logs`, `cp`, `inspect`, `stats`, `top`, `pause`, `unpause`,
-`events`, `start`, `stop`, `kill`, `export`, `prune`, `volume *`, and `network *` match Docker,
-as do the common `run` flags: `-d`, `--rm`, `-i`, `-t`, `-e`, `-p`, `-v`, `-w`, `--name`,
-`--network`, `--entrypoint`.
+`events`, `start`, `stop`, `kill`, `export`, `prune`, `volume *`, and the network `create`,
+`delete` (`rm`), `list` (`ls`), `inspect`, and `prune` commands match Docker, as do the common
+`run` flags: `-d`, `--rm`, `-i`, `-t`, `-e`, `-p`, `-v`, `-w`, `--name`, `--network`,
+`--entrypoint`.
 
 `restart`, `commit`, `rename`, `port`, and `--restart` have no equivalent. Check
 `references/docker-migration.md` before assuming anything else exists.
