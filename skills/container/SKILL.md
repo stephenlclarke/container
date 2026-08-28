@@ -50,8 +50,12 @@ trust that message when `container system status` also reports the service down.
 
 - **`container build` needs `-t`** — the default tag is a freshly generated UUID.
 - **`container ls` hides stopped containers.** Use `-a`.
-- **Every container gets its own IP**, reachable from the host and from other containers. `-p`
-  binds a host port; it is not needed for basic reachability. Get IPs from `container inspect`.
+- **Default- and custom-network containers get their own IP**, reachable
+  from the host and from other containers. `-p` binds a host port; it is not
+  needed for basic reachability on those networks. Get their IPs from
+  `container inspect`. `--network none` has no workload address, while
+  `--isolation shared-vm --network host` shares the Engine VM network
+  namespace instead of receiving a distinct container IP.
 - **Builds run in a builder container.** If a build fails oddly, check `container builder
   status`; `container builder start` takes `--cpus` and `--memory`.
 - **Default-network name resolution takes three steps:**
