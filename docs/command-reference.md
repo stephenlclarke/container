@@ -36,6 +36,11 @@ container run [<options>] <image> [<arguments> ...]
 
 *   `-c, --cpus <cpus>`: Number of CPUs to allocate to the container
 *   `-m, --memory <memory>`: Amount of memory (byte granularity), with optional K, M, G, T, or P suffix
+*   `--memory-reclaim-floor <memory>`: Enable adaptive dedicated-VM memory reclamation and set its minimum live workload-memory target
+*   `--memory-reclaim-headroom <memory>`: Free workload memory retained above observed usage (default: 128M)
+*   `--memory-reclaim-hysteresis <memory>`: Minimum reduction required before lowering the live target (default: 64M)
+*   `--memory-reclaim-interval <duration>`: Statistics sampling interval for adaptive reclamation (default: 2s)
+*   `--memory-reclaim-cooldown <duration>`: Minimum delay between adaptive target changes (default: 30s)
 
 **Management Options**
 
@@ -134,6 +139,9 @@ container run -d --name web -p 8080:80 nginx:latest
 # set environment variables and limit resources
 container run -e NODE_ENV=production --cpus 2 --memory 1G node:18
 
+# keep a 2 GiB boot ceiling while reclaiming an idle dedicated VM down to 512 MiB
+container run --memory 2G --memory-reclaim-floor 512M my-worker:latest
+
 # run a container with a specific MAC address
 container run --network default,mac=02:42:ac:11:00:02 ubuntu:latest
 
@@ -160,14 +168,17 @@ container run --isolation shared-vm --network none alpine:latest echo hello
 
 `shared-vm` is an experimental, explicit opt-in. Workloads share a VM kernel,
 so it is not a replacement for the security boundary provided by the default
-`dedicated-vm` mode. The initial lifecycle supports native Linux workloads
-with either `--network none` or `--network host`. Host networking shares the
-VM network namespace with other shared workloads.
+`dedicated-vm` mode. The current lifecycle supports native Linux workloads
+with `--network none`, `--network host`, or the built-in `--network default`.
+Host networking shares the VM network namespace with other shared workloads.
+The default network gives each shared workload its own interface, address,
+route, and DNS configuration; custom networks are not yet supported in shared
+mode.
 
 The shared mode supports the initial process streams and the container
 lifecycle (`state`, `wait`, `pause`, `resume`, `stats`, `top`, `stop`, and
 `remove`). Attach after start, exec, copy, runtime log following, health
-checks, published TCP/UDP ports, bridge/custom networking, custom VM assets,
+checks, published TCP/UDP ports, custom networking, custom VM assets,
 devices, GPUs, virtualization, privileged workloads, and live snapshots are
 rejected rather than silently falling back to a dedicated VM.
 
@@ -179,6 +190,14 @@ and custom runtime handlers retain cold foreground bootstrap because their
 start-time inputs cannot be safely anticipated. This optimization never
 changes the selected isolation mode or makes two dedicated containers share a
 VM.
+
+Adaptive memory reclamation is opt-in and available only for `dedicated-vm`.
+`--memory` remains the boot-time maximum; `--memory-reclaim-floor` enables the
+controller and sets its minimum live target. After sustained low usage and the
+configured cooldown, the controller lowers the workload target while retaining
+the requested headroom. Sustained pressure restores the boot-time maximum. The
+headroom, hysteresis, sampling interval, and cooldown options tune that policy;
+supplying any tuning option without a floor fails before creation.
 
 ### `container attach`
 
@@ -305,6 +324,11 @@ container create [<options>] <image> [<arguments> ...]
 
 *   `-c, --cpus <cpus>`: Number of CPUs to allocate to the container
 *   `-m, --memory <memory>`: Amount of memory (byte granularity), with optional K, M, G, T, or P suffix
+*   `--memory-reclaim-floor <memory>`: Enable adaptive dedicated-VM memory reclamation and set its minimum live workload-memory target
+*   `--memory-reclaim-headroom <memory>`: Free workload memory retained above observed usage (default: 128M)
+*   `--memory-reclaim-hysteresis <memory>`: Minimum reduction required before lowering the live target (default: 64M)
+*   `--memory-reclaim-interval <duration>`: Statistics sampling interval for adaptive reclamation (default: 2s)
+*   `--memory-reclaim-cooldown <duration>`: Minimum delay between adaptive target changes (default: 30s)
 
 **Management Options**
 
@@ -466,6 +490,34 @@ container unpause [--all] [--debug] [<container-ids> ...]
 **Options**
 
 *   `-a, --all`: Resume all paused containers
+
+### `container resize`
+
+Changes the live workload-memory target for a running or paused dedicated-VM
+container without restarting it. The target must be aligned to 1 MiB, must be
+at least 4 MiB, and cannot exceed the container's configured boot-time memory
+maximum. Setting the target back to that maximum restores the original memory
+ceiling. Shared-VM isolation does not currently support live memory targeting.
+
+**Usage**
+
+```bash
+container resize --memory <memory> [--debug] <container-id>
+```
+
+**Arguments**
+
+*   `<container-id>`: Container ID
+
+**Options**
+
+*   `--memory <memory>`: Target workload memory, with an optional K, M, G, T, or P suffix
+
+**Example**
+
+```bash
+container resize --memory 512M my-container
+```
 
 ### `container kill`
 
