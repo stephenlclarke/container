@@ -43,8 +43,9 @@ trust that message when `container system status` also reports the service down.
 `delete` (`rm`), `list` (`ls`), `inspect`, and `prune` commands and the common `run` flags: `-d`,
 `--rm`, `-i`, `-t`, `-e`, `-p`, `-v`, `-w`, `--name`, `--network`, `--entrypoint`.
 
-`restart`, `commit`, `rename`, `port`, `volume update`, and `--restart` have no equivalent. Check
-`references/docker-migration.md` before assuming anything else exists.
+The `restart`, `commit`, `rename`, and `port` commands, plus `volume update`,
+have no equivalent. Check `references/docker-migration.md` before assuming
+anything else exists.
 
 ## Gotchas
 

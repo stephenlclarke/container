@@ -123,5 +123,8 @@ Toggle on an existing container machine, then reboot it:
 ```bash
 container machine set -n dev virtualization=true kernel=/path/to/vmlinux-kvm
 container machine stop dev
-container machine set -n dev kernel=          # reset to the default kernel
+container machine run -n dev
 ```
+
+To restore the default kernel later, stop the container machine and run
+`container machine set -n dev kernel=` before its next boot.

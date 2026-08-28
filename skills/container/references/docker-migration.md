@@ -18,7 +18,7 @@ spelling.
 | `docker logs` | `container logs` | |
 | `docker cp` | `container copy` / `cp` | `container:path` on either side |
 | `docker export` | `container export` | |
-| `docker inspect` | `container inspect` | also the way to find a container's IP |
+| `docker inspect` | `container inspect` | IP for default/custom networks |
 | `docker stats` | `container stats` | |
 | `docker ps` | `container list` / `ls` | add `-a` for stopped containers |
 | `docker container prune` | `container prune` | |
@@ -31,8 +31,9 @@ spelling.
 | `docker commit` | — | build an image from a Dockerfile instead |
 | `docker rename`, `wait`, `diff`, other `update` options | — | no equivalent |
 
-There is no `--restart` policy flag on `container run`. Supervise long-running services with
-launchd on the host, or run them under an init system inside a container machine.
+`container run --restart` accepts `no`, `always`, `on-failure[:max-retries]`,
+and `unless-stopped`. `--restart-delay` controls retry delay, and
+`--restart-window` controls the successful-run window that resets retry state.
 
 ## Images
 
@@ -175,13 +176,15 @@ Mapping notes:
   explicit readiness loop is usually more correct than what it replaced.
 - Reference other services as `<name>.<domain>` (`db.test`). A bare `db` does not resolve.
   This means editing your application's config, not just the `run` command.
-- `ports:` → `-p`. Often unnecessary between containers, since each container has its own IP
-  and is reachable without publishing. You need `-p` to reach a service from a host browser or
-  a macOS-native tool.
+- `ports:` → `-p`. It is often unnecessary between containers on a default or
+  custom network because each has a reachable IP. You need `-p` to reach a
+  service through a host port.
 - `volumes:` → `-v` for bind mounts, or `container volume create` plus `-v <name>:<path>`.
 - `build:` → a `container build -t <name> .` line before the `run`.
-- `restart:` has no equivalent. Supervise with launchd on the host, or run the stack under an
-  init system inside a container machine.
+- `restart:` → add `--restart` to the corresponding `container run`; supported
+  values are `no`, `always`, `on-failure[:max-retries]`, and
+  `unless-stopped`. The plugin also maps supported `deploy.restart_policy`
+  retry limits and timing.
 
 ## Features with no Docker counterpart
 
