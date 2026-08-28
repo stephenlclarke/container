@@ -22,7 +22,7 @@ Claude Code, from a local clone:
 Or straight from GitHub, without a clone:
 
 ```bash
-/plugin marketplace add apple/container
+/plugin marketplace add stephenlclarke/container
 /plugin install container@apple-container
 ```
 

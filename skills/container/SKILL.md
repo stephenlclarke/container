@@ -35,14 +35,15 @@ trust that message when `container system status` also reports the service down.
 | `docker rm` | `container delete` (alias `rm`) |
 | `docker login` / `logout` | `container registry login` / `logout` |
 | `docker info` | `container system status` |
-| `docker compose` | no equivalent — see `references/docker-migration.md` |
+| `docker compose` | `container compose` via the matched [`container-compose`](https://github.com/stephenlclarke/container-compose) plugin |
 
-`run`, `build`, `exec`, `logs`, `cp`, `inspect`, `stats`, `start`, `stop`, `kill`, `export`,
-`prune`, `volume *`, and `network *` match Docker, as do the common `run` flags: `-d`, `--rm`,
-`-i`, `-t`, `-e`, `-p`, `-v`, `-w`, `--name`, `--network`, `--entrypoint`.
+`run`, `build`, `exec`, `attach`, `logs`, `cp`, `inspect`, `stats`, `top`, `pause`, `unpause`,
+`events`, `start`, `stop`, `kill`, `export`, `prune`, `volume *`, and `network *` match Docker,
+as do the common `run` flags: `-d`, `--rm`, `-i`, `-t`, `-e`, `-p`, `-v`, `-w`, `--name`,
+`--network`, `--entrypoint`.
 
-`restart`, `commit`, `attach`, `top`, `rename`, `pause`, `port`, and `--restart` have no
-equivalent. Check `references/docker-migration.md` before assuming anything else exists.
+`restart`, `commit`, `rename`, `port`, and `--restart` have no equivalent. Check
+`references/docker-migration.md` before assuming anything else exists.
 
 ## Gotchas
 
@@ -52,7 +53,7 @@ equivalent. Check `references/docker-migration.md` before assuming anything else
   binds a host port; it is not needed for basic reachability. Get IPs from `container inspect`.
 - **Builds run in a builder container.** If a build fails oddly, check `container builder
   status`; `container builder start` takes `--cpus` and `--memory`.
-- **Name resolution takes three steps, and works only on the `default` network:**
+- **Default-network name resolution takes three steps:**
 
   ```bash
   # 1. create ~/.config/container/config.toml containing:
@@ -67,9 +68,19 @@ equivalent. Check `references/docker-migration.md` before assuming anything else
   verify with `container system property ls`. There is no `container system dns default`
   subcommand.
 
-  Containers on a network from `container network create` cannot resolve each other by name at
-  all ([apple/container#1809](https://github.com/apple/container/issues/1809)) — reach them by
-  IP. Custom networks are for isolation, not service discovery.
+  Custom networks created by this fork provide network-scoped DNS without the host-domain setup:
+  containers can resolve another container's name and configured network aliases while attached
+  to the same custom network. Name and alias selection follows attachment order when the same name
+  exists on more than one attached network.
+
+## Compose projects
+
+This fork's matched Compose companion is
+[`container-compose`](https://github.com/stephenlclarke/container-compose). Install the supported
+Homebrew stack with `brew install --formula stephenlclarke/tap/container-compose`, refresh plugin
+registration with `brew postinstall stephenlclarke/tap/container`, then use `container compose`.
+Use the shell-script fallback in `references/docker-migration.md` only when the companion cannot be
+installed.
 
 ## Container machines
 

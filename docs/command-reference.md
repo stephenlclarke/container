@@ -495,9 +495,11 @@ container unpause [--all] [--debug] [<container-ids> ...]
 
 Changes the live workload-memory target for a running or paused dedicated-VM
 container without restarting it. The target must be aligned to 1 MiB, must be
-at least 4 MiB, and cannot exceed the container's configured boot-time memory
-maximum. Setting the target back to that maximum restores the original memory
-ceiling. Shared-VM isolation does not currently support live memory targeting.
+at least 4 MiB and, when adaptive reclamation is enabled, cannot be below its
+configured `--memory-reclaim-floor`. It also cannot exceed the container's
+configured boot-time memory maximum. Setting the target back to that maximum
+restores the original memory ceiling. Shared-VM isolation does not currently
+support live memory targeting.
 
 **Usage**
 

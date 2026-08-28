@@ -23,11 +23,12 @@ spelling.
 | `docker ps` | `container list` / `ls` | add `-a` for stopped containers |
 | `docker container prune` | `container prune` | |
 | `docker restart` | — | `container stop <id> && container start <id>` |
-| `docker attach` | — | use `container exec -it <id> sh` |
-| `docker top` | — | `container exec <id> ps aux` |
+| `docker attach` | `container attach` | attaches to the init process streams |
+| `docker top` | `container top` | supports Docker-shaped process columns |
+| `docker pause` / `unpause` | `container pause` / `unpause` | accepts container IDs or `--all` |
 | `docker port` | — | `container inspect <id>` |
 | `docker commit` | — | build an image from a Dockerfile instead |
-| `docker rename`, `pause`, `unpause`, `wait`, `diff`, `update` | — | no equivalent |
+| `docker rename`, `wait`, `diff`, `update` | — | no equivalent |
 
 There is no `--restart` policy flag on `container run`. Supervise long-running services with
 launchd on the host, or run them under an init system inside a container machine.
@@ -82,7 +83,10 @@ Two differences worth knowing:
 | `docker version` | `container system version` |
 | `docker system df` | `container system df` |
 | daemon logs | `container system logs` |
-| `docker events` | — no equivalent |
+| `docker events` | `container events` |
+
+`container events` streams lifecycle events as JSON lines. It supports `--since` and `--until`,
+but it does not reproduce Docker's event filter and output-format flags.
 
 `docker system prune` has no single equivalent. Run the four prunes:
 
@@ -93,17 +97,25 @@ container volume prune
 container network prune
 ```
 
-## Replacing a compose file
+## Running a compose file
 
-There is no `container compose`. A compose file becomes a shell script: DNS-resolvable names
-on the `default` network, and `-d`.
+Use this fork's matched
+[`container-compose`](https://github.com/stephenlclarke/container-compose) companion. Install the
+supported Homebrew stack, refresh plugin registration, and then use `container compose`:
 
-**Do not reach for `container network create` here.** Name lookup between containers works on
-the `default` network with a domain-qualified name. It does *not* work for containers on a
-custom network — that gap is tracked as
-[apple/container#1809](https://github.com/apple/container/issues/1809). A custom network is
-for *isolating* containers; if you use one, wire the containers together by IP from
-`container inspect <name>`, not by name.
+```bash
+brew install --formula stephenlclarke/tap/container-compose
+brew postinstall stephenlclarke/tap/container
+container compose up -d
+```
+
+The companion preserves Compose project, service, network, volume, dependency, and lifecycle
+semantics that a hand-written script would otherwise have to recreate. Use the following script
+translation only when the plugin cannot be installed.
+
+Custom networks in this fork provide network-scoped DNS: containers attached to the same network
+can resolve one another by container name or configured alias. The default network still uses the
+configured domain-qualified name described below.
 
 Set up name resolution once (all three steps — see SKILL.md):
 
@@ -135,7 +147,7 @@ becomes:
 #!/bin/bash
 set -euo pipefail
 
-# no --network flag: both containers land on `default`, where name lookup works
+# no --network flag: both containers land on `default`, where domain-qualified lookup works
 container run -d --name db \
   -e POSTGRES_PASSWORD=secret \
   postgres:16
