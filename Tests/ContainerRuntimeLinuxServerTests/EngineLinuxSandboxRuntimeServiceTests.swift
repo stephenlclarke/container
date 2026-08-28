@@ -252,6 +252,90 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func blockBackedWorkloadsReceivePrivatePersistentRootFilesystems() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixtureRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("engine-sandbox-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: fixtureRoot,
+            withIntermediateDirectories: true
+        )
+        let imageRootfs = fixtureRoot.appendingPathComponent("image-rootfs.ext4")
+        try Data("sealed-image".utf8).write(to: imageRootfs)
+        let rootfs = Filesystem.block(
+            format: "ext4",
+            source: imageRootfs.path,
+            destination: "/",
+            options: []
+        )
+        let firstFixture = try WorkloadBundleFixture(
+            id: "workload-1",
+            sandboxRoot: fixtureRoot,
+            containerRootFilesystem: rootfs
+        )
+        let secondFixture = try WorkloadBundleFixture(
+            id: "workload-2",
+            sandboxRoot: fixtureRoot,
+            containerRootFilesystem: rootfs
+        )
+        defer { firstFixture.remove() }
+
+        let firstRequest = try workloadRequest(root: firstFixture.root)
+        _ = try await service.startWorkload(firstRequest, stdio: [])
+        _ = try await service.startWorkload(
+            workloadRequest(root: secondFixture.root, id: "workload-2"),
+            stdio: []
+        )
+
+        let configuredRootfsSources = await sandbox.configuredRootfsSources
+        let firstPrivateRootfs = firstFixture.root.appendingPathComponent("rootfs.ext4")
+        let secondPrivateRootfs = secondFixture.root.appendingPathComponent("rootfs.ext4")
+        #expect(configuredRootfsSources["workload-1"] == firstPrivateRootfs.path)
+        #expect(configuredRootfsSources["workload-2"] == secondPrivateRootfs.path)
+        #expect(configuredRootfsSources["workload-1"] != imageRootfs.path)
+        #expect(try Data(contentsOf: firstPrivateRootfs) == Data("sealed-image".utf8))
+        #expect(try Data(contentsOf: secondPrivateRootfs) == Data("sealed-image".utf8))
+
+        try Data("workload-state".utf8).write(to: firstPrivateRootfs)
+        #expect(try Data(contentsOf: imageRootfs) == Data("sealed-image".utf8))
+        #expect(try Data(contentsOf: secondPrivateRootfs) == Data("sealed-image".utf8))
+
+        _ = try await service.stopWorkload(workloadStopRequest())
+        _ = try await service.startWorkload(firstRequest, stdio: [])
+        #expect(try Data(contentsOf: firstPrivateRootfs) == Data("workload-state".utf8))
+        #expect(await sandbox.configuredRootfsSources["workload-1"] == firstPrivateRootfs.path)
+    }
+
+    @Test
+    func interruptedPrivateRootFilesystemCloneIsRecovered() throws {
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let imageRootfs = fixture.sandboxRoot.appendingPathComponent("image-rootfs.ext4")
+        try Data("sealed-image".utf8).write(to: imageRootfs)
+        let bundle = ContainerResource.Bundle(path: fixture.root)
+        try Data("incomplete".utf8).write(to: bundle.containerRootfsBlock)
+
+        let materialized =
+            try EngineLinuxSandboxRuntimeServiceV1
+            .materializeWorkloadRootFilesystem(
+                .block(
+                    format: "ext4",
+                    source: imageRootfs.path,
+                    destination: "/",
+                    options: []
+                ),
+                in: bundle,
+                readonly: false
+            )
+
+        #expect(materialized.source == bundle.containerRootfsBlock.path)
+        #expect(try Data(contentsOf: bundle.containerRootfsBlock) == Data("sealed-image".utf8))
+        #expect(try bundle.containerRootfs.source == bundle.containerRootfsBlock.path)
+    }
+
+    @Test
     func exactWorkloadStopIsIdempotentAndObservable() async throws {
         let sandbox = FakeEngineLinuxSandbox()
         let service = try makeService(sandbox: sandbox)
@@ -815,6 +899,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
     private(set) var configuredGuestDevices: [LinuxGuestDeviceRequest] = []
     private(set) var configuredStdout = false
     private(set) var configuredStderr = false
+    private(set) var configuredRootfsSources: [String: String] = [:]
     private var configuredStdoutWriter: (any Writer)?
     private var configuredStderrWriter: (any Writer)?
     private(set) var dialedVsockPorts: [UInt32] = []
@@ -873,6 +958,7 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
         configuredGuestDevices = config.guestDevices
         configuredStdout = config.process.stdout != nil
         configuredStderr = config.process.stderr != nil
+        configuredRootfsSources[id] = rootfs.source
         configuredStdoutWriter = config.process.stdout
         configuredStderrWriter = config.process.stderr
         if failAdd {
@@ -883,7 +969,6 @@ private actor FakeEngineLinuxSandbox: EngineLinuxSandboxInstanceV1 {
             state: .created,
             initProcessID: nil
         )
-        _ = rootfs
     }
 
     func startContainer(_ containerID: String) async throws {
@@ -1112,12 +1197,16 @@ private struct WorkloadBundleFixture {
 
     init(
         id: String = "workload-1",
-        endpoint: Endpoint = .reverseVsock
+        endpoint: Endpoint = .reverseVsock,
+        sandboxRoot: URL? = nil,
+        containerRootFilesystem: Filesystem = .tmpfs(destination: "/", options: [])
     ) throws {
-        sandboxRoot = FileManager.default.temporaryDirectory
+        self.sandboxRoot =
+            sandboxRoot
+            ?? FileManager.default.temporaryDirectory
             .appendingPathComponent("engine-sandbox-\(UUID())", isDirectory: true)
         root =
-            sandboxRoot
+            self.sandboxRoot
             .appendingPathComponent("workloads", isDirectory: true)
             .appendingPathComponent(id, isDirectory: true)
         try FileManager.default.createDirectory(
@@ -1169,7 +1258,7 @@ private struct WorkloadBundleFixture {
                 platform: .linuxArm
             ),
             containerConfiguration: configuration,
-            containerRootFilesystem: .tmpfs(destination: "/", options: [])
+            containerRootFilesystem: containerRootFilesystem
         )
         try runtime.writeRuntimeConfiguration()
     }
