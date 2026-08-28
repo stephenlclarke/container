@@ -26,9 +26,10 @@ spelling.
 | `docker attach` | `container attach` | attaches to the init process streams |
 | `docker top` | `container top` | supports Docker-shaped process columns |
 | `docker pause` / `unpause` | `container pause` / `unpause` | accepts container IDs or `--all` |
+| `docker update --memory` | `container resize --memory` | running or paused dedicated VMs; target must stay between the configured adaptive floor and boot-time maximum |
 | `docker port` | — | `container inspect <id>` |
 | `docker commit` | — | build an image from a Dockerfile instead |
-| `docker rename`, `wait`, `diff`, `update` | — | no equivalent |
+| `docker rename`, `wait`, `diff`, other `update` options | — | no equivalent |
 
 There is no `--restart` policy flag on `container run`. Supervise long-running services with
 launchd on the host, or run them under an init system inside a container machine.
