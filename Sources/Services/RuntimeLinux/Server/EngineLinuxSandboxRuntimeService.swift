@@ -464,6 +464,13 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         try configuration.validate()
         let egressNetwork = try await Self.reserveSealedEgressNetwork(log: log)
         do {
+            for root in configuration.preexposedRootDirectories {
+                try FileManager.default.createDirectory(
+                    at: root,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+            }
             let vmm = VZVirtualMachineManager(
                 kernel: configuration.kernel,
                 initialFilesystem: configuration.initialFilesystem.asMount,
@@ -481,9 +488,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 sandboxConfiguration.bootLog = .file(
                     path: configuration.path.appendingPathComponent("boot.log")
                 )
-                Self.configurePreexposedSnapshotRoot(
+                Self.configurePreexposedWorkloadRoots(
                     &sandboxConfiguration,
-                    root: configuration.effectiveSnapshotRoot
+                    roots: configuration.preexposedRootDirectories
                 )
                 Self.configureSealedEgressNetwork(
                     &sandboxConfiguration,
@@ -514,14 +521,51 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         )
     }
 
-    /// Keeps workload rootfs images reachable through one immutable VZ share.
-    static func configurePreexposedSnapshotRoot(
+    /// Keeps sealed snapshots and private workload root filesystems reachable
+    /// through one immutable VZ share.
+    static func configurePreexposedWorkloadRoots(
         _ configuration: inout LinuxPod.Configuration,
-        root: URL
+        roots: [URL]
     ) {
         configuration.extensions.append(
-            VZPreexposedDirectoryShare(roots: [root])
+            VZPreexposedDirectoryShare(roots: roots)
         )
+    }
+
+    /// Returns a workload-private root filesystem for image-backed containers.
+    ///
+    /// The snapshot store owns image block files and may serve the same snapshot
+    /// to many containers. LinuxPod mounts a container root filesystem writable
+    /// while preparing files such as `/etc/hostname`, so the shared sandbox must
+    /// never attach that common snapshot directly. A bundle-local APFS clone
+    /// provides the same copy-on-write ownership used by the dedicated runtime.
+    static func materializeWorkloadRootFilesystem(
+        _ source: Filesystem,
+        in bundle: ContainerResource.Bundle,
+        readonly: Bool
+    ) throws -> Filesystem {
+        guard source.isBlock, !source.isVolume else {
+            return source
+        }
+
+        let fileManager = FileManager.default
+        let privateBlock = bundle.containerRootfsBlock
+        if let existing = try? bundle.containerRootfs,
+            existing.isBlock,
+            !existing.isVolume,
+            fileManager.fileExists(atPath: privateBlock.path),
+            URL(fileURLWithPath: existing.source)
+                .resolvingSymlinksInPath().standardizedFileURL.path
+                == privateBlock.resolvingSymlinksInPath().standardizedFileURL.path
+        {
+            return existing
+        }
+
+        if fileManager.fileExists(atPath: privateBlock.path) {
+            try fileManager.removeItem(at: privateBlock)
+        }
+        try bundle.cloneContainerRootFs(cloning: source, readonly: readonly)
+        return try bundle.containerRootfs
     }
 
     private static func reserveSealedEgressNetwork(
@@ -912,9 +956,14 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                         let rootfs = runtimeConfiguration.containerRootFilesystem,
                         let io
                     {
+                        let workloadRootfs = try Self.materializeWorkloadRootFilesystem(
+                            rootfs,
+                            in: ContainerResource.Bundle(path: request.workloadRoot),
+                            readonly: containerConfiguration.readOnly
+                        )
                         try await sandbox.addContainer(
                             id,
-                            rootfs: rootfs.asMount
+                            rootfs: workloadRootfs.asMount
                         ) { workload in
                             try EngineLinuxSandboxWorkloadMapper.configure(
                                 &workload,
