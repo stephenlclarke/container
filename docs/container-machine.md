@@ -17,11 +17,15 @@ A container machine automatically maps your username into the Linux environment.
 ```bash
 container machine create alpine:latest --name dev
 container machine run -n dev whoami       # your host username, not root
-container machine run -n dev pwd          # /home/<you> — the machine's Linux home
+container machine run -n dev pwd          # inherits a mounted macOS-home cwd when possible
 container machine run -n dev              # interactive shell; host files are under /Users/<you>
 ```
 
 `container machine run` is how you get a shell or run a single command. If the container machine is stopped, `run` boots it first.
+When launched from a directory inside the mounted macOS home, it preserves that
+`/Users/<username>/...` working directory. Outside the mounted home, or when the
+home mount is disabled, it starts the configured user in `/home/<username>`.
+An explicit `--workdir` takes precedence over both defaults.
 
 ## Working in a container machine
 

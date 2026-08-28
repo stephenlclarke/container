@@ -29,8 +29,11 @@ container machine run -n dev -- cat /proc/cpuinfo   # use -- when the command ta
 `container machine run` is the way in. It boots the container machine first if it is stopped.
 You do not SSH into a container machine.
 
-Inside, `whoami` returns your host username and `pwd` is the Linux home directory. The separate
-macOS home mount is available at its original host path, normally `/Users/<username>`.
+Inside, `whoami` returns your host username. When the command starts from a directory inside
+the mounted macOS home, `container machine run` preserves that `/Users/<username>/...`
+working directory. Outside the mounted home, or when the home mount is disabled, it falls
+back to the machine user's Linux home at `/home/<username>`. An explicit `--workdir` takes
+precedence.
 
 ## Setting a default
 
