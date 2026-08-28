@@ -27,6 +27,14 @@
 
 This slice removes one host-wide bootstrap serialization point. It does not claim that Container authority, provider, storage, logging, or lifecycle performance is fully comparable with Docker.
 
+## Pull-request provenance
+
+The implementation and benchmark evidence were merged in
+[`stephenlclarke/container#143`](https://github.com/stephenlclarke/container/pull/143).
+As of 28 August 2026, no Apple upstream pull request contains this optimization.
+The stock-Apple `upstream/pr-container-lifecycle-locks` ref is a local
+submission candidate, not a submitted pull request.
+
 Tracking issue: [`stephenlclarke/container#124`](https://github.com/stephenlclarke/container/issues/124).
 
 Parent contract: [`stephenlclarke/container-compose#278`](https://github.com/stephenlclarke/container-compose/issues/278).

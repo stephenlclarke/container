@@ -28,6 +28,13 @@ The seven-repetition release comparison passed functional parity and every 10x m
 
 This slice controls host pressure while retaining the dedicated-VM isolation model. It does not introduce VM pre-warming or shared-VM isolation and does not claim completion of the parent performance contract.
 
+## Pull-request provenance
+
+The implementation and benchmark evidence were merged in
+[`stephenlclarke/container#145`](https://github.com/stephenlclarke/container/pull/145).
+As of 28 August 2026, no Apple upstream pull request contains the bounded
+bootstrap-admission optimization.
+
 Tracking issue: [`stephenlclarke/container#144`](https://github.com/stephenlclarke/container/issues/144).
 
 Parent contract: [`stephenlclarke/container-compose#278`](https://github.com/stephenlclarke/container-compose/issues/278).
