@@ -69,6 +69,17 @@ public struct EngineLinuxSandboxRuntimeConfigurationV1: Codable, Sendable {
             )
     }
 
+    /// Host roots containing immutable image snapshots and private workload
+    /// filesystems that the shared VM may attach after boot.
+    public var preexposedRootDirectories: [URL] {
+        let appRoot = path.deletingLastPathComponent()
+        return [
+            effectiveSnapshotRoot,
+            appRoot.appendingPathComponent("containers", isDirectory: true),
+            path.appendingPathComponent("workloads", isDirectory: true),
+        ]
+    }
+
     public func write() throws {
         try validate()
         try FileManager.default.createDirectory(

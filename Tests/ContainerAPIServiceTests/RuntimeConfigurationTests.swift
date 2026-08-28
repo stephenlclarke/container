@@ -130,6 +130,15 @@ struct RuntimeConfigurationTests {
                 == bundlePath.deletingLastPathComponent()
                 .appendingPathComponent("snapshots", isDirectory: true)
         )
+        #expect(
+            decoded.preexposedRootDirectories == [
+                bundlePath.deletingLastPathComponent()
+                    .appendingPathComponent("snapshots", isDirectory: true),
+                bundlePath.deletingLastPathComponent()
+                    .appendingPathComponent("containers", isDirectory: true),
+                bundlePath.appendingPathComponent("workloads", isDirectory: true),
+            ]
+        )
         #expect(decoded.sandboxID == "engine-sandbox")
         #expect(decoded.cpus == 6)
         #expect(decoded.memoryInBytes == 4.gib())

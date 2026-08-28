@@ -464,6 +464,13 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         try configuration.validate()
         let egressNetwork = try await Self.reserveSealedEgressNetwork(log: log)
         do {
+            for root in configuration.preexposedRootDirectories {
+                try FileManager.default.createDirectory(
+                    at: root,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+            }
             let vmm = VZVirtualMachineManager(
                 kernel: configuration.kernel,
                 initialFilesystem: configuration.initialFilesystem.asMount,
@@ -481,9 +488,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
                 sandboxConfiguration.bootLog = .file(
                     path: configuration.path.appendingPathComponent("boot.log")
                 )
-                Self.configurePreexposedSnapshotRoot(
+                Self.configurePreexposedWorkloadRoots(
                     &sandboxConfiguration,
-                    root: configuration.effectiveSnapshotRoot
+                    roots: configuration.preexposedRootDirectories
                 )
                 Self.configureSealedEgressNetwork(
                     &sandboxConfiguration,
@@ -514,13 +521,14 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         )
     }
 
-    /// Keeps workload rootfs images reachable through one immutable VZ share.
-    static func configurePreexposedSnapshotRoot(
+    /// Keeps sealed snapshots and private workload root filesystems reachable
+    /// through one immutable VZ share.
+    static func configurePreexposedWorkloadRoots(
         _ configuration: inout LinuxPod.Configuration,
-        root: URL
+        roots: [URL]
     ) {
         configuration.extensions.append(
-            VZPreexposedDirectoryShare(roots: [root])
+            VZPreexposedDirectoryShare(roots: roots)
         )
     }
 

@@ -29,19 +29,23 @@ import Testing
 
 struct EngineLinuxSandboxRuntimeServiceTests {
     @Test
-    func sandboxPreexposesTheSnapshotRootThroughVZ() throws {
+    func sandboxPreexposesSealedAndPrivateWorkloadRootsThroughVZ() throws {
         var configuration = LinuxPod.Configuration()
-        let root = URL(fileURLWithPath: "/tmp/container-state/snapshots")
+        let roots = [
+            URL(fileURLWithPath: "/tmp/container-state/snapshots"),
+            URL(fileURLWithPath: "/tmp/container-state/containers"),
+            URL(fileURLWithPath: "/tmp/container-state/engine-linux-sandbox/workloads"),
+        ]
 
-        EngineLinuxSandboxRuntimeServiceV1.configurePreexposedSnapshotRoot(
+        EngineLinuxSandboxRuntimeServiceV1.configurePreexposedWorkloadRoots(
             &configuration,
-            root: root
+            roots: roots
         )
 
         let share = try #require(
             configuration.extensions.first as? VZPreexposedDirectoryShare
         )
-        #expect(share.roots == [root])
+        #expect(share.roots == roots)
     }
 
     @Test
