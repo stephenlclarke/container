@@ -39,8 +39,8 @@ The `stephenlclarke` fork supplies the runtime and CLI for the matched
 [`container-compose`](https://github.com/stephenlclarke/container-compose)
 release stack. That repository owns the canonical
 [stack map](https://github.com/stephenlclarke/container-compose#project-repositories),
-[current dependency pins](https://github.com/stephenlclarke/container-compose/blob/main/STATUS.md),
-and [release policy](https://github.com/stephenlclarke/container-compose/blob/main/BRANCHES.md).
+[current dependency pins](https://github.com/stephenlclarke/container-compose/blob/main/docs/project/STATUS.md),
+and [release policy](https://github.com/stephenlclarke/container-compose/blob/main/docs/guides/BUILD.md).
 `container system version` reports the exact runtime, `containerization`, and
 builder-shim revisions in an installed package.
 

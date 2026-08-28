@@ -41,7 +41,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
-        "revision" : "2b1326247020e749064bfac86a772ccc89e08a4d"
+        "revision" : "4d07c76bafabc0adbb1b394f454d5c957023a213"
       }
     },
     {
@@ -265,7 +265,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/swift-nio-ssl.git",
       "state" : {
-        "revision" : "a9d648535c62e640d1df258a70c9117a8ddea43e"
+        "revision" : "09c5c9adcdd2a459187e45fe0143eb01063f244a"
       }
     },
     {

@@ -212,8 +212,13 @@ struct GELFTransportLoopbackTests {
 
     @Test func productionTCPEOFReconnectsAndDeliversGoldenFrame() async throws {
         try await withGELFEventLoopGroup { group in
+            var golden = gelfLoopbackGoldenJSON
+            golden.append(0)
             let framePromise = group.next().makePromise(of: Data.self)
-            let frameCapture = GELFNULFrameCaptureHandler(promise: framePromise)
+            let frameCapture = GELFNULFrameCaptureHandler(
+                matching: golden,
+                promise: framePromise
+            )
             let router = GELFTCPReconnectRouter(
                 firstConnectionReady: group.next().makePromise(of: Void.self),
                 subsequentHandler: frameCapture
@@ -270,8 +275,6 @@ struct GELFTransportLoopbackTests {
                         gelfRecord(payload: Data("loopback".utf8), sequence: probeSequence)
                     )
                     let frame = try await gelfTestBoundedValue(framePromise.futureResult)
-                    var golden = gelfLoopbackGoldenJSON
-                    golden.append(0)
                     #expect(frame == golden)
                     #expect(router.connectionCount == 2)
                     try await session.closeUsingPolicy()
@@ -501,12 +504,14 @@ private final class GELFDatagramCaptureHandler: ChannelInboundHandler, @unchecke
 private final class GELFNULFrameCaptureHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
+    private let matchingFrame: Data?
     private let promise: EventLoopPromise<Data>
     private var bytes = [UInt8]()
     private let completionLock = NSLock()
     private var completed = false
 
-    init(promise: EventLoopPromise<Data>) {
+    init(matching matchingFrame: Data? = nil, promise: EventLoopPromise<Data>) {
+        self.matchingFrame = matchingFrame
         self.promise = promise
     }
 
@@ -515,8 +520,13 @@ private final class GELFNULFrameCaptureHandler: ChannelInboundHandler, @unchecke
         if let received = buffer.readBytes(length: buffer.readableBytes) {
             bytes.append(contentsOf: received)
         }
-        if let terminator = bytes.firstIndex(of: 0) {
-            complete(.success(Data(bytes[...terminator])))
+        while let terminator = bytes.firstIndex(of: 0) {
+            let frame = Data(bytes[...terminator])
+            bytes.removeFirst(terminator + 1)
+            if matchingFrame == nil || frame == matchingFrame {
+                complete(.success(frame))
+                return
+            }
         }
     }
 
