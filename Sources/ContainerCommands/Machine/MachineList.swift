@@ -44,7 +44,9 @@ extension Application {
             let machines = try await client.list()
 
             if self.quiet {
-                machines.forEach { print($0.id) }
+                for machine in machines {
+                    print(machine.id)
+                }
                 return
             }
 
@@ -61,10 +63,8 @@ extension Application {
                 let printables = machines.map {
                     PrintableMachine($0, isDefault: $0.id == defaultMachine)
                 }
-                let encoder = JSONEncoder()
-                encoder.dateEncodingStrategy = .iso8601
-                let data = try encoder.encode(printables)
-                print(String(decoding: data, as: UTF8.self))
+                let options = JSONOptions(dateEncodingStrategy: .iso8601)
+                try Output.emit(Output.renderJSON(printables, options: options))
                 return
             }
 

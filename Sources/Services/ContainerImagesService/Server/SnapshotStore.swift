@@ -86,7 +86,7 @@ public actor SnapshotStore {
 
         for desc in toUnpack {
             try Task.checkCancellation()
-            let snapshotDir = self.snapshotDir(desc)
+            let snapshotDir = try self.snapshotDir(desc)
             guard !self.fm.fileExists(atPath: snapshotDir.absolutePath()) else {
                 // We have already unpacked this image + platform. Skip
                 continue
@@ -116,7 +116,7 @@ public actor SnapshotStore {
                 let mount = try await unpacker.unpack(image, for: platform, at: tempSnapshotPath, progress: progress)
                 let fs = Filesystem.block(
                     format: mount.type,
-                    source: self.snapshotPath(desc).absolutePath(),
+                    source: try self.snapshotPath(desc).absolutePath(),
                     destination: mount.destination,
                     options: mount.options
                 )
@@ -147,7 +147,7 @@ public actor SnapshotStore {
             toDelete = try await image.unpackableDescriptors()
         }
         for desc in toDelete {
-            let p = self.snapshotDir(desc)
+            let p = try self.snapshotDir(desc)
             guard self.fm.fileExists(atPath: p.absolutePath()) else {
                 continue
             }
@@ -157,8 +157,8 @@ public actor SnapshotStore {
 
     public func get(for image: Containerization.Image, platform: Platform) async throws -> Filesystem {
         let desc = try await image.descriptor(for: platform)
-        let infoPath = snapshotInfoPath(desc)
-        let fsPath = snapshotPath(desc)
+        let infoPath = try snapshotInfoPath(desc)
+        let fsPath = try snapshotPath(desc)
 
         guard self.fm.fileExists(atPath: infoPath.absolutePath()),
             self.fm.fileExists(atPath: fsPath.absolutePath())
@@ -179,7 +179,7 @@ public actor SnapshotStore {
                     continue
                 }
                 let desc = try await image.descriptor(for: platform)
-                toKeep.append(desc.digest.trimmingDigestPrefix)
+                toKeep.append(try desc.digest.validatedDigestEncoding())
             }
         }
         let all = try self.fm.contentsOfDirectory(at: self.path, includingPropertiesForKeys: [.totalFileAllocatedSizeKey]).map {
@@ -198,19 +198,19 @@ public actor SnapshotStore {
         return deletedBytes
     }
 
-    private func snapshotDir(_ desc: Descriptor) -> URL {
-        let p = self.path.appendingPathComponent(desc.digest.trimmingDigestPrefix, isDirectory: true)
+    private func snapshotDir(_ desc: Descriptor) throws -> URL {
+        let p = self.path.appendingPathComponent(try desc.digest.validatedDigestEncoding(), isDirectory: true)
         return p
     }
 
-    private func snapshotPath(_ desc: Descriptor) -> URL {
-        let p = self.snapshotDir(desc)
+    private func snapshotPath(_ desc: Descriptor) throws -> URL {
+        let p = try self.snapshotDir(desc)
             .appendingPathComponent(Self.snapshotFileName, isDirectory: false)
         return p
     }
 
-    private func snapshotInfoPath(_ desc: Descriptor) -> URL {
-        let p = self.snapshotDir(desc)
+    private func snapshotInfoPath(_ desc: Descriptor) throws -> URL {
+        let p = try self.snapshotDir(desc)
             .appendingPathComponent(Self.snapshotInfoFileName, isDirectory: false)
         return p
     }
@@ -222,19 +222,19 @@ public actor SnapshotStore {
     }
 
     /// Get the disk size for a specific snapshot descriptor
-    public func getSnapshotSize(descriptor: Descriptor) async -> UInt64 {
-        let snapshotPath = self.snapshotDir(descriptor)
+    public func getSnapshotSize(descriptor: Descriptor) async throws -> UInt64 {
+        let snapshotPath = try self.snapshotDir(descriptor)
         return await Self.allocatedSize(of: snapshotPath)
     }
 
     /// Returns (trimmed digest, size) pairs for every unpackable snapshot owned by the image.
     public func getSnapshotSizes(for image: Containerization.Image) async throws -> [(digest: String, size: UInt64)] {
         let descriptors = try await image.unpackableDescriptors()
-        let entries = descriptors.enumerated().map { index, descriptor in
+        let entries = try descriptors.enumerated().map { index, descriptor in
             DiskUsageEntry(
                 index: index,
-                digest: descriptor.digest.trimmingDigestPrefix,
-                path: self.snapshotDir(descriptor)
+                digest: try descriptor.digest.validatedDigestEncoding(),
+                path: try self.snapshotDir(descriptor)
             )
         }
         return await Self.allocatedSizes(for: entries)
