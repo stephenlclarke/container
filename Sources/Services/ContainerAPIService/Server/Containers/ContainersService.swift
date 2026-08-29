@@ -5341,24 +5341,29 @@ public actor ContainersService {
 
         let path = try Self.containerPath(root: self.containerRoot, id: id)
         let bundle = ContainerResource.Bundle(path: path)
+        let persistedFilesystem: Filesystem?
+        do {
+            persistedFilesystem = try bundle.containerRootfs
+        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
+            persistedFilesystem = nil
+        }
+
         let rootfs: URL
-        if FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path) {
+        if let persistedFilesystem {
+            rootfs = try Self.exportableRootfsURL(persistedFilesystem)
+        } else if FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path) {
+            // Older materialized bundles can contain the block device without
+            // the accompanying filesystem description.
             rootfs = bundle.containerRootfsBlock
         } else {
-            let filesystem: Filesystem
-            do {
-                filesystem = try bundle.containerRootfs
-            } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-                let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: path)
-                guard
-                    let configuredFilesystem = runtimeConfig.options?.rootFsOverride
-                        ?? runtimeConfig.containerRootFilesystem
-                else {
-                    throw ContainerizationError(.notFound, message: "container root filesystem is not available")
-                }
-                filesystem = configuredFilesystem
+            let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: path)
+            guard
+                let configuredFilesystem = runtimeConfig.options?.rootFsOverride
+                    ?? runtimeConfig.containerRootFilesystem
+            else {
+                throw ContainerizationError(.notFound, message: "container root filesystem is not available")
             }
-            rootfs = try Self.exportableRootfsURL(filesystem)
+            rootfs = try Self.exportableRootfsURL(configuredFilesystem)
         }
 
         switch state.snapshot.status {
