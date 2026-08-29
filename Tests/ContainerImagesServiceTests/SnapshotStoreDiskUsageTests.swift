@@ -15,12 +15,36 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerizationOCI
 import Foundation
 import Testing
 
 @testable import ContainerImagesService
 
 struct SnapshotStoreDiskUsageTests {
+    @Test("Snapshot descriptor traversal is rejected")
+    func snapshotSizeRejectsInvalidDigest() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("snapshot-invalid-digest-\(UUID())")
+        defer {
+            try? FileManager.default.removeItem(at: root)
+        }
+        let store = try SnapshotStore(
+            path: root,
+            unpackStrategy: { _, _ in nil },
+            log: nil
+        )
+        let descriptor = Descriptor(
+            mediaType: "application/vnd.oci.image.manifest.v1+json",
+            digest: "sha256:../../outside",
+            size: 0
+        )
+
+        await #expect(throws: (any Error).self) {
+            _ = try await store.getSnapshotSize(descriptor: descriptor)
+        }
+    }
+
     @Test("Snapshot allocation is measured outside store isolation")
     func allocatedSizeReportsStoredFiles() async throws {
         let root = FileManager.default.temporaryDirectory

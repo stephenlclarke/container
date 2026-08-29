@@ -411,6 +411,8 @@ public actor ImagesService {
 
     /// Calculate disk usage for images
     /// - Parameter activeReferences: Set of image references currently in use by containers
+    /// - Returns: Counts and allocated-byte totals for all images, active images, and reclaimable storage.
+    /// - Throws: An error if image metadata, digest validation, or content accounting fails.
     public func calculateDiskUsage(activeReferences: Set<String>) async throws -> (totalCount: Int, activeCount: Int, totalSize: UInt64, reclaimableSize: UInt64) {
         self.log.debug(
             "ImagesService: enter",
@@ -445,7 +447,7 @@ public actor ImagesService {
         uniqueActiveImages.reserveCapacity(activeImages.count)
         var processedDigests = Set<String>()
         for image in activeImages {
-            let imageDigest = image.digest.trimmingDigestPrefix
+            let imageDigest = try image.digest.validatedDigestEncoding()
             if processedDigests.insert(imageDigest).inserted {
                 uniqueActiveImages.append(image)
             }
