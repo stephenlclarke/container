@@ -21,7 +21,7 @@ Tracking issue:
 - Combine Apple's validated digest handling with the fork's concurrent image
   and snapshot disk-usage paths.
 - Pin Containerization to the merged authority from pull request 58; reviewed
-  head `d6c3586fe88a` is used only until the merge commit exists.
+  exact head `5c70fb4a5301` merged as `59ce8dafa118`.
 - Refresh the lock graph without moving unrelated dependencies.
 - Retain focused manifest, resolution, image/snapshot, JSON rendering, affected
   API, and exact-head review evidence.
