@@ -1907,6 +1907,10 @@ public actor ContainersService {
             && snapshot.configuration.runtimeHandler == "container-runtime-linux"
             && !snapshot.configuration.ssh
             && snapshot.configuration.publishedSockets.isEmpty
+            // A dedicated prewarm owns every block attachment until the
+            // prepared VM is reclaimed. Do not reserve a named volume or raw
+            // block device that another created container may need first.
+            && !snapshot.configuration.mounts.contains(where: \.isBlock)
     }
 
     private func scheduleDedicatedPrewarm(snapshot: ContainerSnapshot) {
