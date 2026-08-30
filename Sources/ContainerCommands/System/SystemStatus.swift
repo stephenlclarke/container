@@ -18,6 +18,8 @@ import ArgumentParser
 import ContainerAPIClient
 import ContainerEngineService
 import ContainerPlugin
+import ContainerResource
+import ContainerVersion
 import ContainerXPC
 import ContainerizationError
 import Foundation
@@ -27,7 +29,7 @@ extension Application {
     public struct SystemStatus: AsyncLoggableCommand {
         public static let configuration = CommandConfiguration(
             commandName: "status",
-            abstract: "Show the status of `container` services"
+            abstract: "Show the status of `container` services and system-wide information"
         )
 
         @Option(name: .shortAndLong, help: "Launchd prefix for services")
@@ -40,67 +42,6 @@ extension Application {
         public var logOptions: Flags.Logging
 
         public init() {}
-
-        struct PrintableStatus: Codable {
-            let status: String
-            let appRoot: String
-            let installRoot: String
-            let logRoot: String?
-            let apiServerVersion: String
-            let apiServerCommit: String
-            let apiServerBuild: String
-            let apiServerAppName: String
-            let apiServerBuilderShimRepository: String?
-            let apiServerBuilderShimVersion: String?
-            let apiServerBuilderShimDigest: String?
-            let engineStatus: String
-            let engineSocket: String
-
-            init(
-                status: String,
-                appRoot: String = "",
-                installRoot: String = "",
-                logRoot: String? = nil,
-                apiServerVersion: String = "",
-                apiServerCommit: String = "",
-                apiServerBuild: String = "",
-                apiServerAppName: String = "",
-                apiServerBuilderShimRepository: String? = nil,
-                apiServerBuilderShimVersion: String? = nil,
-                apiServerBuilderShimDigest: String? = nil,
-                engineStatus: String = "unregistered",
-                engineSocket: String = ContainerEngineServiceConfiguration(
-                    appRoot: ApplicationRoot.path
-                ).publicSocketPath.string
-            ) {
-                self.status = status
-                self.appRoot = appRoot
-                self.installRoot = installRoot
-                self.logRoot = logRoot
-                self.apiServerVersion = apiServerVersion
-                self.apiServerCommit = apiServerCommit
-                self.apiServerBuild = apiServerBuild
-                self.apiServerAppName = apiServerAppName
-                self.apiServerBuilderShimRepository = apiServerBuilderShimRepository
-                self.apiServerBuilderShimVersion = apiServerBuilderShimVersion
-                self.apiServerBuilderShimDigest = apiServerBuilderShimDigest
-                self.engineStatus = engineStatus
-                self.engineSocket = engineSocket
-            }
-
-            var apiServerBuilderShimImage: String? {
-                guard let apiServerBuilderShimRepository else {
-                    return nil
-                }
-                if let apiServerBuilderShimDigest, !apiServerBuilderShimDigest.isEmpty {
-                    return "\(apiServerBuilderShimRepository)@\(apiServerBuilderShimDigest)"
-                }
-                guard let apiServerBuilderShimVersion else {
-                    return nil
-                }
-                return "\(apiServerBuilderShimRepository):\(apiServerBuilderShimVersion)"
-            }
-        }
 
         public func run() async throws {
             let serviceNamespace = try ContainerServiceNamespace.resolve()
@@ -129,7 +70,7 @@ extension Application {
             let isRegistered = try ServiceManager.isRegistered(fullServiceLabel: "\(servicePrefix)apiserver")
             if !isRegistered {
                 try Output.render(
-                    payload: PrintableStatus(
+                    payload: StatusPayload(
                         status: "unregistered",
                         engineStatus: engineStatus,
                         engineSocket: engineSocket
@@ -144,19 +85,10 @@ extension Application {
             // Now ping our friendly daemon. Fail after 10 seconds with no response.
             var systemIsDegraded = false
             do {
-                let systemHealth = try await ClientHealthCheck.ping(timeout: .seconds(10))
-                let status = PrintableStatus(
+                let health = try await ClientHealthCheck.ping(timeout: .seconds(10))
+                let status = await Self.gather(
+                    health: health,
                     status: engineRunning ? "running" : "degraded",
-                    appRoot: systemHealth.appRoot.path(percentEncoded: false),
-                    installRoot: systemHealth.installRoot.path(percentEncoded: false),
-                    logRoot: systemHealth.logRoot?.string,
-                    apiServerVersion: systemHealth.apiServerVersion,
-                    apiServerCommit: systemHealth.apiServerCommit,
-                    apiServerBuild: systemHealth.apiServerBuild,
-                    apiServerAppName: systemHealth.apiServerAppName,
-                    apiServerBuilderShimRepository: systemHealth.apiServerBuilderShimRepository,
-                    apiServerBuilderShimVersion: systemHealth.apiServerBuilderShimVersion,
-                    apiServerBuilderShimDigest: systemHealth.apiServerBuilderShimDigest,
                     engineStatus: engineStatus,
                     engineSocket: engineSocket
                 )
@@ -166,7 +98,7 @@ extension Application {
                 systemIsDegraded = !engineRunning
             } catch {
                 try Output.render(
-                    payload: PrintableStatus(
+                    payload: StatusPayload(
                         status: "not running",
                         engineStatus: engineStatus,
                         engineSocket: engineSocket
@@ -182,22 +114,241 @@ extension Application {
             }
         }
 
-        private static func statusTable(_ status: PrintableStatus) -> String {
-            let rows: [[String]] = [
-                ["FIELD", "VALUE"],
-                ["status", status.status],
-                ["appRoot", status.appRoot],
-                ["installRoot", status.installRoot],
-                ["logRoot", status.logRoot ?? ""],
-                ["apiserver.version", status.apiServerVersion],
-                ["apiserver.commit", status.apiServerCommit],
-                ["apiserver.build", status.apiServerBuild],
-                ["apiserver.appName", status.apiServerAppName],
-                ["apiserver.builderShim", status.apiServerBuilderShimImage ?? ""],
-                ["engine.status", status.engineStatus],
-                ["engine.socket", status.engineSocket],
-            ]
+        /// Collects system-wide status from the CLI and the running daemon.
+        /// Resource counts are populated best-effort and omitted when their
+        /// source is unavailable.
+        static func gather(
+            health: SystemHealth,
+            status: String = "running",
+            engineStatus: String = "unregistered",
+            engineSocket: String = ContainerEngineServiceConfiguration(
+                appRoot: ApplicationRoot.path
+            ).publicSocketPath.string
+        ) async -> StatusPayload {
+            let client = ClientInfo(
+                version: ReleaseVersion.version(),
+                build: ReleaseVersion.buildType(),
+                commit: ReleaseVersion.gitCommit() ?? "unspecified",
+                appName: "container"
+            )
+
+            let host = HostInfo(
+                architecture: Arch.hostArchitecture().rawValue,
+                operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+                cpus: ProcessInfo.processInfo.processorCount
+            )
+
+            let server = ServerInfo(
+                version: health.apiServerVersion,
+                build: health.apiServerBuild,
+                commit: health.apiServerCommit,
+                appName: health.apiServerAppName,
+                builderShimRepository: health.apiServerBuilderShimRepository,
+                builderShimVersion: health.apiServerBuilderShimVersion,
+                builderShimDigest: health.apiServerBuilderShimDigest
+            )
+
+            let paths = PathInfo(
+                appRoot: health.appRoot.path(percentEncoded: false),
+                installRoot: health.installRoot.path(percentEncoded: false),
+                logRoot: health.logRoot?.string
+            )
+
+            var containersTotal: Int? = nil
+            var containersRunning: Int? = nil
+            let containerClient = ContainerClient()
+            if let all = try? await containerClient.list(filters: ContainerListFilters.all.withoutMachines()) {
+                containersTotal = all.count
+                containersRunning = all.filter { $0.status == .running }.count
+            }
+            let imageCount = try? await ClientImage.list(responseTimeout: .seconds(10)).count
+            let resources = Self.resourceCounts(
+                containersTotal: containersTotal,
+                containersRunning: containersRunning,
+                imageCount: imageCount
+            )
+
+            return StatusPayload(
+                status: status,
+                client: client,
+                server: server,
+                host: host,
+                paths: paths,
+                resources: resources,
+                engineStatus: engineStatus,
+                engineSocket: engineSocket
+            )
+        }
+
+        /// Builds resource counts from independently best-effort probes. A
+        /// payload is omitted only when every probe is unavailable.
+        static func resourceCounts(
+            containersTotal: Int?,
+            containersRunning: Int?,
+            imageCount: Int?
+        ) -> ResourceCounts? {
+            guard containersTotal != nil || containersRunning != nil || imageCount != nil else {
+                return nil
+            }
+            return ResourceCounts(
+                containersTotal: containersTotal,
+                containersRunning: containersRunning,
+                images: imageCount
+            )
+        }
+
+        static func statusTable(_ status: StatusPayload) -> String {
+            var rows: [[String]] = [["FIELD", "VALUE"]]
+
+            rows.append(["status", status.status])
+
+            if let client = status.client {
+                rows.append(["client.version", client.version])
+                rows.append(["client.build", client.build])
+                rows.append(["client.commit", client.commit])
+            }
+
+            if let host = status.host {
+                rows.append(["host.os", host.operatingSystem])
+                rows.append(["host.architecture", host.architecture])
+                rows.append(["host.cpus", String(host.cpus)])
+            }
+
+            if let server = status.server {
+                rows.append(["server.version", server.version])
+                rows.append(["server.build", server.build])
+                rows.append(["server.commit", server.commit])
+                rows.append(["server.appName", server.appName])
+                rows.append(["server.builderShim", server.builderShimImage ?? ""])
+            }
+
+            if let paths = status.paths {
+                rows.append(["paths.appRoot", paths.appRoot])
+                rows.append(["paths.installRoot", paths.installRoot])
+                rows.append(["paths.logRoot", paths.logRoot ?? ""])
+            }
+
+            if let resources = status.resources {
+                if let containersTotal = resources.containersTotal {
+                    rows.append(["containers.total", String(containersTotal)])
+                }
+                if let containersRunning = resources.containersRunning {
+                    rows.append(["containers.running", String(containersRunning)])
+                }
+                if let images = resources.images {
+                    rows.append(["images.total", String(images)])
+                }
+            }
+
+            rows.append(["engine.status", status.engineStatus])
+            rows.append(["engine.socket", status.engineSocket])
+
             return TableOutput(rows: rows).format()
+        }
+    }
+
+    struct StatusPayload: Codable {
+        let status: String
+        let client: ClientInfo?
+        let server: ServerInfo?
+        let host: HostInfo?
+        let paths: PathInfo?
+        let resources: ResourceCounts?
+        let engineStatus: String
+        let engineSocket: String
+
+        init(
+            status: String,
+            client: ClientInfo? = nil,
+            server: ServerInfo? = nil,
+            host: HostInfo? = nil,
+            paths: PathInfo? = nil,
+            resources: ResourceCounts? = nil,
+            engineStatus: String = "unregistered",
+            engineSocket: String = ContainerEngineServiceConfiguration(
+                appRoot: ApplicationRoot.path
+            ).publicSocketPath.string
+        ) {
+            self.status = status
+            self.client = client
+            self.server = server
+            self.host = host
+            self.paths = paths
+            self.resources = resources
+            self.engineStatus = engineStatus
+            self.engineSocket = engineSocket
+        }
+    }
+
+    struct ClientInfo: Codable {
+        let version: String
+        let build: String
+        let commit: String
+        let appName: String
+    }
+
+    struct ServerInfo: Codable {
+        let version: String
+        let build: String
+        let commit: String
+        let appName: String
+        let builderShimRepository: String?
+        let builderShimVersion: String?
+        let builderShimDigest: String?
+
+        init(
+            version: String,
+            build: String,
+            commit: String,
+            appName: String,
+            builderShimRepository: String? = nil,
+            builderShimVersion: String? = nil,
+            builderShimDigest: String? = nil
+        ) {
+            self.version = version
+            self.build = build
+            self.commit = commit
+            self.appName = appName
+            self.builderShimRepository = builderShimRepository
+            self.builderShimVersion = builderShimVersion
+            self.builderShimDigest = builderShimDigest
+        }
+
+        var builderShimImage: String? {
+            guard let builderShimRepository else {
+                return nil
+            }
+            if let builderShimDigest, !builderShimDigest.isEmpty {
+                return "\(builderShimRepository)@\(builderShimDigest)"
+            }
+            guard let builderShimVersion else {
+                return nil
+            }
+            return "\(builderShimRepository):\(builderShimVersion)"
+        }
+    }
+
+    struct HostInfo: Codable {
+        let architecture: String
+        let operatingSystem: String
+        let cpus: Int
+    }
+
+    struct PathInfo: Codable {
+        let appRoot: String
+        let installRoot: String
+        let logRoot: String?
+    }
+
+    struct ResourceCounts: Codable {
+        let containersTotal: Int?
+        let containersRunning: Int?
+        var images: Int?
+
+        init(containersTotal: Int? = nil, containersRunning: Int? = nil, images: Int? = nil) {
+            self.containersTotal = containersTotal
+            self.containersRunning = containersRunning
+            self.images = images
         }
     }
 }
