@@ -274,7 +274,7 @@ struct ContainerBootstrapConcurrencyTests {
         )
     }
 
-    @Test("Only never-started dedicated containers without caller-owned host endpoints prewarm")
+    @Test("Only never-started dedicated containers without caller-owned or block resources prewarm")
     func dedicatedPrewarmEligibility() throws {
         let eligible = Self.snapshot(id: "eligible")
         #expect(ContainersService.shouldPrewarm(eligible))
@@ -295,6 +295,35 @@ struct ContainerBootstrapConcurrencyTests {
             )
         ]
         #expect(!ContainersService.shouldPrewarm(publishedSocket))
+
+        var namedVolume = Self.snapshot(id: "named-volume")
+        namedVolume.configuration.mounts = [
+            .volume(
+                name: "shared",
+                format: "ext4",
+                source: "/tmp/shared.img",
+                destination: "/shared",
+                options: []
+            )
+        ]
+        #expect(!ContainersService.shouldPrewarm(namedVolume))
+
+        var blockDevice = Self.snapshot(id: "block-device")
+        blockDevice.configuration.mounts = [
+            .block(
+                format: "ext4",
+                source: "/tmp/data.img",
+                destination: "/data",
+                options: []
+            )
+        ]
+        #expect(!ContainersService.shouldPrewarm(blockDevice))
+
+        var sharedDirectory = Self.snapshot(id: "shared-directory")
+        sharedDirectory.configuration.mounts = [
+            .virtiofs(source: "/tmp/shared", destination: "/shared", options: [])
+        ]
+        #expect(ContainersService.shouldPrewarm(sharedDirectory))
 
         var customRuntime = Self.snapshot(id: "custom-runtime")
         customRuntime.configuration.runtimeHandler = "example-runtime"
