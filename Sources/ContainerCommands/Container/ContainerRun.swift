@@ -84,6 +84,24 @@ extension Application {
             emitsCLIOutput: Bool = true
         ) async throws {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
+            try await run(
+                loggingRequest: loggingRequest,
+                emitsCLIOutput: emitsCLIOutput,
+                containerSystemConfig: containerSystemConfig,
+                client: ContainerClient()
+            )
+        }
+
+        /// Runs a container with invocation-scoped runtime dependencies.
+        ///
+        /// The supplied client owns bootstrap and process-session lifetime, so
+        /// callers must not share it with unrelated control-plane operations.
+        public func run(
+            loggingRequest: ContainerLogRequest,
+            emitsCLIOutput: Bool = true,
+            containerSystemConfig: ContainerSystemConfig,
+            client: ContainerClient
+        ) async throws {
             var exitCode: Int32 = 127
             let id = Utility.createContainerID(name: self.managementFlags.name)
 
@@ -115,7 +133,6 @@ extension Application {
             }
 
             // Check if container with id already exists.
-            let client = ContainerClient()
             let existing = try? await client.get(id: id)
             guard existing == nil else {
                 throw ContainerizationError(

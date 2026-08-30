@@ -77,6 +77,26 @@ extension Application {
             emitsCLIOutput: Bool = true
         ) async throws {
             let containerSystemConfig: ContainerSystemConfig = try await Application.loadContainerSystemConfig()
+            try await run(
+                loggingRequest: loggingRequest,
+                emitsCLIOutput: emitsCLIOutput,
+                containerSystemConfig: containerSystemConfig,
+                client: ContainerClient()
+            )
+        }
+
+        /// Creates a container with invocation-scoped runtime dependencies.
+        ///
+        /// In-process clients such as Compose can load the system configuration
+        /// once and reuse an existing control-plane connection across several
+        /// creates. The ordinary CLI entry point above retains its isolated
+        /// one-command lifetime.
+        public func run(
+            loggingRequest: ContainerLogRequest,
+            emitsCLIOutput: Bool = true,
+            containerSystemConfig: ContainerSystemConfig,
+            client: ContainerClient
+        ) async throws {
             let progress: ProgressBar?
             if emitsCLIOutput {
                 progress = ProgressBar(
@@ -128,7 +148,6 @@ extension Application {
                 restartDelay: managementFlags.restartDelay,
                 restartWindow: managementFlags.restartWindow
             )
-            let client = ContainerClient()
             let runtimeData = try LinuxRuntimeData.encoded(from: managementFlags)
             try await client.create(
                 configuration: ck.0,
