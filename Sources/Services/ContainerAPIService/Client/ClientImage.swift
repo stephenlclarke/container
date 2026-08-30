@@ -166,10 +166,10 @@ extension ClientImage {
         return updatedRawReference
     }
 
-    public static func list() async throws -> [ClientImage] {
+    public static func list(responseTimeout: Duration? = nil) async throws -> [ClientImage] {
         let client = newXPCClient()
         let request = newRequest(.imageList)
-        let response = try await client.send(request)
+        let response = try await client.send(request, responseTimeout: responseTimeout)
 
         let imageDescriptions = try response.imageDescriptions()
         return imageDescriptions.map { desc in

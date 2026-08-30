@@ -73,9 +73,7 @@ struct SystemStatusTests {
         let payload = makeRunningPayload(
             paths: Application.PathInfo(appRoot: "/app/root", installRoot: "/install/root", logRoot: "/log/root"),
             resources: {
-                var r = Application.ResourceCounts(containersTotal: 5, containersRunning: 2)
-                r.images = 7
-                return r
+                Application.ResourceCounts(containersTotal: 5, containersRunning: 2, images: 7)
             }()
         )
         let table = Application.SystemStatus.statusTable(payload)
@@ -105,25 +103,63 @@ struct SystemStatusTests {
     }
 
     @Test
-    func imageCountIsRecordedOnResourceCounts() {
-        let resources = Application.ResourceCounts(containersTotal: 3, containersRunning: 1)
-        let updated = Application.SystemStatus.withImageCount(resources, imageCount: 7)
-        #expect(updated?.images == 7)
+    func independentResourceCountsAreRecorded() {
+        let counts = Application.SystemStatus.resourceCounts(
+            containersTotal: 3,
+            containersRunning: 1,
+            imageCount: 7
+        )
+        #expect(counts?.containersTotal == 3)
+        #expect(counts?.containersRunning == 1)
+        #expect(counts?.images == 7)
         // And it surfaces in the rendered table.
-        let table = Application.SystemStatus.statusTable(makeRunningPayload(resources: updated))
+        let table = Application.SystemStatus.statusTable(makeRunningPayload(resources: counts))
+        #expect(table.contains("containers.total"))
+        #expect(table.contains("containers.running"))
         #expect(table.contains("images.total"))
         #expect(table.contains("7"))
     }
 
     @Test
-    func imageCountWithoutResourceCountsStaysNil() {
-        #expect(Application.SystemStatus.withImageCount(nil, imageCount: 7) == nil)
+    func imageCountSurvivesUnavailableContainerCounts() {
+        let counts = Application.SystemStatus.resourceCounts(
+            containersTotal: nil,
+            containersRunning: nil,
+            imageCount: 7
+        )
+        #expect(counts?.containersTotal == nil)
+        #expect(counts?.containersRunning == nil)
+        #expect(counts?.images == 7)
+        let table = Application.SystemStatus.statusTable(makeRunningPayload(resources: counts))
+        #expect(!table.contains("containers.total"))
+        #expect(!table.contains("containers.running"))
+        #expect(table.contains("images.total"))
     }
 
     @Test
-    func imageCountOmittedWhenUnavailable() {
-        let resources = Application.ResourceCounts(containersTotal: 2, containersRunning: 0)
-        let updated = Application.SystemStatus.withImageCount(resources, imageCount: nil)
-        #expect(updated?.images == nil)
+    func containerCountsSurviveUnavailableImageCount() {
+        let counts = Application.SystemStatus.resourceCounts(
+            containersTotal: 4,
+            containersRunning: 2,
+            imageCount: nil
+        )
+        #expect(counts?.containersTotal == 4)
+        #expect(counts?.containersRunning == 2)
+        #expect(counts?.images == nil)
+        let table = Application.SystemStatus.statusTable(makeRunningPayload(resources: counts))
+        #expect(table.contains("containers.total"))
+        #expect(table.contains("containers.running"))
+        #expect(!table.contains("images.total"))
+    }
+
+    @Test
+    func allUnavailableResourceCountsAreOmitted() {
+        #expect(
+            Application.SystemStatus.resourceCounts(
+                containersTotal: nil,
+                containersRunning: nil,
+                imageCount: nil
+            ) == nil
+        )
     }
 }

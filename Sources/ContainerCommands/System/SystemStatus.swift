@@ -154,18 +154,19 @@ extension Application {
                 logRoot: health.logRoot?.string
             )
 
-            var resources: ResourceCounts? = nil
+            var containersTotal: Int? = nil
+            var containersRunning: Int? = nil
             let containerClient = ContainerClient()
             if let all = try? await containerClient.list(filters: ContainerListFilters.all.withoutMachines()) {
-                let running = all.filter { $0.status == .running }.count
-                resources = ResourceCounts(
-                    containersTotal: all.count,
-                    containersRunning: running
-                )
+                containersTotal = all.count
+                containersRunning = all.filter { $0.status == .running }.count
             }
-            if let images = try? await ClientImage.list() {
-                resources = Self.withImageCount(resources, imageCount: images.count)
-            }
+            let imageCount = try? await ClientImage.list(responseTimeout: .seconds(10)).count
+            let resources = Self.resourceCounts(
+                containersTotal: containersTotal,
+                containersRunning: containersRunning,
+                imageCount: imageCount
+            )
 
             return StatusPayload(
                 status: status,
@@ -179,14 +180,21 @@ extension Application {
             )
         }
 
-        /// Records the image count on the resource counts when both are
-        /// available. Returns the counts unchanged (including `nil`) when there
-        /// are no resource counts yet, i.e. the daemon's container list was
-        /// unavailable.
-        static func withImageCount(_ resources: ResourceCounts?, imageCount: Int?) -> ResourceCounts? {
-            guard var resources, let imageCount else { return resources }
-            resources.images = imageCount
-            return resources
+        /// Builds resource counts from independently best-effort probes. A
+        /// payload is omitted only when every probe is unavailable.
+        static func resourceCounts(
+            containersTotal: Int?,
+            containersRunning: Int?,
+            imageCount: Int?
+        ) -> ResourceCounts? {
+            guard containersTotal != nil || containersRunning != nil || imageCount != nil else {
+                return nil
+            }
+            return ResourceCounts(
+                containersTotal: containersTotal,
+                containersRunning: containersRunning,
+                images: imageCount
+            )
         }
 
         static func statusTable(_ status: StatusPayload) -> String {
@@ -221,8 +229,12 @@ extension Application {
             }
 
             if let resources = status.resources {
-                rows.append(["containers.total", String(resources.containersTotal)])
-                rows.append(["containers.running", String(resources.containersRunning)])
+                if let containersTotal = resources.containersTotal {
+                    rows.append(["containers.total", String(containersTotal)])
+                }
+                if let containersRunning = resources.containersRunning {
+                    rows.append(["containers.running", String(containersRunning)])
+                }
                 if let images = resources.images {
                     rows.append(["images.total", String(images)])
                 }
@@ -329,8 +341,14 @@ extension Application {
     }
 
     struct ResourceCounts: Codable {
-        let containersTotal: Int
-        let containersRunning: Int
+        let containersTotal: Int?
+        let containersRunning: Int?
         var images: Int?
+
+        init(containersTotal: Int? = nil, containersRunning: Int? = nil, images: Int? = nil) {
+            self.containersTotal = containersTotal
+            self.containersRunning = containersRunning
+            self.images = images
+        }
     }
 }

@@ -21,6 +21,8 @@ Tracking issue:
   image provenance.
 - Keep daemon-backed container and image counts best-effort so status remains
   useful while individual resource queries are unavailable.
+- Bound the image-service request so a responsive API server cannot leave the
+  diagnostic command waiting indefinitely on an unresponsive image service.
 - Retain useful `unregistered`, `not running`, and `degraded` status payloads.
 
 ## Merge reconciliation
@@ -33,10 +35,11 @@ suite are retained.
 
 ## Validation boundary
 
-The focused `SystemStatusTests` suite passes all seven tests from the resolved
-merge. It covers table rendering, JSON round-tripping, builder-shim and Engine
-fields, optional paths, and best-effort image counts. The exact downstream
-Compose pin and stable release gates remain required before 0.14.0 promotion.
+The focused `SystemStatusTests` suite covers table rendering, JSON
+round-tripping, builder-shim and Engine fields, optional paths, and independent
+best-effort container and image counts. The image-list call has an explicit
+10-second XPC response timeout. The exact downstream Compose pin and stable
+release gates remain required before 0.14.0 promotion.
 
 ## Commit tracking
 
