@@ -35,7 +35,7 @@ jobs:
     name: Publish release
     timeout-minutes: 30
     needs: [build, codeql]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
       packages: read
@@ -70,7 +70,7 @@ jobs:
   deployDocs:
     name: Deploy release documentation
     needs: [build, codeql]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       pages: write

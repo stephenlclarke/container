@@ -31,7 +31,7 @@ jobs:
   linuxServiceWorkloads:
     name: Build Linux service workloads
     if: ${{ inputs.release_artifacts }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
@@ -298,7 +298,7 @@ jobs:
     if: ${{ inputs.release_artifacts && inputs.publish_pages }}
     needs: buildAndTest
     timeout-minutes: 5
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Setup Pages
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6
