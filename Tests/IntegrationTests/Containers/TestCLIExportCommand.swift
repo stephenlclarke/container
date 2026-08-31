@@ -23,7 +23,11 @@ import Testing
 @Suite
 struct TestCLIExportCommand {
     private struct StatusJSON: Decodable {
-        let appRoot: String
+        struct Paths: Decodable {
+            let appRoot: String
+        }
+
+        let paths: Paths
     }
 
     @Test func testExportCreatedContainer() async throws {
@@ -51,7 +55,7 @@ struct TestCLIExportCommand {
             f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
 
             let status = try f.run(["system", "status", "--format", "json"]).check()
-            let appRoot = try JSONDecoder().decode(StatusJSON.self, from: status.outputData).appRoot
+            let appRoot = try JSONDecoder().decode(StatusJSON.self, from: status.outputData).paths.appRoot
             let rootfsMetadata = URL(filePath: appRoot, directoryHint: .isDirectory)
                 .appending(path: "containers", directoryHint: .isDirectory)
                 .appending(path: name, directoryHint: .isDirectory)
