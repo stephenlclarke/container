@@ -10,7 +10,7 @@ permissions:
 jobs:
   analyze:
     name: Analyze PR for labeling
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     
     steps:
       - name: Save PR metadata

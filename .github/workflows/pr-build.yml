@@ -15,7 +15,7 @@ concurrency:
 jobs:
   changes:
     name: Detect Relevant Changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.filter.outputs.heavy }}
     steps:
@@ -47,7 +47,7 @@ jobs:
 
   verify-signatures:
     name: Verify commit signatures
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Check all commits are signed
         env:
