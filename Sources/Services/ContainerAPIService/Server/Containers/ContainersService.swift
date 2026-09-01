@@ -35,6 +35,7 @@ import ContainerizationOS
 import Foundation
 import Logging
 import SystemPackage
+import Virtualization
 
 struct ContainerCreationReservations: Sendable {
     private var reservations: [String: ContainerSnapshot] = [:]
@@ -3375,8 +3376,26 @@ public actor ContainersService {
         if isPostStartProcessExitRace(error) {
             return true
         }
+        let nsError = error as NSError
+        if nsError.domain == VZErrorDomain,
+            nsError.code == VZError.Code.internalError.rawValue
+        {
+            // Virtualization reports a dedicated VM stopping between the
+            // successful start reply and this best-effort PID snapshot as an
+            // internal error. The registered exit monitor stays authoritative.
+            return true
+        }
         guard let error = error as? ContainerizationError else {
             return false
+        }
+        if error.code == .unknown,
+            error.message.contains(
+                "Error Domain=\(VZErrorDomain) Code=\(VZError.Code.internalError.rawValue)"
+            )
+        {
+            // XPC transports an underlying Virtualization NSError as an
+            // unknown ContainerizationError while retaining its domain/code.
+            return true
         }
         if error.code == .unsupported
             || (error.code == .unknown
