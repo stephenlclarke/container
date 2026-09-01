@@ -19,6 +19,7 @@ import ContainerRuntimeClient
 import ContainerizationError
 import Foundation
 import Testing
+import Virtualization
 
 @testable import ContainerAPIService
 
@@ -214,6 +215,40 @@ struct ContainerLifecycleValidationTests {
         #expect(
             !ContainersService.isRecoverablePostStartProcessSnapshotError(
                 ContainerizationError(.timeout, message: "process snapshot timed out")
+            )
+        )
+    }
+
+    @Test
+    func stoppedVirtualMachinePostStartProcessSnapshotDefersToTheExitMonitor() {
+        let stoppedVM = NSError(
+            domain: VZErrorDomain,
+            code: VZError.Code.internalError.rawValue,
+            userInfo: [NSLocalizedDescriptionKey: "The virtual machine stopped unexpectedly."]
+        )
+        let wrapped = ContainerizationError(
+            .internalError,
+            message: "failed to get processes for container example",
+            cause: stoppedVM
+        )
+        let transported = ContainerizationError(
+            .internalError,
+            message: "failed to get processes for container example",
+            cause: ContainerizationError(
+                .unknown,
+                message: "Error Domain=VZErrorDomain Code=1 The virtual machine stopped unexpectedly."
+            )
+        )
+
+        #expect(ContainersService.isRecoverablePostStartProcessSnapshotError(wrapped))
+        #expect(ContainersService.isRecoverablePostStartProcessSnapshotError(transported))
+        #expect(
+            !ContainersService.isRecoverablePostStartProcessSnapshotError(
+                NSError(
+                    domain: VZErrorDomain,
+                    code: VZError.Code.invalidVirtualMachineConfiguration.rawValue,
+                    userInfo: [NSLocalizedDescriptionKey: "Virtual machine configuration is invalid."]
+                )
             )
         )
     }
