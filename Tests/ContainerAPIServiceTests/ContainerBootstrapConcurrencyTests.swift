@@ -278,6 +278,12 @@ struct ContainerBootstrapConcurrencyTests {
     func dedicatedPrewarmEligibility() throws {
         let eligible = Self.snapshot(id: "eligible")
         #expect(ContainersService.shouldPrewarm(eligible))
+        #expect(
+            !ContainersService.shouldPrewarm(
+                eligible,
+                options: ContainerCreateOptions(autoRemove: false, prewarm: false)
+            )
+        )
 
         var shared = Self.snapshot(id: "shared")
         shared.configuration.effectiveIsolation = .sharedVM

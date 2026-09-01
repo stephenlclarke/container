@@ -96,15 +96,19 @@ public struct ContainerCreateOptions: Codable, Sendable {
     public let rootFsOverride: Filesystem?
     /// Restart behavior applied when the container's init process exits.
     public let restartPolicy: ContainerRestartPolicy
+    /// Whether create may prepare a dedicated runtime before a later start.
+    public let prewarm: Bool
 
     public init(
         autoRemove: Bool,
         rootFsOverride: Filesystem? = nil,
-        restartPolicy: ContainerRestartPolicy = .no
+        restartPolicy: ContainerRestartPolicy = .no,
+        prewarm: Bool = true
     ) {
         self.autoRemove = autoRemove
         self.rootFsOverride = rootFsOverride
         self.restartPolicy = restartPolicy
+        self.prewarm = prewarm
     }
 
     public static let `default` = ContainerCreateOptions(autoRemove: false)
@@ -113,6 +117,7 @@ public struct ContainerCreateOptions: Codable, Sendable {
         case autoRemove
         case rootFsOverride
         case restartPolicy
+        case prewarm
     }
 
     public init(from decoder: Decoder) throws {
@@ -120,5 +125,6 @@ public struct ContainerCreateOptions: Codable, Sendable {
         autoRemove = try container.decode(Bool.self, forKey: .autoRemove)
         rootFsOverride = try container.decodeIfPresent(Filesystem.self, forKey: .rootFsOverride)
         restartPolicy = try container.decodeIfPresent(ContainerRestartPolicy.self, forKey: .restartPolicy) ?? .no
+        prewarm = try container.decodeIfPresent(Bool.self, forKey: .prewarm) ?? true
     }
 }

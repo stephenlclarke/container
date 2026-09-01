@@ -1754,6 +1754,18 @@ struct ParserTest {
         #expect(options.restartPolicy.maximumRetryCount == 3)
         #expect(options.restartPolicy.retryDelayInNanoseconds == 5_000_000_000)
         #expect(options.restartPolicy.successfulRunDurationInNanoseconds == 30_000_000_000)
+        #expect(options.prewarm)
+    }
+
+    @Test
+    func testCreateOptionsCanSuppressSpeculativePrewarming() throws {
+        let options = try Parser.createOptions(
+            autoRemove: false,
+            restart: nil,
+            prewarm: false
+        )
+
+        #expect(options.prewarm == false)
     }
 
     @Test

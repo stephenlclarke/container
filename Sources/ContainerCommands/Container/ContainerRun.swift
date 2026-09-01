@@ -162,7 +162,10 @@ extension Application {
                 autoRemove: managementFlags.remove,
                 restart: managementFlags.restart,
                 restartDelay: managementFlags.restartDelay,
-                restartWindow: managementFlags.restartWindow
+                restartWindow: managementFlags.restartWindow,
+                // `run` bootstraps immediately after create, so speculative
+                // preparation can only race the foreground bootstrap.
+                prewarm: false
             )
             let runtimeData = try LinuxRuntimeData.encoded(from: managementFlags)
             try await client.create(
