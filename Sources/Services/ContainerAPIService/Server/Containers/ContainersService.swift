@@ -1898,11 +1898,15 @@ public actor ContainersService {
         }
 
         await publishContainerEvent(action: "create", snapshot: createdSnapshot)
-        scheduleDedicatedPrewarm(snapshot: createdSnapshot)
+        scheduleDedicatedPrewarm(snapshot: createdSnapshot, options: options)
     }
 
-    static func shouldPrewarm(_ snapshot: ContainerSnapshot) -> Bool {
-        snapshot.status == .stopped
+    static func shouldPrewarm(
+        _ snapshot: ContainerSnapshot,
+        options: ContainerCreateOptions = .default
+    ) -> Bool {
+        options.prewarm
+            && snapshot.status == .stopped
             && snapshot.startedDate == nil
             && snapshot.configuration.effectiveIsolation == .dedicatedVM
             && snapshot.configuration.runtimeHandler == "container-runtime-linux"
@@ -1914,8 +1918,22 @@ public actor ContainersService {
             && !snapshot.configuration.mounts.contains(where: \.isBlock)
     }
 
-    private func scheduleDedicatedPrewarm(snapshot: ContainerSnapshot) {
-        guard Self.shouldPrewarm(snapshot), prewarmTasks[snapshot.id] == nil else {
+    private func scheduleDedicatedPrewarm(
+        snapshot: ContainerSnapshot,
+        options: ContainerCreateOptions? = nil
+    ) {
+        let resolvedOptions: ContainerCreateOptions
+        if let options {
+            resolvedOptions = options
+        } else {
+            guard let persistedOptions = try? getContainerCreationOptions(id: snapshot.id) else {
+                return
+            }
+            resolvedOptions = persistedOptions
+        }
+        guard Self.shouldPrewarm(snapshot, options: resolvedOptions),
+            prewarmTasks[snapshot.id] == nil
+        else {
             return
         }
         let id = snapshot.id
@@ -2213,8 +2231,11 @@ public actor ContainersService {
         ) { context -> ContainerBootstrapPlan? in
             let state = try await self.getContainerState(id: id, context: context)
 
-            if prewarming, !Self.shouldPrewarm(state.snapshot) {
-                return nil
+            if prewarming {
+                let options = try await self.getContainerCreationOptions(id: id)
+                guard Self.shouldPrewarm(state.snapshot, options: options) else {
+                    return nil
+                }
             }
 
             // We've already bootstrapped this container. Ideally we should be able to
@@ -8318,7 +8339,8 @@ extension ContainersService {
                 let newOptions = ContainerCreateOptions(
                     autoRemove: oldOptions.autoRemove,
                     rootFsOverride: oldOptions.rootFsOverride,
-                    restartPolicy: restartPolicy ?? oldOptions.restartPolicy
+                    restartPolicy: restartPolicy ?? oldOptions.restartPolicy,
+                    prewarm: oldOptions.prewarm
                 )
                 try Self.validateRestartPolicy(
                     newOptions.restartPolicy,

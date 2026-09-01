@@ -1184,7 +1184,8 @@ public struct Parser {
         autoRemove: Bool,
         restart: String?,
         restartDelay: String? = nil,
-        restartWindow: String? = nil
+        restartWindow: String? = nil,
+        prewarm: Bool = true
     ) throws -> ContainerCreateOptions {
         var restartPolicy = try Self.restartPolicy(restart)
         let restartDelayInNanoseconds = try Self.restartDuration(restartDelay, option: "--restart-delay")
@@ -1204,7 +1205,11 @@ public struct Parser {
                 message: "--rm cannot be combined with --restart"
             )
         }
-        return ContainerCreateOptions(autoRemove: autoRemove, restartPolicy: restartPolicy)
+        return ContainerCreateOptions(
+            autoRemove: autoRemove,
+            restartPolicy: restartPolicy,
+            prewarm: prewarm
+        )
     }
 
     /// Parses Docker-compatible PID namespace modes supported by this runtime.

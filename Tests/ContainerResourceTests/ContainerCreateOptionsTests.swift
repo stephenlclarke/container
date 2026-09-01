@@ -28,7 +28,8 @@ struct ContainerCreateOptionsTests {
                 maximumRetryCount: 3,
                 retryDelayInNanoseconds: 5_000_000_000,
                 successfulRunDurationInNanoseconds: 30_000_000_000
-            )
+            ),
+            prewarm: false
         )
 
         let data = try JSONEncoder().encode(options)
@@ -39,6 +40,7 @@ struct ContainerCreateOptionsTests {
         #expect(decoded.restartPolicy.maximumRetryCount == 3)
         #expect(decoded.restartPolicy.retryDelayInNanoseconds == 5_000_000_000)
         #expect(decoded.restartPolicy.successfulRunDurationInNanoseconds == 30_000_000_000)
+        #expect(decoded.prewarm == false)
     }
 
     @Test func decodesMissingRestartPolicyAsNo() throws {
@@ -47,6 +49,7 @@ struct ContainerCreateOptionsTests {
         let decoded = try JSONDecoder().decode(ContainerCreateOptions.self, from: data)
 
         #expect(decoded.restartPolicy == .no)
+        #expect(decoded.prewarm)
     }
 
     @Test func normalizesRestartPolicyInvariants() throws {
