@@ -2614,21 +2614,36 @@ public actor ContainersService {
         stdio.first.map { $0 == nil } ?? true
     }
 
-    enum PreparedRuntimeShutdownFailureDisposition: Equatable {
-        case retainForRetry
+    enum PreparedRuntimeShutdownRecovery: Equatable {
+        case retryShutdown
+        case stopThenShutdown
+        case resumeStopThenShutdown
         case confirmInactiveService
+        case retainForRetry
     }
 
-    static func preparedRuntimeShutdownFailureDisposition(
-        runtimeIsReachable: Bool
-    ) -> PreparedRuntimeShutdownFailureDisposition {
-        runtimeIsReachable ? .retainForRetry : .confirmInactiveService
+    static func preparedRuntimeShutdownRecovery(
+        status: RuntimeStatus?
+    ) -> PreparedRuntimeShutdownRecovery {
+        guard let status else {
+            return .confirmInactiveService
+        }
+        switch recoveredPrewarmRuntimeAction(for: status) {
+        case .discard:
+            return .retryShutdown
+        case .stop:
+            return .stopThenShutdown
+        case .resumeAndStop:
+            return .resumeStopThenShutdown
+        case .reject:
+            return .retainForRetry
+        }
     }
 
     static func preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
-        _ disposition: PreparedRuntimeShutdownFailureDisposition?
+        _ recovery: PreparedRuntimeShutdownRecovery?
     ) -> Bool {
-        disposition == .confirmInactiveService
+        recovery == .confirmInactiveService
     }
 
     enum PreparedLoggingCleanup: Equatable {
@@ -2674,22 +2689,40 @@ public actor ContainersService {
             runtimeName: configuration.runtimeHandler,
             instanceId: id
         )
-        var shutdownFailureDisposition: PreparedRuntimeShutdownFailureDisposition?
+        var shutdownRecovery: PreparedRuntimeShutdownRecovery?
         do {
             try await client.shutdown()
         } catch let shutdownError {
-            let runtimeIsReachable: Bool
+            let runtimeStatus: RuntimeStatus?
             do {
-                _ = try await client.state()
-                runtimeIsReachable = true
+                runtimeStatus = try await client.state().status
             } catch {
-                runtimeIsReachable = false
+                runtimeStatus = nil
             }
-            let disposition = Self.preparedRuntimeShutdownFailureDisposition(
-                runtimeIsReachable: runtimeIsReachable
+            let recovery = Self.preparedRuntimeShutdownRecovery(
+                status: runtimeStatus
             )
-            shutdownFailureDisposition = disposition
-            switch disposition {
+            shutdownRecovery = recovery
+            switch recovery {
+            case .retryShutdown:
+                try await client.shutdown()
+            case .stopThenShutdown:
+                try await client.stop(
+                    options: ContainerStopOptions(
+                        timeoutInSeconds: 0,
+                        signal: "SIGKILL"
+                    )
+                )
+                try await client.shutdown()
+            case .resumeStopThenShutdown:
+                try await client.resume()
+                try await client.stop(
+                    options: ContainerStopOptions(
+                        timeoutInSeconds: 0,
+                        signal: "SIGKILL"
+                    )
+                )
+                try await client.shutdown()
             case .retainForRetry:
                 log.warning(
                     "prewarmed runtime cleanup failed; retaining it for retry",
@@ -2706,7 +2739,7 @@ public actor ContainersService {
 
         let stopServiceBeforeLogging =
             Self.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
-                shutdownFailureDisposition
+                shutdownRecovery
             )
         if stopServiceBeforeLogging {
             // A runtime that no longer answers RPC may still own the logging

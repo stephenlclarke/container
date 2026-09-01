@@ -83,20 +83,34 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
-    func reachablePreparedRuntimeShutdownFailureRemainsRetryable() {
+    func preparedRuntimeShutdownFailureRecoversByObservedState() {
         #expect(
-            ContainersService.preparedRuntimeShutdownFailureDisposition(
-                runtimeIsReachable: true
-            ) == .retainForRetry
+            ContainersService.preparedRuntimeShutdownRecovery(status: .stopped)
+                == .retryShutdown
         )
         #expect(
-            ContainersService.preparedRuntimeShutdownFailureDisposition(
-                runtimeIsReachable: false
-            ) == .confirmInactiveService
+            ContainersService.preparedRuntimeShutdownRecovery(status: .stopping)
+                == .retryShutdown
+        )
+        #expect(
+            ContainersService.preparedRuntimeShutdownRecovery(status: .running)
+                == .stopThenShutdown
+        )
+        #expect(
+            ContainersService.preparedRuntimeShutdownRecovery(status: .paused)
+                == .resumeStopThenShutdown
+        )
+        #expect(
+            ContainersService.preparedRuntimeShutdownRecovery(status: .unknown)
+                == .retainForRetry
+        )
+        #expect(
+            ContainersService.preparedRuntimeShutdownRecovery(status: nil)
+                == .confirmInactiveService
         )
         #expect(
             !ContainersService.preparedRuntimeCleanupRequiresServiceStopBeforeLogging(
-                .retainForRetry
+                .stopThenShutdown
             )
         )
         #expect(
