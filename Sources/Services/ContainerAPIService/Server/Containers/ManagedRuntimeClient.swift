@@ -200,6 +200,18 @@ enum ManagedRuntimeClient: Sendable {
         }
     }
 
+    func clean(id: String) async throws {
+        switch self {
+        case .dedicated(let client):
+            try await client.clean(id: id)
+        case .shared:
+            throw ContainerizationError(
+                .unsupported,
+                message: "clean is unavailable for shared-vm isolation"
+            )
+        }
+    }
+
     func copyIn(
         source: String,
         destination: String,
