@@ -5472,6 +5472,18 @@ public actor ContainersService {
         }
     }
 
+    public func clean(id: String) async throws {
+        self.log.debug("\(#function)")
+
+        let state = try self._getContainerState(id: id)
+        guard state.snapshot.status == .running else {
+            throw ContainerizationError(.invalidState, message: "container is not running")
+        }
+
+        let client = try state.getClient()
+        try await client.clean(id: id)
+    }
+
     private func handleContainerExit(
         id: String,
         code: ExitStatus? = nil,
