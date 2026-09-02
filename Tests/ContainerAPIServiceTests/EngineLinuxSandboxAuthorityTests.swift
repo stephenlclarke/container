@@ -166,6 +166,11 @@ struct EngineLinuxSandboxAuthorityTests {
         try await client.resume()
         #expect(try await client.statistics().id == containerConfiguration.id)
 
+        let cleanError = await #expect(throws: ContainerizationError.self) {
+            try await client.clean(id: sharedConfiguration.id)
+        }
+        #expect(cleanError?.code == .unsupported)
+
         let error = await #expect(throws: ContainerizationError.self) {
             try await client.createProcess(
                 "exec-1",
