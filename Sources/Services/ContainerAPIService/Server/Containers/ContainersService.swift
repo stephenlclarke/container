@@ -6860,7 +6860,7 @@ public actor ContainersService {
         execExitTasks[id]?[processID]?.cancel()
         execExitTasks[id, default: [:]][processID] = Task { [weak self] in
             do {
-                let status = try await client.wait(processID)
+                let status = try await client.wait(processID, deliversToClient: false)
                 guard !Task.isCancelled else {
                     return
                 }

@@ -14,6 +14,8 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerRuntimeClient
+import ContainerXPC
 import Containerization
 import Testing
 
@@ -74,5 +76,15 @@ struct ExitWaiterTests {
         }
         #expect(clientStatus.exitCode == 137)
         #expect(waiter.didDeliverExit)
+    }
+
+    @Test
+    func waitRequestsDefaultToClientDeliveryButSupportObservers() {
+        let legacy = XPCMessage(route: RuntimeRoutes.wait.rawValue)
+        #expect(RuntimeService.waitDeliversToClient(legacy))
+
+        let observer = XPCMessage(route: RuntimeRoutes.wait.rawValue)
+        observer.set(key: RuntimeKeys.deliversToClient.rawValue, value: false)
+        #expect(!RuntimeService.waitDeliversToClient(observer))
     }
 }

@@ -1088,13 +1088,19 @@ public actor RuntimeService {
             throw ContainerizationError(.invalidArgument, message: "missing id in wait xpc message")
         }
 
+        let deliversToClient = Self.waitDeliversToClient(message)
         let exitStatus = await withCheckedContinuation { cc in
-            self.waitForExit(id: id, cont: cc)
+            self.waitForExit(id: id, cont: cc, deliversToClient: deliversToClient)
         }
         let reply = message.reply()
         reply.set(key: RuntimeKeys.exitCode.rawValue, value: Int64(exitStatus.exitCode))
         reply.set(key: RuntimeKeys.exitedAt.rawValue, value: exitStatus.exitedAt)
         return reply
+    }
+
+    static func waitDeliversToClient(_ message: XPCMessage) -> Bool {
+        let key = RuntimeKeys.deliversToClient.rawValue
+        return !message.contains(key: key) || message.bool(key: key)
     }
 
     /// Copy a file or directory from the host into the container.
