@@ -612,13 +612,13 @@ swift-fmt-check:
 update-licenses:
 	@echo Updating license headers...
 	@HAWKEYE="$(HAWKEYE)" ./scripts/ensure-hawkeye-exists.sh
-	@$(HAWKEYE) format --fail-if-unknown --fail-if-updated false
+	@"$(HAWKEYE)" format --fail-if-unknown --fail-if-updated false
 
 .PHONY: check-licenses
 check-licenses:
 	@echo Checking license headers existence in source files...
 	@HAWKEYE="$(HAWKEYE)" ./scripts/ensure-hawkeye-exists.sh
-	@$(HAWKEYE) check --fail-if-unknown
+	@"$(HAWKEYE)" check --fail-if-unknown
 
 .PHONY: pre-commit
 pre-commit:
