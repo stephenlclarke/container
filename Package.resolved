@@ -33,7 +33,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/container-engine-api.git",
       "state" : {
-        "revision" : "d713f12cb362c6646d083537f16e6595d3743c74"
+        "revision" : "84830606abf971110071248e087a80ff4abb86d4"
       }
     },
     {
