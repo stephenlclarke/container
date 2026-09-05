@@ -41,6 +41,12 @@ if [ -n "${existing_uid}" ] && [ "${existing_uid}" != "${CONTAINER_UID}" ]; then
     exit 1
 fi
 
+existing_gid=$(awk -F: -v user="${CONTAINER_USER}" '$1 == user { print $4; exit }' "${passwd_file}")
+if [ -n "${existing_gid}" ] && [ "${existing_gid}" != "${CONTAINER_GID}" ]; then
+    echo "container machine user '${CONTAINER_USER}' already exists with GID ${existing_gid}, expected ${CONTAINER_GID}" >&2
+    exit 1
+fi
+
 if [ -z "${existing_uid}" ]; then
     # The requested UID may already belong to another image account. A second
     # name for that numeric identity is valid and ensures the persisted machine
