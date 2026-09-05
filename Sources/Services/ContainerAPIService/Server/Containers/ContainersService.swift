@@ -4079,7 +4079,13 @@ public actor ContainersService {
 
         let state = try self._getContainerState(id: id)
         let client = try state.getClient()
-        return try await client.wait(processID)
+        let status = try await client.wait(processID)
+        await completeExecProcess(
+            id: id,
+            processID: processID,
+            exitCode: status.exitCode
+        )
+        return status
     }
 
     /// Waits for the Docker Engine container lifecycle condition without
