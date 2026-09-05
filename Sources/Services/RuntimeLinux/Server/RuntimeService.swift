@@ -73,18 +73,28 @@ public actor RuntimeService {
     static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
 
     class ExitWaiter {
+        struct PendingWait {
+            let continuation: CheckedContinuation<ExitStatus, Never>
+            let deliversToClient: Bool
+        }
+
         public var exitStatus: ExitStatus? = nil
-        public var continuations: [CheckedContinuation<ExitStatus, Never>] = []
+        var continuations: [PendingWait] = []
         public private(set) var didDeliverExit = false
 
-        public func wait(_ cc: CheckedContinuation<ExitStatus, Never>) {
+        public func wait(
+            _ cc: CheckedContinuation<ExitStatus, Never>,
+            deliversToClient: Bool = true
+        ) {
             if let exitStatus = exitStatus {
                 // `doExit` has already been called for this waiter
-                didDeliverExit = true
+                didDeliverExit = didDeliverExit || deliversToClient
                 cc.resume(returning: exitStatus)
                 return
             }
-            continuations.append(cc)
+            continuations.append(
+                PendingWait(continuation: cc, deliversToClient: deliversToClient)
+            )
         }
 
         public func doExit(exitStatus: ExitStatus) {
@@ -95,12 +105,12 @@ public actor RuntimeService {
                 return
             }
             self.exitStatus = exitStatus
-            didDeliverExit = !continuations.isEmpty
+            didDeliverExit = continuations.contains { $0.deliversToClient }
 
             let pending = continuations
             continuations = []
-            for cc in pending {
-                cc.resume(returning: exitStatus)
+            for wait in pending {
+                wait.continuation.resume(returning: exitStatus)
             }
         }
     }
@@ -996,7 +1006,7 @@ public actor RuntimeService {
         // until we observe the exit.
         if signal == .kill {
             _ = await withCheckedContinuation { cc in
-                self.waitForExit(id: id, cont: cc)
+                self.waitForExit(id: id, cont: cc, deliversToClient: false)
             }
         }
 
@@ -2461,12 +2471,19 @@ extension RuntimeService {
         waiters[id] = ExitWaiter()
     }
 
-    private func waitForExit(id: String, cont: CheckedContinuation<ExitStatus, Never>) {
+    private func waitForExit(
+        id: String,
+        cont: CheckedContinuation<ExitStatus, Never>,
+        deliversToClient: Bool = true
+    ) {
         if let waiter = waiters[id] {
-            waiter.wait(cont)
+            waiter.wait(cont, deliversToClient: deliversToClient)
             return
         }
-        if let status = completedExits.removeValue(forKey: id) {
+        if let status = completedExits[id] {
+            if deliversToClient {
+                completedExits.removeValue(forKey: id)
+            }
             cont.resume(returning: status)
             return
         }

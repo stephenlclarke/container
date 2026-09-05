@@ -56,4 +56,23 @@ struct ExitWaiterTests {
         #expect(late.exitCode == 11)
         #expect(waiter.didDeliverExit)
     }
+
+    @Test
+    func internalKillWaitDoesNotConsumeClientExitStatus() async {
+        let waiter = RuntimeService.ExitWaiter()
+
+        let internalStatus = await withCheckedContinuation { continuation in
+            waiter.wait(continuation, deliversToClient: false)
+            waiter.doExit(exitStatus: ExitStatus(exitCode: 137))
+        }
+
+        #expect(internalStatus.exitCode == 137)
+        #expect(!waiter.didDeliverExit)
+
+        let clientStatus = await withCheckedContinuation { continuation in
+            waiter.wait(continuation)
+        }
+        #expect(clientStatus.exitCode == 137)
+        #expect(waiter.didDeliverExit)
+    }
 }
