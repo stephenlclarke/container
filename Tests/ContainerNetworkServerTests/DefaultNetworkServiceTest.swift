@@ -68,6 +68,34 @@ struct DefaultNetworkServiceTest {
     }
 
     @Test
+    func allocationWithoutGatewayProducesIsolatedAttachment() async throws {
+        let network = RunningTestNetwork(
+            status: NetworkStatus(
+                ipv4Subnet: try CIDRv4("192.0.2.0/29"),
+                ipv4Gateway: nil,
+                ipv6Subnet: nil
+            )
+        )
+        let service = try await DefaultNetworkService(
+            network: network,
+            log: Logger(label: "DefaultNetworkServiceTest")
+        )
+
+        let attachment = try await service.allocate(
+            hostname: "isolated",
+            aliases: [],
+            macAddress: nil,
+            requestedIPv4Address: nil,
+            requestedIPv6Address: nil,
+            retainOnDisconnect: false,
+            session: XPCServerSession()
+        ).attachment
+
+        #expect(attachment.ipv4Address != nil)
+        #expect(attachment.ipv4Gateway == nil)
+    }
+
+    @Test
     func allocatesPrimaryHostnameThatMatchesAnExistingAlias() async throws {
         let network = RunningTestNetwork(
             status: NetworkStatus(

@@ -23,7 +23,7 @@ public struct NetworkStatus: Codable, Sendable {
     public let ipv4Subnet: CIDRv4
 
     /// The IPv4 gateway address.
-    public let ipv4Gateway: IPv4Address
+    public let ipv4Gateway: IPv4Address?
 
     /// The IPv4 CIDR range used for dynamic attachment allocation, if configured.
     public let ipv4AllocationRange: CIDRv4?
@@ -39,7 +39,7 @@ public struct NetworkStatus: Codable, Sendable {
 
     public init(
         ipv4Subnet: CIDRv4,
-        ipv4Gateway: IPv4Address,
+        ipv4Gateway: IPv4Address?,
         ipv4AllocationRange: CIDRv4? = nil,
         ipv4ReservedAddresses: [IPv4Address] = [],
         ipv6Subnet: CIDRv6?,
@@ -67,7 +67,7 @@ public struct NetworkStatus: Codable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         ipv4Subnet = try container.decode(CIDRv4.self, forKey: .ipv4Subnet)
-        ipv4Gateway = try container.decode(IPv4Address.self, forKey: .ipv4Gateway)
+        ipv4Gateway = try container.decodeIfPresent(IPv4Address.self, forKey: .ipv4Gateway)
         ipv4AllocationRange = try container.decodeIfPresent(CIDRv4.self, forKey: .ipv4AllocationRange)
         ipv4ReservedAddresses = try container.decodeIfPresent([IPv4Address].self, forKey: .ipv4ReservedAddresses) ?? []
         ipv6Subnet = try container.decodeIfPresent(CIDRv6.self, forKey: .ipv6Subnet)
@@ -78,7 +78,7 @@ public struct NetworkStatus: Codable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(ipv4Subnet, forKey: .ipv4Subnet)
-        try container.encode(ipv4Gateway, forKey: .ipv4Gateway)
+        try container.encodeIfPresent(ipv4Gateway, forKey: .ipv4Gateway)
         try container.encodeIfPresent(ipv4AllocationRange, forKey: .ipv4AllocationRange)
         try container.encode(ipv4ReservedAddresses, forKey: .ipv4ReservedAddresses)
         try container.encodeIfPresent(ipv6Subnet, forKey: .ipv6Subnet)

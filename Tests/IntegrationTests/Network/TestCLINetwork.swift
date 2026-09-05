@@ -363,12 +363,13 @@ struct TestCLINetwork {
                     return result.status == 0
                 }
 
-                // External connection should be blocked — the isolated network has no gateway.
+                // A literal address proves TCP egress is blocked rather than merely
+                // relying on the absence of external DNS resolution.
                 let externalResult = try f.run([
                     "run", "--rm", "--network", net, curlImage,
-                    "curl", "--connect-timeout", "5", "http://google.com",
+                    "curl", "--connect-timeout", "5", "http://1.1.1.1",
                 ])
-                let hostOnlyBlockedCodes: Set<Int32> = [6, 7, 28]
+                let hostOnlyBlockedCodes: Set<Int32> = [7, 28]
                 #expect(
                     hostOnlyBlockedCodes.contains(externalResult.status),
                     "external connection from isolated network should be blocked, got exit \(externalResult.status)")
