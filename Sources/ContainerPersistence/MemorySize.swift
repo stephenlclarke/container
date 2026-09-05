@@ -49,18 +49,14 @@ public struct MemorySize: Codable, Sendable, Equatable, CustomStringConvertible 
     ]
 
     public var formatted: String {
-        // Only whole-number sizes can be represented in the stored unit without
-        // loss. A fractional value (e.g. "1.5gb") would truncate to "1gb" and
-        // silently drop memory when re-encoded, so emit the exact byte count
-        // instead. Binary units are integer multiples of a byte, so this keeps
-        // the encode/decode round-trip lossless while leaving whole-number
-        // output (e.g. "1gb", "2048mb") unchanged.
+        let label = Self.unitLabels[measurement.unit] ?? "unknown"
+        // Double.description is guaranteed to produce a round-trippable value.
+        // Retaining the original unit also avoids rounding fractions such as
+        // 0.1gb that do not convert to a whole number of bytes.
         guard measurement.value == measurement.value.rounded() else {
-            let bytes = UInt64(measurement.converted(to: .bytes).value.rounded())
-            return "\(bytes)\(Self.unitLabels[.bytes] ?? "b")"
+            return "\(measurement.value)\(label)"
         }
         let value = Int64(measurement.value)
-        let label = Self.unitLabels[measurement.unit] ?? "unknown"
         return "\(value)\(label)"
     }
 }
