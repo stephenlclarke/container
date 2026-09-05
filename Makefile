@@ -34,6 +34,7 @@ export CONTAINERIZATION_REF ?= $(shell python3 -c 'import json; pin=next((p for 
 # Commonly used locations
 SWIFT := "/usr/bin/swift"
 PYTHON3 ?= python3
+HAWKEYE ?= $(shell command -v hawkeye 2>/dev/null || printf '%s' .local/bin/hawkeye)
 # Shared swift build invocation; callers append --build-tests / --product / etc.
 SWIFT_BUILD = $(SWIFT) build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION)
 DEST_DIR ?= /usr/local/
@@ -366,9 +367,12 @@ dsym:
 	@echo Packaging the debug symbols...
 	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
 
-.PHONY: test test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+.PHONY: test test-build-artifact-directory test-create-machine-user test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 test-build-artifact-directory:
 	@bash Tests/ScriptTests/TestBuildArtifactDirectory.sh
+
+test-create-machine-user:
+	@Tests/ScriptTests/TestCreateMachineUser.sh
 
 test-homebrew-archive-checksum:
 	@Tests/ScriptTests/TestHomebrewArchiveChecksum.sh
@@ -379,7 +383,7 @@ test-install-init:
 test-verify-developer-id-archive:
 	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
 
-test: build-tests test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test: build-tests test-build-artifact-directory test-create-machine-user test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
@@ -610,14 +614,14 @@ swift-fmt-check:
 .PHONY: update-licenses
 update-licenses:
 	@echo Updating license headers...
-	@./scripts/ensure-hawkeye-exists.sh
-	@.local/bin/hawkeye format --fail-if-unknown --fail-if-updated false
+	@HAWKEYE="$(HAWKEYE)" ./scripts/ensure-hawkeye-exists.sh
+	@"$(HAWKEYE)" format --fail-if-unknown --fail-if-updated false
 
 .PHONY: check-licenses
 check-licenses:
 	@echo Checking license headers existence in source files...
-	@./scripts/ensure-hawkeye-exists.sh
-	@.local/bin/hawkeye check --fail-if-unknown
+	@HAWKEYE="$(HAWKEYE)" ./scripts/ensure-hawkeye-exists.sh
+	@"$(HAWKEYE)" check --fail-if-unknown
 
 .PHONY: pre-commit
 pre-commit:

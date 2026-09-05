@@ -98,9 +98,16 @@ extension Application {
 
             let cwd = getWorkingDirectory(snapshot, user: user)
 
-            // Build environment with HOME set correctly
+            // Preserve the provisioned alias for the default machine user so
+            // init can select that exact account's shell even when the image
+            // already contains another name for the same numeric UID.
+            let imageEnvs = baseEnvironment(
+                defaultEnvironment: snapshot.configuration.processEnvironment,
+                defaultUser: snapshot.configuration.user,
+                user: user
+            )
             let envVars = try Parser.allEnv(
-                imageEnvs: ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+                imageEnvs: imageEnvs,
                 envFiles: processFlags.envFile,
                 envs: processFlags.env
             )
@@ -130,8 +137,9 @@ extension Application {
 
             if !tty {
                 var handler = SignalThreshold(threshold: 3, signals: [SIGINT, SIGTERM])
+                let log = self.log
                 handler.start {
-                    print("Received 3 SIGINT/SIGTERM's, forcefully exiting.")
+                    log.warning("Received 3 SIGINT/SIGTERM's, forcefully exiting.")
                     Darwin.exit(1)
                 }
             }
@@ -161,6 +169,17 @@ extension Application {
                 return fallback
             }
             return cwd.string
+        }
+
+        func baseEnvironment(
+            defaultEnvironment: [String],
+            defaultUser: ProcessConfiguration.User,
+            user: ProcessConfiguration.User
+        ) -> [String] {
+            guard user == defaultUser else {
+                return ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+            }
+            return defaultEnvironment
         }
 
         func processConfiguration(

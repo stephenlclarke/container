@@ -61,8 +61,11 @@ public actor DefaultNetworkService: NetworkService {
             allocator = try AttachmentAllocator(lower: allocationLower, size: size)
         }
         var reservedIndexes: Set<UInt32> = []
-        if status.ipv4Gateway.value >= allocationLower, status.ipv4Gateway.value <= allocationUpper {
-            reservedIndexes.insert(status.ipv4Gateway.value)
+        if let gateway = status.ipv4Gateway,
+            gateway.value >= allocationLower,
+            gateway.value <= allocationUpper
+        {
+            reservedIndexes.insert(gateway.value)
         }
         for address in status.ipv4ReservedAddresses where address.value >= allocationLower && address.value <= allocationUpper {
             reservedIndexes.insert(address.value)
@@ -271,10 +274,10 @@ public actor DefaultNetworkService: NetworkService {
         return attachments
     }
 
-    private func allocatableIPv4Index(_ address: IPv4Address, subnet: CIDRv4, gateway: IPv4Address) throws -> UInt32 {
+    private func allocatableIPv4Index(_ address: IPv4Address, subnet: CIDRv4, gateway: IPv4Address?) throws -> UInt32 {
         let lower = subnet.lower.value + 2
         let upper = subnet.upper.value - 2
-        guard address.value >= lower, address.value <= upper, address != gateway else {
+        guard address.value >= lower, address.value <= upper, gateway != address else {
             throw ContainerizationError(
                 .invalidArgument,
                 message: "requested IPv4 address '\(address)' is not an allocatable host address in subnet '\(subnet)'"
@@ -335,9 +338,9 @@ public actor DefaultNetworkService: NetworkService {
             hostname: hostname,
             aliases: aliases,
             ipv4Address: enableIPv4 ? try CIDRv4(IPv4Address(index), prefix: status.ipv4Subnet.prefix) : nil,
-            ipv4Gateway: enableIPv4 ? status.ipv4Gateway : nil,
+            ipv4Gateway: enableIPv4 && status.gatewayRoutingEnabled ? status.ipv4Gateway : nil,
             ipv6Address: ipv6CIDR,
-            ipv6Gateway: status.ipv6Gateway,
+            ipv6Gateway: status.gatewayRoutingEnabled ? status.ipv6Gateway : nil,
             macAddress: macAddress,
             variant: network.variant
         )

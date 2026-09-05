@@ -14,6 +14,8 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerRuntimeClient
+import ContainerXPC
 import Containerization
 import Testing
 
@@ -35,10 +37,54 @@ struct ExitWaiterTests {
         #expect(received.exitCode == 7)
         #expect(waiter.exitStatus?.exitCode == 7)
         #expect(waiter.continuations.isEmpty)
+        #expect(waiter.didDeliverExit)
 
         let late = await withCheckedContinuation { continuation in
             waiter.wait(continuation)
         }
         #expect(late.exitCode == 7)
+    }
+
+    @Test
+    func exitWithoutWaiterRemainsUndeliveredUntilLateWait() async {
+        let waiter = RuntimeService.ExitWaiter()
+
+        waiter.doExit(exitStatus: ExitStatus(exitCode: 11))
+        #expect(!waiter.didDeliverExit)
+
+        let late = await withCheckedContinuation { continuation in
+            waiter.wait(continuation)
+        }
+        #expect(late.exitCode == 11)
+        #expect(waiter.didDeliverExit)
+    }
+
+    @Test
+    func internalKillWaitDoesNotConsumeClientExitStatus() async {
+        let waiter = RuntimeService.ExitWaiter()
+
+        let internalStatus = await withCheckedContinuation { continuation in
+            waiter.wait(continuation, deliversToClient: false)
+            waiter.doExit(exitStatus: ExitStatus(exitCode: 137))
+        }
+
+        #expect(internalStatus.exitCode == 137)
+        #expect(!waiter.didDeliverExit)
+
+        let clientStatus = await withCheckedContinuation { continuation in
+            waiter.wait(continuation)
+        }
+        #expect(clientStatus.exitCode == 137)
+        #expect(waiter.didDeliverExit)
+    }
+
+    @Test
+    func waitRequestsDefaultToClientDeliveryButSupportObservers() {
+        let legacy = XPCMessage(route: RuntimeRoutes.wait.rawValue)
+        #expect(RuntimeService.waitDeliversToClient(legacy))
+
+        let observer = XPCMessage(route: RuntimeRoutes.wait.rawValue)
+        observer.set(key: RuntimeKeys.deliversToClient.rawValue, value: false)
+        #expect(!RuntimeService.waitDeliversToClient(observer))
     }
 }

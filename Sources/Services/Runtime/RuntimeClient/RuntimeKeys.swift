@@ -23,6 +23,8 @@ public enum RuntimeKeys: String {
     case exitCode
     /// Exit timestamp for a process
     case exitedAt
+    /// Whether a process wait consumes the exit status retained for a caller.
+    case deliversToClient
     /// FD to a container resource key.
     case fd
     /// Options for stopping a container key.

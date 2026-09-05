@@ -21,6 +21,33 @@ import Testing
 
 struct MachineRunCommandTests {
     @Test
+    func defaultUserEnvironmentPreservesProvisionedAlias() throws {
+        let command = try Application.MachineRun.parse(["id"])
+        let defaultUser = ProcessConfiguration.User.raw(userString: "machine-user")
+        let defaultEnvironment = [
+            "PATH=/usr/bin:/bin",
+            "CONTAINER_USER=machine-user",
+            "CONTAINER_UID=501",
+            "CONTAINER_GID=20",
+        ]
+
+        #expect(
+            command.baseEnvironment(
+                defaultEnvironment: defaultEnvironment,
+                defaultUser: defaultUser,
+                user: defaultUser
+            ) == defaultEnvironment
+        )
+        #expect(
+            command.baseEnvironment(
+                defaultEnvironment: defaultEnvironment,
+                defaultUser: defaultUser,
+                user: .id(uid: 0, gid: 0)
+            ) == ["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"]
+        )
+    }
+
+    @Test
     func runParsesPrivilegedFlagIntoProcessConfiguration() throws {
         let command = try Application.MachineRun.parse(["--privileged", "id"])
 

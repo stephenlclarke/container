@@ -116,10 +116,12 @@ struct NetworkConfigurationTest {
         )
         var encoded = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(status)) as? [String: Any])
         encoded.removeValue(forKey: "ipv4ReservedAddresses")
+        encoded.removeValue(forKey: "gatewayRoutingEnabled")
         let decoded = try JSONDecoder().decode(NetworkStatus.self, from: JSONSerialization.data(withJSONObject: encoded))
 
         #expect(decoded.ipv4ReservedAddresses == [])
         #expect(decoded.ipv6Gateway == nil)
+        #expect(decoded.gatewayRoutingEnabled)
     }
 
     @Test func networkStatusRoundTripsIPv6Gateway() throws {
@@ -128,12 +130,14 @@ struct NetworkConfigurationTest {
             ipv4Subnet: try CIDRv4("192.0.2.0/24"),
             ipv4Gateway: try IPv4Address("192.0.2.1"),
             ipv6Subnet: try CIDRv6("fd00:1234::/64"),
-            ipv6Gateway: gateway
+            ipv6Gateway: gateway,
+            gatewayRoutingEnabled: false
         )
 
         let decoded = try JSONDecoder().decode(NetworkStatus.self, from: JSONEncoder().encode(status))
 
         #expect(decoded.ipv6Gateway == gateway)
+        #expect(!decoded.gatewayRoutingEnabled)
     }
 
     @Test func networkConfigurationRoundTripsIPv4ReservedAddresses() throws {

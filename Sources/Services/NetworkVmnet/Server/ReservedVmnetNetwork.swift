@@ -25,6 +25,13 @@ import Synchronization
 import XPC
 import vmnet
 
+func resolvedIPv6Gateway(
+    configuredGateway: IPv6Address?,
+    subnet: CIDRv6
+) -> IPv6Address {
+    configuredGateway ?? IPv6Address(subnet.lower.value + 1)
+}
+
 /// Creates a vmnet network with reservation APIs.
 @available(macOS 26, *)
 public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
@@ -36,7 +43,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
     private struct NetworkInfo {
         let network: vmnet_network_ref
         let ipv4Subnet: CIDRv4
-        let ipv4Gateway: IPv4Address
+        let ipv4Gateway: IPv4Address?
         let ipv4AllocationRange: CIDRv4?
         let ipv6Subnet: CIDRv6?
         let ipv6Gateway: IPv6Address?
@@ -93,7 +100,8 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
                 ipv4AllocationRange: networkInfo.ipv4AllocationRange,
                 ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
                 ipv6Subnet: networkInfo.ipv6Subnet,
-                ipv6Gateway: networkInfo.ipv6Gateway
+                ipv6Gateway: networkInfo.ipv6Gateway,
+                gatewayRoutingEnabled: configuration.mode != .hostOnly
             )
             state.network = networkInfo.network
         }
@@ -202,7 +210,10 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
             // to the network address before exposing the CIDR to callers.
             let subnet = try CIDRv6(reportedSubnet.lower, prefix: prefix)
             runningV6Subnet = subnet
-            runningV6Gateway = configuration.ipv6Gateway ?? IPv6Address(subnet.lower.value + 1)
+            runningV6Gateway = resolvedIPv6Gateway(
+                configuredGateway: configuration.ipv6Gateway,
+                subnet: subnet
+            )
         } else {
             runningV6Subnet = nil
             runningV6Gateway = nil

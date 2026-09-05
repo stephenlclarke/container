@@ -62,11 +62,11 @@ let releaseVersion = ProcessInfo.processInfo.environment["RELEASE_VERSION"] ?? "
 let gitCommit = ProcessInfo.processInfo.environment["GIT_COMMIT"] ?? "unspecified"
 let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ?? "stephenlclarke/container"
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
-let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-32967604909-2df7b287e530"
-let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:d81d12e1dca1133ede535483a809803e6b256555a73d17f207003279539454a4"
+let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-33970281067-287f2ea3276e"
+let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:7398845b67e6d5c5e610e9f1c6bf4ce84e4c7242a8f8002ff2e5e917437cfdf7"
 let scVersion = "0.43.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "e97e92bf3b7c86c569b34b31f5655c0571979f8f"
+let containerizationRevision = "b404e03bb914904107a6a9305ba1f0e44c79a59c"
 let containerEngineAPIRevision = "d713f12cb362c6646d083537f16e6595d3743c74"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
@@ -143,7 +143,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
         .package(
             url: "https://github.com/stephenlclarke/swift-nio-ssl.git",
-            revision: "09c5c9adcdd2a459187e45fe0143eb01063f244a"
+            revision: "3e13ce5f6dd5b7e89fff9ab55ab7caed39fe7285"
         ),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.36.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
@@ -539,6 +539,14 @@ let package = Package(
                 "ContainerXPC",
             ],
             path: "Sources/Services/NetworkVmnet/Server"
+        ),
+        .testTarget(
+            name: "ContainerNetworkVmnetServerTests",
+            dependencies: [
+                .product(name: "ContainerizationExtras", package: "containerization"),
+                "ContainerNetworkVmnetServer",
+                "ContainerResource",
+            ]
         ),
         .target(
             name: "ContainerRuntimeLinuxClient",

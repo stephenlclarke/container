@@ -179,9 +179,13 @@ enum ManagedRuntimeClient: Sendable {
         }
     }
 
-    func wait(_ id: String) async throws -> ExitStatus {
+    func wait(_ id: String, deliversToClient: Bool = true) async throws -> ExitStatus {
         switch self {
-        case .dedicated(let client): return try await client.wait(id)
+        case .dedicated(let client):
+            if deliversToClient {
+                return try await client.wait(id)
+            }
+            return try await client.observeExit(id)
         case .shared(let client): return try await client.wait(id)
         }
     }

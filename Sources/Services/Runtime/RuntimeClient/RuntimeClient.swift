@@ -402,8 +402,19 @@ extension RuntimeClient {
     }
 
     public func wait(_ id: String) async throws -> ExitStatus {
+        try await wait(id, deliversToClient: true)
+    }
+
+    /// Observe a process exit without consuming the result retained for its
+    /// foreground client.
+    public func observeExit(_ id: String) async throws -> ExitStatus {
+        try await wait(id, deliversToClient: false)
+    }
+
+    private func wait(_ id: String, deliversToClient: Bool) async throws -> ExitStatus {
         let request = XPCMessage(route: RuntimeRoutes.wait.rawValue)
         request.set(key: RuntimeKeys.id.rawValue, value: id)
+        request.set(key: RuntimeKeys.deliversToClient.rawValue, value: deliversToClient)
 
         let response: XPCMessage
         do {

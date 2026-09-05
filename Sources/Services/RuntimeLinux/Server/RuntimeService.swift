@@ -59,6 +59,7 @@ public actor RuntimeService {
     private let monitor: ExitMonitor
     private let eventLoopGroup: any EventLoopGroup
     private var waiters: [String: ExitWaiter] = [:]
+    private var completedExits: [String: ExitStatus] = [:]
     private let lock: AsyncLock = AsyncLock()
     private let log: Logging.Logger
     private var state: State = .created
@@ -72,16 +73,28 @@ public actor RuntimeService {
     static let sshAuthSocketEnvVar = "SSH_AUTH_SOCK"
 
     class ExitWaiter {
-        public var exitStatus: ExitStatus? = nil
-        public var continuations: [CheckedContinuation<ExitStatus, Never>] = []
+        struct PendingWait {
+            let continuation: CheckedContinuation<ExitStatus, Never>
+            let deliversToClient: Bool
+        }
 
-        public func wait(_ cc: CheckedContinuation<ExitStatus, Never>) {
+        public var exitStatus: ExitStatus? = nil
+        var continuations: [PendingWait] = []
+        public private(set) var didDeliverExit = false
+
+        public func wait(
+            _ cc: CheckedContinuation<ExitStatus, Never>,
+            deliversToClient: Bool = true
+        ) {
             if let exitStatus = exitStatus {
                 // `doExit` has already been called for this waiter
+                didDeliverExit = didDeliverExit || deliversToClient
                 cc.resume(returning: exitStatus)
                 return
             }
-            continuations.append(cc)
+            continuations.append(
+                PendingWait(continuation: cc, deliversToClient: deliversToClient)
+            )
         }
 
         public func doExit(exitStatus: ExitStatus) {
@@ -92,11 +105,12 @@ public actor RuntimeService {
                 return
             }
             self.exitStatus = exitStatus
+            didDeliverExit = continuations.contains { $0.deliversToClient }
 
             let pending = continuations
             continuations = []
-            for cc in pending {
-                cc.resume(returning: exitStatus)
+            for wait in pending {
+                wait.continuation.resume(returning: exitStatus)
             }
         }
     }
@@ -733,18 +747,15 @@ public actor RuntimeService {
                         onExit: { id, exitStatus in
                             await self.releaseWaiters(for: id, status: exitStatus)
 
-                            guard let process = await self.processes[id]?.process else {
-                                throw ContainerizationError(
-                                    .invalidState,
-                                    message: "ProcessInfo missing for process \(id)"
-                                )
+                            if let process = await self.processes[id]?.process {
+                                try? await process.delete()
                             }
-                            try await process.delete()
-                            try await self.setProcessState(id: id, state: .stopped)
+                            await self.reapExecProcess(id: id)
                         }
                     )
                 } catch {
                     await self.releaseWaiters(for: id, status: ExitStatus(exitCode: -1))
+                    await self.reapExecProcess(id: id, preserveUndeliveredExit: false)
                     throw error
                 }
 
@@ -995,7 +1006,7 @@ public actor RuntimeService {
         // until we observe the exit.
         if signal == .kill {
             _ = await withCheckedContinuation { cc in
-                self.waitForExit(id: id, cont: cc)
+                self.waitForExit(id: id, cont: cc, deliversToClient: false)
             }
         }
 
@@ -1077,13 +1088,19 @@ public actor RuntimeService {
             throw ContainerizationError(.invalidArgument, message: "missing id in wait xpc message")
         }
 
+        let deliversToClient = Self.waitDeliversToClient(message)
         let exitStatus = await withCheckedContinuation { cc in
-            self.waitForExit(id: id, cont: cc)
+            self.waitForExit(id: id, cont: cc, deliversToClient: deliversToClient)
         }
         let reply = message.reply()
         reply.set(key: RuntimeKeys.exitCode.rawValue, value: Int64(exitStatus.exitCode))
         reply.set(key: RuntimeKeys.exitedAt.rawValue, value: exitStatus.exitedAt)
         return reply
+    }
+
+    static func waitDeliversToClient(_ message: XPCMessage) -> Bool {
+        let key = RuntimeKeys.deliversToClient.rawValue
+        return !message.contains(key: key) || message.bool(key: key)
     }
 
     /// Copy a file or directory from the host into the container.
@@ -1414,22 +1431,31 @@ public actor RuntimeService {
             containerConfig: containerInfo.config,
         )
 
-        let process = try await container.exec(id, configuration: czConfig)
-        try self.setUnderlyingProcess(id, process)
+        do {
+            let process = try await container.exec(id, configuration: czConfig)
+            try self.setUnderlyingProcess(id, process)
 
-        try await process.start()
+            try await process.start()
 
-        let waitFunc: ExitMonitor.WaitHandler = {
-            let code = try await process.wait()
-            if let out = processInfo.io[1] {
-                try self.closeHandle(out.fileDescriptor)
+            let waitFunc: ExitMonitor.WaitHandler = {
+                let code = try await process.wait()
+                if let out = processInfo.io[1] {
+                    try self.closeHandle(out.fileDescriptor)
+                }
+                if let err = processInfo.io[2] {
+                    try self.closeHandle(err.fileDescriptor)
+                }
+                return code
             }
-            if let err = processInfo.io[2] {
-                try self.closeHandle(err.fileDescriptor)
+            try await self.monitor.track(id: id, waitingOn: waitFunc)
+        } catch {
+            if let process = self.processes[id]?.process {
+                try? await process.delete()
             }
-            return code
+            self.releaseWaiters(for: id, status: ExitStatus(exitCode: -1))
+            await self.reapExecProcess(id: id, preserveUndeliveredExit: false)
+            throw error
         }
-        try await self.monitor.track(id: id, waitingOn: waitFunc)
     }
 
     private func startSocketForwarders(attachment: Attachment, publishedPorts: [PublishPort]) async throws {
@@ -2166,6 +2192,15 @@ public actor RuntimeService {
         let status = exitStatus ?? ExitStatus(exitCode: 255)
         self.releaseWaiters(for: id, status: status)
 
+        for processId in Array(self.processes.keys) {
+            if let process = self.processes[processId]?.process {
+                try? await process.delete()
+            }
+            self.releaseWaiters(for: processId, status: status)
+            await self.reapExecProcess(id: processId)
+        }
+        await self.monitor.stopTracking(id: id)
+
         if case .propagateAfterCleanup = stopFailurePolicy,
             let stopFailure
         {
@@ -2349,30 +2384,6 @@ extension Filesystem.SyncMode {
     }
 }
 
-struct MultiWriter: Writer {
-    let writers: [any Writer]
-
-    init(handles: [FileHandle]) {
-        self.writers = handles
-    }
-
-    init(writers: [any Writer]) {
-        self.writers = writers
-    }
-
-    func close() throws {
-        for writer in writers {
-            try writer.close()
-        }
-    }
-
-    func write(_ data: Data) throws {
-        for writer in writers {
-            try writer.write(data)
-        }
-    }
-}
-
 extension FileHandle: @retroactive ReaderStream, @retroactive Writer {
     public func write(_ data: Data) throws {
         try self.write(contentsOf: data)
@@ -2462,21 +2473,44 @@ extension RuntimeService {
         guard waiters[id] == nil else {
             throw ContainerizationError(.invalidState, message: "waiter for \(id) already initialized")
         }
+        completedExits.removeValue(forKey: id)
         waiters[id] = ExitWaiter()
     }
 
-    private func waitForExit(id: String, cont: CheckedContinuation<ExitStatus, Never>) {
-        guard let waiter = waiters[id] else {
-            // No waiter was initialized at all, resume immediately
-            cont.resume(returning: ExitStatus(exitCode: -1))
+    private func waitForExit(
+        id: String,
+        cont: CheckedContinuation<ExitStatus, Never>,
+        deliversToClient: Bool = true
+    ) {
+        if let waiter = waiters[id] {
+            waiter.wait(cont, deliversToClient: deliversToClient)
             return
         }
-
-        waiter.wait(cont)
+        if let status = completedExits[id] {
+            if deliversToClient {
+                completedExits.removeValue(forKey: id)
+            }
+            cont.resume(returning: status)
+            return
+        }
+        cont.resume(returning: ExitStatus(exitCode: -1))
     }
 
     private func releaseWaiters(for id: String, status: ExitStatus) {
         waiters[id]?.doExit(exitStatus: status)
+    }
+
+    private func reapExecProcess(id: String, preserveUndeliveredExit: Bool = true) async {
+        if preserveUndeliveredExit,
+            let waiter = waiters[id],
+            let status = waiter.exitStatus,
+            !waiter.didDeliverExit
+        {
+            completedExits[id] = status
+        }
+        waiters.removeValue(forKey: id)
+        processes.removeValue(forKey: id)
+        await monitor.stopTracking(id: id)
     }
 
     private func setUnderlyingProcess(_ id: String, _ process: LinuxProcess) throws {
