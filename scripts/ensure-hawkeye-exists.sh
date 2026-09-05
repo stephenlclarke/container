@@ -49,8 +49,18 @@ fi
 
 echo "Checking existence of hawkeye..."
 
+if [[ -n "${HAWKEYE:-}" ]] && command -v "${HAWKEYE}" >/dev/null 2>&1; then
+    echo "hawkeye found at ${HAWKEYE}!"
+    exit 0
+fi
+
+if command -v hawkeye >/dev/null 2>&1; then
+    echo "hawkeye found at $(command -v hawkeye)!"
+    exit 0
+fi
+
 if command -v .local/bin/hawkeye >/dev/null 2>&1; then
-    echo "hawkeye found!"
+    echo "hawkeye found at .local/bin/hawkeye!"
     exit 0
 fi
 
