@@ -367,9 +367,12 @@ dsym:
 	@echo Packaging the debug symbols...
 	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
 
-.PHONY: test test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+.PHONY: test test-build-artifact-directory test-create-machine-user test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 test-build-artifact-directory:
 	@bash Tests/ScriptTests/TestBuildArtifactDirectory.sh
+
+test-create-machine-user:
+	@Tests/ScriptTests/TestCreateMachineUser.sh
 
 test-homebrew-archive-checksum:
 	@Tests/ScriptTests/TestHomebrewArchiveChecksum.sh
@@ -380,7 +383,7 @@ test-install-init:
 test-verify-developer-id-archive:
 	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
 
-test: build-tests test-build-artifact-directory test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test: build-tests test-build-artifact-directory test-create-machine-user test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel

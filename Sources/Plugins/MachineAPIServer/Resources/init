@@ -55,7 +55,8 @@ if [ "$1" = "-s" ]; then
     fi
 elif [ "$1" = "-u" ]; then
     # DEPRECATED 0.11.0.0 - use `id` instead of checking `${MACHINE_INITIALIZED}` for backward compatibility, remove in 0.13.0.0
-    if ! id "${CONTAINER_USER}" >/dev/null 2>&1; then
+    existing_uid=$(id -u "${CONTAINER_USER}" 2>/dev/null || true)
+    if [ "${existing_uid}" != "${CONTAINER_UID}" ]; then
         if [ -f ${CUSTOM_SETUP} ]; then
             ${CUSTOM_SETUP}
         else
