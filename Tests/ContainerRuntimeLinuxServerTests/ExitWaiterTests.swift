@@ -35,10 +35,25 @@ struct ExitWaiterTests {
         #expect(received.exitCode == 7)
         #expect(waiter.exitStatus?.exitCode == 7)
         #expect(waiter.continuations.isEmpty)
+        #expect(waiter.didDeliverExit)
 
         let late = await withCheckedContinuation { continuation in
             waiter.wait(continuation)
         }
         #expect(late.exitCode == 7)
+    }
+
+    @Test
+    func exitWithoutWaiterRemainsUndeliveredUntilLateWait() async {
+        let waiter = RuntimeService.ExitWaiter()
+
+        waiter.doExit(exitStatus: ExitStatus(exitCode: 11))
+        #expect(!waiter.didDeliverExit)
+
+        let late = await withCheckedContinuation { continuation in
+            waiter.wait(continuation)
+        }
+        #expect(late.exitCode == 11)
+        #expect(waiter.didDeliverExit)
     }
 }
