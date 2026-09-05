@@ -25,15 +25,11 @@ import Synchronization
 import XPC
 import vmnet
 
-func reportedIPv6Gateway(
-    mode: NetworkMode,
+func resolvedIPv6Gateway(
     configuredGateway: IPv6Address?,
     subnet: CIDRv6
-) -> IPv6Address? {
-    guard mode != .hostOnly else {
-        return nil
-    }
-    return configuredGateway ?? IPv6Address(subnet.lower.value + 1)
+) -> IPv6Address {
+    configuredGateway ?? IPv6Address(subnet.lower.value + 1)
 }
 
 /// Creates a vmnet network with reservation APIs.
@@ -104,7 +100,8 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
                 ipv4AllocationRange: networkInfo.ipv4AllocationRange,
                 ipv4ReservedAddresses: configuration.ipv4ReservedAddresses,
                 ipv6Subnet: networkInfo.ipv6Subnet,
-                ipv6Gateway: networkInfo.ipv6Gateway
+                ipv6Gateway: networkInfo.ipv6Gateway,
+                gatewayRoutingEnabled: configuration.mode != .hostOnly
             )
             state.network = networkInfo.network
         }
@@ -193,10 +190,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
         let lower = IPv4Address(subnetValue & maskValue)
         let upper = IPv4Address(lower.value + ~maskValue)
         let runningSubnet = try CIDRv4(lower: lower, upper: upper)
-        let runningGateway: IPv4Address? =
-            configuration.mode == .hostOnly
-            ? nil
-            : configuration.ipv4Gateway ?? IPv4Address(runningSubnet.lower.value + 1)
+        let runningGateway = configuration.ipv4Gateway ?? IPv4Address(runningSubnet.lower.value + 1)
 
         let runningV6Subnet: CIDRv6?
         let runningV6Gateway: IPv6Address?
@@ -216,8 +210,7 @@ public final class ReservedVmnetNetwork: ContainerNetworkServer.Network {
             // to the network address before exposing the CIDR to callers.
             let subnet = try CIDRv6(reportedSubnet.lower, prefix: prefix)
             runningV6Subnet = subnet
-            runningV6Gateway = reportedIPv6Gateway(
-                mode: configuration.mode,
+            runningV6Gateway = resolvedIPv6Gateway(
                 configuredGateway: configuration.ipv6Gateway,
                 subnet: subnet
             )

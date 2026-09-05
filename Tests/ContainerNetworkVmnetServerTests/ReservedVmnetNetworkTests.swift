@@ -22,17 +22,16 @@ import Testing
 
 struct ReservedVmnetNetworkTests {
     @Test
-    func hostOnlyIPv6NetworkDoesNotReportGateway() throws {
+    func resolvesConfiguredIPv6GatewayForReservation() throws {
         let subnet = try CIDRv6("fd00::/64")
         let configuredGateway = try IPv6Address("fd00::42")
 
-        let gateway = reportedIPv6Gateway(
-            mode: .hostOnly,
+        let gateway = resolvedIPv6Gateway(
             configuredGateway: configuredGateway,
             subnet: subnet
         )
 
-        #expect(gateway == nil)
+        #expect(gateway == configuredGateway)
     }
 
     @Test
@@ -41,15 +40,13 @@ struct ReservedVmnetNetworkTests {
         let configuredGateway = try IPv6Address("fd00::42")
 
         #expect(
-            reportedIPv6Gateway(
-                mode: .nat,
+            resolvedIPv6Gateway(
                 configuredGateway: configuredGateway,
                 subnet: subnet
             ) == configuredGateway
         )
         #expect(
-            reportedIPv6Gateway(
-                mode: .nat,
+            resolvedIPv6Gateway(
                 configuredGateway: nil,
                 subnet: subnet
             ) == IPv6Address(subnet.lower.value + 1)

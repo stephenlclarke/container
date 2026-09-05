@@ -96,6 +96,62 @@ struct DefaultNetworkServiceTest {
     }
 
     @Test
+    func hostOnlyGatewaysRemainReservedButAreNotRouted() async throws {
+        let ipv4Gateway = try IPv4Address("192.0.2.2")
+        let ipv6Gateway = try IPv6Address("fd00:2026:806::42")
+        let network = RunningTestNetwork(
+            status: NetworkStatus(
+                ipv4Subnet: try CIDRv4("192.0.2.0/29"),
+                ipv4Gateway: ipv4Gateway,
+                ipv6Subnet: try CIDRv6("fd00:2026:806::/64"),
+                ipv6Gateway: ipv6Gateway,
+                gatewayRoutingEnabled: false
+            )
+        )
+        let service = try await DefaultNetworkService(
+            network: network,
+            log: Logger(label: "DefaultNetworkServiceTest")
+        )
+
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.allocate(
+                hostname: "reserved-v4",
+                aliases: [],
+                macAddress: nil,
+                requestedIPv4Address: ipv4Gateway,
+                requestedIPv6Address: nil,
+                retainOnDisconnect: false,
+                session: XPCServerSession()
+            )
+        }
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await service.allocate(
+                hostname: "reserved-v6",
+                aliases: [],
+                macAddress: nil,
+                requestedIPv4Address: nil,
+                requestedIPv6Address: ipv6Gateway,
+                retainOnDisconnect: false,
+                session: XPCServerSession()
+            )
+        }
+
+        let attachment = try await service.allocate(
+            hostname: "isolated",
+            aliases: [],
+            macAddress: nil,
+            requestedIPv4Address: nil,
+            requestedIPv6Address: nil,
+            retainOnDisconnect: false,
+            session: XPCServerSession()
+        ).attachment
+
+        #expect(attachment.ipv4Address?.lower != ipv4Gateway)
+        #expect(attachment.ipv4Gateway == nil)
+        #expect(attachment.ipv6Gateway == nil)
+    }
+
+    @Test
     func allocatesPrimaryHostnameThatMatchesAnExistingAlias() async throws {
         let network = RunningTestNetwork(
             status: NetworkStatus(

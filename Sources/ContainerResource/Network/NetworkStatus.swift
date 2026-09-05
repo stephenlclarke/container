@@ -37,13 +37,19 @@ public struct NetworkStatus: Codable, Sendable {
     /// The IPv6 gateway address, if IPv6 is enabled.
     public let ipv6Gateway: IPv6Address?
 
+    /// Whether network attachments should install the reported gateways as
+    /// default routes. Host-only networks retain their vmnet gateway addresses
+    /// for allocation safety but do not route attachment traffic through them.
+    public let gatewayRoutingEnabled: Bool
+
     public init(
         ipv4Subnet: CIDRv4,
         ipv4Gateway: IPv4Address?,
         ipv4AllocationRange: CIDRv4? = nil,
         ipv4ReservedAddresses: [IPv4Address] = [],
         ipv6Subnet: CIDRv6?,
-        ipv6Gateway: IPv6Address? = nil
+        ipv6Gateway: IPv6Address? = nil,
+        gatewayRoutingEnabled: Bool = true
     ) {
         self.ipv4Subnet = ipv4Subnet
         self.ipv4Gateway = ipv4Gateway
@@ -51,6 +57,7 @@ public struct NetworkStatus: Codable, Sendable {
         self.ipv4ReservedAddresses = ipv4ReservedAddresses
         self.ipv6Subnet = ipv6Subnet
         self.ipv6Gateway = ipv6Gateway
+        self.gatewayRoutingEnabled = gatewayRoutingEnabled
     }
 
     enum CodingKeys: String, CodingKey {
@@ -60,6 +67,7 @@ public struct NetworkStatus: Codable, Sendable {
         case ipv4ReservedAddresses
         case ipv6Subnet
         case ipv6Gateway
+        case gatewayRoutingEnabled
     }
 
     /// Decodes a network status, treating statuses written before reserved IPv4
@@ -72,6 +80,7 @@ public struct NetworkStatus: Codable, Sendable {
         ipv4ReservedAddresses = try container.decodeIfPresent([IPv4Address].self, forKey: .ipv4ReservedAddresses) ?? []
         ipv6Subnet = try container.decodeIfPresent(CIDRv6.self, forKey: .ipv6Subnet)
         ipv6Gateway = try container.decodeIfPresent(IPv6Address.self, forKey: .ipv6Gateway)
+        gatewayRoutingEnabled = try container.decodeIfPresent(Bool.self, forKey: .gatewayRoutingEnabled) ?? true
     }
 
     /// Encodes the active network status.
@@ -83,5 +92,6 @@ public struct NetworkStatus: Codable, Sendable {
         try container.encode(ipv4ReservedAddresses, forKey: .ipv4ReservedAddresses)
         try container.encodeIfPresent(ipv6Subnet, forKey: .ipv6Subnet)
         try container.encodeIfPresent(ipv6Gateway, forKey: .ipv6Gateway)
+        try container.encode(gatewayRoutingEnabled, forKey: .gatewayRoutingEnabled)
     }
 }

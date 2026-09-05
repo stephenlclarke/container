@@ -338,9 +338,9 @@ public actor DefaultNetworkService: NetworkService {
             hostname: hostname,
             aliases: aliases,
             ipv4Address: enableIPv4 ? try CIDRv4(IPv4Address(index), prefix: status.ipv4Subnet.prefix) : nil,
-            ipv4Gateway: enableIPv4 ? status.ipv4Gateway : nil,
+            ipv4Gateway: enableIPv4 && status.gatewayRoutingEnabled ? status.ipv4Gateway : nil,
             ipv6Address: ipv6CIDR,
-            ipv6Gateway: status.ipv6Gateway,
+            ipv6Gateway: status.gatewayRoutingEnabled ? status.ipv6Gateway : nil,
             macAddress: macAddress,
             variant: network.variant
         )
