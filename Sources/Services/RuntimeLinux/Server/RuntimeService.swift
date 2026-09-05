@@ -2368,30 +2368,6 @@ extension Filesystem.SyncMode {
     }
 }
 
-struct MultiWriter: Writer {
-    let writers: [any Writer]
-
-    init(handles: [FileHandle]) {
-        self.writers = handles
-    }
-
-    init(writers: [any Writer]) {
-        self.writers = writers
-    }
-
-    func close() throws {
-        for writer in writers {
-            try writer.close()
-        }
-    }
-
-    func write(_ data: Data) throws {
-        for writer in writers {
-            try writer.write(data)
-        }
-    }
-}
-
 extension FileHandle: @retroactive ReaderStream, @retroactive Writer {
     public func write(_ data: Data) throws {
         try self.write(contentsOf: data)
