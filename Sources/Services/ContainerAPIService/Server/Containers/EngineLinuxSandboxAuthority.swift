@@ -64,12 +64,14 @@ public protocol EngineLinuxSandboxWorkloadAuthorityV1: Sendable {
     func stopWorkload(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1,
         workloadID: String,
-        workloadProcessGeneration: UInt64
+        workloadProcessGeneration: UInt64,
+        controllers: [any WorkloadEffectControllerV1]
     ) async throws -> EngineWorkloadRecordV1
 
-    func reclaimEffectlessWorkloadAtBoot(
+    func reclaimWorkloadAtBoot(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1,
-        workloadID: String
+        workloadID: String,
+        controllers: [any WorkloadEffectControllerV1]
     ) async throws -> EngineWorkloadRecordV1?
 }
 
@@ -733,14 +735,15 @@ public actor EngineLinuxSandboxAuthorityV1:
         )
     }
 
-    /// Stops only the exact active workload generation after all controller
-    /// effects have been released. A durable stop reservation precedes the
-    /// runtime call, and a lost response is reconciled before the ledger can
-    /// forget the active process tuple.
+    /// Stops only the exact active workload generation, then releases every
+    /// controller effect before the ledger forgets the active process tuple.
+    /// A durable stop reservation precedes the runtime call and a lost reply
+    /// is reconciled before effect compensation can begin.
     public func stopWorkload(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1,
         workloadID: String,
-        workloadProcessGeneration: UInt64
+        workloadProcessGeneration: UInt64,
+        controllers: [any WorkloadEffectControllerV1] = []
     ) async throws -> EngineWorkloadRecordV1 {
         let ready = try await ensureReady(configuration: configuration)
         guard let runtime else {
@@ -765,7 +768,6 @@ public actor EngineLinuxSandboxAuthorityV1:
             return workload
         }
         guard
-            workload.activeEffects.isEmpty,
             workload.activeProcessGeneration == workloadProcessGeneration,
             workload.activeSandboxGeneration == ready.generation,
             workload.state == .running || workload.state == .paused
@@ -806,7 +808,7 @@ public actor EngineLinuxSandboxAuthorityV1:
             )
         }
         if workload.state == .recoveryRequired {
-            workload = try await ledger.resumeEffectlessStop(mutation)
+            workload = try await ledger.resumeStop(mutation)
         } else {
             switch try await ledger.beginStop(mutation) {
             case .reserved(let value), .replay(let value):
@@ -817,10 +819,16 @@ public actor EngineLinuxSandboxAuthorityV1:
             workload.state == .stopping,
             let operation = workload.operation,
             operation.kind == .stop,
-            operation.effects.isEmpty,
             operation.candidateProcessGeneration
                 == workloadProcessGeneration,
             operation.sandboxGeneration == ready.generation
+        else {
+            throw WorkloadPlanResolverError.recoveryRequired
+        }
+        let controllersByDomain = try Self.controllersByDomain(controllers)
+        guard
+            Set(operation.effects.map(\.domain))
+                == Set(controllersByDomain.keys)
         else {
             throw WorkloadPlanResolverError.recoveryRequired
         }
@@ -852,6 +860,48 @@ public actor EngineLinuxSandboxAuthorityV1:
                 throw WorkloadPlanResolverError.recoveryRequired
             }
         }
+        let context = WorkloadStartContextV1(
+            containerID: workloadID,
+            operationGeneration: operation.operationGeneration,
+            candidateProcessGeneration: workloadProcessGeneration,
+            sandboxGeneration: ready.generation,
+            requestDigest: operation.requestDigest
+        )
+        for effect in operation.effects.reversed() {
+            guard effect.state == .compensating || effect.state == .compensated,
+                let controller = controllersByDomain[effect.domain]
+            else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+            if effect.state == .compensated {
+                continue
+            }
+            let compensated: Bool
+            do {
+                let receipt = try await controller.compensate(
+                    effect,
+                    context: context
+                )
+                compensated = Self.matches(receipt, effect: effect)
+            } catch {
+                switch try? await controller.observe(effect, context: context) {
+                case .absent:
+                    compensated = true
+                case .compensated(let receipt):
+                    compensated = Self.matches(receipt, effect: effect)
+                default:
+                    compensated = false
+                }
+            }
+            guard compensated else {
+                throw WorkloadPlanResolverError.recoveryRequired
+            }
+            _ = try await ledger.acknowledgeEffectCompensated(
+                containerID: workloadID,
+                operationGeneration: operation.operationGeneration,
+                effectID: effect.effectID
+            )
+        }
         return try await ledger.commitStop(
             containerID: workloadID,
             operationGeneration: operation.operationGeneration
@@ -859,22 +909,14 @@ public actor EngineLinuxSandboxAuthorityV1:
     }
 
     /// Reconciles an ordinary shared workload that survived the API authority.
-    /// Protected service workloads retain controller effects and are therefore
-    /// deliberately outside this boot-cleanup boundary.
-    public func reclaimEffectlessWorkloadAtBoot(
+    /// Callers must provide the exact controllers for every durable effect.
+    public func reclaimWorkloadAtBoot(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1,
-        workloadID: String
+        workloadID: String,
+        controllers: [any WorkloadEffectControllerV1] = []
     ) async throws -> EngineWorkloadRecordV1? {
         guard var workload = await ledger.workload(containerID: workloadID) else {
             return nil
-        }
-        guard workload.activeEffects.isEmpty,
-            workload.operation?.effects.isEmpty ?? true
-        else {
-            throw ContainerizationError(
-                .invalidState,
-                message: "Engine Linux sandbox boot cleanup cannot reclaim a controller-owned workload"
-            )
         }
         switch workload.state {
         case .created, .stopped, .removed:
@@ -912,7 +954,8 @@ public actor EngineLinuxSandboxAuthorityV1:
         return try await stopWorkload(
             configuration: configuration,
             workloadID: workloadID,
-            workloadProcessGeneration: processGeneration
+            workloadProcessGeneration: processGeneration,
+            controllers: controllers
         )
     }
 
@@ -1039,6 +1082,33 @@ public actor EngineLinuxSandboxAuthorityV1:
             && receipt.processGeneration == context.candidateProcessGeneration
             && receipt.sandboxGeneration == context.sandboxGeneration
             && receipt.requestDigest == context.requestDigest
+    }
+
+    private static func matches(
+        _ receipt: WorkloadEffectReceiptV1,
+        effect: EngineWorkloadEffectV1
+    ) -> Bool {
+        receipt.domain == effect.domain
+            && receipt.leaseID == effect.leaseID
+            && receipt.leaseGeneration == effect.leaseGeneration
+            && receipt.effectID == effect.effectID
+            && receipt.integrityDigest == effect.integrityDigest
+    }
+
+    private static func controllersByDomain(
+        _ controllers: [any WorkloadEffectControllerV1]
+    ) throws -> [EngineWorkloadEffectDomainV1: any WorkloadEffectControllerV1] {
+        var result = [
+            EngineWorkloadEffectDomainV1: any WorkloadEffectControllerV1
+        ]()
+        for controller in controllers {
+            guard result.updateValue(controller, forKey: controller.domain) == nil else {
+                throw WorkloadPlanResolverError.duplicateDomain(
+                    controller.domain
+                )
+            }
+        }
+        return result
     }
 
     /// Keeps pre-snapshot-root and explicit snapshot-root configurations equivalent.

@@ -70,6 +70,17 @@ enum ManagedRuntimeClient: Sendable {
         }
     }
 
+    func engineSocketWorkloadTuple() async throws
+        -> (processGeneration: UInt64, sandboxGeneration: UInt64)?
+    {
+        switch self {
+        case .dedicated:
+            return nil
+        case .shared(let client):
+            return try await client.engineSocketWorkloadTuple()
+        }
+    }
+
     func createProcess(
         _ id: String,
         config: ProcessConfiguration,
@@ -437,6 +448,7 @@ actor SharedSandboxRuntimeClient {
     private var sandboxConfiguration: EngineLinuxSandboxRuntimeConfigurationV1?
     private var workload: EngineWorkloadRecordV1?
     private var networkAttachments: [Attachment] = []
+    private var effectControllers: [any WorkloadEffectControllerV1] = []
 
     init(
         id: String,
@@ -499,6 +511,9 @@ actor SharedSandboxRuntimeClient {
                     attachment: pair.1
                 )
             }
+        let controllers = try Self.workloadEffectControllers(
+            for: containerConfiguration
+        )
         let running = try await authority.startWorkload(
             planDigest: Self.initProcessPlan,
             configuration: configuration,
@@ -506,7 +521,7 @@ actor SharedSandboxRuntimeClient {
             dynamicEnvironment: dynamicEnv,
             networkEndpoints: networkEndpoints,
             stdio: stdio,
-            controllers: [],
+            controllers: controllers,
             monitorTerminal: false
         )
         guard running.containerID == id,
@@ -521,6 +536,7 @@ actor SharedSandboxRuntimeClient {
         sandboxConfiguration = configuration
         workload = running
         networkAttachments = attachments
+        effectControllers = controllers
     }
 
     func state() async throws -> SandboxSnapshot {
@@ -532,6 +548,24 @@ actor SharedSandboxRuntimeClient {
             networks: networkAttachments,
             containers: []
         )
+    }
+
+    func engineSocketWorkloadTuple()
+        throws -> (processGeneration: UInt64, sandboxGeneration: UInt64)?
+    {
+        guard !containerConfiguration.inboundSockets.isEmpty else {
+            return nil
+        }
+        let (configuration, processGeneration) = try activeTuple()
+        guard let sandboxGeneration = workload?.activeSandboxGeneration,
+            configuration.sandboxID == containerConfiguration.sandboxID
+        else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "shared Engine socket workload has no active sandbox generation"
+            )
+        }
+        return (processGeneration, sandboxGeneration)
     }
 
     static func networkConfigurations(
@@ -628,6 +662,27 @@ actor SharedSandboxRuntimeClient {
         return "cw" + digest.prefix(13)
     }
 
+    static func workloadEffectControllers(
+        for configuration: ContainerConfiguration
+    ) throws -> [any WorkloadEffectControllerV1] {
+        switch configuration.inboundSockets.count {
+        case 0:
+            return []
+        case 1:
+            return [
+                try EngineSocketGrantWorkloadControllerV1(
+                    containerID: configuration.id,
+                    intent: configuration.inboundSockets[0]
+                )
+            ]
+        default:
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "a workload can request at most one Engine API socket"
+            )
+        }
+    }
+
     func createProcess(
         _ processID: String,
         config: ProcessConfiguration,
@@ -679,7 +734,8 @@ actor SharedSandboxRuntimeClient {
         workload = try await authority.stopWorkload(
             configuration: configuration,
             workloadID: id,
-            workloadProcessGeneration: processGeneration
+            workloadProcessGeneration: processGeneration,
+            controllers: effectControllers
         )
     }
 
@@ -759,7 +815,8 @@ actor SharedSandboxRuntimeClient {
             self.workload = try await authority.stopWorkload(
                 configuration: configuration,
                 workloadID: id,
-                workloadProcessGeneration: processGeneration
+                workloadProcessGeneration: processGeneration,
+                controllers: effectControllers
             )
         default:
             throw ContainerizationError(

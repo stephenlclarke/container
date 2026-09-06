@@ -196,7 +196,7 @@ struct EngineWorkloadLedgerTests {
         #expect(recovered.activeSandboxGeneration == stopping.activeSandboxGeneration)
         #expect(recovered.operation?.phase == .recoveryRequired)
 
-        let resumed = try await reloaded.resumeEffectlessStop(
+        let resumed = try await reloaded.resumeStop(
             mutation("stop-1", digest: "sha256:stop")
         )
         #expect(resumed.state == .stopping)
@@ -208,6 +208,61 @@ struct EngineWorkloadLedgerTests {
             )
         )
         #expect(stopped.state == .stopped)
+    }
+
+    @Test func interruptedEffectfulStopCanResumeCompensation() async throws {
+        let persistence = InMemoryEngineWorkloadLedgerPersistenceV1()
+        let ledger = try await readyLedger(persistence: persistence)
+        _ = try await ledger.registerWorkload(
+            containerID: "container-1",
+            planDigest: "sha256:plan"
+        )
+        let starting = try reserved(
+            try await ledger.beginStart(
+                mutation("start-1", digest: "sha256:start"),
+                sandboxGeneration: 1
+            )
+        )
+        let startGeneration = try #require(
+            starting.operation?.operationGeneration
+        )
+        let effect = try workloadEffect("engine-socket-1", domain: .engineSocket)
+        _ = try await ledger.reserveEffect(
+            containerID: "container-1",
+            operationGeneration: startGeneration,
+            effect: effect
+        )
+        _ = try await ledger.acknowledgeEffectApplied(
+            containerID: "container-1",
+            operationGeneration: startGeneration,
+            effectID: effect.effectID
+        )
+        _ = try await ledger.recordProcessStarted(
+            containerID: "container-1",
+            operationGeneration: startGeneration
+        )
+        _ = try await ledger.commitStart(
+            containerID: "container-1",
+            operationGeneration: startGeneration
+        )
+        _ = try reserved(
+            try await ledger.beginStop(
+                mutation("stop-1", digest: "sha256:stop")
+            )
+        )
+
+        let reloaded = try await EngineWorkloadLedgerV1.open(
+            owningControllerID: "controller-1",
+            sandboxID: "sandbox-1",
+            persistence: persistence
+        )
+        let resumed = try await reloaded.resumeStop(
+            mutation("stop-1", digest: "sha256:stop")
+        )
+
+        #expect(resumed.state == .stopping)
+        #expect(resumed.operation?.phase == .compensating)
+        #expect(resumed.operation?.effects.map(\.state) == [.compensating])
     }
 
     @Test func removePersistsCleanupIntentBeforeCompletion() async throws {

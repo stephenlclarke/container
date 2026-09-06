@@ -450,12 +450,20 @@ public actor ContainersService {
             try await sharedSandboxConfigurationProvider
             .sandboxConfiguration()
         for id in workloadIDs {
+            let state = try _getContainerState(id: id)
+            let controllers =
+                try SharedSandboxRuntimeClient
+                .workloadEffectControllers(
+                    for: state.snapshot.configuration
+                )
             _ =
                 try await sharedSandboxAuthority
-                .reclaimEffectlessWorkloadAtBoot(
+                .reclaimWorkloadAtBoot(
                     configuration: configuration,
-                    workloadID: id
+                    workloadID: id,
+                    controllers: controllers
                 )
+            try reconcileEngineSocketGrantAtBoot(id: id)
         }
     }
 
@@ -1243,6 +1251,22 @@ public actor ContainersService {
                         configuration: state.snapshot.configuration
                     )
                     var revisionAdvanced = needsPersistence
+                    if var grant = record.engineSocketGrant,
+                        grant.state == .staged || grant.state == .active
+                    {
+                        grant.reconcile(
+                            runningProcessGeneration: nil,
+                            runningSandboxGeneration: nil
+                        )
+                        record.engineSocketGrant = grant
+                        if !revisionAdvanced {
+                            try Self.advanceLifecycleRevisions(
+                                &record.snapshot
+                            )
+                        }
+                        needsPersistence = true
+                        revisionAdvanced = true
+                    }
                     if let options = try Self.getContainerConfiguration(
                         at: bundle.path
                     ).1 {
@@ -1362,6 +1386,20 @@ public actor ContainersService {
                 {
                     migrated.containerID = dockerID
                 }
+                switch state.snapshot.configuration.inboundSockets.count {
+                case 0:
+                    break
+                case 1:
+                    migrated.engineSocketGrant = try .prepare(
+                        containerID: migrated.containerID,
+                        intent: state.snapshot.configuration.inboundSockets[0]
+                    )
+                default:
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "a container can request at most one Engine API socket"
+                    )
+                }
                 if migrated.intent.autoRemove,
                     [.exited, .dead, .removing].contains(migrated.snapshot.state)
                 {
@@ -1415,7 +1453,7 @@ public actor ContainersService {
         bundleKey: String,
         configuration: ContainerConfiguration
     ) throws -> Bool {
-        let expected = Self.makeLifecycleRecord(
+        let expected = try Self.makeLifecycleRecord(
             configuration: configuration,
             options: .default
         )
@@ -1429,13 +1467,43 @@ public actor ContainersService {
                 message: "lifecycle record identity does not match bundle \(bundleKey)"
             )
         }
-        let canonicalName = configuration.dockerName ?? configuration.id
-        guard record.canonicalName != canonicalName else {
-            return false
+        var changed = false
+        switch (record.engineSocketGrant, expected.engineSocketGrant) {
+        case (nil, nil):
+            break
+        case (nil, .some(let expectedGrant)):
+            record.engineSocketGrant = expectedGrant
+            changed = true
+        case (.some, nil):
+            throw ContainerizationError(
+                .invalidState,
+                message: "lifecycle record has an unrequested Engine socket grant"
+            )
+        case (.some(let grant), .some(let expectedGrant)):
+            try grant.validate()
+            guard
+                grant.grantID == expectedGrant.grantID,
+                grant.containerID == expectedGrant.containerID,
+                grant.guestPath == expectedGrant.guestPath,
+                grant.guestMode == expectedGrant.guestMode,
+                grant.guestUID == expectedGrant.guestUID,
+                grant.guestGID == expectedGrant.guestGID
+            else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "lifecycle Engine socket grant does not match bundle intent"
+                )
+            }
         }
-        record.canonicalName = canonicalName
-        try Self.advanceLifecycleRevisions(&record.snapshot)
-        return true
+        let canonicalName = configuration.dockerName ?? configuration.id
+        if record.canonicalName != canonicalName {
+            record.canonicalName = canonicalName
+            changed = true
+        }
+        if changed {
+            try Self.advanceLifecycleRevisions(&record.snapshot)
+        }
+        return changed
     }
 
     @discardableResult
@@ -1856,7 +1924,7 @@ public actor ContainersService {
                 networks: [],
                 startedDate: nil
             )
-            let lifecycleRecord = Self.makeLifecycleRecord(
+            let lifecycleRecord = try Self.makeLifecycleRecord(
                 configuration: authoritativeConfiguration,
                 options: options
             )
@@ -1912,6 +1980,7 @@ public actor ContainersService {
             && snapshot.configuration.runtimeHandler == "container-runtime-linux"
             && !snapshot.configuration.ssh
             && snapshot.configuration.publishedSockets.isEmpty
+            && snapshot.configuration.inboundSockets.isEmpty
             // A dedicated prewarm owns every block attachment until the
             // prepared VM is reclaimed. Do not reserve a named volume or raw
             // block device that another created container may need first.
@@ -2286,6 +2355,7 @@ public actor ContainersService {
         var runtimeClientToken: UUID?
         var runtimeBootstrapPermitHeld = false
         var bootstrappedClient: ManagedRuntimeClient?
+        var expectedBootstrapOperationGeneration = plan.operationGeneration
         do {
             // A prior bootstrap may have stopped its runtime but failed part
             // way through retryable logging cleanup. Finish that cleanup
@@ -2406,6 +2476,12 @@ public actor ContainersService {
             // the client before the ambiguous RPC so failed cleanup can be
             // retained as a retryable tombstone.
             bootstrappedClient = runtimeClient
+            if runtimeClient.isDedicated {
+                try self.stageDedicatedEngineSocketGrant(id: id)
+                expectedBootstrapOperationGeneration = try lifecycleRecord(
+                    id: id
+                ).snapshot.operationGeneration
+            }
             do {
                 try await runtimeClient.bootstrap(
                     stdio: runtimeStdio,
@@ -2432,6 +2508,16 @@ public actor ContainersService {
                     bootstrapFinishedAt: bootstrapFinishedAt
                 )
             )
+            if let tuple = try await runtimeClient.engineSocketWorkloadTuple() {
+                try self.stageEngineSocketGrant(
+                    id: id,
+                    processGeneration: tuple.processGeneration,
+                    sandboxGeneration: tuple.sandboxGeneration
+                )
+                expectedBootstrapOperationGeneration = try lifecycleRecord(
+                    id: id
+                ).snapshot.operationGeneration
+            }
             if runtimeBootstrapPermitHeld {
                 await Self.runtimeBootstrapLimiter.releasePermit()
                 runtimeBootstrapPermitHeld = false
@@ -2456,6 +2542,8 @@ public actor ContainersService {
             }
             timings.finish("exit-monitor")
 
+            let commitOperationGeneration =
+                expectedBootstrapOperationGeneration
             try await self.lock.withLock(
                 logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]
             ) { context in
@@ -2465,7 +2553,8 @@ public actor ContainersService {
                     Self.bootstrapCommitIsCurrent(
                         plannedContainerGeneration: plan.containerGeneration,
                         currentContainerGeneration: state.generation,
-                        plannedOperationGeneration: plan.operationGeneration,
+                        plannedOperationGeneration:
+                            commitOperationGeneration,
                         currentOperationGeneration: lifecycle.snapshot.operationGeneration
                     ),
                     Self.lifecycleMayBootstrap(
@@ -2569,6 +2658,9 @@ public actor ContainersService {
             )
             if let loggingCleanupError {
                 throw loggingCleanupError
+            }
+            if runtimeAndLoggingCleanupFinished || bootstrappedClient == nil {
+                try? self.deactivateEngineSocketGrant(id: id)
             }
             throw bootstrapError
         }
@@ -2812,6 +2904,7 @@ public actor ContainersService {
             state.client = nil
             await self.setContainerState(id, state, context: context)
         }
+        try deactivateEngineSocketGrant(id: id)
         return true
     }
 
@@ -3228,6 +3321,19 @@ public actor ContainersService {
                         incrementProcessGeneration: true,
                         resetOOMObservation: true,
                         observedOOMKillCount: oomKillCountBaseline,
+                        engineSocketGrant: { grant in
+                            guard
+                                let processGeneration = grant.activeProcessGeneration,
+                                let sandboxGeneration = grant.activeSandboxGeneration
+                            else {
+                                throw EngineSocketGrantError.invalidGeneration
+                            }
+                            try grant.activate(
+                                leaseGeneration: grant.leaseGeneration,
+                                processGeneration: processGeneration,
+                                sandboxGeneration: sandboxGeneration
+                            )
+                        },
                         intent: { $0.manualRestartSuppressed = false }
                     )
                     await self.setContainerState(id, currentState, context: context)
@@ -3285,6 +3391,9 @@ public actor ContainersService {
                     recoveredState.prewarmed = false
                     recoveredState.prewarmCleanupRequired = true
                     recoveredState.prewarmCleanupRequiresLoggingClose = true
+                }
+                if cleanupSucceeded {
+                    try? self.deactivateEngineSocketGrant(id: id)
                 }
                 let stateAfterRollback = recoveredState
                 await self.lock.withLock(logMetadata: ["acquirer": "\(#function)-rollback", "id": "\(id)"]) { context in
@@ -5660,6 +5769,9 @@ public actor ContainersService {
                 incrementRestartCount: willRestart,
                 restartConsecutiveFailureCount: state.restart.consecutiveFailures,
                 observedOOMKillCount: observedOOMKillCount ?? nil,
+                engineSocketGrant: { grant in
+                    try Self.deactivateEngineSocketGrant(&grant)
+                },
                 intent: { intent in
                     intent.manualRestartSuppressed = explicitExitCause != nil
                 }
@@ -6012,6 +6124,7 @@ public actor ContainersService {
         // The durable bundle must disappear before its protected child. If
         // deletion fails, keep both the in-memory state and protected object so
         // a retry sees the same stopped container configuration.
+        try revokeEngineSocketGrant(id: id)
         do {
             try bundle.delete()
         } catch {
@@ -6349,6 +6462,10 @@ public actor ContainersService {
                 "\($0); \(persistenceMessage)"
             } ?? persistenceMessage
         recovered.intent.manualRestartSuppressed = manualRestartSuppressed
+        recovered.engineSocketGrant?.reconcile(
+            runningProcessGeneration: nil,
+            runningSandboxGeneration: nil
+        )
         return recovered
     }
 
@@ -6409,6 +6526,107 @@ public actor ContainersService {
             }
     }
 
+    private func stageDedicatedEngineSocketGrant(id: String) throws {
+        guard let record = lifecycleRecords[id], record.engineSocketGrant != nil else {
+            return
+        }
+        let processGeneration = try Self.nextLifecycleCounter(
+            record.snapshot.processGeneration ?? 0,
+            named: "Engine socket process generation"
+        )
+        let sandboxGeneration = try Self.nextLifecycleCounter(
+            record.snapshot.operationGeneration,
+            named: "Engine socket sandbox generation"
+        )
+        try stageEngineSocketGrant(
+            id: id,
+            processGeneration: processGeneration,
+            sandboxGeneration: sandboxGeneration
+        )
+    }
+
+    private func stageEngineSocketGrant(
+        id: String,
+        processGeneration: UInt64,
+        sandboxGeneration: UInt64
+    ) throws {
+        try mutateEngineSocketGrant(id: id) { grant in
+            try grant.stage(
+                leaseGeneration: try Self.nextLifecycleCounter(
+                    grant.leaseGeneration,
+                    named: "Engine socket lease generation"
+                ),
+                processGeneration: processGeneration,
+                sandboxGeneration: sandboxGeneration
+            )
+        }
+    }
+
+    private func deactivateEngineSocketGrant(id: String) throws {
+        try mutateEngineSocketGrant(id: id) { grant in
+            try Self.deactivateEngineSocketGrant(&grant)
+        }
+    }
+
+    private static func deactivateEngineSocketGrant(
+        _ grant: inout ContainerResource.EngineSocketGrantRecordV1
+    ) throws {
+        switch grant.state {
+        case .inactive, .revoked:
+            return
+        case .staged, .active:
+            guard let processGeneration = grant.activeProcessGeneration,
+                let sandboxGeneration = grant.activeSandboxGeneration
+            else {
+                throw EngineSocketGrantError.invalidGeneration
+            }
+            try grant.deactivate(
+                leaseGeneration: grant.leaseGeneration,
+                processGeneration: processGeneration,
+                sandboxGeneration: sandboxGeneration
+            )
+        }
+    }
+
+    private func reconcileEngineSocketGrantAtBoot(id: String) throws {
+        try mutateEngineSocketGrant(id: id) { grant in
+            grant.reconcile(
+                runningProcessGeneration: nil,
+                runningSandboxGeneration: nil
+            )
+        }
+    }
+
+    private func revokeEngineSocketGrant(id: String) throws {
+        try mutateEngineSocketGrant(id: id) { grant in
+            try Self.deactivateEngineSocketGrant(&grant)
+            try grant.revoke(expectedLeaseGeneration: grant.leaseGeneration)
+        }
+    }
+
+    private func mutateEngineSocketGrant(
+        id: String,
+        _ mutation: (inout ContainerResource.EngineSocketGrantRecordV1) throws -> Void
+    ) throws {
+        guard var record = lifecycleRecords[id],
+            var grant = record.engineSocketGrant
+        else {
+            return
+        }
+        let previous = grant
+        try mutation(&grant)
+        guard grant != previous else {
+            return
+        }
+        record.engineSocketGrant = grant
+        try Self.advanceLifecycleRevisions(&record.snapshot)
+        let bundle = ContainerResource.Bundle(
+            path: try Self.containerPath(root: containerRoot, id: id)
+        )
+        try bundle.setDurably(lifecycleRecordV2: record)
+        lifecycleRecords[id] = record
+    }
+
     @discardableResult
     private func commitLifecycle(
         id: String,
@@ -6421,6 +6639,8 @@ public actor ContainersService {
         restartConsecutiveFailureCount: UInt32? = nil,
         resetOOMObservation: Bool = false,
         observedOOMKillCount: UInt64? = nil,
+        engineSocketGrant:
+            ((inout ContainerResource.EngineSocketGrantRecordV1) throws -> Void)? = nil,
         intent: ((inout ContainerResource.ContainerLifecycleIntentV2) -> Void)? = nil
     ) async throws -> ContainerResource.ContainerLifecycleRecordV2 {
         guard var record = lifecycleRecords[id] else {
@@ -6472,6 +6692,10 @@ public actor ContainersService {
         record.snapshot.startedAt = container.snapshot.startedDate
         record.snapshot.finishedAt = container.snapshot.exitedDate
         record.snapshot.health = container.snapshot.health?.rawValue
+        if let engineSocketGrant, var grant = record.engineSocketGrant {
+            try engineSocketGrant(&grant)
+            record.engineSocketGrant = grant
+        }
         intent?(&record.intent)
 
         let bundle = ContainerResource.Bundle(
@@ -6508,18 +6732,36 @@ public actor ContainersService {
     private static func makeLifecycleRecord(
         configuration: ContainerConfiguration,
         options: ContainerCreateOptions
-    ) -> ContainerResource.ContainerLifecycleRecordV2 {
-        ContainerResource.ContainerLifecycleRecordV2(
-            containerID: configuration.dockerID
-                ?? ContainerResource.ContainerLifecycleRecordV2.migrate(
-                    bundleKey: configuration.id,
-                    canonicalName: configuration.dockerName ?? configuration.id,
-                    selectedProviderFingerprint: configuration.runtimeHandler,
-                    legacy: nil
-                ).containerID,
+    ) throws -> ContainerResource.ContainerLifecycleRecordV2 {
+        let containerID =
+            configuration.dockerID
+            ?? ContainerResource.ContainerLifecycleRecordV2.migrate(
+                bundleKey: configuration.id,
+                canonicalName: configuration.dockerName ?? configuration.id,
+                selectedProviderFingerprint: configuration.runtimeHandler,
+                legacy: nil
+            ).containerID
+        let grant: ContainerResource.EngineSocketGrantRecordV1?
+        switch configuration.inboundSockets.count {
+        case 0:
+            grant = nil
+        case 1:
+            grant = try .prepare(
+                containerID: containerID,
+                intent: configuration.inboundSockets[0]
+            )
+        default:
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "a container can request at most one Engine API socket"
+            )
+        }
+        return ContainerResource.ContainerLifecycleRecordV2(
+            containerID: containerID,
             canonicalName: configuration.dockerName ?? configuration.id,
             immutableBundleKey: configuration.id,
             selectedProviderFingerprint: configuration.runtimeHandler,
+            engineSocketGrant: grant,
             intent: ContainerResource.ContainerLifecycleIntentV2(
                 autoRemove: options.autoRemove,
                 restartPolicy: options.restartPolicy

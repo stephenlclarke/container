@@ -1152,10 +1152,11 @@ public actor EngineWorkloadLedgerV1 {
         return .reserved(record)
     }
 
-    /// Reopens only an interrupted stop whose controller effects were already
-    /// empty. The caller must still reconcile the exact runtime stop before
-    /// committing; stops with compensating or unknown effects remain fenced.
-    public func resumeEffectlessStop(
+    /// Reopens an interrupted stop whose effects are still safely
+    /// compensating (or were already compensated). The caller must still
+    /// reconcile the exact runtime stop and provide the matching controllers
+    /// before committing. Unknown effects remain fenced.
+    public func resumeStop(
         _ request: EngineWorkloadMutationRequestV1
     ) async throws -> EngineWorkloadRecordV1 {
         var record = try requireWorkload(request.containerID)
@@ -1164,12 +1165,14 @@ public actor EngineWorkloadLedgerV1 {
             let operation = record.operation,
             operation.kind == .stop,
             operation.phase == .recoveryRequired,
-            operation.effects.isEmpty,
             operation.idempotencyKey == request.idempotencyKey,
             operation.requestDigest == request.requestDigest,
             operation.candidateProcessGeneration
                 == record.activeProcessGeneration,
-            operation.sandboxGeneration == record.activeSandboxGeneration
+            operation.sandboxGeneration == record.activeSandboxGeneration,
+            operation.effects.allSatisfy({
+                $0.state == .compensating || $0.state == .compensated
+            })
         else {
             throw EngineWorkloadLedgerError.recoveryRequired
         }
