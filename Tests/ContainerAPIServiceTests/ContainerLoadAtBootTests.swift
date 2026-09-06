@@ -210,6 +210,125 @@ struct ContainerLoadAtBootTests {
     }
 
     @Test
+    func interruptedEngineSocketGrantIsConservativelyDeactivatedAtBoot() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "interrupted-engine-socket"
+        let dockerID = String(repeating: "e", count: 64)
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        var configuration = testConfiguration(id: id)
+        configuration.dockerID = dockerID
+        configuration.inboundSockets = [try .engineAPI()]
+        try bundle.set(configuration: configuration)
+        var grant = try EngineSocketGrantRecordV1.prepare(
+            containerID: dockerID,
+            intent: configuration.inboundSockets[0]
+        )
+        try grant.stage(
+            leaseGeneration: 1,
+            processGeneration: 2,
+            sandboxGeneration: 3
+        )
+        try grant.activate(
+            leaseGeneration: 1,
+            processGeneration: 2,
+            sandboxGeneration: 3
+        )
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2(
+                containerID: dockerID,
+                canonicalName: id,
+                immutableBundleKey: id,
+                selectedProviderFingerprint: configuration.runtimeHandler,
+                engineSocketGrant: grant,
+                snapshot: ContainerLifecycleSnapshotV2(
+                    state: .created,
+                    transitionRevision: 7,
+                    operationGeneration: 8
+                )
+            )
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log,
+            deregisterService: { _ in }
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(recovered.engineSocketGrant?.state == .inactive)
+        #expect(recovered.engineSocketGrant?.leaseGeneration == 1)
+        #expect(recovered.engineSocketGrant?.activeProcessGeneration == nil)
+        #expect(recovered.engineSocketGrant?.activeSandboxGeneration == nil)
+        #expect(recovered.snapshot.transitionRevision == 8)
+        #expect(recovered.snapshot.operationGeneration == 9)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+    }
+
+    @Test
+    func existingLifecycleGainsInactiveGrantFromImmutableSocketIntent() throws {
+        let fixture = try Fixture(includeRuntime: true)
+        defer { fixture.remove() }
+
+        let id = "upgrade-engine-socket"
+        let dockerID = String(repeating: "f", count: 64)
+        let bundlePath = fixture.containers.appendingPathComponent(id)
+        try FileManager.default.createDirectory(
+            at: bundlePath,
+            withIntermediateDirectories: true
+        )
+        let bundle = ContainerResource.Bundle(path: bundlePath)
+        var configuration = testConfiguration(id: id)
+        configuration.dockerID = dockerID
+        configuration.inboundSockets = [try .engineAPI()]
+        try bundle.set(configuration: configuration)
+        try bundle.setDurably(
+            lifecycleRecordV2: ContainerLifecycleRecordV2(
+                containerID: dockerID,
+                canonicalName: id,
+                immutableBundleKey: id,
+                selectedProviderFingerprint: configuration.runtimeHandler,
+                snapshot: ContainerLifecycleSnapshotV2(
+                    state: .created,
+                    transitionRevision: 3,
+                    operationGeneration: 4
+                )
+            )
+        )
+
+        let states = try ContainersService.loadAtBoot(
+            root: fixture.containers,
+            loader: fixture.loader,
+            log: fixture.log,
+            deregisterService: { _ in }
+        )
+        let records = ContainersService.loadLifecycleRecords(
+            containers: states,
+            root: fixture.containers,
+            log: fixture.log
+        )
+        let recovered = try #require(records[id])
+
+        #expect(recovered.engineSocketGrant?.state == .inactive)
+        #expect(recovered.engineSocketGrant?.containerID == dockerID)
+        #expect(recovered.snapshot.transitionRevision == 4)
+        #expect(recovered.snapshot.operationGeneration == 5)
+        #expect(try bundle.lifecycleRecordV2 == recovered)
+    }
+
+    @Test
     func sharedWorkloadDoesNotOwnAPerContainerRuntimeServiceAtBoot() throws {
         let fixture = try Fixture(includeRuntime: true)
         defer { fixture.remove() }

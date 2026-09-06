@@ -302,6 +302,10 @@ struct ContainerBootstrapConcurrencyTests {
         ]
         #expect(!ContainersService.shouldPrewarm(publishedSocket))
 
+        var engineSocket = Self.snapshot(id: "engine-socket")
+        engineSocket.configuration.inboundSockets = [try .engineAPI()]
+        #expect(!ContainersService.shouldPrewarm(engineSocket))
+
         var namedVolume = Self.snapshot(id: "named-volume")
         namedVolume.configuration.mounts = [
             .volume(

@@ -644,9 +644,11 @@ private actor FakeDockerPluginAuthority:
     func stopWorkload(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1,
         workloadID: String,
-        workloadProcessGeneration: UInt64
+        workloadProcessGeneration: UInt64,
+        controllers: [any WorkloadEffectControllerV1]
     ) throws -> EngineWorkloadRecordV1 {
         _ = configuration
+        #expect(controllers.isEmpty)
         stopCount += 1
         let record = try EngineWorkloadRecordV1(
             containerID: workloadID,

@@ -858,7 +858,8 @@ package protocol EngineLinuxSandboxDockerPluginAuthorityV1: Sendable {
     func stopWorkload(
         configuration: EngineLinuxSandboxRuntimeConfigurationV1,
         workloadID: String,
-        workloadProcessGeneration: UInt64
+        workloadProcessGeneration: UInt64,
+        controllers: [any WorkloadEffectControllerV1]
     ) async throws -> EngineWorkloadRecordV1
 }
 
@@ -1059,7 +1060,8 @@ package actor EngineLinuxSandboxDockerPluginGenerationReclaimerV1:
         let stopped = try await authority.stopWorkload(
             configuration: configuration,
             workloadID: assets.workloadID,
-            workloadProcessGeneration: processGeneration
+            workloadProcessGeneration: processGeneration,
+            controllers: []
         )
         guard stopped.state == .stopped else {
             throw EngineLinuxSandboxDockerPluginServiceError

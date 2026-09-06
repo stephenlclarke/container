@@ -141,6 +141,7 @@ struct EngineLinuxSandboxAuthorityTests {
         sharedConfiguration.requestedIsolation = .sharedVM
         sharedConfiguration.effectiveIsolation = .sharedVM
         sharedConfiguration.sandboxID = fixture.sandboxConfiguration.sandboxID
+        sharedConfiguration.inboundSockets = [try .engineAPI()]
         let client = ManagedRuntimeClient.shared(
             SharedSandboxRuntimeClient(
                 id: sharedConfiguration.id,
@@ -180,9 +181,18 @@ struct EngineLinuxSandboxAuthorityTests {
         }
         #expect(error?.code == .unsupported)
         #expect(await runtime.workloadStartCount == 1)
+        #expect(
+            await authority.snapshot().workloads.first?.activeEffects.map(
+                \.domain
+            ) == [.engineSocket]
+        )
 
         try await client.stop(options: .default)
         #expect(await runtime.workloadStopCount == 1)
+        #expect(
+            await authority.snapshot().workloads.first?.activeEffects.isEmpty
+                == true
+        )
         try await client.shutdown()
         #expect(await runtime.workloadStopCount == 1)
     }
@@ -529,9 +539,10 @@ struct EngineLinuxSandboxAuthorityTests {
         )
 
         let reclaimed = try #require(
-            try await authority.reclaimEffectlessWorkloadAtBoot(
+            try await authority.reclaimWorkloadAtBoot(
                 configuration: fixture.sandboxConfiguration,
-                workloadID: running.containerID
+                workloadID: running.containerID,
+                controllers: []
             )
         )
 
@@ -847,6 +858,59 @@ struct EngineLinuxSandboxAuthorityTests {
             workloadProcessGeneration: processGeneration
         )
         #expect(replay == stopped)
+        #expect(await runtime.workloadStopCount == 1)
+    }
+
+    @Test
+    func engineSocketGrantIsDurableAndCompensatedAfterExactStop() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime(failFirstStopResponse: true)
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let configuration = try #require(
+            RuntimeConfiguration.readRuntimeConfiguration(
+                from: fixture.workloadRoot
+            ).containerConfiguration
+        )
+        let controller = try EngineSocketGrantWorkloadControllerV1(
+            containerID: configuration.id,
+            intent: .engineAPI()
+        )
+        let running = try await authority.startWorkload(
+            planDigest: "sha256:socket-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            controllers: [controller]
+        )
+        let processGeneration = try #require(
+            running.activeProcessGeneration
+        )
+
+        #expect(running.activeEffects.map(\.domain) == [.engineSocket])
+        #expect(running.activeEffects.map(\.state) == [.active])
+
+        // A restarted API authority can reconstruct the controller from the
+        // immutable socket intent and safely compensate after runtime absence
+        // has been proven.
+        let recoveredController = try EngineSocketGrantWorkloadControllerV1(
+            containerID: configuration.id,
+            intent: .engineAPI()
+        )
+        let stopped = try await authority.stopWorkload(
+            configuration: fixture.sandboxConfiguration,
+            workloadID: running.containerID,
+            workloadProcessGeneration: processGeneration,
+            controllers: [recoveredController]
+        )
+
+        #expect(stopped.state == .stopped)
+        #expect(stopped.activeEffects.isEmpty)
         #expect(await runtime.workloadStopCount == 1)
     }
 

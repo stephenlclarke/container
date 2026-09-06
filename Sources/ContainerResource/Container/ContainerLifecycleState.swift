@@ -139,6 +139,8 @@ public struct ContainerLifecycleRecordV2: Codable, Equatable, Sendable {
     public var canonicalName: String
     public var immutableBundleKey: String
     public var selectedProviderFingerprint: String
+    /// Durable full-authority Engine socket grant, when explicitly requested.
+    public var engineSocketGrant: EngineSocketGrantRecordV1?
     public var intent: ContainerLifecycleIntentV2
     public var snapshot: ContainerLifecycleSnapshotV2
 
@@ -147,6 +149,7 @@ public struct ContainerLifecycleRecordV2: Codable, Equatable, Sendable {
         canonicalName: String,
         immutableBundleKey: String,
         selectedProviderFingerprint: String,
+        engineSocketGrant: EngineSocketGrantRecordV1? = nil,
         intent: ContainerLifecycleIntentV2 = .init(),
         snapshot: ContainerLifecycleSnapshotV2
     ) {
@@ -155,6 +158,7 @@ public struct ContainerLifecycleRecordV2: Codable, Equatable, Sendable {
         self.canonicalName = canonicalName
         self.immutableBundleKey = immutableBundleKey
         self.selectedProviderFingerprint = selectedProviderFingerprint
+        self.engineSocketGrant = engineSocketGrant
         self.intent = intent
         self.snapshot = snapshot
     }
