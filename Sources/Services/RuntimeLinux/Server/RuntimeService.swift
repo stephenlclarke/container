@@ -745,12 +745,17 @@ public actor RuntimeService {
                     try await self.monitor.registerProcess(
                         id: id,
                         onExit: { id, exitStatus in
-                            await self.releaseWaiters(for: id, status: exitStatus)
+                            // Publish exit and close the process agent while holding the same
+                            // lifecycle lock as disconnect-driven signals. Once the waiter is
+                            // released, its client can disconnect immediately.
+                            await self.lock.withLock { _ in
+                                await self.releaseWaiters(for: id, status: exitStatus)
 
-                            if let process = await self.processes[id]?.process {
-                                try? await process.delete()
+                                if let process = await self.processes[id]?.process {
+                                    try? await process.delete()
+                                }
+                                await self.reapExecProcess(id: id)
                             }
-                            await self.reapExecProcess(id: id)
                         }
                     )
                 } catch {
