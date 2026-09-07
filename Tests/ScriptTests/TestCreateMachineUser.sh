@@ -55,6 +55,21 @@ SHELL_LOG="${SHELL_LOG}" \
     Sources/Plugins/MachineAPIServer/Resources/init -s printf selected-shell
 grep -qx -- '-c printf selected-shell' "${SHELL_LOG}"
 
+FAKE_BIN="${TEST_ROOT}/bin"
+mkdir -p "${FAKE_BIN}"
+cat > "${FAKE_BIN}/id" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "${FAKE_BIN}/id"
+printf 'SHELL=%s\n' "${FAKE_SHELL}" > "${ETC_ROOT}/default/useradd"
+PATH="${FAKE_BIN}:${PATH}" \
+CONTAINER_USER= \
+CONTAINER_ETC_ROOT="${ETC_ROOT}" \
+SHELL_LOG="${SHELL_LOG}" \
+    Sources/Plugins/MachineAPIServer/Resources/init -s printf numeric-user
+grep -qx -- '-c printf numeric-user' "${SHELL_LOG}"
+
 SETUP_LOG="${TEST_ROOT}/setup.log"
 mkdir -p "${ETC_ROOT}/machine"
 cat > "${ETC_ROOT}/machine/create-user.sh" <<'EOF'
