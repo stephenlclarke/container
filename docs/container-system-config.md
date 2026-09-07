@@ -20,7 +20,7 @@ diagnosticKind = "container-system-config-inspection-v1"
 cpus = 2
 memory = "2048mb"
 rosetta = true
-image = "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:7398845b67e6d5c5e610e9f1c6bf4ce84e4c7242a8f8002ff2e5e917437cfdf7"
+image = "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:5598b550fe76ad4992de94a3f80811326e2f7bd85147a5343bc1edd2205402dd"
 
 [container]
 cpus = 4

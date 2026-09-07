@@ -21,7 +21,7 @@ BUILDER_SHIM_REPO ?= https://github.com/stephenlclarke/container-builder-shim.gi
 # Protocol generation consumes source, whereas Package.swift records an OCI
 # image tag. Keep the source revision immutable and paired with that image;
 # current-* image tags are deliberately not Git refs.
-BUILDER_SHIM_SOURCE_REF ?= 287f2ea3276eca73cd3781ff59b4c9c82d5f3d32
+BUILDER_SHIM_SOURCE_REF ?= f99e66b8940242d6ea8bed448619ba61f3f6f1a5
 PROTOC_VERSION := 26.1
 
 # Protoc binary installation
