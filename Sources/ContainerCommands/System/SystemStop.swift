@@ -20,6 +20,7 @@ import ContainerPlugin
 import ContainerResource
 import ContainerXPC
 import Containerization
+import ContainerizationError
 import ContainerizationOS
 import Foundation
 import Logging
@@ -41,6 +42,47 @@ extension Application {
         public var logOptions: Flags.Logging
 
         public init() {}
+
+        static func serviceLabelsToDeregister(
+            _ labels: [String],
+            servicePrefix: String,
+            launchdDomainString: String
+        ) -> [String] {
+            labels
+                .filter { $0.hasPrefix(servicePrefix) }
+                .map { "\(launchdDomainString)/\($0)" }
+        }
+
+        static func stopServiceAndConfirmInactive(
+            fullServiceLabel label: String,
+            deregisterService: (String) throws -> Int32 = { label in
+                var status: Int32 = -1
+                try ServiceManager.deregister(
+                    fullServiceLabel: label,
+                    status: &status
+                )
+                return status
+            },
+            isServiceRegistered: (String) throws -> Bool = { label in
+                try ServiceManager.isRegistered(fullServiceLabel: label)
+            }
+        ) throws {
+            let status: Int32
+            do {
+                status = try deregisterService(label)
+            } catch {
+                guard try isServiceRegistered(label) else {
+                    return
+                }
+                throw error
+            }
+            if status != 0, try isServiceRegistered(label) {
+                throw ContainerizationError(
+                    .internalError,
+                    message: "failed to stop surviving service \(label)"
+                )
+            }
+        }
 
         public func run() async throws {
             let serviceNamespace = try ContainerServiceNamespace.resolve()
@@ -76,7 +118,7 @@ extension Application {
                 log.info("checking if APIServer is alive")
                 _ = try await ClientHealthCheck.ping(timeout: .seconds(5))
             } catch {
-                log.info("APIServer health check failed, skipping bootout")
+                log.info("APIServer health check failed, continuing with launchd cleanup")
                 running = false
             }
 
@@ -106,7 +148,7 @@ extension Application {
                     }
 
                     log.info("stopping service", metadata: ["label": "\(fullLabel)"])
-                    try ServiceManager.deregister(fullServiceLabel: fullLabel)
+                    try Self.stopServiceAndConfirmInactive(fullServiceLabel: fullLabel)
                 } catch {
                     log.warning("failed to wait for all containers", metadata: ["error": "\(error)"])
                 }
@@ -115,13 +157,28 @@ extension Application {
             // Note: The assumption here is that we would have registered the launchd services
             // in the same domain as `launchdDomainString`. This is a fairly sane assumption since
             // if somehow the launchd domain changed, XPC interactions would not be possible.
-            let remainingServiceLabels = try ServiceManager.enumerate()
-                .filter { $0.hasPrefix(servicePrefix) }
-                .filter { $0 != fullLabel }
-                .map { "\(launchdDomainString)/\($0)" }
+            let remainingServiceLabels = Self.serviceLabelsToDeregister(
+                try ServiceManager.enumerate(),
+                servicePrefix: servicePrefix,
+                launchdDomainString: launchdDomainString
+            )
+            var cleanupError: (any Error)?
             for label in remainingServiceLabels {
                 log.info("stopping service", metadata: ["label": "\(label)"])
-                try? ServiceManager.deregister(fullServiceLabel: label)
+                do {
+                    try Self.stopServiceAndConfirmInactive(fullServiceLabel: label)
+                } catch {
+                    log.warning(
+                        "failed to stop service",
+                        metadata: ["label": "\(label)", "error": "\(error)"]
+                    )
+                    if cleanupError == nil {
+                        cleanupError = error
+                    }
+                }
+            }
+            if let cleanupError {
+                throw cleanupError
             }
         }
     }

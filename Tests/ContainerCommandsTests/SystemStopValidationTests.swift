@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerizationError
 import Testing
 
 @testable import ContainerCommands
@@ -48,6 +49,44 @@ struct SystemStopValidationTests {
         #expect(
             try namespace.servicePrefix(requestedPrefix: "com.example.svc.")
                 == "com.example.svc."
+        )
+    }
+
+    @Test
+    func unhealthyAPIServerRemainsInLaunchdCleanupSet() {
+        #expect(
+            Application.SystemStop.serviceLabelsToDeregister(
+                [
+                    "com.example.svc.apiserver",
+                    "com.example.svc.network-vmnet",
+                    "com.other.svc.apiserver",
+                ],
+                servicePrefix: "com.example.svc.",
+                launchdDomainString: "gui/501"
+            ) == [
+                "gui/501/com.example.svc.apiserver",
+                "gui/501/com.example.svc.network-vmnet",
+            ]
+        )
+    }
+
+    @Test
+    func rejectsFailedBootoutOfRegisteredService() {
+        #expect(throws: ContainerizationError.self) {
+            try Application.SystemStop.stopServiceAndConfirmInactive(
+                fullServiceLabel: "gui/501/com.example.svc.apiserver",
+                deregisterService: { _ in 5 },
+                isServiceRegistered: { _ in true }
+            )
+        }
+    }
+
+    @Test
+    func acceptsFailedBootoutOfAlreadyInactiveService() throws {
+        try Application.SystemStop.stopServiceAndConfirmInactive(
+            fullServiceLabel: "gui/501/com.example.svc.apiserver",
+            deregisterService: { _ in 5 },
+            isServiceRegistered: { _ in false }
         )
     }
 
