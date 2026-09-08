@@ -116,7 +116,7 @@ struct TestK8sRunSerial {
         }
     }
 
-    @Test func testRestartAfterAddressRotation() async throws {
+    @Test func testRestartPreservesRetainedAddress() async throws {
         try await ContainerFixture.with { f in
             let name = "k8s-\(f.testID)"
             let bumper = "\(name)-bumper"
@@ -134,8 +134,9 @@ struct TestK8sRunSerial {
             ]).check()
 
             try f.run(["stop", name]).check()
-            // Advance the rotating allocator while the node is stopped so its
-            // restart cannot accidentally reuse the same address.
+            // Occupy the allocator's next address while the node is stopped.
+            // If stop accidentally releases the retained lease, this workload
+            // receives the node's old address and the equality below fails.
             try f.restoreWarmupImage(.alpine320)
             try f.run([
                 "run", "--name", bumper, "-d", WarmupImage.alpine320.rawValue,
@@ -149,15 +150,21 @@ struct TestK8sRunSerial {
             }
             try restart.check()
 
-            let rotatedAddress = try f.run(["exec", name, "cat", "/kind/old-ipv4"])
-            try rotatedAddress.check()
+            let restartedAddress = try f.run(["exec", name, "cat", "/kind/old-ipv4"])
+            try restartedAddress.check()
             let originalIP = originalAddress.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            let rotatedIP = rotatedAddress.output.trimmingCharacters(in: .whitespacesAndNewlines)
-            print("[k8s-run] restart rotated address \(originalIP) -> \(rotatedIP)")
-            #expect(originalIP != rotatedIP)
+            let restartedIP = restartedAddress.output.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("[k8s-run] restart retained address \(originalIP) -> \(restartedIP)")
+            // This fork retains the network attachment and lease across
+            // stop/start, so the Kubernetes node must retain its address.
+            #expect(originalIP == restartedIP)
             #expect(try f.getContainerStatus(name) == "running")
+            #expect(try f.run(["exec", name, "test", "-f", "/kind/kubeadm.conf"]).status == 0)
             try f.run([
-                "exec", name, "grep", "-F", "advertiseAddress: \(rotatedIP)", "/kind/kubeadm.conf",
+                "exec", name, "grep", "-F", "controlPlaneEndpoint: 127.0.0.1:6443", "/kind/kubeadm.conf",
+            ]).check()
+            try f.run([
+                "exec", name, "grep", "-F", "advertiseAddress: \(restartedIP)", "/kind/kubeadm.conf",
             ]).check()
             try f.run([
                 "exec", name, "kubectl", "wait", "--for=condition=Ready", "node", "--all", "--timeout=30s",
