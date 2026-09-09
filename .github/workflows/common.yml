@@ -26,6 +26,10 @@ on:
         type: boolean
         description: "Upload the generated documentation as a GitHub Pages artifact"
         default: false
+      check_protobuf:
+        type: boolean
+        description: "Regenerate protobuf sources and verify the checked-in output"
+        default: true
 
 jobs:
   linuxServiceWorkloads:
@@ -133,6 +137,7 @@ jobs:
           fi
 
       - name: Check protobuf
+        if: ${{ inputs.check_protobuf }}
         run: |
           make protos
           if ! git diff --quiet -- . ; then

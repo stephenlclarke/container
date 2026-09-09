@@ -18,6 +18,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.filter.outputs.heavy }}
+      protobuf: ${{ steps.filter.outputs.protobuf }}
     steps:
       - name: Checkout for push diff
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -38,19 +39,7 @@ jobs:
             git diff --name-only "$before" "$after" > "$changed_files"
           fi
 
-          heavy=false
-          while IFS= read -r path; do
-            case "$path" in
-              *.md|docs/*|Formula/*)
-                ;;
-              *)
-                heavy=true
-                break
-                ;;
-            esac
-          done < "$changed_files"
-
-          printf 'heavy=%s\n' "$heavy" >> "$GITHUB_OUTPUT"
+          python3 scripts/classify-build-inputs.py "$changed_files" >> "$GITHUB_OUTPUT"
 
   build:
     name: Invoke build
@@ -59,6 +48,7 @@ jobs:
     uses: ./.github/workflows/common.yml
     with:
       release: true
+      check_protobuf: ${{ needs.changes.outputs.protobuf == 'true' }}
     secrets: inherit
     permissions:
       contents: read

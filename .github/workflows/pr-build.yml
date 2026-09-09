@@ -18,7 +18,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       heavy: ${{ steps.filter.outputs.heavy }}
+      protobuf: ${{ steps.filter.outputs.protobuf }}
     steps:
+      - name: Checkout workflow tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
       - name: Classify changed files
         id: filter
         env:
@@ -31,19 +35,7 @@ jobs:
             --paginate \
             --jq '.[].filename' > "$changed_files"
 
-          heavy=false
-          while IFS= read -r path; do
-            case "$path" in
-              *.md|docs/*|Formula/*)
-                ;;
-              *)
-                heavy=true
-                break
-                ;;
-            esac
-          done < "$changed_files"
-
-          printf 'heavy=%s\n' "$heavy" >> "$GITHUB_OUTPUT"
+          python3 scripts/classify-build-inputs.py "$changed_files" >> "$GITHUB_OUTPUT"
 
   verify-signatures:
     name: Verify commit signatures
@@ -85,6 +77,7 @@ jobs:
       release: false
       coverage: ${{ github.repository == 'apple/container' }}
       pr_number: ${{ github.event.pull_request.number }}
+      check_protobuf: ${{ needs.changes.outputs.protobuf == 'true' }}
     secrets: inherit
     permissions:
       contents: read
