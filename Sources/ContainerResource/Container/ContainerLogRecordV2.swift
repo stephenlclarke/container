@@ -354,7 +354,7 @@ public struct ContainerLogRecordSplitterV1: Sendable {
         let fragment = ContainerLogRecordFragmentV1(
             stream: stream,
             observation: observation,
-            payload: pending,
+            payload: takePendingPayload(),
             partial: nil
         )
         do {
@@ -376,7 +376,7 @@ public struct ContainerLogRecordSplitterV1: Sendable {
         let fragment = ContainerLogRecordFragmentV1(
             stream: stream,
             observation: context.observation,
-            payload: pending,
+            payload: takePendingPayload(),
             partial: ContainerLogPartialMetadataV1(
                 id: context.id,
                 ordinal: nextPartialOrdinal,
@@ -393,9 +393,18 @@ public struct ContainerLogRecordSplitterV1: Sendable {
         if completesLogicalLine {
             resetLogicalLine()
         } else {
-            pending.removeAll(keepingCapacity: true)
             nextPartialOrdinal += 1
         }
+    }
+
+    /// Transfers the current bytes to the emitted fragment before installing
+    /// fresh mutable storage. Delivery may outlive the synchronous callback,
+    /// so the splitter must never mutate storage which has crossed that
+    /// ownership boundary.
+    private mutating func takePendingPayload() -> Data {
+        let payload = pending
+        pending = Data(capacity: maximumRecordBytes)
+        return payload
     }
 
     private mutating func partialContext(
