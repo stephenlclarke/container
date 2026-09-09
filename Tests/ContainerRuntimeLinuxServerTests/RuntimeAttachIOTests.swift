@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import Containerization
+import Darwin
 import Foundation
 import Synchronization
 import Testing
@@ -22,6 +23,47 @@ import Testing
 @testable import ContainerRuntimeLinuxServer
 
 struct RuntimeAttachIOTests {
+    @Test("Process output close cannot close a subsequently reused descriptor")
+    func processOutputCloseTracksFileHandleOwnership() throws {
+        let source = Pipe()
+        let ownedDescriptor = Darwin.fcntl(
+            source.fileHandleForWriting.fileDescriptor,
+            F_DUPFD_CLOEXEC,
+            10_000
+        )
+        try #require(ownedDescriptor >= 10_000)
+        let originalWrite = FileHandle(fileDescriptor: ownedDescriptor, closeOnDealloc: true)
+        defer {
+            try? source.fileHandleForReading.close()
+            try? source.fileHandleForWriting.close()
+            try? originalWrite.close()
+        }
+
+        try RuntimeService.closeProcessOutputHandles([nil, originalWrite, nil])
+
+        let replacement = Pipe()
+        try #require(
+            Darwin.dup2(replacement.fileHandleForReading.fileDescriptor, ownedDescriptor)
+                == ownedDescriptor
+        )
+        defer {
+            _ = Darwin.close(ownedDescriptor)
+            try? replacement.fileHandleForReading.close()
+            try? replacement.fileHandleForWriting.close()
+        }
+        try replacement.fileHandleForWriting.write(contentsOf: Data("ok".utf8))
+
+        // A raw close leaves originalWrite marked open. Closing it again would
+        // then close the replacement after the kernel reuses the descriptor.
+        try originalWrite.close()
+        var buffer = [UInt8](repeating: 0, count: 2)
+        let bytesRead = buffer.withUnsafeMutableBytes {
+            Darwin.read(ownedDescriptor, $0.baseAddress, $0.count)
+        }
+        #expect(bytesRead == 2)
+        #expect(buffer == Array("ok".utf8))
+    }
+
     @Test("Prewarming keeps stdin attachable before the first client arrives")
     func prewarmingCreatesDeferredInputRelay() {
         let ordinary = RuntimeService.attachableInput(

@@ -1444,12 +1444,7 @@ public actor RuntimeService {
 
             let waitFunc: ExitMonitor.WaitHandler = {
                 let code = try await process.wait()
-                if let out = processInfo.io[1] {
-                    try self.closeHandle(out.fileDescriptor)
-                }
-                if let err = processInfo.io[2] {
-                    try self.closeHandle(err.fileDescriptor)
-                }
+                try Self.closeProcessOutputHandles(processInfo.io)
                 return code
             }
             try await self.monitor.track(id: id, waitingOn: waitFunc)
@@ -2117,13 +2112,9 @@ public actor RuntimeService {
         )
     }
 
-    private nonisolated func closeHandle(_ handle: Int32) throws {
-        guard close(handle) == 0 else {
-            guard let errCode = POSIXErrorCode(rawValue: errno) else {
-                fatalError("failed to convert errno to POSIXErrorCode")
-            }
-            throw POSIXError(errCode)
-        }
+    package nonisolated static func closeProcessOutputHandles(_ io: [FileHandle?]) throws {
+        try io[1]?.close()
+        try io[2]?.close()
     }
 
     private func getContainer() throws -> ContainerInfo {
