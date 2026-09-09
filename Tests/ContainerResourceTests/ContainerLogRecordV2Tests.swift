@@ -358,6 +358,30 @@ struct ContainerLogRecordV2Tests {
         #expect(emitted == 64)
     }
 
+    @Test func emittedPayloadsRemainStableWhileTheSplitterContinuesWriting() throws {
+        let observation = try makeObservation(seconds: 101)
+        var splitter = try ContainerLogRecordSplitterV1(
+            stream: .stdout,
+            maximumRecordBytes: 4
+        )
+        var fragments: [ContainerLogRecordFragmentV1] = []
+
+        for value in 0..<1_024 {
+            let byte = UInt8(ascii: "a") + UInt8(value % 26)
+            splitter.append(
+                Data(repeating: byte, count: 4),
+                observationProvider: { observation },
+                emit: { fragments.append($0) }
+            )
+        }
+
+        #expect(fragments.count == 1_024)
+        for (value, fragment) in fragments.enumerated() {
+            let byte = UInt8(ascii: "a") + UInt8(value % 26)
+            #expect(fragment.payload == Data(repeating: byte, count: 4))
+        }
+    }
+
     @Test func strictTimestampAndAuthorityConstructionPreserveFractionalTime() throws {
         let timestamp = try ContainerLogTimestamp(
             secondsSinceUnixEpoch: 1_700_000_000,
