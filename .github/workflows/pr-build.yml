@@ -46,14 +46,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          UPSTREAM_REPO: apple/container
+          UPSTREAM_BRANCH: main
         run: |
           commits=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/commits" --paginate)
           unsigned_commits=""
 
           while IFS='|' read -r sha author verified; do
-            if [ "$verified" != "true" ]; then
-              unsigned_commits="$unsigned_commits  - $sha by $author\n"
-            fi
+            [ "$verified" = "true" ] && continue
+
+            # Upstream occasionally lands unsigned commits. Accept one only
+            # when GitHub proves it is already an ancestor of upstream/main;
+            # unsigned commits authored solely in this fork still fail.
+            upstream_status=$(gh api \
+              "repos/${UPSTREAM_REPO}/compare/${sha}...${UPSTREAM_BRANCH}" \
+              --jq '.status' 2>/dev/null || true)
+            case "$upstream_status" in
+              ahead|identical) ;;
+              *) unsigned_commits="$unsigned_commits  - $sha by $author\n" ;;
+            esac
           done < <(echo "$commits" | jq -r '.[] | "\(.sha)|\(.commit.author.name)|\(.commit.verification.verified)"')
 
           if [ -n "$unsigned_commits" ]; then
