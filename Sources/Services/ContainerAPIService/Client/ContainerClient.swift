@@ -537,6 +537,20 @@ public struct ContainerClient: Sendable {
         options: ContainerLogOptions = .default,
         replay: ContainerLogReplayOptions = .default
     ) async throws -> [ContainerLogRecord] {
+        try await logRecords(
+            id: id,
+            options: options,
+            replay: replay,
+            responseTimeout: XPCClient.xpcRegistrationTimeout
+        )
+    }
+
+    public func logRecords(
+        id: String,
+        options: ContainerLogOptions = .default,
+        replay: ContainerLogReplayOptions = .default,
+        responseTimeout: Duration?
+    ) async throws -> [ContainerLogRecord] {
         do {
             let request = XPCMessage(route: .containerLogRecords)
             request.set(key: .id, value: id)
@@ -551,7 +565,10 @@ public struct ContainerClient: Sendable {
             }
             request.set(key: .logIncludeRotated, value: replay.includeRotated)
 
-            let response = try await xpcClient.send(request)
+            let response = try await xpcSend(
+                message: request,
+                timeout: responseTimeout
+            )
             guard let data = response.dataNoCopy(key: .logRecords) else {
                 throw ContainerizationError(
                     .internalError,
@@ -580,6 +597,18 @@ public struct ContainerClient: Sendable {
         id: String,
         options: ContainerLogOptions = .default
     ) async throws -> FileHandle {
+        try await followLogRecords(
+            id: id,
+            options: options,
+            responseTimeout: XPCClient.xpcRegistrationTimeout
+        )
+    }
+
+    public func followLogRecords(
+        id: String,
+        options: ContainerLogOptions = .default,
+        responseTimeout: Duration?
+    ) async throws -> FileHandle {
         do {
             let request = XPCMessage(route: .containerFollowLogRecords)
             request.set(key: .id, value: id)
@@ -593,7 +622,10 @@ public struct ContainerClient: Sendable {
                 request.set(key: .logUntil, value: until)
             }
 
-            let response = try await xpcClient.send(request)
+            let response = try await xpcSend(
+                message: request,
+                timeout: responseTimeout
+            )
             guard let fd = response.fileHandle(key: .logRecordFile) else {
                 throw ContainerizationError(
                     .internalError,
@@ -614,7 +646,22 @@ public struct ContainerClient: Sendable {
 
     /// Get the timestamped log record file for a container.
     public func logRecordFile(id: String) async throws -> FileHandle {
-        try await logRecordFile(id: id, replay: .default)
+        try await logRecordFile(
+            id: id,
+            replay: .default,
+            responseTimeout: XPCClient.xpcRegistrationTimeout
+        )
+    }
+
+    public func logRecordFile(
+        id: String,
+        responseTimeout: Duration?
+    ) async throws -> FileHandle {
+        try await logRecordFile(
+            id: id,
+            replay: .default,
+            responseTimeout: responseTimeout
+        )
     }
 
     /// Stream a finite newline-delimited record file for a container.
@@ -625,12 +672,27 @@ public struct ContainerClient: Sendable {
         id: String,
         replay: ContainerLogReplayOptions
     ) async throws -> FileHandle {
+        try await logRecordFile(
+            id: id,
+            replay: replay,
+            responseTimeout: XPCClient.xpcRegistrationTimeout
+        )
+    }
+
+    public func logRecordFile(
+        id: String,
+        replay: ContainerLogReplayOptions,
+        responseTimeout: Duration?
+    ) async throws -> FileHandle {
         do {
             let request = XPCMessage(route: .containerLogRecordFile)
             request.set(key: .id, value: id)
             request.set(key: .logIncludeRotated, value: replay.includeRotated)
 
-            let response = try await xpcClient.send(request)
+            let response = try await xpcSend(
+                message: request,
+                timeout: responseTimeout
+            )
             guard let fd = response.fileHandle(key: .logRecordFile) else {
                 throw ContainerizationError(
                     .internalError,
@@ -655,7 +717,23 @@ public struct ContainerClient: Sendable {
         id: String,
         replay: ContainerLogReplayOptions = .default
     ) async throws -> AsyncThrowingStream<ContainerLogRecord, any Error> {
-        let file = try await logRecordFile(id: id, replay: replay)
+        try await logRecordStream(
+            id: id,
+            replay: replay,
+            responseTimeout: XPCClient.xpcRegistrationTimeout
+        )
+    }
+
+    public func logRecordStream(
+        id: String,
+        replay: ContainerLogReplayOptions = .default,
+        responseTimeout: Duration?
+    ) async throws -> AsyncThrowingStream<ContainerLogRecord, any Error> {
+        let file = try await logRecordFile(
+            id: id,
+            replay: replay,
+            responseTimeout: responseTimeout
+        )
         return Self.logRecordStream(file: file)
     }
 
