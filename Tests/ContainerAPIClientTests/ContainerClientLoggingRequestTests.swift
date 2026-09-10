@@ -23,6 +23,54 @@ import Testing
 
 struct ContainerClientLoggingRequestTests {
     @Test
+    func logRecordRequestsExposeResponseTimeouts() {
+        let client = ContainerClient()
+        let originalRecords:
+            @Sendable (
+                String,
+                ContainerLogOptions,
+                ContainerLogReplayOptions
+            ) async throws -> [ContainerLogRecord] = client.logRecords
+        let originalFollow:
+            @Sendable (
+                String,
+                ContainerLogOptions
+            ) async throws -> FileHandle = client.followLogRecords
+        let originalFile:
+            @Sendable (
+                String,
+                ContainerLogReplayOptions
+            ) async throws -> FileHandle = client.logRecordFile
+        let originalStream:
+            @Sendable (
+                String,
+                ContainerLogReplayOptions
+            ) async throws -> AsyncThrowingStream<ContainerLogRecord, any Error> =
+                client.logRecordStream
+        let records: @Sendable (ContainerClient) async throws -> [ContainerLogRecord] = { client in
+            try await client.logRecords(
+                id: "fixture",
+                responseTimeout: .milliseconds(100)
+            )
+        }
+        let stream:
+            @Sendable (ContainerClient) async throws
+                -> AsyncThrowingStream<ContainerLogRecord, any Error> = { client in
+                    try await client.logRecordStream(
+                        id: "fixture",
+                        responseTimeout: .milliseconds(100)
+                    )
+                }
+
+        _ = originalRecords
+        _ = originalFollow
+        _ = originalFile
+        _ = originalStream
+        _ = records
+        _ = stream
+    }
+
+    @Test
     func clientEncodingPreservesTheExactLoggingRequest() throws {
         let request = ContainerLogRequest(
             driver: "acme.example/remote",
