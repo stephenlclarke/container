@@ -20,6 +20,65 @@ import ContainerRuntimeLinuxClient
 import ContainerizationOCI
 import Foundation
 
+private struct DockerRequestedImagePlatform {
+    let os: String
+    let architecture: String
+    let variant: String?
+
+    init(_ value: String) throws {
+        let components = value.split(
+            separator: "/",
+            omittingEmptySubsequences: false
+        )
+        guard components.count == 2 || components.count == 3,
+            components.allSatisfy({ !$0.isEmpty })
+        else {
+            throw DockerLoggingBackendError.invalidParameter(
+                "invalid platform '\(value)'"
+            )
+        }
+        os = String(components[0])
+        architecture = Self.normalizedArchitecture(String(components[1]))
+        variant = components.count == 3 ? String(components[2]) : nil
+    }
+
+    func matches(_ candidate: Platform) -> Bool {
+        guard candidate.os == os,
+            candidate.architecture == architecture
+        else {
+            return false
+        }
+        guard let variant else {
+            return true
+        }
+        return Self.normalizedVariant(variant, architecture: architecture)
+            == Self.normalizedVariant(candidate.variant, architecture: architecture)
+    }
+
+    private static func normalizedArchitecture(_ value: String) -> String {
+        switch value {
+        case "aarch64": "arm64"
+        case "x86_64", "x86-64": "amd64"
+        case "armhf", "armel": "arm"
+        default: value
+        }
+    }
+
+    private static func normalizedVariant(
+        _ value: String?,
+        architecture: String
+    ) -> String? {
+        switch (architecture, value) {
+        case ("arm64", nil), ("arm64", "8"):
+            "v8"
+        case ("amd64", "v1"):
+            nil
+        default:
+            value
+        }
+    }
+}
+
 private struct DockerImageGroup {
     let digest: String
     let descriptor: Descriptor
@@ -99,14 +158,45 @@ extension ContainerDockerLoggingBackend:
     }
 
     public func imageInspectJSON(name: String) async throws -> Data {
+        try await imageInspectJSON(name: name, platform: nil)
+    }
+
+    public func imageInspectJSON(
+        name: String,
+        platform: String?
+    ) async throws -> Data {
         do {
+            let requestedPlatform = try platform.map {
+                try DockerRequestedImagePlatform($0)
+            }
             let groups = Self.imageGroups(
                 try await imageResourceProvider()
             )
             guard let group = Self.resolveImageReference(name, in: groups) else {
                 throw DockerLoggingBackendError.imageNotFound(name)
             }
-            return try Self.jsonData(Self.imageInspectObject(group))
+            let variant: ImageResource.Variant
+            if let requestedPlatform {
+                guard
+                    let selected = Self.resolveImageVariant(
+                        requestedPlatform,
+                        in: group
+                    )
+                else {
+                    throw DockerLoggingBackendError.imageNotFound(name)
+                }
+                variant = selected
+            } else {
+                guard let selected = group.variant else {
+                    throw DockerLoggingBackendError.server(
+                        "image \(group.digest) has no runnable platform variant"
+                    )
+                }
+                variant = selected
+            }
+            return try Self.jsonData(
+                Self.imageInspectObject(group, variant: variant)
+            )
         } catch {
             throw Self.map(error, containerID: nil)
         }
@@ -292,13 +382,9 @@ extension ContainerDockerLoggingBackend:
     }
 
     private static func imageInspectObject(
-        _ group: DockerImageGroup
+        _ group: DockerImageGroup,
+        variant: ImageResource.Variant
     ) throws -> [String: Any] {
-        guard let variant = group.variant else {
-            throw DockerLoggingBackendError.server(
-                "image \(group.digest) has no runnable platform variant"
-            )
-        }
         var config = try encodableJSONObject(variant.config.config)
         if let healthCheck = variant.healthCheck {
             config["Healthcheck"] = try encodableJSONObject(healthCheck)
@@ -348,6 +434,15 @@ extension ContainerDockerLoggingBackend:
                 variant: variant
             )
         }
+    }
+
+    private static func resolveImageVariant(
+        _ requestedPlatform: DockerRequestedImagePlatform,
+        in group: DockerImageGroup
+    ) -> ImageResource.Variant? {
+        group.resources.lazy
+            .flatMap(\.variants)
+            .first { requestedPlatform.matches($0.platform) }
     }
 
     private static func matchesImageListFilter(
