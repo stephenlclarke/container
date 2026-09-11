@@ -1479,12 +1479,33 @@ struct ContainerLogsTests {
 
         let digest = "sha256:" + String(repeating: "d", count: 64)
         let created = Date(timeIntervalSince1970: 1_776_383_604)
-        let alpine = resource(
+        let alpineBase = resource(
             reference: "alpine:3.20",
             digest: digest,
             created: created,
             labels: ["fixture": "true"],
             size: 4_103_199
+        )
+        let amd64Variant = ImageResource.Variant(
+            platform: Platform(arch: "amd64", os: "linux", variant: "v3"),
+            digest: "sha256:" + String(repeating: "a", count: 64),
+            size: 5_103_199,
+            config: Image(
+                created: "2026-04-16T23:53:24.896953537Z",
+                architecture: "amd64",
+                os: "linux",
+                variant: "v3",
+                config: ImageConfig(
+                    cmd: ["/bin/amd64"],
+                    workingDir: "/"
+                ),
+                rootfs: Rootfs(type: "layers", diffIDs: [])
+            )
+        )
+        let alpine = ImageResource(
+            configuration: alpineBase.configuration,
+            variants: alpineBase.variants + [amd64Variant],
+            displayReference: alpineBase.displayReference
         )
         let stable = resource(
             reference: "alpine:stable",
@@ -1566,6 +1587,60 @@ struct ContainerLogsTests {
         let rootFS = try #require(inspect["RootFS"] as? [String: Any])
         #expect(rootFS["Type"] as? String == "layers")
         #expect((rootFS["Layers"] as? [String])?.count == 1)
+
+        let amd64InspectData = try await backend.imageInspectJSON(
+            name: "alpine:3.20",
+            platform: #"{"os":"linux","architecture":"amd64","variant":"v3"}"#
+        )
+        let amd64Inspect = try #require(
+            try JSONSerialization.jsonObject(with: amd64InspectData)
+                as? [String: Any]
+        )
+        #expect(amd64Inspect["Architecture"] as? String == "amd64")
+        #expect(amd64Inspect["Variant"] as? String == "v3")
+        #expect(amd64Inspect["Size"] as? Int == 5_103_199)
+        let amd64Config = try #require(amd64Inspect["Config"] as? [String: Any])
+        #expect(amd64Config["Cmd"] as? [String] == ["/bin/amd64"])
+
+        let slashPlatformData = try await backend.imageInspectJSON(
+            name: "alpine:3.20",
+            platform: "linux/amd64/v3"
+        )
+        let slashPlatform = try #require(
+            try JSONSerialization.jsonObject(with: slashPlatformData)
+                as? [String: Any]
+        )
+        #expect(slashPlatform["Architecture"] as? String == "amd64")
+        #expect(slashPlatform["Variant"] as? String == "v3")
+
+        await #expect(
+            throws: DockerLoggingBackendError.imageNotFound("alpine:3.20")
+        ) {
+            try await backend.imageInspectJSON(
+                name: "alpine:3.20",
+                platform: "linux/riscv64"
+            )
+        }
+        await #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                "invalid platform 'linux'"
+            )
+        ) {
+            try await backend.imageInspectJSON(
+                name: "alpine:3.20",
+                platform: "linux"
+            )
+        }
+        await #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                #"invalid platform '{"os":"linux","architecture":"amd64","variant":""}'"#
+            )
+        ) {
+            try await backend.imageInspectJSON(
+                name: "alpine:3.20",
+                platform: #"{"os":"linux","architecture":"amd64","variant":""}"#
+            )
+        }
 
         func inspectedID(_ name: String) async throws -> String? {
             let data = try await backend.imageInspectJSON(name: name)
