@@ -20,30 +20,60 @@ import ContainerRuntimeLinuxClient
 import ContainerizationOCI
 import Foundation
 
+private struct DockerImagePlatformQuery: Decodable {
+    let operatingSystem: String
+    let architecture: String
+    let variant: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case operatingSystem = "os"
+        case architecture
+        case variant
+    }
+}
+
 private struct DockerRequestedImagePlatform {
-    let os: String
+    let operatingSystem: String
     let architecture: String
     let variant: String?
 
     init(_ value: String) throws {
-        let components = value.split(
-            separator: "/",
-            omittingEmptySubsequences: false
-        )
-        guard components.count == 2 || components.count == 3,
-            components.allSatisfy({ !$0.isEmpty })
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let platform: DockerImagePlatformQuery?
+        if trimmed.first == "{" {
+            platform = trimmed.data(using: .utf8).flatMap {
+                try? JSONDecoder().decode(DockerImagePlatformQuery.self, from: $0)
+            }
+        } else {
+            let components = trimmed.split(
+                separator: "/",
+                omittingEmptySubsequences: false
+            )
+            platform =
+                components.count == 2 || components.count == 3
+                ? DockerImagePlatformQuery(
+                    operatingSystem: String(components[0]),
+                    architecture: String(components[1]),
+                    variant: components.count == 3 ? String(components[2]) : nil
+                )
+                : nil
+        }
+        guard let platform,
+            !platform.operatingSystem.isEmpty,
+            !platform.architecture.isEmpty,
+            platform.variant?.isEmpty != true
         else {
             throw DockerLoggingBackendError.invalidParameter(
                 "invalid platform '\(value)'"
             )
         }
-        os = String(components[0])
-        architecture = Self.normalizedArchitecture(String(components[1]))
-        variant = components.count == 3 ? String(components[2]) : nil
+        operatingSystem = platform.operatingSystem
+        architecture = Self.normalizedArchitecture(platform.architecture)
+        variant = platform.variant
     }
 
     func matches(_ candidate: Platform) -> Bool {
-        guard candidate.os == os,
+        guard candidate.os == operatingSystem,
             candidate.architecture == architecture
         else {
             return false

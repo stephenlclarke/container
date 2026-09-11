@@ -1590,7 +1590,7 @@ struct ContainerLogsTests {
 
         let amd64InspectData = try await backend.imageInspectJSON(
             name: "alpine:3.20",
-            platform: "linux/amd64/v3"
+            platform: #"{"os":"linux","architecture":"amd64","variant":"v3"}"#
         )
         let amd64Inspect = try #require(
             try JSONSerialization.jsonObject(with: amd64InspectData)
@@ -1601,6 +1601,17 @@ struct ContainerLogsTests {
         #expect(amd64Inspect["Size"] as? Int == 5_103_199)
         let amd64Config = try #require(amd64Inspect["Config"] as? [String: Any])
         #expect(amd64Config["Cmd"] as? [String] == ["/bin/amd64"])
+
+        let slashPlatformData = try await backend.imageInspectJSON(
+            name: "alpine:3.20",
+            platform: "linux/amd64/v3"
+        )
+        let slashPlatform = try #require(
+            try JSONSerialization.jsonObject(with: slashPlatformData)
+                as? [String: Any]
+        )
+        #expect(slashPlatform["Architecture"] as? String == "amd64")
+        #expect(slashPlatform["Variant"] as? String == "v3")
 
         await #expect(
             throws: DockerLoggingBackendError.imageNotFound("alpine:3.20")
@@ -1618,6 +1629,16 @@ struct ContainerLogsTests {
             try await backend.imageInspectJSON(
                 name: "alpine:3.20",
                 platform: "linux"
+            )
+        }
+        await #expect(
+            throws: DockerLoggingBackendError.invalidParameter(
+                #"invalid platform '{"os":"linux","architecture":"amd64","variant":""}'"#
+            )
+        ) {
+            try await backend.imageInspectJSON(
+                name: "alpine:3.20",
+                platform: #"{"os":"linux","architecture":"amd64","variant":""}"#
             )
         }
 
