@@ -142,6 +142,34 @@ struct PacketFilterTest {
         }
     }
 
+    @Test(arguments: [false, true])
+    func testCustomConfigRetainsRedirectAnchor(existingExactAnchor: Bool) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            let anchorPath = tempPath.appending("com.apple.container")
+            let exactAnchor = "rdr-anchor \"com.apple/container\" # user owned\n"
+            let originalConfig = "set skip on lo0\n" + (existingExactAnchor ? exactAnchor : "")
+            try originalConfig.write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { _ in 0 }
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+
+            try pf.createRedirectRule(from: from, to: to, domain: domain)
+
+            let managedAnchor = existingExactAnchor ? "" : "rdr-anchor \"com.apple/container\" # managed by container\n"
+            let loadAnchor = "load anchor \"com.apple/container\" from \"\(anchorPath.string)\"\n"
+            #expect(
+                try String(contentsOfFile: configPath.string, encoding: .utf8)
+                    == originalConfig + managedAnchor + loadAnchor)
+
+            try pf.removeRedirectRule(from: from, to: to, domain: domain)
+
+            #expect(!FileManager.default.fileExists(atPath: anchorPath.string))
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == originalConfig)
+        }
+    }
+
     @Test(arguments: [0, 1, 2])
     func testReinitializeStopsOnFailure(failingCommand: Int) throws {
         try withTemporaryDirectory { tempPath in

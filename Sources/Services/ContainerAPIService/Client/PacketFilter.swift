@@ -115,10 +115,12 @@ public struct PacketFilter: Sendable {
         let anchorPath = self.anchorsPath.appending(Self.anchorFileName)
 
         let anchorKeywords = ["scrub-anchor", "nat-anchor", "rdr-anchor", "dummynet-anchor", "anchor"]
+        let redirectAnchorText = "rdr-anchor \"\(Self.anchor)\" # managed by container"
         let loadAnchorText = "load anchor \"\(Self.anchor)\" from \"\(anchorPath.string)\""
         let ownedLines =
             anchorKeywords.map { "\($0) \"\(Self.legacyAnchor)\"" } + [
                 "load anchor \"\(Self.legacyAnchor)\" from \"\(anchorPath.string)\"",
+                redirectAnchorText,
                 loadAnchorText,
             ]
 
@@ -130,6 +132,15 @@ public struct PacketFilter: Sendable {
         if !removing {
             if lines.last != "" {
                 lines.append("")
+            }
+            let redirectAnchors = ["rdr-anchor \"com.apple/*\"", "rdr-anchor \"\(Self.anchor)\""]
+            let hasApplicableRedirectAnchor = lines.contains { line in
+                let directive = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
+                    .trimmingCharacters(in: .whitespaces)
+                return redirectAnchors.contains(directive)
+            }
+            if !hasApplicableRedirectAnchor {
+                lines.insert(redirectAnchorText, at: lines.endIndex - 1)
             }
             lines.insert(loadAnchorText, at: lines.endIndex - 1)
         }
