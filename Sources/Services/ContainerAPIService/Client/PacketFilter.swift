@@ -143,7 +143,7 @@ public struct PacketFilter: Sendable {
                 return redirectAnchors.contains(directive)
             }
             if !hasApplicableRedirectAnchor {
-                lines.insert(redirectAnchorText, at: Self.redirectAnchorInsertionIndex(in: lines))
+                lines.insert(redirectAnchorText, at: try Self.redirectAnchorInsertionIndex(in: lines))
             }
             lines.insert(loadAnchorText, at: lines.endIndex - 1)
         }
@@ -160,12 +160,17 @@ public struct PacketFilter: Sendable {
         }
     }
 
-    private static func redirectAnchorInsertionIndex(in lines: [String]) -> Int {
+    private static func redirectAnchorInsertionIndex(in lines: [String]) throws -> Int {
         let filteringKeywords: Set<String> = ["anchor", "antispoof", "block", "dummynet", "dummynet-anchor", "match", "pass"]
         for (index, line) in lines.enumerated() {
             let directive = normalizedLine(line)
             guard !directive.isEmpty else {
                 continue
+            }
+            if directive.hasPrefix("include ") {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "cannot safely place the managed redirect anchor in a pf config containing include directives")
             }
             if directive.hasPrefix("load anchor ") {
                 return index

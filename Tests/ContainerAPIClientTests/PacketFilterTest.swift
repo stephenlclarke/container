@@ -168,6 +168,30 @@ struct PacketFilterTest {
         }
     }
 
+    @Test
+    func testCustomConfigRejectsUnknownIncludeOrdering() throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            let originalConfig = "include \"/etc/pf/custom.conf\"\npass out all\n"
+            try originalConfig.write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { _ in 0 }
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+
+            #expect {
+                try pf.createRedirectRule(from: from, to: to, domain: domain)
+            } throws: { error in
+                guard let error = error as? ContainerizationError else {
+                    return false
+                }
+                return error.code == .invalidState
+            }
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == originalConfig)
+            #expect(!FileManager.default.fileExists(atPath: tempPath.appending("com.apple.container").string))
+        }
+    }
+
     @Test(arguments: [0, 1, 2, 3, 4])
     func testReinitializeStopsOnFailure(failingCommand: Int) throws {
         try withTemporaryDirectory { tempPath in
