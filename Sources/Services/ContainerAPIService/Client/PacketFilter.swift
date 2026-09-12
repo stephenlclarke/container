@@ -117,30 +117,33 @@ public struct PacketFilter: Sendable {
         let anchorKeywords = ["scrub-anchor", "nat-anchor", "rdr-anchor", "dummynet-anchor", "anchor"]
         let redirectAnchorText = "rdr-anchor \"\(Self.anchor)\" # managed by container"
         let loadAnchorText = "load anchor \"\(Self.anchor)\" from \"\(anchorPath.string)\""
-        let ownedLines =
+        let ownedDirectives = Set(
             anchorKeywords.map { "\($0) \"\(Self.legacyAnchor)\"" } + [
                 "load anchor \"\(Self.legacyAnchor)\" from \"\(anchorPath.string)\"",
-                redirectAnchorText,
                 loadAnchorText,
-            ]
+            ])
+        let normalizedManagedRedirectAnchor = Self.normalizedLine(redirectAnchorText, retainingComment: true)
 
         var content: String = ""
         if fm.fileExists(atPath: self.configPath.string) {
             content = try String(contentsOfFile: self.configPath.string, encoding: .utf8)
         }
-        var lines = content.components(separatedBy: .newlines).filter { !ownedLines.contains($0) }
+        var lines = content.components(separatedBy: .newlines).filter { line in
+            let directive = Self.normalizedLine(line)
+            let completeLine = Self.normalizedLine(line, retainingComment: true)
+            return !ownedDirectives.contains(directive) && completeLine != normalizedManagedRedirectAnchor
+        }
         if !removing {
             if lines.last != "" {
                 lines.append("")
             }
-            let redirectAnchors = ["rdr-anchor \"com.apple/*\"", "rdr-anchor \"\(Self.anchor)\""]
+            let redirectAnchors = Set(["rdr-anchor \"com.apple/*\"", "rdr-anchor \"\(Self.anchor)\""])
             let hasApplicableRedirectAnchor = lines.contains { line in
-                let directive = line.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)[0]
-                    .trimmingCharacters(in: .whitespaces)
+                let directive = Self.normalizedLine(line)
                 return redirectAnchors.contains(directive)
             }
             if !hasApplicableRedirectAnchor {
-                lines.insert(redirectAnchorText, at: lines.endIndex - 1)
+                lines.insert(redirectAnchorText, at: Self.redirectAnchorInsertionIndex(in: lines))
             }
             lines.insert(loadAnchorText, at: lines.endIndex - 1)
         }
@@ -157,34 +160,92 @@ public struct PacketFilter: Sendable {
         }
     }
 
+    private static func redirectAnchorInsertionIndex(in lines: [String]) -> Int {
+        let filteringKeywords: Set<String> = ["anchor", "antispoof", "block", "dummynet", "dummynet-anchor", "match", "pass"]
+        for (index, line) in lines.enumerated() {
+            let directive = normalizedLine(line)
+            guard !directive.isEmpty else {
+                continue
+            }
+            if directive.hasPrefix("load anchor ") {
+                return index
+            }
+            if let keyword = directive.split(separator: " ", maxSplits: 1).first,
+                filteringKeywords.contains(String(keyword))
+            {
+                return index
+            }
+        }
+        return lines.last == "" ? lines.index(before: lines.endIndex) : lines.endIndex
+    }
+
+    private static func normalizedLine(_ line: String, retainingComment: Bool = false) -> String {
+        var content = ""
+        var insideQuotes = false
+        var escaped = false
+        for character in line {
+            if character == "#" && !insideQuotes && !retainingComment {
+                break
+            }
+            content.append(character)
+            if character == "\\" && insideQuotes {
+                escaped.toggle()
+                continue
+            }
+            if character == "\"" && !escaped {
+                insideQuotes.toggle()
+            }
+            escaped = false
+        }
+        return content.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
     public func reinitialize() throws {
         let anchorPath = self.anchorsPath.appending(Self.anchorFileName)
-        let path = FileManager.default.fileExists(atPath: anchorPath.string) ? anchorPath.string : "/dev/null"
+        let fm = FileManager.default
+        let hasAnchorFile = fm.fileExists(atPath: anchorPath.string)
+        let path = hasAnchorFile ? anchorPath.string : "/dev/null"
 
-        let checkStatus: Int32
-        do {
-            checkStatus = try run(["-n", "-a", Self.anchor, "-f", path])
-        } catch {
-            throw ContainerizationError(.internalError, message: "pfctl rule check exec failed: \"\(error)\"")
+        try validateRules(arguments: ["-n", "-a", Self.anchor, "-f", path], path: path)
+
+        if fm.fileExists(atPath: self.configPath.string) {
+            try validateRules(arguments: ["-n", "-f", self.configPath.string], path: self.configPath.string)
+            try loadRules(arguments: ["-f", self.configPath.string])
+            if !hasAnchorFile {
+                try loadRules(anchor: Self.anchor, path: "/dev/null")
+            }
+        } else {
+            try loadRules(anchor: Self.anchor, path: path)
         }
 
-        guard checkStatus == 0 else {
-            throw ContainerizationError(.internalError, message: "invalid pf config \"\(path)\"")
-        }
-
-        try loadRules(anchor: Self.anchor, path: path)
         try loadRules(anchor: Self.legacyAnchor, path: "/dev/null")
     }
 
+    private func validateRules(arguments: [String], path: String) throws {
+        let checkStatus: Int32
+        do {
+            checkStatus = try run(arguments)
+        } catch {
+            throw ContainerizationError(.internalError, message: "pfctl rule check exec failed: \"\(error)\"")
+        }
+        guard checkStatus == 0 else {
+            throw ContainerizationError(.internalError, message: "invalid pf config \"\(path)\"")
+        }
+    }
+
     private func loadRules(anchor: String, path: String) throws {
+        try loadRules(arguments: ["-a", anchor, "-f", path])
+    }
+
+    private func loadRules(arguments: [String]) throws {
         let reloadStatus: Int32
         do {
-            reloadStatus = try run(["-a", anchor, "-f", path])
+            reloadStatus = try run(arguments)
         } catch {
             throw ContainerizationError(.internalError, message: "pfctl reload exec failed: \"\(error)\"")
         }
         guard reloadStatus == 0 else {
-            throw ContainerizationError(.invalidState, message: "pfctl -a \"\(anchor)\" -f \"\(path)\" failed with status \(reloadStatus)")
+            throw ContainerizationError(.invalidState, message: "pfctl \(arguments.joined(separator: " ")) failed with status \(reloadStatus)")
         }
     }
 
