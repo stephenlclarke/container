@@ -18,6 +18,7 @@ import ContainerizationError
 import ContainerizationExtras
 import DNSServer
 import Foundation
+import Synchronization
 import SystemPackage
 import Testing
 
@@ -25,7 +26,300 @@ import Testing
 
 struct PacketFilterTest {
     @Test
-    func testRedirectRuleUpdate() async throws {
+    func testRedirectRuleLifecycle() throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            let anchorPath = tempPath.appending("com.apple.container")
+            try String(Self.config.dropLast()).write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let commands = Mutex<[[String]]>([])
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { $0.append(arguments) }
+                    return 0
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
+            let from1 = try IPAddress("203.0.113.113")
+            let from2 = try IPAddress("203.0.113.114")
+            let to = try IPAddress("127.0.0.1")
+            let domain1 = try DNSName("aaa.com")
+            let domain2 = try DNSName("bbb.com")
+            let rule1 = "rdr inet from any to \(from1) -> \(to) # \(domain1.pqdn)\n"
+            let rule2 = "rdr inet from any to \(from2) -> \(to) # \(domain2.pqdn)\n"
+            let configured = Self.config + "load anchor \"com.apple/container\" from \"\(anchorPath.string)\"\n"
+            let reloadCommands = Self.reloadCommands(anchorPath: anchorPath.string)
+
+            try pf.createRedirectRule(from: from1, to: to, domain: domain1)
+            try pf.createRedirectRule(from: from1, to: to, domain: domain1)
+            try pf.createRedirectRule(from: from2, to: to, domain: domain2)
+            try pf.reinitialize()
+
+            #expect(try String(contentsOfFile: anchorPath.string, encoding: .utf8) == rule1 + rule2)
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == configured)
+            #expect(commands.withLock { $0 } == reloadCommands)
+
+            try pf.removeRedirectRule(from: from1, to: to, domain: domain1)
+            try pf.reinitialize()
+
+            #expect(try String(contentsOfFile: anchorPath.string, encoding: .utf8) == rule2)
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == configured)
+            #expect(commands.withLock { $0 } == reloadCommands + reloadCommands)
+
+            try pf.removeRedirectRule(from: from2, to: to, domain: domain2)
+            try pf.reinitialize()
+
+            #expect(!FileManager.default.fileExists(atPath: anchorPath.string))
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == Self.config)
+            #expect(
+                commands.withLock { $0 }
+                    == reloadCommands + reloadCommands + Self.reloadCommands(anchorPath: "/dev/null"))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func testLegacyRulesMigration(deleting: Bool) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            let anchorPath = tempPath.appending("com.apple.container")
+            try Self.legacyConfig(anchorPath: anchorPath).write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+            let rule = "rdr inet from any to \(from) -> \(to) # \(domain.pqdn)\n"
+            let retainedRule = "rdr inet from any to 203.0.113.114 -> 127.0.0.1 # bbb.com\n"
+            let originalRules = deleting ? rule + retainedRule : retainedRule
+            try originalRules.write(toFile: anchorPath.string, atomically: true, encoding: .utf8)
+            let commands = Mutex<[[String]]>([])
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { $0.append(arguments) }
+                    return 0
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
+
+            if deleting {
+                try pf.removeRedirectRule(from: from, to: to, domain: domain)
+            } else {
+                try pf.createRedirectRule(from: from, to: to, domain: domain)
+            }
+            try pf.reinitialize()
+
+            let expectedRules = deleting ? retainedRule : retainedRule + rule
+            let expectedConfig = Self.config + "load anchor \"com.apple/container\" from \"\(anchorPath.string)\"\n"
+            #expect(try String(contentsOfFile: anchorPath.string, encoding: .utf8) == expectedRules)
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == expectedConfig)
+            #expect(
+                commands.withLock { $0 } == Self.reloadCommands(anchorPath: anchorPath.string))
+        }
+    }
+
+    @Test(arguments: [false, true], [false, true])
+    func testLegacyLastRuleDeletion(missingFile: Bool, formattedLegacy: Bool) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            let anchorPath = tempPath.appending("com.apple.container")
+            try Self.legacyConfig(anchorPath: anchorPath, formatted: formattedLegacy)
+                .write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+            if !missingFile {
+                let rule = "rdr inet from any to \(from) -> \(to) # \(domain.pqdn)\n"
+                try rule.write(toFile: anchorPath.string, atomically: true, encoding: .utf8)
+            }
+            let commands = Mutex<[[String]]>([])
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { $0.append(arguments) }
+                    return 0
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
+
+            try pf.removeRedirectRule(from: from, to: to, domain: domain)
+            try pf.reinitialize()
+
+            #expect(!FileManager.default.fileExists(atPath: anchorPath.string))
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == Self.config)
+            #expect(commands.withLock { $0 } == Self.reloadCommands(anchorPath: "/dev/null"))
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func testCustomConfigRetainsExactRedirectAnchor(filteringRule: Bool) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            let anchorPath = tempPath.appending("com.apple.container")
+            let exactAnchor = "rdr-anchor \"com.apple/container\" # user owned\n"
+            let filterRule = filteringRule ? "pass out all\n" : ""
+            let originalConfig = "set skip on lo0\n" + exactAnchor + filterRule
+            try originalConfig.write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { _ in 0 },
+                inspect: { _ in (0, #"rdr-anchor "com.apple/container" all"#) })
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+
+            try pf.createRedirectRule(from: from, to: to, domain: domain)
+
+            let loadAnchor = "load anchor \"com.apple/container\" from \"\(anchorPath.string)\"\n"
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == originalConfig + loadAnchor)
+
+            try pf.removeRedirectRule(from: from, to: to, domain: domain)
+
+            #expect(!FileManager.default.fileExists(atPath: anchorPath.string))
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == originalConfig)
+        }
+    }
+
+    @Test(arguments: [
+        "set skip on lo0\n",
+        "set skip on lo0\npass out all\n",
+        "include \"/etc/pf/custom.conf\"\npass out all\n",
+    ])
+    func testCustomConfigWithoutRedirectAnchorIsRejected(originalConfig: String) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            try originalConfig.write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { _ in 0 },
+                inspect: { _ in (0, Self.activeWildcardRules) })
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+
+            #expect {
+                try pf.createRedirectRule(from: from, to: to, domain: domain)
+            } throws: { error in
+                guard let error = error as? ContainerizationError else {
+                    return false
+                }
+                return error.code == .invalidState
+            }
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == originalConfig)
+            #expect(!FileManager.default.fileExists(atPath: tempPath.appending("com.apple.container").string))
+        }
+    }
+
+    @Test(arguments: [0, 1, 2])
+    func testConfiguredRedirectAnchorRequiresActiveRule(inspectionFailure: Int) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            try Self.config.write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let inspections = Mutex<[[String]]>([])
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { _ in 0 },
+                inspect: { arguments in
+                    inspections.withLock { $0.append(arguments) }
+                    if inspectionFailure == 2 {
+                        throw StubError.failed
+                    }
+                    return (inspectionFailure == 1 ? 1 : 0, #"rdr-anchor "example/other" all"#)
+                })
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+
+            #expect {
+                try pf.createRedirectRule(from: from, to: to, domain: domain)
+            } throws: { error in
+                guard let error = error as? ContainerizationError else {
+                    return false
+                }
+                return error.code == (inspectionFailure == 2 ? .internalError : .invalidState)
+            }
+            #expect(inspections.withLock { $0 } == [["-s", "nat"]])
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == Self.config)
+            #expect(!FileManager.default.fileExists(atPath: tempPath.appending("com.apple.container").string))
+        }
+    }
+
+    @Test(arguments: [0, 1, 2])
+    func testReinitializeStopsOnFailure(failingCommand: Int) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            let commands = Mutex<[[String]]>([])
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { commands in
+                        commands.append(arguments)
+                        return commands.count - 1 == failingCommand ? 1 : 0
+                    }
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
+
+            #expect {
+                try pf.reinitialize()
+            } throws: { error in
+                guard let error = error as? ContainerizationError else {
+                    return false
+                }
+                return error.code == (failingCommand == 0 ? .internalError : .invalidState)
+            }
+            #expect(
+                commands.withLock { $0 }
+                    == Array(Self.reloadCommands(anchorPath: "/dev/null").prefix(failingCommand + 1)))
+        }
+    }
+
+    private static let config = """
+        # Preserve com.apple.container configuration owned by other services.
+        scrub-anchor "com.apple/*"
+        nat-anchor "com.apple/*"
+        rdr-anchor "com.apple/*"
+        rdr-anchor "com.apple.container.other"
+        dummynet-anchor "com.apple/*"
+        anchor "com.apple/*"
+        load anchor "com.apple" from "/etc/pf.anchors/com.apple"
+        # load anchor "com.apple.container" from "/etc/pf.anchors/custom"
+
+        """
+
+    private static let activeWildcardRules = #"rdr-anchor "com.apple/*" all"#
+
+    private enum StubError: Error {
+        case failed
+    }
+
+    private static func reloadCommands(anchorPath: String) -> [[String]] {
+        [
+            ["-n", "-a", "com.apple/container", "-f", anchorPath],
+            ["-a", "com.apple/container", "-f", anchorPath],
+            ["-a", "com.apple.container", "-f", "/dev/null"],
+        ]
+    }
+
+    private static func legacyConfig(anchorPath: FilePath, formatted: Bool = false) -> String {
+        var config = Self.config
+        for keyword in ["scrub-anchor", "nat-anchor", "rdr-anchor", "dummynet-anchor", "anchor"] {
+            let wildcard = "\(keyword) \"com.apple/*\""
+            let legacy =
+                formatted
+                ? "  \(keyword)   \"com.apple.container\"   # legacy container directive"
+                : "\(keyword) \"com.apple.container\""
+            config = config.replacingOccurrences(of: "\n\(wildcard)\n", with: "\n\(legacy)\n\(wildcard)\n")
+        }
+        let legacyLoad =
+            formatted
+            ? "  load   anchor \"com.apple.container\"  from  \"\(anchorPath.string)\"  # legacy load"
+            : "load anchor \"com.apple.container\" from \"\(anchorPath.string)\""
+        return config + legacyLoad + "\n"
+    }
+
+    private func withTemporaryDirectory(_ body: (FilePath) throws -> Void) throws {
         let fm = FileManager.default
         let tempURL = try fm.url(
             for: .itemReplacementDirectory,
@@ -33,61 +327,7 @@ struct PacketFilterTest {
             appropriateFor: .temporaryDirectory,
             create: true
         )
-        let tempPath = FilePath(tempURL.path)
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-        let configPath = tempPath.appending("pf.conf")
-
-        let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath)
-        let from1 = try! IPAddress("203.0.113.113")
-        let domain1 = try! DNSName("aaa.com")
-        let to = try! IPAddress("127.0.0.1")
-        try pf.createRedirectRule(from: from1, to: to, domain: domain1)
-
-        let anchorPath = tempPath.appending("com.apple.container")
-        var actualAnchorText = try String(contentsOfFile: anchorPath.string, encoding: .utf8)
-        var expectedAnchorTest = """
-            rdr inet from any to \(from1) -> \(to) # \(domain1.pqdn)\n
-            """
-
-        #expect(actualAnchorText == expectedAnchorTest)
-
-        let from2 = try! IPAddress("172.31.72.1")
-        let domain2 = try! DNSName("bbb.com")
-        try pf.createRedirectRule(from: from2, to: to, domain: domain2)
-
-        actualAnchorText = try String(contentsOfFile: anchorPath.string, encoding: .utf8)
-        expectedAnchorTest += """
-            rdr inet from any to \(from2) -> \(to) # \(domain2.pqdn)\n
-            """
-        #expect(actualAnchorText == expectedAnchorTest)
-
-        let actualConfigText = try String(contentsOfFile: configPath.string, encoding: .utf8)
-        let expectedConfigText = try Regex(
-            #"""
-            scrub-anchor "([^"]+)"
-            nat-anchor "([^"]+)"
-            rdr-anchor "([^"]+)"
-            dummynet-anchor "([^"]+)"
-            anchor "([^"]+)"
-            load anchor "([^"]+)" from "[^"]+"
-            """#
-        )
-
-        #expect(actualConfigText.contains(expectedConfigText))
-
-        try pf.removeRedirectRule(from: from1, to: to, domain: domain1)
-        try pf.removeRedirectRule(from: from2, to: to, domain: domain2)
-
-        #expect(!fm.fileExists(atPath: anchorPath.string))
-        let configText = try String(contentsOfFile: configPath.string, encoding: .utf8)
-        #expect(configText == "")
-    }
-
-    @Test
-    func testPacketFilterReinitialize() async throws {
-        let pf = PacketFilter()
-        #expect(throws: ContainerizationError.self) {
-            try pf.reinitialize()
-        }
+        defer { try? fm.removeItem(at: tempURL) }
+        try body(FilePath(tempURL.path))
     }
 }
