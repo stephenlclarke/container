@@ -115,14 +115,12 @@ public struct PacketFilter: Sendable {
         let anchorPath = self.anchorsPath.appending(Self.anchorFileName)
 
         let anchorKeywords = ["scrub-anchor", "nat-anchor", "rdr-anchor", "dummynet-anchor", "anchor"]
-        let redirectAnchorText = "rdr-anchor \"\(Self.anchor)\" # managed by container"
         let loadAnchorText = "load anchor \"\(Self.anchor)\" from \"\(anchorPath.string)\""
         let ownedDirectives = Set(
             anchorKeywords.map { "\($0) \"\(Self.legacyAnchor)\"" } + [
                 "load anchor \"\(Self.legacyAnchor)\" from \"\(anchorPath.string)\"",
                 loadAnchorText,
             ])
-        let normalizedManagedRedirectAnchor = Self.normalizedLine(redirectAnchorText, retainingComment: true)
 
         var content: String = ""
         if fm.fileExists(atPath: self.configPath.string) {
@@ -130,20 +128,21 @@ public struct PacketFilter: Sendable {
         }
         var lines = content.components(separatedBy: .newlines).filter { line in
             let directive = Self.normalizedLine(line)
-            let completeLine = Self.normalizedLine(line, retainingComment: true)
-            return !ownedDirectives.contains(directive) && completeLine != normalizedManagedRedirectAnchor
+            return !ownedDirectives.contains(directive)
         }
         if !removing {
-            if lines.last != "" {
-                lines.append("")
-            }
             let redirectAnchors = Set(["rdr-anchor \"com.apple/*\"", "rdr-anchor \"\(Self.anchor)\""])
             let hasApplicableRedirectAnchor = lines.contains { line in
                 let directive = Self.normalizedLine(line)
                 return redirectAnchors.contains(directive)
             }
-            if !hasApplicableRedirectAnchor {
-                lines.insert(redirectAnchorText, at: try Self.redirectAnchorInsertionIndex(in: lines))
+            guard hasApplicableRedirectAnchor else {
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "pf config has no active rdr-anchor for \"com.apple/*\" or \"\(Self.anchor)\"")
+            }
+            if lines.last != "" {
+                lines.append("")
             }
             lines.insert(loadAnchorText, at: lines.endIndex - 1)
         }
@@ -160,36 +159,12 @@ public struct PacketFilter: Sendable {
         }
     }
 
-    private static func redirectAnchorInsertionIndex(in lines: [String]) throws -> Int {
-        let filteringKeywords: Set<String> = ["anchor", "antispoof", "block", "dummynet", "dummynet-anchor", "match", "pass"]
-        for (index, line) in lines.enumerated() {
-            let directive = normalizedLine(line)
-            guard !directive.isEmpty else {
-                continue
-            }
-            if directive.hasPrefix("include ") {
-                throw ContainerizationError(
-                    .invalidState,
-                    message: "cannot safely place the managed redirect anchor in a pf config containing include directives")
-            }
-            if directive.hasPrefix("load anchor ") {
-                return index
-            }
-            if let keyword = directive.split(separator: " ", maxSplits: 1).first,
-                filteringKeywords.contains(String(keyword))
-            {
-                return index
-            }
-        }
-        return lines.last == "" ? lines.index(before: lines.endIndex) : lines.endIndex
-    }
-
-    private static func normalizedLine(_ line: String, retainingComment: Bool = false) -> String {
+    private static func normalizedLine(_ line: String) -> String {
         var content = ""
         var insideQuotes = false
         var escaped = false
         for character in line {
-            if character == "#" && !insideQuotes && !retainingComment {
+            if character == "#" && !insideQuotes {
                 break
             }
             content.append(character)
@@ -207,22 +182,10 @@ public struct PacketFilter: Sendable {
 
     public func reinitialize() throws {
         let anchorPath = self.anchorsPath.appending(Self.anchorFileName)
-        let fm = FileManager.default
-        let hasAnchorFile = fm.fileExists(atPath: anchorPath.string)
-        let path = hasAnchorFile ? anchorPath.string : "/dev/null"
+        let path = FileManager.default.fileExists(atPath: anchorPath.string) ? anchorPath.string : "/dev/null"
 
         try validateRules(arguments: ["-n", "-a", Self.anchor, "-f", path], path: path)
-
-        if fm.fileExists(atPath: self.configPath.string) {
-            try validateRules(arguments: ["-n", "-f", self.configPath.string], path: self.configPath.string)
-            try loadRules(arguments: ["-f", self.configPath.string])
-            if !hasAnchorFile {
-                try loadRules(anchor: Self.anchor, path: "/dev/null")
-            }
-        } else {
-            try loadRules(anchor: Self.anchor, path: path)
-        }
-
+        try loadRules(anchor: Self.anchor, path: path)
         try loadRules(anchor: Self.legacyAnchor, path: "/dev/null")
     }
 
@@ -239,18 +202,14 @@ public struct PacketFilter: Sendable {
     }
 
     private func loadRules(anchor: String, path: String) throws {
-        try loadRules(arguments: ["-a", anchor, "-f", path])
-    }
-
-    private func loadRules(arguments: [String]) throws {
         let reloadStatus: Int32
         do {
-            reloadStatus = try run(arguments)
+            reloadStatus = try run(["-a", anchor, "-f", path])
         } catch {
             throw ContainerizationError(.internalError, message: "pfctl reload exec failed: \"\(error)\"")
         }
         guard reloadStatus == 0 else {
-            throw ContainerizationError(.invalidState, message: "pfctl \(arguments.joined(separator: " ")) failed with status \(reloadStatus)")
+            throw ContainerizationError(.invalidState, message: "pfctl -a \"\(anchor)\" -f \"\(path)\" failed with status \(reloadStatus)")
         }
     }
 
