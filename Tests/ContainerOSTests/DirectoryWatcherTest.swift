@@ -15,7 +15,6 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerizationError
-import DNSServer
 import Darwin
 import Foundation
 import SystemPackage
