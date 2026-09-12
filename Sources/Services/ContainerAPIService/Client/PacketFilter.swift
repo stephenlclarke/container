@@ -31,15 +31,22 @@ public struct PacketFilter: Sendable {
     private let configPath: FilePath
     private let anchorsPath: FilePath
     private let run: @Sendable ([String]) throws -> Int32
+    private let inspect: @Sendable ([String]) throws -> (status: Int32, output: String)
 
     public init(configPath: FilePath = Self.defaultConfigPath, anchorsPath: FilePath = Self.defaultAnchorsPath) {
-        self.init(configPath: configPath, anchorsPath: anchorsPath, run: Self.runPFCTL)
+        self.init(configPath: configPath, anchorsPath: anchorsPath, run: Self.runPFCTL, inspect: Self.inspectPFCTL)
     }
 
-    init(configPath: FilePath, anchorsPath: FilePath, run: @escaping @Sendable ([String]) throws -> Int32) {
+    init(
+        configPath: FilePath,
+        anchorsPath: FilePath,
+        run: @escaping @Sendable ([String]) throws -> Int32,
+        inspect: @escaping @Sendable ([String]) throws -> (status: Int32, output: String)
+    ) {
         self.configPath = configPath
         self.anchorsPath = anchorsPath
         self.run = run
+        self.inspect = inspect
     }
 
     public func createRedirectRule(from: IPAddress, to: IPAddress, domain: DNSName) throws {
@@ -139,8 +146,9 @@ public struct PacketFilter: Sendable {
             guard hasApplicableRedirectAnchor else {
                 throw ContainerizationError(
                     .invalidState,
-                    message: "pf config has no active rdr-anchor for \"com.apple/*\" or \"\(Self.anchor)\"")
+                    message: "pf config has no rdr-anchor for \"com.apple/*\" or \"\(Self.anchor)\"")
             }
+            try confirmActiveRedirectAnchor()
             if lines.last != "" {
                 lines.append("")
             }
@@ -156,6 +164,31 @@ public struct PacketFilter: Sendable {
             try updatedContent.write(toFile: configPath.string, atomically: true, encoding: .utf8)
         } catch {
             throw ContainerizationError(.invalidState, message: "failed to write \"\(configPath.string)\"")
+        }
+    }
+
+    private func confirmActiveRedirectAnchor() throws {
+        let result: (status: Int32, output: String)
+        do {
+            result = try inspect(["-s", "nat"])
+        } catch {
+            throw ContainerizationError(.internalError, message: "pfctl active rule inspection failed: \"\(error)\"")
+        }
+        guard result.status == 0 else {
+            throw ContainerizationError(.invalidState, message: "pfctl -s nat failed with status \(result.status)")
+        }
+
+        let redirectAnchors = ["rdr-anchor \"com.apple/*\"", "rdr-anchor \"\(Self.anchor)\""]
+        let hasActiveRedirectAnchor = result.output.components(separatedBy: .newlines).contains { line in
+            let directive = Self.normalizedLine(line)
+            return redirectAnchors.contains { anchor in
+                directive == anchor || directive.hasPrefix("\(anchor) ")
+            }
+        }
+        guard hasActiveRedirectAnchor else {
+            throw ContainerizationError(
+                .invalidState,
+                message: "active pf rules have no rdr-anchor for \"com.apple/*\" or \"\(Self.anchor)\"")
         }
     }
 
@@ -222,5 +255,18 @@ public struct PacketFilter: Sendable {
         try process.run()
         process.waitUntilExit()
         return process.terminationStatus
+    }
+
+    private static func inspectPFCTL(_ arguments: [String]) throws -> (status: Int32, output: String) {
+        let process = Foundation.Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/sbin/pfctl")
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (process.terminationStatus, String(decoding: data, as: UTF8.self))
     }
 }

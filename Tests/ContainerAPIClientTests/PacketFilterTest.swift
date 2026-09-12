@@ -32,10 +32,14 @@ struct PacketFilterTest {
             let anchorPath = tempPath.appending("com.apple.container")
             try String(Self.config.dropLast()).write(toFile: configPath.string, atomically: true, encoding: .utf8)
             let commands = Mutex<[[String]]>([])
-            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { arguments in
-                commands.withLock { $0.append(arguments) }
-                return 0
-            }
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { $0.append(arguments) }
+                    return 0
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
             let from1 = try IPAddress("203.0.113.113")
             let from2 = try IPAddress("203.0.113.114")
             let to = try IPAddress("127.0.0.1")
@@ -87,10 +91,14 @@ struct PacketFilterTest {
             let originalRules = deleting ? rule + retainedRule : retainedRule
             try originalRules.write(toFile: anchorPath.string, atomically: true, encoding: .utf8)
             let commands = Mutex<[[String]]>([])
-            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { arguments in
-                commands.withLock { $0.append(arguments) }
-                return 0
-            }
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { $0.append(arguments) }
+                    return 0
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
 
             if deleting {
                 try pf.removeRedirectRule(from: from, to: to, domain: domain)
@@ -123,10 +131,14 @@ struct PacketFilterTest {
                 try rule.write(toFile: anchorPath.string, atomically: true, encoding: .utf8)
             }
             let commands = Mutex<[[String]]>([])
-            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { arguments in
-                commands.withLock { $0.append(arguments) }
-                return 0
-            }
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { $0.append(arguments) }
+                    return 0
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
 
             try pf.removeRedirectRule(from: from, to: to, domain: domain)
             try pf.reinitialize()
@@ -146,7 +158,11 @@ struct PacketFilterTest {
             let filterRule = filteringRule ? "pass out all\n" : ""
             let originalConfig = "set skip on lo0\n" + exactAnchor + filterRule
             try originalConfig.write(toFile: configPath.string, atomically: true, encoding: .utf8)
-            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { _ in 0 }
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { _ in 0 },
+                inspect: { _ in (0, #"rdr-anchor "com.apple/container" all"#) })
             let from = try IPAddress("203.0.113.113")
             let to = try IPAddress("127.0.0.1")
             let domain = try DNSName("aaa.com")
@@ -172,7 +188,11 @@ struct PacketFilterTest {
         try withTemporaryDirectory { tempPath in
             let configPath = tempPath.appending("pf.conf")
             try originalConfig.write(toFile: configPath.string, atomically: true, encoding: .utf8)
-            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { _ in 0 }
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { _ in 0 },
+                inspect: { _ in (0, Self.activeWildcardRules) })
             let from = try IPAddress("203.0.113.113")
             let to = try IPAddress("127.0.0.1")
             let domain = try DNSName("aaa.com")
@@ -191,16 +211,55 @@ struct PacketFilterTest {
     }
 
     @Test(arguments: [0, 1, 2])
+    func testConfiguredRedirectAnchorRequiresActiveRule(inspectionFailure: Int) throws {
+        try withTemporaryDirectory { tempPath in
+            let configPath = tempPath.appending("pf.conf")
+            try Self.config.write(toFile: configPath.string, atomically: true, encoding: .utf8)
+            let inspections = Mutex<[[String]]>([])
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { _ in 0 },
+                inspect: { arguments in
+                    inspections.withLock { $0.append(arguments) }
+                    if inspectionFailure == 2 {
+                        throw StubError.failed
+                    }
+                    return (inspectionFailure == 1 ? 1 : 0, #"rdr-anchor "example/other" all"#)
+                })
+            let from = try IPAddress("203.0.113.113")
+            let to = try IPAddress("127.0.0.1")
+            let domain = try DNSName("aaa.com")
+
+            #expect {
+                try pf.createRedirectRule(from: from, to: to, domain: domain)
+            } throws: { error in
+                guard let error = error as? ContainerizationError else {
+                    return false
+                }
+                return error.code == (inspectionFailure == 2 ? .internalError : .invalidState)
+            }
+            #expect(inspections.withLock { $0 } == [["-s", "nat"]])
+            #expect(try String(contentsOfFile: configPath.string, encoding: .utf8) == Self.config)
+            #expect(!FileManager.default.fileExists(atPath: tempPath.appending("com.apple.container").string))
+        }
+    }
+
+    @Test(arguments: [0, 1, 2])
     func testReinitializeStopsOnFailure(failingCommand: Int) throws {
         try withTemporaryDirectory { tempPath in
             let configPath = tempPath.appending("pf.conf")
             let commands = Mutex<[[String]]>([])
-            let pf = PacketFilter(configPath: configPath, anchorsPath: tempPath) { arguments in
-                commands.withLock { commands in
-                    commands.append(arguments)
-                    return commands.count - 1 == failingCommand ? 1 : 0
-                }
-            }
+            let pf = PacketFilter(
+                configPath: configPath,
+                anchorsPath: tempPath,
+                run: { arguments in
+                    commands.withLock { commands in
+                        commands.append(arguments)
+                        return commands.count - 1 == failingCommand ? 1 : 0
+                    }
+                },
+                inspect: { _ in (0, Self.activeWildcardRules) })
 
             #expect {
                 try pf.reinitialize()
@@ -228,6 +287,12 @@ struct PacketFilterTest {
         # load anchor "com.apple.container" from "/etc/pf.anchors/custom"
 
         """
+
+    private static let activeWildcardRules = #"rdr-anchor "com.apple/*" all"#
+
+    private enum StubError: Error {
+        case failed
+    }
 
     private static func reloadCommands(anchorPath: String) -> [[String]] {
         [
