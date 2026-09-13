@@ -62,6 +62,22 @@ class UpdateHomebrewFormulaTests(unittest.TestCase):
             template,
         )
 
+    def test_formula_installs_every_required_runtime_asset(self) -> None:
+        template = TEMPLATE.read_text(encoding="utf-8")
+
+        self.assertIn('bin.install "bin/container-engine"', template)
+        self.assertIn('libexec.install "libexec/container"', template)
+        self.assertNotIn(
+            '(libexec/"container").install "libexec/container/plugins"',
+            template,
+        )
+        for relative_path in (
+            "container/helpers/container-semantic-helper",
+            "container/services/journald/container-journald-service.oci.tar",
+            "container/services/gelf/container-gelf-service.oci.tar",
+        ):
+            self.assertIn(relative_path, template)
+
     def test_existing_formula_is_rebuilt_from_the_maintained_template(self) -> None:
         stale_formula = TEMPLATE.read_text(encoding="utf-8").replace(
             "    working_dir var\n",

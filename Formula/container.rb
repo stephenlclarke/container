@@ -12,10 +12,11 @@ class Container < Formula
   def install
     bin.install "bin/container"
     bin.install "bin/container-apiserver"
+    bin.install "bin/container-engine"
     bin.install "bin/update-container.sh"
     bin.install "bin/uninstall-container.sh"
     libexec.install "libexec/ensure-container-stopped.sh"
-    (libexec/"container").install "libexec/container/plugins"
+    libexec.install "libexec/container"
 
     generate_completions_from_executable bin/"container", "--generate-completion-script"
 
@@ -59,5 +60,9 @@ class Container < Formula
   test do
     assert_match "container CLI version", shell_output("#{bin}/container --version")
     assert_match "List running containers", shell_output("#{bin}/container list --help")
+    assert_predicate bin/"container-engine", :executable?
+    assert_predicate libexec/"container/helpers/container-semantic-helper", :executable?
+    assert_path_exists libexec/"container/services/journald/container-journald-service.oci.tar"
+    assert_path_exists libexec/"container/services/gelf/container-gelf-service.oci.tar"
   end
 end
