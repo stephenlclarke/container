@@ -47,7 +47,7 @@ builder-shim revisions in an installed package.
 
 As of 15 September 2026, source-bearing `main` revision `ef78345f59fd`
 passes the merge build, SonarQube, signed Prebuilt Binaries, and downstream
-matched-stack publication. SonarQube reports an `OK` quality gate, 61.8%
+matched-stack publication. SonarQube reports an `OK` quality gate, 61.9%
 aggregate coverage, 2.4% duplicated lines, 121,453 lines of code, and zero
 bugs, vulnerabilities, code smells, or security hotspots, with A reliability,
 security, and maintainability ratings. Coverage is materially below the
