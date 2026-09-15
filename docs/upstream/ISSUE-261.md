@@ -33,15 +33,26 @@ unavailable.
 
 ## Acceptance evidence
 
-- [ ] Formula-updater unit tests prove the complete runtime asset contract.
-- [ ] Ruby syntax and Homebrew audit pass.
-- [ ] A package archive installation contains the gateway, semantic helper,
+- [x] Formula-updater unit tests prove the complete runtime asset contract.
+- [x] Ruby syntax and Homebrew audit pass.
+- [x] The packaged archive contains the gateway, semantic helper,
   and journald/GELF service archives.
 - [ ] `container system start`, Engine `/_ping`, and clean shutdown pass from
   the installed prefix.
-- [ ] The repaired formula is propagated to `stephenlclarke/homebrew-tap` by
+- [x] The repaired formula is propagated to `stephenlclarke/homebrew-tap` by
   the release workflow.
+
+## Closure status
+
+Pull request 262 merged on 13 September 2026. The maintained stable and Current
+formulae now install and assert `container-engine`, the semantic helper, and the
+journald/GELF service archives. The matched Current package and tap publication
+subsequently passed in
+[`container-compose` run 34968418462](https://github.com/stephenlclarke/container-compose/actions/runs/34968418462).
+That packaging evidence does not replace the still-unrecorded installed-prefix
+startup, Engine `/_ping`, and shutdown check above.
 
 ## Tracking
 
 - Issue: <https://github.com/stephenlclarke/container/issues/261>
+- Pull request: <https://github.com/stephenlclarke/container/pull/262>
