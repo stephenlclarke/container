@@ -1,30 +1,128 @@
 name: SonarQube
 
 on:
+  pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
-  group: sonar-${{ github.workflow }}-${{ github.ref_name }}
+  group: sonar-${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   analyze:
     name: Analyze Swift
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
     steps:
-      - name: Checkout container
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Analyze with SonarQube Cloud
+      - name: Generate unit coverage
+        env:
+          SWIFT_TEST_FLAGS: --no-parallel
+        run: make coverage-sonar
+
+      - name: Validate SonarQube project policy
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          set -euo pipefail
+          settings="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" \
+            'https://sonarcloud.io/api/settings/values?component=stephenlclarke_container&keys=sonar.leak.period,sonar.leak.period.type')"
+          jq -e '
+            ([.settings[] | select(.key == "sonar.leak.period") | .value] == ["previous_version"])
+            and ([.settings[] | select(.key == "sonar.leak.period.type") | .value] == ["previous_version"])
+          ' <<< "${settings}" >/dev/null
+
+      - name: Analyze pull request
+        if: github.event_name == 'pull_request'
         uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectVersion=${{ github.event.pull_request.head.sha }}
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
+            -Dsonar.qualitygate.wait=true
+
+      - name: Analyze main
+        if: github.event_name != 'pull_request' && github.ref_name == 'main'
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectVersion=${{ github.sha }}
+            -Dsonar.branch.name=${{ github.ref_name }}
+            -Dsonar.qualitygate.wait=true
+
+      - name: Analyze diagnostic branch
+        if: github.event_name == 'workflow_dispatch' && github.ref_name != 'main'
+        uses: SonarSource/sonarqube-scan-action@22918119ff8e1ca75a623e15c8296b6ea4fbe28f # v8.2.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectVersion=${{ github.sha }}
+            -Dsonar.branch.name=${{ github.ref_name }}
+            -Dsonar.qualitygate.wait=false
+
+      - name: Require clean pull request or main
+        if: github.event_name == 'pull_request' || github.ref_name == 'main'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          set -euo pipefail
+          context=()
+          scope=()
+          if [[ "${GITHUB_EVENT_NAME}" == 'pull_request' ]]; then
+            context+=(--data-urlencode 'pullRequest=${{ github.event.pull_request.number }}')
+            scope+=(--data-urlencode 'inNewCodePeriod=true')
+          else
+            context+=(--data-urlencode "branch=${GITHUB_REF_NAME}")
+          fi
+          if ((${#scope[@]})); then
+            issues="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'componentKeys=stephenlclarke_container' \
+              --data-urlencode 'resolved=false' --data-urlencode 'ps=1' \
+              "${scope[@]}" "${context[@]}" https://sonarcloud.io/api/issues/search)"
+            hotspots="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'projectKey=stephenlclarke_container' \
+              --data-urlencode 'status=TO_REVIEW' --data-urlencode 'ps=1' \
+              "${scope[@]}" "${context[@]}" https://sonarcloud.io/api/hotspots/search)"
+          else
+            issues="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'componentKeys=stephenlclarke_container' \
+              --data-urlencode 'resolved=false' --data-urlencode 'ps=1' \
+              "${context[@]}" https://sonarcloud.io/api/issues/search)"
+            hotspots="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'projectKey=stephenlclarke_container' \
+              --data-urlencode 'status=TO_REVIEW' --data-urlencode 'ps=1' \
+              "${context[@]}" https://sonarcloud.io/api/hotspots/search)"
+          fi
+          jq -e '.total == 0' <<< "${issues}" >/dev/null
+          jq -e '.paging.total == 0' <<< "${hotspots}" >/dev/null
+
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sonar-coverage-${{ github.sha }}
+          path: |
+            coverage-reports/unit/coverage.lcov
+            coverage.xml
+          if-no-files-found: error

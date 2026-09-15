@@ -5,6 +5,8 @@
 # https://github.com/kubernetes-sigs/kind/blob/v0.29.0/pkg/build/nodeimage/const_cni.go
 #
 # The POD_SUBNET value must stay in sync with podSubnet in K8sHelper.
+# hostNetwork plus NET_ADMIN/NET_RAW are required for this node-level CNI to
+# configure routes and packet filtering in each host network namespace.
 #
 # kindnetd image pinned by the same kind release: docker.io/kindest/kindnetd:v20260528-9350166c
 ---
@@ -77,7 +79,7 @@ spec:
         app: kindnet
         k8s-app: kindnet
     spec:
-      hostNetwork: true
+      hostNetwork: true  # NOSONAR: required by node CNI
       nodeSelector:
         kubernetes.io/os: linux
       tolerations:
@@ -112,13 +114,15 @@ spec:
           requests:
             cpu: "100m"
             memory: "50Mi"
+            ephemeral-storage: "50Mi"
           limits:
             cpu: "100m"
             memory: "50Mi"
+            ephemeral-storage: "50Mi"
         securityContext:
           privileged: false
           capabilities:
-            add: ["NET_RAW", "NET_ADMIN"]
+            add: ["NET_RAW", "NET_ADMIN"]  # NOSONAR: required by node CNI
       volumes:
       - name: cni-cfg
         hostPath:

@@ -585,6 +585,22 @@ coverage: coverage-unit coverage-integration
 		-o $(COVERAGE_OUTPUT_DIR)/combined/default.profdata
 	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/combined/default.profdata,combined,$(COV_OBJECT_FLAGS))
 
+.PHONY: coverage-sonar
+coverage-sonar: coverage-unit
+	@xcrun llvm-cov export --compilation-dir=`pwd` --format=lcov \
+		-instr-profile=$(COVERAGE_OUTPUT_DIR)/unit/default.profdata \
+		$(LLVM_COV_IGNORE) \
+		$(TEST_BINARY) > $(COVERAGE_OUTPUT_DIR)/unit/coverage.lcov
+	@$(PYTHON3) scripts/lcov-to-sonarqube-generic.py \
+		$(COVERAGE_OUTPUT_DIR)/unit/coverage.lcov coverage.xml
+
+.PHONY: sonar-scan
+sonar-scan:
+	@test -s coverage.xml || { echo 'coverage.xml is missing; run make coverage-sonar first' >&2; exit 2; }
+	@sonar_project_version="$${SONAR_PROJECT_VERSION:-$$(git rev-parse HEAD)}"; \
+	echo "$$sonar_project_version" | grep -Eq '^[0-9a-f]{40}$$' || { echo 'SONAR_PROJECT_VERSION must be an exact lowercase commit SHA' >&2; exit 2; }; \
+	sonar-scanner -Dsonar.projectVersion="$$sonar_project_version" -Dsonar.qualitygate.wait="$${SONAR_QUALITYGATE_WAIT:-true}"
+
 .PHONY: coverage-unit
 coverage-unit: build-tests
 	@echo Running unit test coverage...
