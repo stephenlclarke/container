@@ -95,14 +95,25 @@ jobs:
           else
             context+=(--data-urlencode "branch=${GITHUB_REF_NAME}")
           fi
-          issues="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
-            --data-urlencode 'componentKeys=stephenlclarke_container' \
-            --data-urlencode 'resolved=false' --data-urlencode 'ps=1' \
-            "${scope[@]}" "${context[@]}" https://sonarcloud.io/api/issues/search)"
-          hotspots="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
-            --data-urlencode 'projectKey=stephenlclarke_container' \
-            --data-urlencode 'status=TO_REVIEW' --data-urlencode 'ps=1' \
-            "${scope[@]}" "${context[@]}" https://sonarcloud.io/api/hotspots/search)"
+          if ((${#scope[@]})); then
+            issues="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'componentKeys=stephenlclarke_container' \
+              --data-urlencode 'resolved=false' --data-urlencode 'ps=1' \
+              "${scope[@]}" "${context[@]}" https://sonarcloud.io/api/issues/search)"
+            hotspots="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'projectKey=stephenlclarke_container' \
+              --data-urlencode 'status=TO_REVIEW' --data-urlencode 'ps=1' \
+              "${scope[@]}" "${context[@]}" https://sonarcloud.io/api/hotspots/search)"
+          else
+            issues="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'componentKeys=stephenlclarke_container' \
+              --data-urlencode 'resolved=false' --data-urlencode 'ps=1' \
+              "${context[@]}" https://sonarcloud.io/api/issues/search)"
+            hotspots="$(curl --fail --silent --show-error --user "${SONAR_TOKEN}:" --get \
+              --data-urlencode 'projectKey=stephenlclarke_container' \
+              --data-urlencode 'status=TO_REVIEW' --data-urlencode 'ps=1' \
+              "${context[@]}" https://sonarcloud.io/api/hotspots/search)"
+          fi
           jq -e '.total == 0' <<< "${issues}" >/dev/null
           jq -e '.paging.total == 0' <<< "${hotspots}" >/dev/null
 
