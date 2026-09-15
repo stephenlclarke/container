@@ -185,6 +185,8 @@ Contributions to `container` are welcome and encouraged. Please see our
 [main contributing guide](https://github.com/apple/containerization/blob/main/CONTRIBUTING.md)
 for more information.
 
+`make coverage-sonar` runs the instrumented unit suite and emits project-confined LCOV plus SonarQube generic XML. `make sonar-scan` submits that report with the exact current commit as the previous-version baseline; the hosted workflow performs both steps for pull requests and `main`.
+
 ## Project Status
 
 The container project is under active development. Its release versions are product versions, not semantic versions.

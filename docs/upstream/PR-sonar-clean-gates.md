@@ -1,0 +1,35 @@
+# Pull request: make Container SonarQube authoritative
+
+<!-- markdownlint-disable MD013 -->
+
+## Summary
+
+- Export the existing instrumented unit suite as project-confined LCOV and SonarQube generic coverage XML.
+- Verify the project-level previous-version policy, label analyses with the exact checked-out commit, and wait for the quality gate.
+- Reject unresolved new issues and security hotspots on pull requests and `main`.
+- Bound kindnet ephemeral storage and document its necessary host-network and network-administration privileges as narrow CNI exceptions.
+
+See [issue 267](https://github.com/stephenlclarke/container/issues/267) and its [repository handoff](ISSUE-267.md).
+
+## Validation
+
+- [x] Coverage converter unit tests and Python compilation
+- [x] GitHub Actions workflow validation
+- [x] Source diff validation
+- [ ] Xcode 26.6 instrumented unit suite
+- [ ] Exact-head SonarQube pull-request analysis
+- [ ] Exact merged-main SonarQube analysis
+
+Local Apple-toolchain validation remains unavailable until the host's Xcode 27 licence is explicitly accepted. The authoritative hosted workflow uses the repository's pinned Xcode 26.6 environment and must supply the remaining evidence before merge.
+
+## Compatibility and risk
+
+The runtime and CLI are unchanged. The kindnet pod gains a 50 MiB ephemeral-storage request and limit. Host networking and `NET_ADMIN`/`NET_RAW` remain mandatory for the node CNI, and their Sonar dispositions are scoped to the pinned kindnet manifest only.
+
+## Upstream relationship
+
+The analysis workflow is Stephen-fork release policy. The resource bound is suitable for later upstream consideration, but this pull request modifies only the Stephen-owned fork and does not push to Apple.
+
+Closes [#267](https://github.com/stephenlclarke/container/issues/267).
+
+<!-- markdownlint-enable MD013 -->
