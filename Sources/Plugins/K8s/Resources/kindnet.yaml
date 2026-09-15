@@ -79,7 +79,7 @@ spec:
         app: kindnet
         k8s-app: kindnet
     spec:
-      hostNetwork: true
+      hostNetwork: true # NOSONAR -- node CNI must configure the host network namespace.
       nodeSelector:
         kubernetes.io/os: linux
       tolerations:
@@ -122,7 +122,7 @@ spec:
         securityContext:
           privileged: false
           capabilities:
-            add: ["NET_RAW", "NET_ADMIN"]
+            add: ["NET_RAW", "NET_ADMIN"] # NOSONAR -- required CNI packet and route administration.
       volumes:
       - name: cni-cfg
         hostPath:
