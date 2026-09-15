@@ -729,7 +729,7 @@ public actor MachinesService {
                 let generation = state.generation
                 try await self.exitMonitor.registerProcess(
                     id: id,
-                    onExit: { [weak self] id, status in
+                    onExit: { [weak self = self] id, status in
                         guard let self else {
                             return
                         }
