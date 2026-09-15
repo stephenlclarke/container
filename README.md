@@ -3,7 +3,7 @@
 <!-- markdownlint-disable MD013 MD033 -->
 <p>
   <img align="left" hspace="20" src="assets/container-icon.png" width="147" alt="container project icon: the standard three-row container service panel" />
-  <a href="https://github.com/stephenlclarke/container/actions/workflows/merge-build.yml?query=branch%3Amain+event%3Apush"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/stephenlclarke/container/merge-build.yml?branch=main&amp;event=push&amp;label=container%20project%20-%20merge%20build" /></a>
+  <a href="https://github.com/stephenlclarke/container/actions/workflows/merge-build.yml?query=branch%3Amain+event%3Apush"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/stephenlclarke/container/merge-build.yml?branch=main&amp;label=container%20project%20-%20merge%20build&amp;cacheSeconds=300" /></a>
   <a href="https://github.com/stephenlclarke/container/actions/workflows/codeql.yml?query=branch%3Amain"><img alt="CodeQL" src="https://github.com/stephenlclarke/container/actions/workflows/codeql.yml/badge.svg?branch=main" /></a>
   <a href="https://github.com/stephenlclarke/container/actions/workflows/homebrew.yml?query=branch%3Amain"><img alt="Homebrew" src="https://github.com/stephenlclarke/container/actions/workflows/homebrew.yml/badge.svg?branch=main" /></a>
   <a href="https://github.com/stephenlclarke/container/actions/workflows/prebuilt-binaries.yml?query=branch%3Amain"><img alt="Prebuilt Binaries" src="https://github.com/stephenlclarke/container/actions/workflows/prebuilt-binaries.yml/badge.svg?branch=main" /></a>
@@ -47,8 +47,10 @@ builder-shim revisions in an installed package.
 
 As of 15 September 2026, source-bearing `main` revision `ef78345f59fd`
 passes the merge build, SonarQube, signed Prebuilt Binaries, and downstream
-matched-stack publication. SonarQube reports an `OK` quality gate, 61.9%
-aggregate coverage, 2.4% duplicated lines, 121,453 lines of code, and zero
+matched-stack publication. Recent exact-main SonarQube analyses report an `OK`
+quality gate and 61.8–61.9% aggregate coverage; the tenth-point variation comes
+from repeated instrumented runs of unchanged source. They report 2.4%
+duplicated lines, 121,453 lines of code, and zero
 bugs, vulnerabilities, code smells, or security hotspots, with A reliability,
 security, and maintainability ratings. Coverage is materially below the
 Container-family's approximately 90% objective and remains an explicit quality
