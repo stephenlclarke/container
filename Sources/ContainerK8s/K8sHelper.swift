@@ -66,14 +66,38 @@ public struct K8sHelper {
     // Shared exec helper used by bootstrap, readiness, and kubeconfig extensions.
     public static func execCapture(
         containerId: String, executable: String, arguments: [String],
-        client: ContainerClient
+        client: ContainerClient, standardInput: Data? = nil
     ) async throws -> (code: Int32, output: String) {
+        let inputURL = standardInput.map { _ in
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("container-k8s-stdin-\(UUID().uuidString)")
+        }
+        var inputHandle: FileHandle?
+        if let inputURL, let standardInput {
+            guard
+                FileManager.default.createFile(
+                    atPath: inputURL.path,
+                    contents: standardInput,
+                    attributes: [.posixPermissions: 0o600]
+                )
+            else {
+                throw ContainerizationError(.internalError, message: "failed to stage process standard input")
+            }
+            inputHandle = try FileHandle(forReadingFrom: inputURL)
+        }
+        defer {
+            try? inputHandle?.close()
+            if let inputURL {
+                try? FileManager.default.removeItem(at: inputURL)
+            }
+        }
+
         let pipe = Pipe()
         let config = ProcessConfiguration(
             executable: executable, arguments: arguments, environment: [], terminal: false)
         let proc = try await client.createProcess(
             containerId: containerId, processId: UUID().uuidString.lowercased(),
-            configuration: config, stdio: [nil, pipe.fileHandleForWriting, pipe.fileHandleForWriting])
+            configuration: config, stdio: [inputHandle, pipe.fileHandleForWriting, pipe.fileHandleForWriting])
         try await proc.start()
         pipe.fileHandleForWriting.closeFile()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()

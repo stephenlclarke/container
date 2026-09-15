@@ -86,13 +86,25 @@ extension K8sHelper {
 
         log.info("Applying CNI manifest", metadata: ["node": "\(nodeID)"])
         let manifest = try await loadCNIManifest(path: cniManifestPath, log: log)
-        let apply = "\(kubeconfigEnv) kubectl apply -f - <<'EOF'\n\(manifest)\nEOF"
+        let apply = cniApplyInvocation(manifest: manifest)
         r = try await execCapture(
-            containerId: nodeID, executable: "/bin/sh",
-            arguments: ["-c", apply], client: client)
+            containerId: nodeID,
+            executable: apply.executable,
+            arguments: apply.arguments,
+            client: client,
+            standardInput: apply.standardInput
+        )
         guard r.code == 0 else {
             throw ContainerizationError(.internalError, message: "apply CNI failed on \(nodeID): \(r.output)")
         }
+    }
+
+    static func cniApplyInvocation(manifest: String) -> (executable: String, arguments: [String], standardInput: Data) {
+        (
+            executable: kubectlPath,
+            arguments: ["--kubeconfig", kubeconfigPath, "apply", "-f", "-"],
+            standardInput: Data(manifest.utf8)
+        )
     }
 
     private static func configureCoreDNS(

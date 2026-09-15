@@ -62,3 +62,20 @@ struct LoadCNIManifestTests {
         }
     }
 }
+
+// MARK: - K8sHelper.cniApplyInvocation
+
+@Suite("K8sHelper.cniApplyInvocation")
+struct CNIApplyInvocationTests {
+    @Test func streamsLargeManifestWithoutAddingItToArguments() throws {
+        let marker = "cni-payload-marker"
+        let manifest = String(repeating: "# \(marker)\n", count: 20_000)
+
+        let invocation = K8sHelper.cniApplyInvocation(manifest: manifest)
+
+        #expect(invocation.executable == "/bin/kubectl")
+        #expect(invocation.arguments == ["--kubeconfig", "/etc/kubernetes/admin.conf", "apply", "-f", "-"])
+        #expect(!invocation.arguments.contains(where: { $0.contains(marker) }))
+        #expect(String(data: invocation.standardInput, encoding: .utf8) == manifest)
+    }
+}
