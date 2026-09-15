@@ -61,7 +61,7 @@ static int32_t cdns_parse_nameservers(
 
     int32_t status = CDNS_STATUS_OK;
     char *cursor = copy;
-    char *server = NULL;
+    const char *server = NULL;
     while ((server = strsep(&cursor, ",")) != NULL) {
         if (server[0] == '\0' || *server_count == MAXNS) {
             status = CDNS_STATUS_INVALID_ARGUMENT;
