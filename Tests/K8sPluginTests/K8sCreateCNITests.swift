@@ -144,6 +144,12 @@ struct LoadCNIManifestTests {
             _ = try await K8sHelper.loadCNIManifest(path: missingPath, log: log)
         }
     }
+
+    @Test func defaultManifestRequiresAnInstalledK8sPlugin() async {
+        await #expect(throws: ContainerizationError.self) {
+            _ = try await K8sHelper.loadCNIManifest(path: nil, log: log)
+        }
+    }
 }
 
 // MARK: - K8sHelper.cniApplyInvocation
