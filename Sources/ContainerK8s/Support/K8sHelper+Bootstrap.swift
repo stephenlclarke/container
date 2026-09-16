@@ -95,7 +95,7 @@ extension K8sHelper {
                 arguments: ["taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-"])
         }
 
-        try await applyCNIManifest(nodeID: nodeID, path: cniManifestPath, client: client, log: log)
+        try await applyCNIManifest(nodeID: nodeID, path: cniManifestPath, client: client, log: log, execute: execCapture)
     }
 
     static func applyCNIManifest(
@@ -103,7 +103,7 @@ extension K8sHelper {
         path: String?,
         client: ContainerClient,
         log: Logger,
-        execute: CNIManifestExecutor = { try await execCapture(containerId: $0, executable: $1, arguments: $2, client: $3, standardInput: $4) }
+        execute: CNIManifestExecutor
     ) async throws {
         log.info("Applying CNI manifest", metadata: ["node": "\(nodeID)"])
         let manifest = try await loadCNIManifest(path: path, log: log)
