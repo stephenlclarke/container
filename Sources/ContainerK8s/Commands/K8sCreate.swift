@@ -144,15 +144,16 @@ public struct K8sCreate: AsyncParsableCommand {
         guard FileManager.default.fileExists(atPath: path) else {
             throw ContainerizationError(.invalidArgument, message: "CNI manifest not found at \(path)")
         }
+        let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
         do {
-            let attributes = try FileManager.default.attributesOfItem(atPath: path)
+            let attributes = try FileManager.default.attributesOfItem(atPath: resolvedPath)
             guard attributes[.type] as? FileAttributeType == .typeRegular else {
                 throw ContainerizationError(.invalidArgument, message: "CNI manifest is not a regular file at \(path)")
             }
-            guard FileManager.default.isReadableFile(atPath: path) else {
+            guard FileManager.default.isReadableFile(atPath: resolvedPath) else {
                 throw ContainerizationError(.invalidArgument, message: "CNI manifest is not readable at \(path)")
             }
-            _ = try String(contentsOfFile: path, encoding: .utf8)
+            _ = try String(contentsOfFile: resolvedPath, encoding: .utf8)
         } catch let error as ContainerizationError {
             throw error
         } catch {

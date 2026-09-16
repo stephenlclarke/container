@@ -49,6 +49,19 @@ struct K8sCreateCNIFlagTests {
         try K8sCreate.validateCNIManifestPath(url.path)
     }
 
+    @Test func validationAcceptsSymlinkToExistingManifest() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let manifest = directory.appendingPathComponent("generated.yaml")
+        let link = directory.appendingPathComponent("cni.yaml")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try "kind: ConfigMap\n".write(to: manifest, atomically: true, encoding: .utf8)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: manifest)
+
+        try K8sCreate.validateCNIManifestPath(link.path)
+    }
+
     @Test func validationRejectsMissingManifest() throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + "-missing.yaml").path
