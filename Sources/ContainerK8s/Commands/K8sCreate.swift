@@ -106,11 +106,15 @@ public struct K8sCreate: AsyncParsableCommand {
             progress.set(description: "Running kubeadm init")
             try await K8sHelper.prepareNode(nodeID: name, client: client, log: log)
             try await K8sHelper.bootstrapControlPlane(
-                nodeID: name, apiServerSANs: sans, advertiseAddress: vmIP,
-                // All in-VM Kubernetes clients (including host-networked kube-proxy)
-                // can reach the single-node API through loopback. This endpoint is
-                // independent of the container's rotating vmnet address.
-                controlPlaneEndpoint: K8sHelper.nodeLocalControlPlaneEndpoint,
+                nodeID: name,
+                networking: (
+                    apiServerSANs: sans,
+                    advertiseAddress: vmIP,
+                    // All in-VM Kubernetes clients (including host-networked kube-proxy)
+                    // can reach the single-node API through loopback. This endpoint is
+                    // independent of the container's rotating vmnet address.
+                    controlPlaneEndpoint: K8sHelper.nodeLocalControlPlaneEndpoint
+                ),
                 schedulable: provisioner.roles.contains(StandardRoles.worker),
                 cniManifestPath: cni,
                 client: client, log: log)
