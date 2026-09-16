@@ -46,7 +46,7 @@ extension K8sHelper {
     static func bootstrapControlPlane(
         nodeID: String, apiServerSANs: [String], advertiseAddress: String,
         controlPlaneEndpoint: String,
-        schedulable: Bool, cniManifestPath: String? = nil,
+        schedulable: Bool, customCNIManifest: String? = nil,
         dependencies: BootstrapDependencies
     ) async throws {
         let (client, log) = dependencies
@@ -95,19 +95,19 @@ extension K8sHelper {
                 arguments: ["taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-"])
         }
 
-        try await applyCNIManifest(nodeID: nodeID, path: cniManifestPath, client: client, log: log, execute: execCapture)
+        try await applyCNIManifest(nodeID: nodeID, manifest: customCNIManifest, client: client, log: log, execute: execCapture)
     }
 
     static func applyCNIManifest(
         nodeID: String,
-        path: String?,
+        manifest: String?,
         client: ContainerClient,
         log: Logger,
         execute: CNIManifestExecutor
     ) async throws {
         log.info("Applying CNI manifest", metadata: ["node": "\(nodeID)"])
-        let manifest = try await loadCNIManifest(path: path, log: log)
-        let apply = cniApplyInvocation(manifest: manifest)
+        let resolvedManifest = try await resolveCNIManifest(customManifest: manifest, log: log)
+        let apply = cniApplyInvocation(manifest: resolvedManifest)
         let result = try await execute(
             nodeID, apply.executable, apply.arguments, client, apply.standardInput)
         guard result.code == 0 else {
@@ -246,13 +246,9 @@ extension K8sHelper {
         return (token: parts[tokenIdx + 1], caCertHash: parts[hashIdx + 1])
     }
 
-    static func loadCNIManifest(path: String?, log: Logger) async throws -> String {
-        if let path {
-            do {
-                return try String(contentsOfFile: path, encoding: .utf8)
-            } catch {
-                throw ContainerizationError(.invalidArgument, message: "failed to read CNI manifest at \(path): \(error)")
-            }
+    static func resolveCNIManifest(customManifest: String?, log: Logger) async throws -> String {
+        if let customManifest {
+            return customManifest
         }
         return try await loadKindnetManifest(log: log)
     }

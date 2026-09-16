@@ -59,7 +59,7 @@ public struct K8sCreate: AsyncParsableCommand {
             throw ContainerizationError(.invalidArgument, message: "cluster name \(name) is not a valid container ID")
         }
 
-        try Self.validateCNIManifestPath(cni)
+        let customCNIManifest = try Self.snapshotCNIManifest(at: cni)
 
         LoggingSystem.bootstrap { _ in StderrLogHandler() }
         let log = Logger(label: K8sHelper.pluginName)
@@ -112,7 +112,7 @@ public struct K8sCreate: AsyncParsableCommand {
                 // independent of the container's rotating vmnet address.
                 controlPlaneEndpoint: K8sHelper.nodeLocalControlPlaneEndpoint,
                 schedulable: provisioner.roles.contains(StandardRoles.worker),
-                cniManifestPath: cni,
+                customCNIManifest: customCNIManifest,
                 dependencies: (client: client, log: log))
 
             progress.set(description: "Waiting for cluster to be ready")
@@ -137,23 +137,30 @@ public struct K8sCreate: AsyncParsableCommand {
         print(name)
     }
 
-    static func validateCNIManifestPath(_ path: String?) throws {
+    static func snapshotCNIManifest(at path: String?) throws -> String? {
         guard let path else {
-            return
-        }
-        guard FileManager.default.fileExists(atPath: path) else {
-            throw ContainerizationError(.invalidArgument, message: "CNI manifest not found at \(path)")
+            return nil
         }
         let resolvedPath = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        let descriptor = Darwin.open(resolvedPath, O_RDONLY | O_NONBLOCK | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw ContainerizationError(.invalidArgument, message: "failed to open CNI manifest at \(path): \(String(cString: strerror(errno)))")
+        }
+        defer { Darwin.close(descriptor) }
+
         do {
-            let attributes = try FileManager.default.attributesOfItem(atPath: resolvedPath)
-            guard attributes[.type] as? FileAttributeType == .typeRegular else {
+            var status = stat()
+            guard fstat(descriptor, &status) == 0 else {
+                throw ContainerizationError(.invalidArgument, message: "failed to inspect CNI manifest at \(path): \(String(cString: strerror(errno)))")
+            }
+            guard status.st_mode & S_IFMT == S_IFREG else {
                 throw ContainerizationError(.invalidArgument, message: "CNI manifest is not a regular file at \(path)")
             }
-            guard FileManager.default.isReadableFile(atPath: resolvedPath) else {
-                throw ContainerizationError(.invalidArgument, message: "CNI manifest is not readable at \(path)")
+            let data = try FileHandle(fileDescriptor: descriptor, closeOnDealloc: false).readToEnd() ?? Data()
+            guard let manifest = String(data: data, encoding: .utf8) else {
+                throw ContainerizationError(.invalidArgument, message: "CNI manifest is not valid UTF-8 at \(path)")
             }
-            _ = try String(contentsOfFile: resolvedPath, encoding: .utf8)
+            return manifest
         } catch let error as ContainerizationError {
             throw error
         } catch {

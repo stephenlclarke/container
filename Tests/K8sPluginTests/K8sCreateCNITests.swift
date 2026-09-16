@@ -16,6 +16,7 @@
 
 import ContainerAPIClient
 import ContainerizationError
+import Darwin
 import Foundation
 import Logging
 import Testing
@@ -37,7 +38,7 @@ struct K8sCreateCNIFlagTests {
     }
 
     @Test func validationAcceptsNoManifest() throws {
-        try K8sCreate.validateCNIManifestPath(nil)
+        #expect(try K8sCreate.snapshotCNIManifest(at: nil) == nil)
     }
 
     @Test func validationAcceptsExistingManifest() throws {
@@ -46,7 +47,7 @@ struct K8sCreateCNIFlagTests {
         try "kind: ConfigMap\n".write(to: url, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: url) }
 
-        try K8sCreate.validateCNIManifestPath(url.path)
+        #expect(try K8sCreate.snapshotCNIManifest(at: url.path) == "kind: ConfigMap\n")
     }
 
     @Test func validationAcceptsSymlinkToExistingManifest() throws {
@@ -59,7 +60,7 @@ struct K8sCreateCNIFlagTests {
         try "kind: ConfigMap\n".write(to: manifest, atomically: true, encoding: .utf8)
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: manifest)
 
-        try K8sCreate.validateCNIManifestPath(link.path)
+        #expect(try K8sCreate.snapshotCNIManifest(at: link.path) == "kind: ConfigMap\n")
     }
 
     @Test func validationRejectsMissingManifest() throws {
@@ -67,7 +68,7 @@ struct K8sCreateCNIFlagTests {
             .appendingPathComponent(UUID().uuidString + "-missing.yaml").path
 
         #expect(throws: ContainerizationError.self) {
-            try K8sCreate.validateCNIManifestPath(path)
+            _ = try K8sCreate.snapshotCNIManifest(at: path)
         }
     }
 
@@ -78,7 +79,7 @@ struct K8sCreateCNIFlagTests {
         defer { try? FileManager.default.removeItem(at: url) }
 
         #expect(throws: ContainerizationError.self) {
-            try K8sCreate.validateCNIManifestPath(url.path)
+            _ = try K8sCreate.snapshotCNIManifest(at: url.path)
         }
     }
 
@@ -89,7 +90,7 @@ struct K8sCreateCNIFlagTests {
         defer { try? FileManager.default.removeItem(at: url) }
 
         #expect(throws: ContainerizationError.self) {
-            try K8sCreate.validateCNIManifestPath(url.path)
+            _ = try K8sCreate.snapshotCNIManifest(at: url.path)
         }
     }
 
@@ -104,8 +105,32 @@ struct K8sCreateCNIFlagTests {
         }
 
         #expect(throws: ContainerizationError.self) {
-            try K8sCreate.validateCNIManifestPath(url.path)
+            _ = try K8sCreate.snapshotCNIManifest(at: url.path)
         }
+    }
+
+    @Test func validationRejectsFIFOWithoutBlocking() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".fifo")
+        #expect(mkfifo(url.path, 0o600) == 0)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: ContainerizationError.self) {
+            _ = try K8sCreate.snapshotCNIManifest(at: url.path)
+        }
+    }
+
+    @Test func snapshotDoesNotChangeWhenSourceIsReplaced() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".yaml")
+        try "kind: ConfigMap\nmetadata:\n  name: original\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let snapshot = try K8sCreate.snapshotCNIManifest(at: url.path)
+        try "kind: ConfigMap\nmetadata:\n  name: replacement\n".write(to: url, atomically: true, encoding: .utf8)
+
+        #expect(snapshot?.contains("name: original") == true)
+        #expect(snapshot?.contains("name: replacement") == false)
     }
 
     @Test func runRejectsMissingManifestBeforeProvisioning() async throws {
@@ -119,35 +144,22 @@ struct K8sCreateCNIFlagTests {
     }
 }
 
-// MARK: - K8sHelper.loadCNIManifest
+// MARK: - K8sHelper.resolveCNIManifest
 
-@Suite("K8sHelper.loadCNIManifest")
-struct LoadCNIManifestTests {
+@Suite("K8sHelper.resolveCNIManifest")
+struct ResolveCNIManifestTests {
     private let log = Logger(label: "test")
 
-    @Test func customPathReturnsItsContents() async throws {
+    @Test func customManifestIsReturnedWithoutAnotherRead() async throws {
         let contents = "kind: DaemonSet\nmetadata:\n  name: my-custom-cni\n"
-        let dir = FileManager.default.temporaryDirectory
-        let url = dir.appendingPathComponent(UUID().uuidString + ".yaml")
-        try contents.write(to: url, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: url) }
 
-        let result = try await K8sHelper.loadCNIManifest(path: url.path, log: log)
+        let result = try await K8sHelper.resolveCNIManifest(customManifest: contents, log: log)
         #expect(result == contents)
-    }
-
-    @Test func missingPathThrowsInvalidArgument() async throws {
-        let missingPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + "-does-not-exist.yaml").path
-
-        await #expect(throws: ContainerizationError.self) {
-            _ = try await K8sHelper.loadCNIManifest(path: missingPath, log: log)
-        }
     }
 
     @Test func defaultManifestRequiresAnInstalledK8sPlugin() async {
         await #expect(throws: ContainerizationError.self) {
-            _ = try await K8sHelper.loadCNIManifest(path: nil, log: log)
+            _ = try await K8sHelper.resolveCNIManifest(customManifest: nil, log: log)
         }
     }
 }
@@ -233,15 +245,11 @@ struct ApplyCNIManifestTests {
 
     @Test func customManifestIsStreamedToKubectl() async throws {
         let manifest = "kind: DaemonSet\nmetadata:\n  name: custom-cni\n"
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + ".yaml")
-        try manifest.write(to: url, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: url) }
 
         let recorder = CNIInvocationRecorder()
         try await K8sHelper.applyCNIManifest(
             nodeID: "test-node",
-            path: url.path,
+            manifest: manifest,
             client: ContainerClient(),
             log: log
         ) { containerID, executable, arguments, _, standardInput in
@@ -262,15 +270,10 @@ struct ApplyCNIManifestTests {
     }
 
     @Test func kubectlFailureIsReported() async throws {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + ".yaml")
-        try "kind: DaemonSet\n".write(to: url, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: url) }
-
         await #expect(throws: ContainerizationError.self) {
             try await K8sHelper.applyCNIManifest(
                 nodeID: "test-node",
-                path: url.path,
+                manifest: "kind: DaemonSet\n",
                 client: ContainerClient(),
                 log: log
             ) { _, _, _, _, _ in
