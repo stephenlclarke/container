@@ -113,7 +113,7 @@ public struct K8sCreate: AsyncParsableCommand {
                 controlPlaneEndpoint: K8sHelper.nodeLocalControlPlaneEndpoint,
                 schedulable: provisioner.roles.contains(StandardRoles.worker),
                 cniManifestPath: cni,
-                client: client, log: log)
+                dependencies: (client: client, log: log))
 
             progress.set(description: "Waiting for cluster to be ready")
             try await K8sHelper.waitForReady(containerId: name, client: client, log: log)

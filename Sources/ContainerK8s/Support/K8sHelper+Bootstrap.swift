@@ -23,6 +23,7 @@ import Foundation
 import Logging
 
 extension K8sHelper {
+    typealias BootstrapDependencies = (client: ContainerClient, log: Logger)
 
     typealias CNIManifestExecutor = (
         _ containerID: String,
@@ -42,12 +43,13 @@ extension K8sHelper {
         }
     }
 
-    // The explicit Apple-compatible orchestration inputs keep call-site authority visible.
-    static func bootstrapControlPlane(  // NOSONAR: an opaque parameter bag would hide that boundary.
+    static func bootstrapControlPlane(
         nodeID: String, apiServerSANs: [String], advertiseAddress: String,
         controlPlaneEndpoint: String,
-        schedulable: Bool, cniManifestPath: String? = nil, client: ContainerClient, log: Logger
+        schedulable: Bool, cniManifestPath: String? = nil,
+        dependencies: BootstrapDependencies
     ) async throws {
+        let (client, log) = dependencies
         let configYAML = initConfigYAML(
             advertiseAddress: advertiseAddress, certSANs: apiServerSANs,
             controlPlaneEndpoint: controlPlaneEndpoint)
