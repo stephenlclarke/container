@@ -399,7 +399,20 @@ install-kernel: container
 COV_DATA_DIR = $(shell $(SWIFT) test --show-coverage-path | xargs dirname)
 COV_REPORT_FILE = $(ROOT_DIR)/code-coverage-report
 COVERAGE_OUTPUT_DIR := $(ROOT_DIR)/coverage-reports
-TEST_BINARY = $(BUILD_BIN_DIR)/containerPackageTests.xctest/Contents/MacOS/containerPackageTests
+# SwiftPM through Xcode 26 emits one aggregate test bundle. Xcode 27 emits one
+# bundle per test target instead. Prefer the aggregate bundle when it exists;
+# otherwise discover every unit-test bundle and give llvm-cov one primary
+# object plus the remainder as additional objects. IntegrationTests is covered
+# separately by coverage-integration.
+TEST_BINARIES = $(shell \
+	if [ -x "$(BUILD_BIN_DIR)/containerPackageTests.xctest/Contents/MacOS/containerPackageTests" ]; then \
+		printf '%s\n' "$(BUILD_BIN_DIR)/containerPackageTests.xctest/Contents/MacOS/containerPackageTests"; \
+	else \
+		find "$(BUILD_BIN_DIR)" -type f -path '*/*.xctest/Contents/MacOS/*Tests' \
+			! -path '*/IntegrationTests.xctest/Contents/MacOS/IntegrationTests' -perm -111 2>/dev/null | sort; \
+	fi)
+TEST_BINARY = $(firstword $(TEST_BINARIES))
+TEST_OBJECT_FLAGS = $(patsubst %,-object %,$(wordlist 2,999,$(TEST_BINARIES)))
 # All product binaries that may be instrumented for coverage.
 # Used as additional -object args to llvm-cov for integration/combined reports.
 COV_BINARIES := \
@@ -427,13 +440,13 @@ define GENERATE_COV_REPORTS
 	@xcrun llvm-cov export --compilation-dir=`pwd` \
 		-instr-profile=$(1) \
 		$(LLVM_COV_IGNORE) \
-		$(TEST_BINARY) $(3) > $(COVERAGE_OUTPUT_DIR)/$(2)/coverage-summary.json
+		$(TEST_BINARY) $(TEST_OBJECT_FLAGS) $(3) > $(COVERAGE_OUTPUT_DIR)/$(2)/coverage-summary.json
 	@echo Generating $(2) coverage HTML report...
 	@xcrun llvm-cov show --compilation-dir=`pwd` --format=html \
 		-instr-profile=$(1) \
 		$(LLVM_COV_IGNORE) \
 		-output-dir=$(COVERAGE_OUTPUT_DIR)/$(2)/html \
-		$(TEST_BINARY) $(3)
+		$(TEST_BINARY) $(TEST_OBJECT_FLAGS) $(3)
 	@echo Extracting $(2) coverage percentages...
 	@jq -r '.data[0].totals as $$t | \
 		"Coverage summary:", \
@@ -590,7 +603,7 @@ coverage-sonar: coverage-unit
 	@xcrun llvm-cov export --compilation-dir=`pwd` --format=lcov \
 		-instr-profile=$(COVERAGE_OUTPUT_DIR)/unit/default.profdata \
 		$(LLVM_COV_IGNORE) \
-		$(TEST_BINARY) > $(COVERAGE_OUTPUT_DIR)/unit/coverage.lcov
+		$(TEST_BINARY) $(TEST_OBJECT_FLAGS) > $(COVERAGE_OUTPUT_DIR)/unit/coverage.lcov
 	@$(PYTHON3) scripts/lcov-to-sonarqube-generic.py \
 		$(COVERAGE_OUTPUT_DIR)/unit/coverage.lcov coverage.xml
 
@@ -604,6 +617,10 @@ sonar-scan:
 .PHONY: coverage-unit
 coverage-unit: build-tests
 	@echo Running unit test coverage...
+	@test -n "$(TEST_BINARY)" && test -x "$(TEST_BINARY)" || { \
+		echo 'no SwiftPM unit-test coverage binaries were found' >&2; \
+		exit 2; \
+	}
 	@rm -f $(COV_DATA_DIR)/*.profraw
 	@mkdir -p $(COVERAGE_OUTPUT_DIR)/unit
 	@$(SWIFT) test --skip-build --enable-code-coverage -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
