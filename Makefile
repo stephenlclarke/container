@@ -64,6 +64,16 @@ STAGING_DIR := bin/$(BUILD_CONFIGURATION)/staging/
 PKG_PATH := bin/$(BUILD_CONFIGURATION)/container-installer-unsigned.pkg
 DSYM_DIR := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM
 DSYM_PATH := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM.zip
+DEBUG_SYMBOL_BUILD_TOOL := Tools/DebugSymbols/package.py
+DEBUG_SYMBOL_PRODUCTS := \
+	container \
+	container-apiserver \
+	container-engine \
+	container-core-images \
+	container-runtime-linux \
+	container-network-vmnet \
+	machine-apiserver \
+	k8s
 HOMEBREW_ARCHIVE ?= bin/$(BUILD_CONFIGURATION)/container-homebrew-$(BUILD_CONFIGURATION)-arm64.tar.gz
 CODESIGN_OPTS ?= --force --sign - --timestamp=none
 
@@ -354,25 +364,22 @@ homebrew-package: build $(STAGING_DIR)
 
 .PHONY: dsym
 dsym:
-	@echo Copying debug symbols...
-	@rm -rf "$(DSYM_DIR)"
-	@mkdir -p "$(DSYM_DIR)"
-	@cp -a "$(BUILD_BIN_DIR)/container-runtime-linux.dSYM" "$(DSYM_DIR)"
-	@cp -a "$(BUILD_BIN_DIR)/container-network-vmnet.dSYM" "$(DSYM_DIR)"
-	@cp -a "$(BUILD_BIN_DIR)/container-core-images.dSYM" "$(DSYM_DIR)"
-	@cp -a "$(BUILD_BIN_DIR)/container-apiserver.dSYM" "$(DSYM_DIR)"
-	@cp -a "$(BUILD_BIN_DIR)/container-engine.dSYM" "$(DSYM_DIR)"
-	@cp -a "$(BUILD_BIN_DIR)/container.dSYM" "$(DSYM_DIR)"
+	@echo Preparing debug symbols...
+	@$(PYTHON3) $(DEBUG_SYMBOL_BUILD_TOOL) \
+		--build-directory "$(BUILD_BIN_DIR)" \
+		--output-directory "$(DSYM_DIR)" \
+		--archive "$(DSYM_PATH)" \
+		$(foreach product,$(DEBUG_SYMBOL_PRODUCTS),--product "$(product)")
 
-	@echo Packaging the debug symbols...
-	@(cd "$(dir $(DSYM_DIR))" ; zip -r $(notdir $(DSYM_PATH)) $(notdir $(DSYM_DIR)))
-
-.PHONY: test test-build-artifact-directory test-create-machine-user test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+.PHONY: test test-build-artifact-directory test-create-machine-user test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 test-build-artifact-directory:
 	@bash Tests/ScriptTests/TestBuildArtifactDirectory.sh
 
 test-create-machine-user:
 	@Tests/ScriptTests/TestCreateMachineUser.sh
+
+test-debug-symbol-packaging:
+	@$(PYTHON3) -m unittest Tools/DebugSymbols/test_package.py
 
 test-homebrew-archive-checksum:
 	@Tests/ScriptTests/TestHomebrewArchiveChecksum.sh
@@ -383,7 +390,7 @@ test-install-init:
 test-verify-developer-id-archive:
 	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
 
-test: build-tests test-build-artifact-directory test-create-machine-user test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test: build-tests test-build-artifact-directory test-create-machine-user test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
