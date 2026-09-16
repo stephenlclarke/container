@@ -55,14 +55,14 @@ public struct K8sCreate: AsyncParsableCommand {
     var cni: String?
 
     public func run() async throws {
-        LoggingSystem.bootstrap { _ in StderrLogHandler() }
-        let log = Logger(label: K8sHelper.pluginName)
-
         guard ManagedContainer.nameValid(name) else {
             throw ContainerizationError(.invalidArgument, message: "cluster name \(name) is not a valid container ID")
         }
 
         try Self.validateCNIManifestPath(cni)
+
+        LoggingSystem.bootstrap { _ in StderrLogHandler() }
+        let log = Logger(label: K8sHelper.pluginName)
 
         let isTTY = isatty(FileHandle.standardError.fileDescriptor) == 1
         let progressConfig = try ProgressConfig(
