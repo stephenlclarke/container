@@ -24,6 +24,14 @@ import Logging
 
 extension K8sHelper {
 
+    typealias CNIManifestExecutor = (
+        _ containerID: String,
+        _ executable: String,
+        _ arguments: [String],
+        _ client: ContainerClient,
+        _ standardInput: Data
+    ) async throws -> (code: Int32, output: String)
+
     public static func prepareNode(nodeID: String, client: ContainerClient, log: Logger) async throws {
         log.info("Preparing node", metadata: ["id": "\(nodeID)"])
         let result = try await execCapture(
@@ -84,18 +92,23 @@ extension K8sHelper {
                 arguments: ["taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-"])
         }
 
+        try await applyCNIManifest(nodeID: nodeID, path: cniManifestPath, client: client, log: log)
+    }
+
+    static func applyCNIManifest(
+        nodeID: String,
+        path: String?,
+        client: ContainerClient,
+        log: Logger,
+        execute: CNIManifestExecutor = { try await execCapture(containerId: $0, executable: $1, arguments: $2, client: $3, standardInput: $4) }
+    ) async throws {
         log.info("Applying CNI manifest", metadata: ["node": "\(nodeID)"])
-        let manifest = try await loadCNIManifest(path: cniManifestPath, log: log)
+        let manifest = try await loadCNIManifest(path: path, log: log)
         let apply = cniApplyInvocation(manifest: manifest)
-        r = try await execCapture(
-            containerId: nodeID,
-            executable: apply.executable,
-            arguments: apply.arguments,
-            client: client,
-            standardInput: apply.standardInput
-        )
-        guard r.code == 0 else {
-            throw ContainerizationError(.internalError, message: "apply CNI failed on \(nodeID): \(r.output)")
+        let result = try await execute(
+            nodeID, apply.executable, apply.arguments, client, apply.standardInput)
+        guard result.code == 0 else {
+            throw ContainerizationError(.internalError, message: "apply CNI failed on \(nodeID): \(result.output)")
         }
     }
 

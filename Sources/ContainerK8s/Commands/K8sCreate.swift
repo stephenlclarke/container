@@ -62,11 +62,7 @@ public struct K8sCreate: AsyncParsableCommand {
             throw ContainerizationError(.invalidArgument, message: "cluster name \(name) is not a valid container ID")
         }
 
-        if let cni {
-            guard FileManager.default.fileExists(atPath: cni) else {
-                throw ContainerizationError(.invalidArgument, message: "CNI manifest not found at \(cni)")
-            }
-        }
+        try Self.validateCNIManifestPath(cni)
 
         let isTTY = isatty(FileHandle.standardError.fileDescriptor) == 1
         let progressConfig = try ProgressConfig(
@@ -139,5 +135,11 @@ public struct K8sCreate: AsyncParsableCommand {
 
         progress.finish()
         print(name)
+    }
+
+    static func validateCNIManifestPath(_ path: String?) throws {
+        if let path, !FileManager.default.fileExists(atPath: path) {
+            throw ContainerizationError(.invalidArgument, message: "CNI manifest not found at \(path)")
+        }
     }
 }

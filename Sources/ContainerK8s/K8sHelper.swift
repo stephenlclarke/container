@@ -24,6 +24,18 @@ import Logging
 // MARK: - K8sHelper
 
 public struct K8sHelper {
+    struct StagedStandardInput {
+        let handle: FileHandle?
+        let url: URL?
+
+        func cleanup() {
+            try? handle?.close()
+            if let url {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+    }
+
     public static let pluginName: String = "k8s"
     public static let defaultName: String = "k8s-dev"
     public static let controlPlaneRoleName: String = "control-plane"
@@ -68,42 +80,44 @@ public struct K8sHelper {
         containerId: String, executable: String, arguments: [String],
         client: ContainerClient, standardInput: Data? = nil
     ) async throws -> (code: Int32, output: String) {
-        let inputURL = standardInput.map { _ in
-            FileManager.default.temporaryDirectory
-                .appendingPathComponent("container-k8s-stdin-\(UUID().uuidString)")
-        }
-        var inputHandle: FileHandle?
-        if let inputURL, let standardInput {
-            guard
-                FileManager.default.createFile(
-                    atPath: inputURL.path,
-                    contents: standardInput,
-                    attributes: [.posixPermissions: 0o600]
-                )
-            else {
-                throw ContainerizationError(.internalError, message: "failed to stage process standard input")
-            }
-            inputHandle = try FileHandle(forReadingFrom: inputURL)
-        }
-        defer {
-            try? inputHandle?.close()
-            if let inputURL {
-                try? FileManager.default.removeItem(at: inputURL)
-            }
-        }
+        let stagedInput = try stageStandardInput(standardInput)
+        defer { stagedInput.cleanup() }
 
         let pipe = Pipe()
         let config = ProcessConfiguration(
             executable: executable, arguments: arguments, environment: [], terminal: false)
         let proc = try await client.createProcess(
             containerId: containerId, processId: UUID().uuidString.lowercased(),
-            configuration: config, stdio: [inputHandle, pipe.fileHandleForWriting, pipe.fileHandleForWriting])
+            configuration: config, stdio: [stagedInput.handle, pipe.fileHandleForWriting, pipe.fileHandleForWriting])
         try await proc.start()
         pipe.fileHandleForWriting.closeFile()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         try? pipe.fileHandleForReading.close()
         let code = try await proc.wait()
         return (code, String(data: data, encoding: .utf8) ?? "")
+    }
+
+    static func stageStandardInput(_ data: Data?) throws -> StagedStandardInput {
+        guard let data else {
+            return StagedStandardInput(handle: nil, url: nil)
+        }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("container-k8s-stdin-\(UUID().uuidString)")
+        guard
+            FileManager.default.createFile(
+                atPath: url.path,
+                contents: data,
+                attributes: [.posixPermissions: 0o600]
+            )
+        else {
+            throw ContainerizationError(.internalError, message: "failed to stage process standard input")
+        }
+        do {
+            return StagedStandardInput(handle: try FileHandle(forReadingFrom: url), url: url)
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
     }
 
     // MARK: - List rows
