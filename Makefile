@@ -413,6 +413,14 @@ TEST_BINARIES = $(shell \
 	fi)
 TEST_BINARY = $(firstword $(TEST_BINARIES))
 TEST_OBJECT_FLAGS = $(patsubst %,-object %,$(wordlist 2,999,$(TEST_BINARIES)))
+# Xcode 27 emits IntegrationTests as a separate bundle. Unit reports exclude it,
+# while integration and combined reports must map its profile counters back to
+# the production modules statically linked into that executable.
+INTEGRATION_TEST_BINARY = $(shell \
+	find "$(BUILD_BIN_DIR)" -type f \
+		-path '*/IntegrationTests.xctest/Contents/MacOS/IntegrationTests' \
+		-perm -111 2>/dev/null | sort | head -n 1)
+INTEGRATION_TEST_OBJECT_FLAGS = $(if $(INTEGRATION_TEST_BINARY),-object $(INTEGRATION_TEST_BINARY))
 # All product binaries that may be instrumented for coverage.
 # Used as additional -object args to llvm-cov for integration/combined reports.
 COV_BINARIES := \
@@ -577,7 +585,7 @@ coverage-integration: coverage-all
 	$(RUN_INTEGRATION)
 	@echo Merging integration coverage profdata...
 	@xcrun llvm-profdata merge -sparse $(COVERAGE_OUTPUT_DIR)/integration/*.profraw -o $(COVERAGE_OUTPUT_DIR)/integration/default.profdata
-	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/integration/default.profdata,integration,$(COV_OBJECT_FLAGS))
+	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/integration/default.profdata,integration,$(INTEGRATION_TEST_OBJECT_FLAGS) $(COV_OBJECT_FLAGS))
 
 empty :=
 space := $(empty) $(empty)
@@ -596,7 +604,7 @@ coverage: coverage-unit coverage-integration
 		$(COVERAGE_OUTPUT_DIR)/unit/default.profdata \
 		$(COVERAGE_OUTPUT_DIR)/integration/default.profdata \
 		-o $(COVERAGE_OUTPUT_DIR)/combined/default.profdata
-	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/combined/default.profdata,combined,$(COV_OBJECT_FLAGS))
+	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/combined/default.profdata,combined,$(INTEGRATION_TEST_OBJECT_FLAGS) $(COV_OBJECT_FLAGS))
 
 .PHONY: coverage-sonar
 coverage-sonar: coverage-unit
