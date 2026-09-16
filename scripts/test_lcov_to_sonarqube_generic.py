@@ -61,6 +61,24 @@ class ConverterTests(unittest.TestCase):
             self.assertIn('lineNumber="1" covered="true"', text)
             self.assertIn('lineNumber="2" covered="false"', text)
 
+    def test_parse_lcov_omits_blank_source_lines(self) -> None:
+        """LLVM regions spanning blank lines do not lower source coverage."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "Sources" / "API.swift"
+            source.parent.mkdir()
+            source.write_text("let answer = 42\n\nreturn answer\n", encoding="utf-8")
+            report = root / "coverage.lcov"
+            report.write_text(
+                f"SF:{source}\nDA:1,1\nDA:2,0\nDA:3,0\nend_of_record\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                lcov.parse_lcov(report, root),
+                {"Sources/API.swift": {1: True, 3: False}},
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

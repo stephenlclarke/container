@@ -23,6 +23,15 @@ import Foundation
 import Logging
 
 extension K8sHelper {
+    typealias BootstrapDependencies = (client: ContainerClient, log: Logger)
+
+    typealias CNIManifestExecutor = (
+        _ containerID: String,
+        _ executable: String,
+        _ arguments: [String],
+        _ client: ContainerClient,
+        _ standardInput: Data
+    ) async throws -> (code: Int32, output: String)
 
     public static func prepareNode(nodeID: String, client: ContainerClient, log: Logger) async throws {
         log.info("Preparing node", metadata: ["id": "\(nodeID)"])
@@ -37,8 +46,10 @@ extension K8sHelper {
     static func bootstrapControlPlane(
         nodeID: String, apiServerSANs: [String], advertiseAddress: String,
         controlPlaneEndpoint: String,
-        schedulable: Bool, client: ContainerClient, log: Logger
+        schedulable: Bool, customCNIManifest: String? = nil,
+        dependencies: BootstrapDependencies
     ) async throws {
+        let (client, log) = dependencies
         let configYAML = initConfigYAML(
             advertiseAddress: advertiseAddress, certSANs: apiServerSANs,
             controlPlaneEndpoint: controlPlaneEndpoint)
@@ -84,17 +95,32 @@ extension K8sHelper {
                 arguments: ["taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-"])
         }
 
-        log.info("Applying kindnet CNI", metadata: ["node": "\(nodeID)"])
-        let manifest = try await loadKindnetManifest(log: log)
-        let apply =
-            "cat > /tmp/kindnet.yaml <<'EOF'\n\(manifest)\nEOF\n"
-            + "\(kubeconfigEnv) kubectl apply -f /tmp/kindnet.yaml"
-        r = try await execCapture(
-            containerId: nodeID, executable: "/bin/sh",
-            arguments: ["-c", apply], client: client)
-        guard r.code == 0 else {
-            throw ContainerizationError(.internalError, message: "apply CNI failed on \(nodeID): \(r.output)")
+        try await applyCNIManifest(nodeID: nodeID, manifest: customCNIManifest, client: client, log: log, execute: execCapture)
+    }
+
+    static func applyCNIManifest(
+        nodeID: String,
+        manifest: String?,
+        client: ContainerClient,
+        log: Logger,
+        execute: CNIManifestExecutor
+    ) async throws {
+        log.info("Applying CNI manifest", metadata: ["node": "\(nodeID)"])
+        let resolvedManifest = try await resolveCNIManifest(customManifest: manifest, log: log)
+        let apply = cniApplyInvocation(manifest: resolvedManifest)
+        let result = try await execute(
+            nodeID, apply.executable, apply.arguments, client, apply.standardInput)
+        guard result.code == 0 else {
+            throw ContainerizationError(.internalError, message: "apply CNI failed on \(nodeID): \(result.output)")
         }
+    }
+
+    static func cniApplyInvocation(manifest: String) -> (executable: String, arguments: [String], standardInput: Data) {
+        (
+            executable: kubectlPath,
+            arguments: ["--kubeconfig", kubeconfigPath, "apply", "-f", "-"],
+            standardInput: Data(manifest.utf8)
+        )
     }
 
     private static func configureCoreDNS(
@@ -218,6 +244,13 @@ extension K8sHelper {
             throw ContainerizationError(.internalError, message: "could not parse join command output from kubeadm on \(nodeID)")
         }
         return (token: parts[tokenIdx + 1], caCertHash: parts[hashIdx + 1])
+    }
+
+    static func resolveCNIManifest(customManifest: String?, log: Logger) async throws -> String {
+        if let customManifest {
+            return customManifest
+        }
+        return try await loadKindnetManifest(log: log)
     }
 
     private static func loadKindnetManifest(log: Logger) async throws -> String {

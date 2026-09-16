@@ -420,7 +420,7 @@ private func servicePair(
         fileDescriptor: descriptors[1],
         closeOnDealloc: true
     )
-    Task.detached {
+    _ = Task.detached {
         defer { try? server.close() }
         let request = try JournaldServiceFrameCodecV1.read(
             JournaldServiceWireRequestV1.self,

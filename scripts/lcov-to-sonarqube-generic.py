@@ -45,6 +45,7 @@ def relative_path(path: str, root: Path) -> str | None:
 def parse_lcov(path: Path, root: Path) -> dict[str, dict[int, bool]]:
     """Parse LCOV line records."""
     files: dict[str, dict[int, bool]] = {}
+    source_lines: list[str] | None = None
     current: str | None = None
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -52,11 +53,17 @@ def parse_lcov(path: Path, root: Path) -> dict[str, dict[int, bool]]:
             current = relative_path(line[3:], root)
             if current is not None:
                 files.setdefault(current, {})
+                source_path = root / current
+                source_lines = source_path.read_text(encoding="utf-8").splitlines() if source_path.is_file() else None
         elif line.startswith("DA:") and current is not None:
             number, count, *_ = line[3:].split(",")
-            files[current][int(number)] = int(count) > 0
+            line_number = int(number)
+            if source_lines is not None and line_number <= len(source_lines) and not source_lines[line_number - 1].strip():
+                continue
+            files[current][line_number] = int(count) > 0
         elif line == "end_of_record":
             current = None
+            source_lines = None
     return files
 
 

@@ -677,7 +677,7 @@ private func dockerPluginServicePair(
         fileDescriptor: descriptors[1],
         closeOnDealloc: true
     )
-    Task.detached {
+    _ = Task.detached {
         defer { try? server.close() }
         let request = try DockerPluginLifecycleServiceFrameCodecV1.read(
             DockerPluginLifecycleServiceWireRequestV1.self,

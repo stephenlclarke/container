@@ -986,7 +986,7 @@ private func gelfTCPServicePair(
         fileDescriptor: descriptors[1],
         closeOnDealloc: true
     )
-    Task.detached {
+    _ = Task.detached {
         defer { try? server.close() }
         let request = try GELFTCPServiceFrameCodecV1.read(
             GELFTCPServiceWireRequestV1.self,
