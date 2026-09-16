@@ -139,6 +139,34 @@ struct StandardInputStagingTests {
         staged.cleanup()
         #expect(!FileManager.default.fileExists(atPath: url.path))
     }
+
+    @Test func creationFailureIsReported() throws {
+        #expect(throws: ContainerizationError.self) {
+            _ = try K8sHelper.stageStandardInput(Data("manifest payload".utf8)) { _, _ in
+                false
+            }
+        }
+    }
+
+    @Test func openFailureRemovesTheStagedFile() throws {
+        var stagedPath: String?
+
+        #expect(throws: CocoaError.self) {
+            _ = try K8sHelper.stageStandardInput(
+                Data("manifest payload".utf8),
+                createFile: { path, contents in
+                    stagedPath = path
+                    return FileManager.default.createFile(atPath: path, contents: contents)
+                },
+                openFile: { _ in
+                    throw CocoaError(.fileReadNoSuchFile)
+                }
+            )
+        }
+
+        let path = try #require(stagedPath)
+        #expect(!FileManager.default.fileExists(atPath: path))
+    }
 }
 
 // MARK: - K8sHelper.applyCNIManifest

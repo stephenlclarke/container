@@ -97,23 +97,27 @@ public struct K8sHelper {
         return (code, String(data: data, encoding: .utf8) ?? "")
     }
 
-    static func stageStandardInput(_ data: Data?) throws -> StagedStandardInput {
+    static func stageStandardInput(
+        _ data: Data?,
+        createFile: (String, Data) -> Bool = { path, contents in
+            FileManager.default.createFile(
+                atPath: path,
+                contents: contents,
+                attributes: [.posixPermissions: 0o600]
+            )
+        },
+        openFile: (URL) throws -> FileHandle = { try FileHandle(forReadingFrom: $0) }
+    ) throws -> StagedStandardInput {
         guard let data else {
             return StagedStandardInput(handle: nil, url: nil)
         }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("container-k8s-stdin-\(UUID().uuidString)")
-        guard
-            FileManager.default.createFile(
-                atPath: url.path,
-                contents: data,
-                attributes: [.posixPermissions: 0o600]
-            )
-        else {
+        guard createFile(url.path, data) else {
             throw ContainerizationError(.internalError, message: "failed to stage process standard input")
         }
         do {
-            return StagedStandardInput(handle: try FileHandle(forReadingFrom: url), url: url)
+            return StagedStandardInput(handle: try openFile(url), url: url)
         } catch {
             try? FileManager.default.removeItem(at: url)
             throw error
