@@ -80,6 +80,21 @@ struct K8sCreateCNIFlagTests {
         }
     }
 
+    @Test func validationRejectsUnreadableManifest() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".yaml")
+        try "kind: ConfigMap\n".write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: url.path)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        #expect(throws: ContainerizationError.self) {
+            try K8sCreate.validateCNIManifestPath(url.path)
+        }
+    }
+
     @Test func runRejectsMissingManifestBeforeProvisioning() async throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + "-missing.yaml").path
