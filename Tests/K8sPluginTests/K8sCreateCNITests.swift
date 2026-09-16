@@ -94,6 +94,37 @@ struct K8sCreateCNIFlagTests {
         }
     }
 
+    @Test func validationReportsDescriptorInspectionFailure() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".yaml")
+        try "kind: ConfigMap\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: ContainerizationError.self) {
+            _ = try K8sCreate.snapshotCNIManifest(
+                at: url.path,
+                inspect: { _, _ in
+                    errno = EIO
+                    return -1
+                }
+            )
+        }
+    }
+
+    @Test func validationReportsDescriptorReadFailure() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".yaml")
+        try "kind: ConfigMap\n".write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: ContainerizationError.self) {
+            _ = try K8sCreate.snapshotCNIManifest(
+                at: url.path,
+                read: { _ in throw CocoaError(.fileReadCorruptFile) }
+            )
+        }
+    }
+
     @Test func validationRejectsUnreadableManifest() throws {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".yaml")

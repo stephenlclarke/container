@@ -137,7 +137,13 @@ public struct K8sCreate: AsyncParsableCommand {
         print(name)
     }
 
-    static func snapshotCNIManifest(at path: String?) throws -> String? {
+    static func snapshotCNIManifest(
+        at path: String?,
+        inspect: (Int32, UnsafeMutablePointer<stat>) -> Int32 = { fstat($0, $1) },
+        read: (Int32) throws -> Data = {
+            try FileHandle(fileDescriptor: $0, closeOnDealloc: false).readToEnd() ?? Data()
+        }
+    ) throws -> String? {
         guard let path else {
             return nil
         }
@@ -150,13 +156,13 @@ public struct K8sCreate: AsyncParsableCommand {
 
         do {
             var status = stat()
-            guard fstat(descriptor, &status) == 0 else {
+            guard inspect(descriptor, &status) == 0 else {
                 throw ContainerizationError(.invalidArgument, message: "failed to inspect CNI manifest at \(path): \(String(cString: strerror(errno)))")
             }
             guard status.st_mode & S_IFMT == S_IFREG else {
                 throw ContainerizationError(.invalidArgument, message: "CNI manifest is not a regular file at \(path)")
             }
-            let data = try FileHandle(fileDescriptor: descriptor, closeOnDealloc: false).readToEnd() ?? Data()
+            let data = try read(descriptor)
             guard let manifest = String(data: data, encoding: .utf8) else {
                 throw ContainerizationError(.invalidArgument, message: "CNI manifest is not valid UTF-8 at \(path)")
             }
