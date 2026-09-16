@@ -58,6 +58,28 @@ struct K8sCreateCNIFlagTests {
         }
     }
 
+    @Test func validationRejectsDirectory() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: ContainerizationError.self) {
+            try K8sCreate.validateCNIManifestPath(url.path)
+        }
+    }
+
+    @Test func validationRejectsNonUTF8Manifest() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".yaml")
+        try Data([0xff, 0xfe]).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        #expect(throws: ContainerizationError.self) {
+            try K8sCreate.validateCNIManifestPath(url.path)
+        }
+    }
+
     @Test func runRejectsMissingManifestBeforeProvisioning() async throws {
         let path = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + "-missing.yaml").path
