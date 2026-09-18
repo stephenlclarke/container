@@ -1,0 +1,19 @@
+# fix(deps): align the EXT4 decoding dependency across the stack
+
+<!-- markdownlint-disable MD013 -->
+
+## Motivation
+
+Resolve the exact-revision conflict described in [the issue record](ISSUE-ext4-dependency-alignment.md), required to consume [Containerization PR 103](https://github.com/stephenlclarke/containerization/pull/103) from [Compose PR 708](https://github.com/stephenlclarke/container-compose/pull/708).
+
+## Implementation
+
+Advance `containerizationRevision` and its matching lock entry from `51bf8a10e2036861f87ccdf2fd881a8726c534d2` to immutable source commit `ea5ff3b97bd1a12c4054f262ce9fbb7207e6f443`. No other dependency moves. This is Stephen-fork integration metadata, not an Apple upstream patch.
+
+## Validation
+
+The generic fix has independent source review and native Compose proof: the unchanged dependency fails the deterministic alignment regression (`421c2b24-261b-4133-b2a6-5d4f87b5bc2e`), the fixed affected runtime target passes all 32 cases under TSan (`7040f032-1f97-4660-8ec0-237c8e701dd8`), and both enhanced sanitizer aggregates pass all eleven targets (TSan `87d7bbd6-8aa2-4c20-8920-9aeb5230965b`, ASan `4d49c38e-9aa3-4522-95ad-106c19e018fd`). These are prior dependency-level consumer proofs, not final exact Container-pin or release evidence. Matched consumer graph validation and required GitHub checks remain pending.
+
+## Compatibility and rollback
+
+The fix preserves the generic loader signature and disk/endian policy. Guest/public distribution admission remains separate. No Docker behavior, CLI flags, install instructions, README badges or public API documentation change. Reverting these two fields restores the previous graph and its known EXT4 crash. Keep this PR draft until coordinated checks pass; remove the branch/worktree after reviewed merge. Owner: the active build migration; next review 18 September 2026.
