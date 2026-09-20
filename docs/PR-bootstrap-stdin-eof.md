@@ -1,0 +1,31 @@
+# fix(runtime): allow bootstrap input to own stdin EOF
+
+## Type of Change
+
+- [x] Bug fix
+- [ ] Breaking change
+- [x] Documentation update
+
+## Motivation and Context
+
+Fixes [issue 287](https://github.com/stephenlclarke/container/issues/287); see [the issue handoff](ISSUE-287.md). Ordinary attachment disconnect must remain detach-only, but devcontainer's generation-owned bootstrap socket must be able to finish stdin. A separate close RPC can overtake queued bytes or address a replacement generation, so the policy travels with the original descriptor instead.
+
+`closeStdinOnEOF` defaults to false. It is forwarded through the public bootstrap request, API authority, dedicated runtime and prewarm-consumption attachment. `AttachableInput` yields all data before finishing its stream at that descriptor's EOF; the existing guest relay drains that stream before closing process input. No process-ID lookup or relay cancellation is added. Unsupported shared-VM policy is explicitly rejected.
+
+Registration, callback lookup/read/yield and logical completion share one lifecycle lock. Physical handler/descriptor cleanup follows removal of the registrations, preventing queued callbacks from reading closed or reused descriptors. Default behavior and deferred-prewarm no-input EOF remain intact.
+
+The companion devcontainer adapter sends the optional field with both stock and enhanced SDKs, preserving their different descriptor-transfer ownership. Stock Apple already propagates input descriptor EOF; no Compose library dependency is introduced into devcontainer's neutral core.
+
+## Testing
+
+- [x] Tested locally: 13 focused `RuntimeAttachIOTests` pass, including exact four-MiB delivery before EOF, default reattachment, cold/deferred generation isolation, stale callbacks and add-after-close. Swift 6.3/macOS SDK 26.5; task scratch is on the SSD.
+- [x] Added/updated tests and documentation.
+- [x] Independent complete source review is clean after fixing its registration/closure race finding.
+- [ ] Exact signed native-runtime plus guest and devcontainer live E07 proof.
+- [ ] Full cold/prewarm API forwarding integration, affected regression/quality/coverage and release gates.
+
+Companion devcontainer focused tests pass for enhanced Bazel invocation `e37f2b33-2626-49f9-9b37-d344731e8b02` and stock `6201cd07-0313-44c7-b4c3-f87df528686c`; stock bootstrap/IO/exit boundary passes 19 tests in `29205dc8-7ce5-4d21-90c7-6f2d5b37fe49`. These are component proofs, not live parity or whole-repository coverage. Formatting-only changes are rechecked before publication. No timing waiver, coverage exclusion, stable release, guest pin or main promotion is part of this draft.
+
+## Compatibility, rollback and remaining risk
+
+Existing callers retain detach-only semantics. The new option is additive; shared-VM use is not claimed. Retain the prior runtime package and restart only owned isolated test resources for rollback. Unit tests do not prove the entire XPC/prewarm handoff or installation/signing path; those boundaries remain open. Comparative performance and published-release benchmarking follow functional closure using unchanged fixture assertions.
