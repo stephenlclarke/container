@@ -23,7 +23,7 @@ Wall times include the launcher, SSD checks, logging and report retention. They 
 
 The combined reports contain 13,831 JUnit testcase records. XCTest records five skips in XML; Swift Testing reports another 37 skipped test entries in the retained logs and omits those entries from its XML. Do not interpret the XML count as all discovered tests having executed. Skips include explicit Keychain/network/registry checks, a Docker interoperability check and upstream disabled or large-memory cases. Their source assertions remain intact.
 
-The two DocC-only lockfile packages are excluded. Smithy's empty placeholder test is not counted; its real generated-SDK test project remains outside this reduced build. CRT qualification selects upstream offline test files. The selected AWS runtime tests exercise Smithy consumers. No VM execution, release packaging, installed service qualification, coverage percentage or cloud Sonar result is claimed.
+The two DocC-only lockfile packages are excluded. Smithy's empty placeholder test is not counted; its real generated-SDK test project remains outside this reduced build. CRT qualification selects upstream offline test files. The selected AWS runtime tests exercise Smithy consumers. The later [runtime benchmark](RUNTIME_BENCHMARK.md) adds actual VM execution and image builds in private signed installations. Release packaging, the pre-existing installed service, a coverage percentage and a cloud Sonar result remain unqualified.
 
 ## Evidence
 

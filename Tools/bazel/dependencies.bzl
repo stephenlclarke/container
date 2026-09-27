@@ -25,7 +25,7 @@ def _dependencies_impl(ctx):
                     test_data_globs = TEST_DATA_GLOBS.get(identity, {}),
                 )
                 if identity == "container":
-                    local_swift_package(path = ".", **options)
+                    local_swift_package(path = ".", env_inherit = ["GIT_COMMIT"], **options)
                     continue
                 pin = pins[identity]
                 revision = pin["state"]["revision"]

@@ -8,6 +8,8 @@ See [QUALIFICATION.md](QUALIFICATION.md) for validation and explicit limits, and
 
 [FORK_BENCHMARK.md](FORK_BENCHMARK.md) compares the active forks with matching Apple revisions, including identical test workloads and explicit behavior differences.
 
+[RUNTIME_BENCHMARK.md](RUNTIME_BENCHMARK.md) compares actual container startup, execution, CPU/disk workloads, image transfers and image builds using optimized Apple and fork stacks. It is part of the final build qualification.
+
 ## Commands
 
 Run these in the container checkout:
@@ -21,6 +23,8 @@ Run these in the container checkout:
 | `make bazel-dependency-test` | Selected tests for all admitted dependencies |
 | `make bazel-test-all` | Container and dependency tests together |
 | `make bazel-fork-benchmark` | Isolated fork/Apple component comparisons; retains mismatches and timings |
+| `make bazel-runtime-benchmark` | Build optimized Apple/fork stacks and run repeated runtime speed benchmarks |
+| `make bazel-final` | Tool checks, all 91 normal test suites, optimized builds and runtime comparison |
 | `make bazel-tools-test` | Launcher, runner and retained-report checks |
 | `make bazel-check` | Tool checks, complete build, container unit tests |
 | `make bazel-host-test LAYER=container-api` | Explicit host checks; requires the relevant host services |
@@ -29,7 +33,7 @@ Run these in the container checkout:
 
 `LAYER` defaults to `container`. Pick individual layer names from [layers.bzl](layers.bzl). Build and test commands reuse the same outputs. Host and runtime integration runs deliberately disable result caching because their external state can change.
 
-Runtime integration requires a matching prepared installation, running services, kernel/images, permissions and network access. Its tests can create and remove runtime resources. The build workflow does not install or start these prerequisites. Compilation alone is not a runtime pass.
+The separate runtime integration suite requires a matching prepared installation, running services, kernel/images, permissions and network access. Its tests can create and remove runtime resources. Ordinary build/test commands do not start these prerequisites. The explicit runtime benchmark stages and starts its own signed installations, restores inactive default registrations afterward, and fails if an active default installation would be displaced. Compilation alone is not a runtime pass.
 
 ## Available layers
 
@@ -95,4 +99,4 @@ The Smithy source-generation plugin is represented by a native Bazel action. It 
 
 The active graph contains this repository and 39 pinned Swift package dependencies, plus the same-repository Go helper's pinned module dependencies. The two DocC-only lockfile packages are not imported. The internal K8s module belongs to this container repository; no separate Kubernetes repository is admitted.
 
-Normal builds produce debug artifacts. Release stamping, packaging, signing for installation, VM execution and family-wide release gates are outside this check. The engine command's source file is named after its type instead of `main.swift`, avoiding Swift's top-level entry-point interpretation when using `@main`; its contents are unchanged.
+Normal builds produce debug artifacts. `bazel-final` also builds optimized binaries, signs the private benchmark installations and runs VMs. Packaging, publishing and family-wide release gates remain outside this check. The engine command's source file is named after its type instead of `main.swift`, avoiding Swift's top-level entry-point interpretation when using `@main`; its contents are unchanged.

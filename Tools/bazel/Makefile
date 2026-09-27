@@ -36,3 +36,13 @@ bazel-fork-benchmark:
 	@python3 Tools/bazel/fork_benchmark.py \
 		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/fork-comparison/$(BENCHMARK_RUN)" \
 		--scratch "/Volumes/SSD/cf/container-only/fork-comparison/$(BENCHMARK_RUN)" $(BENCHMARK_ARGS)
+
+.PHONY: bazel-runtime-benchmark bazel-final
+bazel-runtime-benchmark:
+	@python3 Tools/bazel/runtime_benchmark.py --prepare \
+		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/runtime-benchmark/$(BENCHMARK_RUN)"
+
+# Final qualification is explicit; normal layer tests remain VM-free and cached.
+bazel-final: bazel-tools-test
+	@$(MAKE) bazel-test-all
+	@$(MAKE) bazel-runtime-benchmark BENCHMARK_RUN="$(BENCHMARK_RUN)"

@@ -189,6 +189,7 @@ To retain your user data so that it is available should you reinstall later, run
 - Browse the [full command reference](./docs/command-reference.md).
 - [Build and run](./BUILDING.md) `container` on your own development system.
 - [Container-only Bazel build](./Tools/bazel/README.md): qualify dependencies and tests one layer at a time.
+- [Apple versus fork runtime benchmarks](./Tools/bazel/RUNTIME_BENCHMARK.md): `make bazel-final` finishes the build with repeated speed comparisons.
 - View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
 - Compare the [Apple upstream API reference](https://apple.github.io/container/documentation/).
 
