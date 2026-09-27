@@ -20,7 +20,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.ref_name }}
+          ref: ${{ github.sha }}
+      - name: Bind the named branch to the requested revision
+        shell: bash
+        env:
+          REQUESTED_REVISION: ${{ github.sha }}
+          REQUESTED_BRANCH: ${{ github.ref_name }}
+          REQUESTED_REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+          test "$REQUESTED_REF_TYPE" = branch
+          git switch --force-create "$REQUESTED_BRANCH" "$REQUESTED_REVISION"
+          test "$(git rev-parse HEAD)" = "$REQUESTED_REVISION"
       - name: Run the same local qualification command
         shell: bash
         env:

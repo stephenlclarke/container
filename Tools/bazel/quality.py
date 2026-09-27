@@ -77,6 +77,21 @@ def context_arguments(context: dict) -> list[str]:
     return ['-Dsonar.pullrequest.' + key + '=' + context[key] for key in ('key', 'branch', 'base')]
 
 
+def clean_code_checks(context: dict, evidence: Path) -> dict:
+    """Preserve the original workflow's stricter issue and hotspot authority."""
+    scope = ({'pullRequest': context['key'], 'inNewCodePeriod': 'true'}
+             if context['kind'] == 'pull_request' else {'branch': context['branch']})
+    issues = api('issues/search', {'componentKeys': PROJECT, 'resolved': 'false', 'ps': 1, **scope})
+    (evidence / 'unresolved-issues.json').write_text(json.dumps(issues, indent=2) + '\n')
+    hotspots = api('hotspots/search', {'projectKey': PROJECT, 'status': 'TO_REVIEW', 'ps': 1, **scope})
+    (evidence / 'unreviewed-hotspots.json').write_text(json.dumps(hotspots, indent=2) + '\n')
+    counts = {'unresolved_issues': issues.get('total'),
+              'unreviewed_hotspots': hotspots.get('paging', {}).get('total')}
+    if any(type(count) is not int or count != 0 for count in counts.values()):
+        raise RuntimeError('Sonar requires zero unresolved issues and zero unreviewed hotspots; see retained responses')
+    return counts
+
+
 def run(evidence: Path, coverage: Path) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
     result = {'passed': False, 'failures': []}
@@ -113,6 +128,7 @@ def run(evidence: Path, coverage: Path) -> None:
                 result.update(analysis_id=analysis, dashboard=task.get('dashboardUrl'), gate=gate['projectStatus']['status'])
         if row['status'] or result.get('gate') != 'OK':
             raise RuntimeError('Sonar analysis or quality gate failed; see retained scanner output and gate conditions')
+        result['clean_code'] = clean_code_checks(context, evidence)
         if checkpoint() != revision:
             raise RuntimeError('Source changed during authoritative analysis')
         if analysis_context(revision) != context:

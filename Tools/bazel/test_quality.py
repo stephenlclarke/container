@@ -2,12 +2,38 @@
 
 import unittest
 from copy import deepcopy
+import json
+from pathlib import Path
+import tempfile
 from unittest.mock import patch
 
-from quality import REPOSITORY, checkpoint, context_arguments, pull_request_context, validate_policy
+from quality import REPOSITORY, checkpoint, clean_code_checks, context_arguments, pull_request_context, validate_policy
 
 
 class QualityAdmissionTests(unittest.TestCase):
+    def test_clean_code_checks_keep_pr_new_code_and_main_full_scope(self):
+        for context, expected in [({'kind': 'pull_request', 'key': '289'},
+                                   {'pullRequest': '289', 'inNewCodePeriod': 'true'}),
+                                  ({'kind': 'branch', 'branch': 'main'}, {'branch': 'main'})]:
+            with self.subTest(context=context), tempfile.TemporaryDirectory() as directory, \
+                    patch('quality.api', side_effect=[{'total': 0}, {'paging': {'total': 0}}]) as api:
+                evidence = Path(directory)
+                self.assertEqual(clean_code_checks(context, evidence),
+                                 {'unresolved_issues': 0, 'unreviewed_hotspots': 0})
+                self.assertEqual(api.call_args_list[0].args, ('issues/search',
+                                 {'componentKeys': 'stephenlclarke_container', 'resolved': 'false', 'ps': 1, **expected}))
+                self.assertEqual(api.call_args_list[1].args, ('hotspots/search',
+                                 {'projectKey': 'stephenlclarke_container', 'status': 'TO_REVIEW', 'ps': 1, **expected}))
+                self.assertEqual(json.loads((evidence / 'unresolved-issues.json').read_text()), {'total': 0})
+                self.assertEqual(json.loads((evidence / 'unreviewed-hotspots.json').read_text()), {'paging': {'total': 0}})
+
+    def test_nonzero_or_missing_clean_code_counts_fail(self):
+        for issues, hotspots in [(1, 0), (0, 1), (None, 0), (0, None), ('0', 0), (False, 0), (-1, 0)]:
+            with self.subTest(issues=issues, hotspots=hotspots), tempfile.TemporaryDirectory() as directory, \
+                    patch('quality.api', side_effect=[{'total': issues}, {'paging': {'total': hotspots}}]):
+                with self.assertRaisesRegex(RuntimeError, 'zero unresolved issues'):
+                    clean_code_checks({'kind': 'branch', 'branch': 'main'}, Path(directory))
+
     def test_pr_analysis_requires_exact_open_pushed_checkpoint(self):
         revision = 'a' * 40
         pull = {'number': 289, 'state': 'open',
