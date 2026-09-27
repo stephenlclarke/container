@@ -21,3 +21,5 @@ Release admission must preserve a clean checkout. CodeQL extractor version check
 Keep dormant original Apple/Homebrew service registrations aside across the whole unattended run. Restoring them between runtime stages allowed background clients to reactivate the original service and interfere with the next admission. The existing ownership guard still refuses active workloads; cleanup attempts both Colima and registration restoration even if either fails.
 
 The reduced quality lane must preserve the original workflow's separate zero-unresolved-issues and zero-unreviewed-hotspots checks, even when Sonar's configurable quality gate passes. Manual GitHub qualification must also test its event SHA rather than the branch tip at runner startup, otherwise queued branch updates can misidentify the tested source.
+
+The reduced workflow also needs the original integration and combined coverage tiers. Unit-only evidence cannot replace these. Build tests share a private builder that must be removed at their layer boundary before System tests assert an empty image store.

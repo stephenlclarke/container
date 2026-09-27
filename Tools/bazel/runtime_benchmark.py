@@ -154,9 +154,13 @@ class StockSlot:
 
 
 class RuntimeRunner(Runner):
+    def __init__(self, evidence: Path, scratch: Path) -> None:
+        super().__init__(evidence, scratch)
+        self.runtime_environment: dict[str, str] = {}
+
     def command(self, lane: str, fixture: str, trial: int, args: list[str],
                 timeout: int = 120, expected: str | None = None) -> dict:
-        self.env = environment(lane)
+        self.env = dict(environment(lane), **self.runtime_environment)
         cli = INSTALLS / lane / 'install/bin/container'
         row = self.run('runtime-stack', lane, fixture, trial, [str(cli), *args], ROOT, timeout)
         if expected is not None and expected not in Path(row['log']).read_text():
@@ -353,7 +357,8 @@ def reset_state(lane: str, init: str, builder_image: str) -> str:
     return digest(kernel)
 
 
-def stage(lane: str, workspace: Path, output_root: Path, evidence: Path) -> None:
+def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
+          configuration: str = 'release', profile_file: str | None = None) -> None:
     if lane == 'fork':
         guest = verified_guest(evidence / 'guest-artifact.json', workspace)
         builder = verified_builder(evidence / 'builder-artifact.json')
@@ -368,7 +373,7 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path) -> None
     bazel = [str(BAZEL), '--output_user_root=' + str(output_root)]
     execution = Path(checked(bazel + ['info', 'execution_root'], cwd=workspace, env=env))
     target = '//:container' if lane == 'fork' else '//:component'
-    files = checked(bazel + ['cquery', target, '--config=release', '--repo_env=GIT_COMMIT=' + revision, '--output=files'],
+    files = checked(bazel + ['cquery', target, '--config=' + configuration, '--repo_env=GIT_COMMIT=' + revision, '--output=files'],
                     cwd=workspace, env=env).splitlines()
     executables = {Path(p).name.removesuffix('.rspm.__impl'): execution / p
                    for p in files if p.endswith('.rspm.__impl') and '/Contents/Resources/DWARF/' not in p}
@@ -442,7 +447,8 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path) -> None
     metadata = {'lane': lane, 'workspace': str(workspace), 'install': str(install),
                 'state': str(state), 'binaries': fingerprints, 'kernel_sha256': kernel_sha,
                 'init_image': init, 'builder_image': builder_image, 'workload_image': ALPINE,
-                'cli_version': checked([str(install / 'bin/container'), '--version']),
+                'cli_version': checked([str(install / 'bin/container'), '--version'],
+                                       env=dict(env, LLVM_PROFILE_FILE=profile_file) if profile_file else env),
                 'package_lock_sha256': digest(workspace / 'Package.resolved')}
     if lane == 'fork':
         metadata['init_archive_sha256'] = guest['archive_sha256']

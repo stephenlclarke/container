@@ -14,6 +14,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from fork_benchmark import ROOT, digest, install_signal_handlers
+from runtime_coverage import RuntimeCoverage
 from runtime_benchmark import INSTALLS, PLUGINS, STATE, RuntimeRunner, build_inputs, environment, own, reset_state, start_lane, stop_owned
 
 LAYERS = ['Containers', 'Run', 'Volumes', 'Network', 'Images', 'Build', 'System', 'Registry', 'Machine', 'K8s']
@@ -96,7 +97,8 @@ def retain_layer_reports(log: Path, destination: Path) -> int:
     return executed
 
 
-def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None = None) -> None:
+def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None = None,
+        coverage: bool = False) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
     verify_prepared(prepared)
     for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json']:
@@ -105,10 +107,14 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
     executable = INSTALLS / 'fork/install/bin/container'
     records = evidence / 'processes'
     records.mkdir()
-    result = {'passed': False, 'layers': layers, 'selection': selection, 'failures': []}
+    result = {'passed': False, 'layers': layers, 'selection': selection, 'failures': [], 'coverage': coverage}
+    profiling = None
     with (INSTALLS / 'benchmark.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
+            if coverage:
+                profiling = RuntimeCoverage(runner, layers == LAYERS and selection is None)
+                profiling.prepare()
             stop_owned('fork')
             metadata = json.loads((evidence / 'fork-fingerprint.json').read_text())
             if reset_state('fork', metadata['init_image'], metadata['builder_image']) != metadata['kernel_sha256']:
@@ -124,18 +130,24 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
                        CONTAINER_REGISTRY_ANONYMOUS_HOSTS='ghcr.io,docker.io,registry-1.docker.io',
                        CLITEST_SCRATCH_ROOT=str(state / 'scratch'),
                        KUBECONFIG=str(config / 'kubeconfig'), DOCKER_CONFIG=str(config / '.docker'))
+            if profiling:
+                env['CLITEST_RUNTIME_PROFILE'] = profiling.environment['LLVM_PROFILE_FILE']
             names = ['CONTAINER_APP_ROOT', 'CONTAINER_INSTALL_ROOT', 'CONTAINER_SERVICE_NAMESPACE',
                      'XDG_CONFIG_HOME', 'CONTAINER_REGISTRY_ANONYMOUS_HOSTS', 'CONTAINER_CLI_PATH',
                      'CONTAINER_RUNTIME_TESTS_SERIAL', 'CLITEST_LOG_ROOT', 'CLITEST_SCRATCH_ROOT', 'CLITEST_REAL_CLI', 'CLITEST_PROCESS_DIRECTORY',
-                     'KUBECONFIG', 'DOCKER_CONFIG']
+                     'KUBECONFIG', 'DOCKER_CONFIG', 'CLITEST_RUNTIME_PROFILE']
             flags = ['--test_env=' + name + '=' + env[name] for name in names if name in env]
+            mode = 'coverage' if profiling else 'test'
+            configuration = 'runtime-coverage' if profiling else 'release'
+            if profiling:
+                flags += ['--combined_report=lcov', '--repo_env=GIT_COMMIT=' + profiling.result['revision']]
             for layer in ['Warmup', *layers]:
                 selected = '^ImageWarmup/' if layer == 'Warmup' else selection or test_filter(layer)
                 runner.env = env
                 row = runner.run('integration', 'fork', layer.lower(), 0,
-                                 [str(ROOT / 'Tools/bazel/run.sh'), 'test', '//:runtime-integration-tests',
+                                 [str(ROOT / 'Tools/bazel/run.sh'), mode, '//:runtime-integration-tests',
                                   '--test_filter=' + selected, '--strategy=TestRunner=local',
-                                  '--config=release', '--nocache_test_results',
+                                  '--config=' + configuration, '--nocache_test_results',
                                   '--test_timeout=1800', *flags], ROOT, timeout=1860)
                 try:
                     row['executed_tests'] = retain_layer_reports(Path(row['log']), evidence / (layer.lower() + '-reports'))
@@ -145,6 +157,11 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
                         raise
                 if row['status']:
                     raise RuntimeError('Integration layer failed: ' + layer + '; see ' + row['log'])
+                if profiling:
+                    profiling.retain_layer(Path(row['log']), layer)
+                if layer == 'Build':
+                    # Build tests share a builder; System disk accounting needs an empty store.
+                    runner.command('fork', 'build-cleanup', 0, ['builder', 'delete', '--force'])
             result['passed'] = True
         except BaseException as error:
             result['failures'].append(str(error))
@@ -166,6 +183,11 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
             except BaseException as error:
                 cleanup_errors.append(str(error))
             finally:
+                if profiling:
+                    try:
+                        profiling.finish(result['passed'] and not cleanup_errors)
+                    except BaseException as error:
+                        cleanup_errors.append(str(error))
                 if cleanup_errors:
                     result['passed'] = False
                     result['failures'].extend(cleanup_errors)
@@ -182,10 +204,11 @@ def main() -> None:
     parser.add_argument('--prepared', type=Path, required=True, help='Matching runtime preparation/benchmark evidence')
     parser.add_argument('--layer', choices=LAYERS, action='append')
     parser.add_argument('--test-filter', help='Focused selection within one explicitly selected layer; recorded as partial coverage')
+    parser.add_argument('--coverage', action='store_true', help='Collect runtime and per-layer integration line coverage')
     args = parser.parse_args()
     if args.test_filter and len(args.layer or []) != 1:
         parser.error('--test-filter requires exactly one --layer')
-    run(args.evidence, args.prepared, args.layer or LAYERS, args.test_filter)
+    run(args.evidence, args.prepared, args.layer or LAYERS, args.test_filter, args.coverage)
 
 
 if __name__ == '__main__':

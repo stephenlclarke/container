@@ -81,9 +81,13 @@ bazel-vm-integration:
 bazel-maintenance:
 	@python3 Tools/bazel/maintenance.py --evidence "$(QUALIFICATION_EVIDENCE)/maintenance"
 
-.PHONY: bazel-coverage
+.PHONY: bazel-coverage bazel-combined-coverage
 bazel-coverage:
 	@python3 Tools/bazel/coverage.py --evidence "$(QUALIFICATION_EVIDENCE)/coverage"
+
+bazel-combined-coverage:
+	@python3 Tools/bazel/combined_coverage.py --unit "$(QUALIFICATION_EVIDENCE)/coverage" \
+		--integration "$(QUALIFICATION_EVIDENCE)/integration/coverage" --evidence "$(QUALIFICATION_EVIDENCE)/combined-coverage"
 
 BENCHMARK_TRIALS ?= 7
 BENCHMARK_RUN ?= $(shell date -u +%Y%m%dT%H%M%SZ)

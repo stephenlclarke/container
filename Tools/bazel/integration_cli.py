@@ -18,7 +18,10 @@ def main() -> None:
     temporary = record.with_suffix('.tmp')
     temporary.write_text(json.dumps({'pid': pid, 'started': started, 'executable': executable}) + '\n')
     temporary.replace(record)
-    os.execve(executable, [executable, *sys.argv[1:]], os.environ)
+    environment = dict(os.environ)
+    if environment.get('CLITEST_RUNTIME_PROFILE'):
+        environment['LLVM_PROFILE_FILE'] = environment['CLITEST_RUNTIME_PROFILE']
+    os.execve(executable, [executable, *sys.argv[1:]], environment)
 
 
 if __name__ == '__main__':

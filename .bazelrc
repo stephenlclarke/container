@@ -23,3 +23,9 @@ build --test_env=CI=1
 build:release --compilation_mode=opt
 build:release --apple_generate_dsym
 build:release --strip=never
+
+# Coverage stays in its own configuration; release benchmarks use plain release.
+build:runtime-coverage --config=release
+build:runtime-coverage --collect_code_coverage
+build:runtime-coverage --instrumentation_filter=.*swiftpkg_container//
+build:runtime-coverage --@build_bazel_rules_swift//swift:copt=-DCONTAINER_COVERAGE
