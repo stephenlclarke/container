@@ -33,3 +33,17 @@ diff --git a/swiftpkg/internal/minimum_os_transition.bzl b/swiftpkg/internal/min
      outputs[minimum_os_config.option] = minimum_os
  
      # Set the minimum_os_version flag in addition to the OS specific flag
+@@ -194,6 +196,12 @@
+ spm_minimum_os_test = rule(
+     implementation = _spm_minimum_os_executable_impl,
+-    attrs = _minimum_os_attrs,
++    attrs = dict(_minimum_os_attrs, **{
++        "_lcov_merger": attr.label(
++            cfg = "exec",
++            default = Label("@bazel_tools//tools/test:coverage_report_generator"),
++            executable = True,
++        ),
++    }),
+     test = True,
+     doc = "Applies Swift package minimum OS settings to a test implementation target.",
+ )

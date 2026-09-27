@@ -13,6 +13,27 @@ import runtime_benchmark as runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_guest_receipt_rejects_wrong_source_and_tampered_archive(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            revision = 'a' * 40
+            (root / 'Package.resolved').write_text(json.dumps({'pins': [
+                {'identity': 'containerization', 'state': {'revision': revision}}]}))
+            archive = root / 'guest.tar'
+            archive.write_bytes(b'qualified guest')
+            record = {'schema': 1, 'identity': {'source': revision}, 'archive': str(archive),
+                      'archive_sha256': runtime.digest(archive), 'reference': 'example/guest:' + revision}
+            receipt = root / 'receipt.json'
+            receipt.write_text(json.dumps(record))
+            self.assertEqual(runtime.verified_guest(receipt, root), record)
+            archive.write_bytes(b'changed')
+            with self.assertRaisesRegex(RuntimeError, 'checksum'):
+                runtime.verified_guest(receipt, root)
+            record['identity']['source'] = 'b' * 40
+            receipt.write_text(json.dumps(record))
+            with self.assertRaisesRegex(RuntimeError, 'source'):
+                runtime.verified_guest(receipt, root)
+
     def test_stock_cache_ignores_replaced_fork_pins_but_tracks_effective_inputs(self):
         def pin(identity, revision):
             return {'identity': identity, 'state': {'revision': revision}}

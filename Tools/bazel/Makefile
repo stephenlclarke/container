@@ -1,5 +1,25 @@
+# Copyright © 2026 Apple Inc. and the container project authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Container-only Bazel qualification. See Tools/bazel/README.md.
 LAYER ?= container
+PREFLIGHT_PROFILE ?= build
+.PHONY: bazel-preflight bazel-repository-test
+bazel-preflight:
+	@python3 Tools/bazel/preflight.py --profile "$(PREFLIGHT_PROFILE)"
+bazel-repository-test:
+	@Tools/bazel/run.sh test //:repository-tests
 .PHONY: bazel-build bazel-test bazel-host-test bazel-tools-test
 bazel-build:
 	@Tools/bazel/run.sh build //:$(LAYER)
@@ -30,8 +50,47 @@ bazel-integration-test:
 	@test -n "$(CONTAINER_CLI_PATH)" && test -x "$(CONTAINER_CLI_PATH)" || { echo "Set CONTAINER_CLI_PATH to the CLI for the prepared test installation."; exit 2; }
 	@Tools/bazel/run.sh test //:runtime-integration-tests --test_env=CONTAINER_CLI_PATH="$(CONTAINER_CLI_PATH)" --strategy=TestRunner=local --nocache_test_results --test_timeout=1800
 
+.PHONY: bazel-runtime-integration
+bazel-runtime-integration:
+	@test -n "$(PREPARED_RUNTIME)" || { printf '%s\n' 'Set PREPARED_RUNTIME to matching runtime preparation evidence.'; exit 2; }
+	@python3 Tools/bazel/runtime_integration.py --prepared "$(PREPARED_RUNTIME)" \
+		--evidence "$(QUALIFICATION_EVIDENCE)/integration" $(INTEGRATION_ARGS)
+
+.PHONY: bazel-release-artifact
+bazel-release-artifact:
+	@test -n "$(PREPARED_RUNTIME)" && test -n "$(SERVICE_ARTIFACTS)" || { printf '%s\n' 'Set PREPARED_RUNTIME and SERVICE_ARTIFACTS to source-matched evidence.'; exit 2; }
+	@python3 Tools/bazel/release_artifact.py --prepared "$(PREPARED_RUNTIME)" \
+		--service-artifacts "$(SERVICE_ARTIFACTS)" --evidence "$(QUALIFICATION_EVIDENCE)/release" $(RELEASE_ARGS)
+
+.PHONY: bazel-service-artifacts
+bazel-service-artifacts:
+	@python3 Tools/bazel/service_artifacts.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/services"
+
+.PHONY: bazel-service-integration bazel-quality
+bazel-service-integration:
+	@python3 Tools/bazel/service_integration.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/service-integration"
+bazel-quality:
+	@python3 Tools/bazel/quality.py --coverage "$(QUALIFICATION_EVIDENCE)/coverage" --evidence "$(QUALIFICATION_EVIDENCE)/quality"
+
+.PHONY: bazel-vm-integration
+bazel-vm-integration:
+	@python3 Tools/bazel/vm_integration.py --guest-artifact "$(QUALIFICATION_EVIDENCE)/guest/guest-artifact.json" \
+		--evidence "$(QUALIFICATION_EVIDENCE)/vm-integration" $(VM_INTEGRATION_ARGS)
+
+.PHONY: bazel-maintenance
+bazel-maintenance:
+	@python3 Tools/bazel/maintenance.py --evidence "$(QUALIFICATION_EVIDENCE)/maintenance"
+
+.PHONY: bazel-coverage
+bazel-coverage:
+	@python3 Tools/bazel/coverage.py --evidence "$(QUALIFICATION_EVIDENCE)/coverage"
+
 BENCHMARK_TRIALS ?= 7
 BENCHMARK_RUN ?= $(shell date -u +%Y%m%dT%H%M%SZ)
+.PHONY: bazel-guest-build
+bazel-guest-build:
+	@python3 Tools/bazel/preflight.py --profile build
+	@python3 Tools/bazel/guest_artifact.py --evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/guest-build/$(BENCHMARK_RUN)"
 .PHONY: bazel-fork-benchmark
 bazel-fork-benchmark:
 	@python3 Tools/bazel/fork_benchmark.py \
@@ -53,3 +112,38 @@ DOCKER_CONTEXT ?= colima
 bazel-docker-benchmark:
 	@python3 Tools/bazel/docker_benchmark.py --context "$(DOCKER_CONTEXT)" --trials "$(BENCHMARK_TRIALS)" \
 		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/docker-benchmark/$(BENCHMARK_RUN)"
+
+QUALIFICATION_EVIDENCE ?= $(HOME)/Library/Application Support/ContainerFamily/retained/container-only/artifact-check/$(BENCHMARK_RUN)
+.PHONY: bazel-linux-test bazel-builder-build bazel-artifact-check bazel-unattended-artifacts
+bazel-linux-test:
+	@python3 Tools/bazel/linux_tests.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/linux"
+bazel-builder-build:
+	@python3 Tools/bazel/builder_artifact.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/builder"
+# This checkpoint proves source-built guest/builder artifacts through a live CLI.
+# Complete release qualification also requires the integration and release gates.
+bazel-artifact-check: bazel-tools-test
+	@python3 Tools/bazel/guest_artifact.py --evidence "$(QUALIFICATION_EVIDENCE)/guest"
+	@$(MAKE) bazel-linux-test
+	@$(MAKE) bazel-builder-build
+	@python3 Tools/bazel/runtime_benchmark.py --prepare --trials 1 --context "$(DOCKER_CONTEXT)" \
+		--guest-artifact "$(QUALIFICATION_EVIDENCE)/guest/guest-artifact.json" \
+		--builder-artifact "$(QUALIFICATION_EVIDENCE)/builder/builder-artifact.json" \
+		--evidence "$(QUALIFICATION_EVIDENCE)/runtime-smoke"
+bazel-unattended-artifacts:
+	@python3 Tools/bazel/unattended.py --evidence "$(QUALIFICATION_EVIDENCE)"
+
+.PHONY: bazel-qualify bazel-unattended bazel-release-install
+bazel-qualify:
+	@python3 Tools/bazel/qualification.py --evidence "$(QUALIFICATION_EVIDENCE)" --trials "$(BENCHMARK_TRIALS)"
+bazel-unattended:
+	@python3 Tools/bazel/unattended.py --profile release --target bazel-qualify --evidence "$(QUALIFICATION_EVIDENCE)"
+bazel-release-install:
+	@python3 Tools/bazel/release_install.py --release "$(QUALIFICATION_EVIDENCE)/release" --evidence "$(QUALIFICATION_EVIDENCE)/install"
+
+.PHONY: bazel-docs
+bazel-docs:
+	@python3 Tools/bazel/documentation.py --evidence "$(QUALIFICATION_EVIDENCE)/documentation"
+
+.PHONY: bazel-codeql
+bazel-codeql:
+	@python3 Tools/bazel/codeql.py --evidence "$(QUALIFICATION_EVIDENCE)/codeql"

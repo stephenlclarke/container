@@ -45,6 +45,23 @@ class ReportTests(unittest.TestCase):
             self.assertIn('started', Path(row['log']).read_text())
             self.assertEqual(json.loads((evidence / 'results.json').read_text())[0]['status'], 124)
 
+    def test_timeout_terminates_descendants(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            runner = Runner(evidence, evidence)
+            marker = evidence / 'orphan-survived'
+            child = 'import time,pathlib; time.sleep(1.5); pathlib.Path(' + repr(str(marker)) + ').touch()'
+            parent = ('import subprocess,sys,time; subprocess.Popen([sys.executable,"-c",' +
+                      repr(child) + ']); time.sleep(30)')
+            with patch('threading.excepthook') as errors:
+                row = runner.run('probe', 'fork', 'descendant-timeout', 0,
+                                 [sys.executable, '-c', parent], evidence, timeout=0.5)
+            errors.assert_not_called()
+            self.assertEqual(row['status'], 124)
+            import time
+            time.sleep(1.5)
+            self.assertFalse(marker.exists())
+
     def test_median_does_not_hide_a_tenfold_trial(self):
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory)
@@ -78,7 +95,7 @@ class ReportTests(unittest.TestCase):
             runner.report()
             matrix = json.loads((evidence / 'matrix.json').read_text())
             self.assertEqual([r['fixture'] for r in matrix], ['archive', 'oci'])
-            self.assertEqual([r['ratio'] for r in matrix], [10, 1.5])
+            self.assertEqual([r['ratio'] for r in matrix], [10, None])
             self.assertFalse(any(r['passed'] for r in matrix))
             junit = ET.parse(evidence / 'timings.xml')
             self.assertEqual(len(list(junit.iter('failure'))), 2)

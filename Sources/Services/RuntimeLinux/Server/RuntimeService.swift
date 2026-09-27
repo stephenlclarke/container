@@ -2389,7 +2389,19 @@ extension FileHandle: @retroactive ReaderStream, @retroactive Writer {
     }
 
     public func stream() -> AsyncStream<Data> {
-        .init { cont in
+        var metadata = stat()
+        if fstat(fileDescriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG {
+            // Darwin does not deliver another readability event at regular-file
+            // EOF. Pull bounded chunks so staged exec input closes in the guest.
+            return .init(unfolding: {
+                guard let data = try? self.read(upToCount: 64 * 1024), !data.isEmpty else {
+                    return nil
+                }
+                return data
+            })
+        }
+        return .init { cont in
+            cont.onTermination = { _ in self.readabilityHandler = nil }
             self.readabilityHandler = { handle in
                 let data = handle.availableData
                 if data.isEmpty {

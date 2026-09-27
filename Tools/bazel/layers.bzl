@@ -243,6 +243,30 @@ LAYERS = {
         tests = ["ContainerizationUnitTests"],
         compile_checks = [],
     ),
+    "containerization-netlink": struct(
+        package = "containerization",
+        products = ["ContainerizationNetlink"],
+        tests = ["ContainerizationNetlinkTests"],
+        compile_checks = [],
+    ),
+    "containerization-hypervisor": struct(
+        package = "containerization",
+        products = ["CloudHypervisor"],
+        tests = ["CloudHypervisorTests"],
+        compile_checks = [],
+    ),
+    "containerization-cli": struct(
+        package = "containerization",
+        products = ["cctl"],
+        tests = ["cctlTests"],
+        compile_checks = [],
+    ),
+    "containerization-guest-core": struct(
+        package = "containerization",
+        products = ["VminitdCore"],
+        tests = ["VminitdCoreTests"],
+        compile_checks = [],
+    ),
     "engine-core": struct(
         package = "container-engine-api",
         products = ["ContainerEngineRuntimeSPI", "ContainerEngineRouter", "ContainerEngineLogging"],
@@ -435,7 +459,7 @@ def declare_layers():
     )
     native.test_suite(
         name = "qualified-tests",
-        tests = [":dependency-tests", ":container-tests"],
+        tests = [":dependency-tests", ":container-tests", ":repository-tests"],
     )
 
     layer_build(

@@ -1,4 +1,18 @@
 #!/usr/bin/env bash
+# Copyright © 2026 Apple Inc. and the container project authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # USAGE: test_runner.sh TEST_BINARY [ARGUMENTS...]
 # Present declared runfiles with both package-relative and Bazel source paths.
 set -euo pipefail
@@ -17,6 +31,7 @@ workspace="$TEST_TMPDIR/source-root"
 mkdir -p "$workspace"
 ln -s "$TEST_SRCDIR" "$workspace/external"
 if [[ -d "$TEST_SRCDIR/$package" ]]; then
+    shopt -s dotglob nullglob
     for entry in "$TEST_SRCDIR/$package/"*; do
         [[ -e "$entry" ]] || continue
         name="$(basename "$entry")"
@@ -34,4 +49,14 @@ if [[ -x "$helper" ]]; then
 fi
 cd "$workspace"
 export TMPDIR="$TEST_TMPDIR/"
+if [[ "${COVERAGE:-0}" == 1 && -n "${TEST_BINARIES_FOR_LLVM_COV:-}" ]]; then
+    set +e
+    "$executable" "$@"
+    status=$?
+    set -e
+    if [[ "$status" == 0 ]]; then
+        bash "$TEST_SRCDIR/_main/Tools/bazel/collect_coverage.sh" "$executable"
+    fi
+    exit "$status"
+fi
 exec "$executable" "$@"

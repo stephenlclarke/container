@@ -24,12 +24,29 @@ Run these in the container checkout:
 | `make bazel-test-all` | Container and dependency tests together |
 | `make bazel-fork-benchmark` | Isolated fork/Apple component comparisons; retains mismatches and timings |
 | `make bazel-runtime-benchmark` | Build optimized Apple/fork stacks and run repeated runtime speed benchmarks |
-| `make bazel-final` | Tool checks, all 91 normal test suites, optimized builds and runtime comparison |
+| `make bazel-final` | Tool checks, all 101 normal test targets, optimized builds and runtime comparison |
+| `make bazel-preflight PREFLIGHT_PROFILE=release` | Check noninteractive signing, package access, Sonar authentication and the configured notarization profile |
+| `make bazel-repository-test` | Six original packaging/install script checks as independent cached targets |
+| `make bazel-guest-build` | Cross-compile the exact pinned Linux guest and retain a verified OCI archive |
+| `make bazel-linux-test` | Guest core/netlink and vmexec Linux tests, with separate build caches and coverage |
+| `make bazel-builder-build` | Production-toolchain formatting, vet, race tests and coverage, then a pinned builder OCI archive |
+| `make bazel-unattended-artifacts` | Preflight, tool checks, guest/Linux/builder qualification and one live Apple/fork smoke trial; restore a Colima VM started by this run |
+| `make bazel-unattended` | Run the full qualification pipeline from a clean committed checkpoint, with release preflight and Colima restoration |
+| `make bazel-service-artifacts` | Original journald/GELF race, coverage and reproducibility checks, with reusable verified OCI outputs |
+| `make bazel-service-integration` | Original Swift-to-journald protocol test against the packaged Linux service, compiled by Bazel |
+| `make bazel-maintenance` | Original format/license checks and isolated protobuf regeneration/diff |
+| `make bazel-coverage` | Instrumented container host tests, retained LCOV and Sonar XML bound to source hashes |
+| `make bazel-docs` | Original 15 API modules, extracted through Bazel and merged with DocC |
+| `make bazel-codeql` | Pinned CodeQL Swift analysis with a separate traced Bazel build and retained SARIF |
+| `make bazel-quality` | Enforce Previous version policy and scan a clean exact commit with verified coverage |
+| `make bazel-release-artifact PREPARED_RUNTIME=... SERVICE_ARTIFACTS=... RELEASE_ARGS=--notarize` | Sign and validate the original archive payload, then retain Apple's notarization result |
+| `make bazel-release-install` | Validate and exercise the signed archive in the private runtime location, then restore its predecessor |
 | `make bazel-tools-test` | Launcher, runner and retained-report checks |
 | `make bazel-check` | Tool checks, complete build, container unit tests |
 | `make bazel-host-test LAYER=container-api` | Explicit host checks; requires the relevant host services |
 | `make bazel-integration-build` | Compile the runtime integration harness without running it |
 | `make bazel-integration-test CONTAINER_CLI_PATH=/absolute/path/to/container` | Run integration against an already prepared test installation |
+| `make bazel-runtime-integration PREPARED_RUNTIME=/absolute/evidence/path` | Reset owned runtime data and run original CLI suites by layer; select one with `INTEGRATION_ARGS='--layer System'` |
 
 `LAYER` defaults to `container`. Pick individual layer names from [layers.bzl](layers.bzl). Build and test commands reuse the same outputs. Host and runtime integration runs deliberately disable result caching because their external state can change.
 
@@ -45,7 +62,31 @@ Additional dependencies are admitted only after the preceding layer passes. Runt
 
 ## Storage and evidence
 
-`Tools/bazel/run.sh` checks the enrolled external SSD and the SHA-256 of Bazel 8.8.0 before running. Scratch and compiler outputs live in `/Volumes/SSD/cf/container-only`. Each invocation saves its source status, toolchain version and raw output, Bazel events and copied JUnit/test logs under `~/Library/Application Support/ContainerFamily/retained/container-only`. There is no timer, automatic cleanup, package installer or release step.
+`Tools/bazel/run.sh` checks the enrolled external SSD and the SHA-256 of Bazel 8.8.0 before running. Scratch and compiler outputs live in `/Volumes/SSD/cf/container-only`. Each invocation saves its source status, toolchain version and raw output, Bazel events and copied JUnit/test logs under `~/Library/Application Support/ContainerFamily/retained/container-only`. Commands run immediately, without a scheduler. The unattended artifact check stops only its own temporary workloads and restores Colima when it started it; it does not clear compiler caches or install a system package.
+
+## Unattended artifact checkpoint
+
+The host graph remains native Bazel. The Linux guest uses the repository's Swift 6.3 static SDK build, and Linux-only tests use a digest-pinned Swift 6.3 glibc container because the installed musl SDK omits Swift Testing. These specialized lanes have independent persistent build directories; they do not rebuild the macOS SwiftPM graph. The builder uses its repository's digest-pinned production Go/BuildKit images and vendored dependencies.
+
+Artifact receipts bind source revisions, toolchains, helper inputs and archive hashes. The runtime harness verifies the guest against `Package.resolved` and the builder against the container manifest, imports those exact local archives, and checks their hashes again before starting. Verified guest and builder archives are reused; Linux tests run again against the current VM and retain their instrumented coverage files. Ordinary host targets now also cover Netlink, CloudHypervisor, cctl, the macOS portion of VminitdCore, and six original repository script checks.
+
+`make bazel-unattended-artifacts` requires the enrolled SSD, stable Developer ID signing identity, and an existing default arm64 Docker Colima profile. If that profile is stopped, the command starts it with a temporary SSD mount and restores its stopped state afterward. It preserves the selected Docker context and saved Colima configuration. Existing containers cause an admission failure. An already running Colima instance is retained; it must already expose the SSD. Every invocation needs a new `QUALIFICATION_EVIDENCE` directory; failures remain in the previous one.
+
+For later release admission, store a notarization profile in Keychain and put only its name in `~/Library/Application Support/ContainerFamily/config/unattended.json`, for example `{"notary_profile":"container-only-release"}`. The preflight also verifies signing with a disposable probe, GitHub keyring package scopes and Sonar authentication. It does not certify all privacy permissions or claim a successful release. Credentials and passwords never belong in this repository.
+
+The first unattended artifact checkpoint passed, including 69 Linux tests, builder race tests, and eight live workloads on both Apple and fork stacks. Its target took 83.96 seconds with reused guest/builder archives; the wrapper also started and stopped Colima. Subsequent checkpoints passed original service reproducibility tests, the Swift/journald wire test, original maintenance checks, and CLI layers for containers, run, volumes, network, images, build, system, registry and machines. The first Build run encountered a public Alpine repository fetch failure; a recorded rerun passed all 61 tests. Existing TCP-forwarding known issues remain visible in Run results.
+
+Apple accepted pilot notarization submission `aa97fc82-3cd8-45f8-b9d2-48157926eb4b` using Keychain profile `container-only-release`. That pilot is not the final source checkpoint and has not been published. Host unit line coverage is 63.38% and builder statement coverage is 49.2%, both below the 90% aim. Coverage export rejects empty reports and retains the original raw profile evidence. A final full run, final archive installation, authoritative Sonar result and final benchmarks remain pending; intermediate green checkpoints do not certify them.
+
+Kubernetes integration exposed a regular-file stdin EOF defect: Darwin's readability callback delivered contents but never completed the stream, leaving `kubectl apply -f -` waiting. A focused empty/large-file regression failed before the fix and passes afterward. Regular files now use bounded pull reads; pipes retain event-driven reads. All nine Kubernetes cases subsequently passed across the recorded full/focused runs after correcting private kubeconfig lookup and restart readiness. A final combined run remains required.
+
+## Complete unattended run
+
+`make bazel-unattended` requires a clean committed checkout. It runs tools, dependency/container/repository tests, maintenance, host checks, guest and Linux tests, builder and service qualification, lower-level VM and CLI integration, coverage, Sonar, component and Apple/Docker benchmarks, signed/notarized packaging and an archive installation smoke test. Each stage has a deadline and a separate result. Failed prerequisites block dependent work; independent checks continue. The command exits nonzero for failed or incomplete qualification and retains `QUALIFICATION.md`, `qualification.json`, `BENCHMARK.md`, raw measurements and cleanup records.
+
+The optional manually dispatched `container-only-bazel.yml` workflow uses the same command on a self-hosted runner labelled `container-only`. Enroll only the designated MacBook Pro; the file does not register or start a runner. Existing upstream workflows are preserved. There is no scheduled task. The full command creates release candidates but does not publish a release or replace a user's installed runtime. The signed tar installation test supplies the exact guest/builder artifacts explicitly; it does not claim that unpublished default registry references are available.
+
+The separately runnable four NIO host behavior checks remain known failures on this macOS version. Identical upstream benchmark fixtures also expose intentional container-name and TLS-alert differences; their raw failed assertions remain visible and receive no qualified performance claim. Exit status 2 means only these exact reviewed differences remain; the full workflow records `reviewed-differences`. Any extra failure, timeout, or tenfold timing remains a failed gate. API documentation now builds all 15 original modules through Bazel/DocC. The optimized release configuration emits nonempty dSYMs with verified binary UUIDs. The original unsigned installer recipe and an exact-commit CodeQL 2.27.1 scan are included; their final qualification remains pending. An Installer certificate is not configured, so only the archive distribution is signed/notarized; the native PKG remains explicitly unsigned.
 
 Keep the same build directory between runs. Repeating the same target should reuse compiled outputs and passing test results. An edit invalidates its affected actions and dependents; separating layers limits which tests are requested, but does not prevent necessary dependent rebuilds. Do not clean the cache to diagnose an ordinary source error.
 
@@ -126,3 +167,5 @@ comparisons, not controlled measurements of a common kernel or storage engine.
 Runtime Makefile targets use seven trials by default; override `BENCHMARK_TRIALS`
 for an explicitly shorter smoke run. The final optimization report is
 [PERFORMANCE_OPTIMIZATIONS.md](PERFORMANCE_OPTIMIZATIONS.md).
+
+The lower-level VM suite exposed retained original VSOCK descriptors that prevented silent close from reaching the guest. Closing the original descriptors after duplication restored all 100 parallel relay rounds. The complete native suite then passed 191 tests with 22 platform skips and verified cleanup. The focused owner-lifetime unit selection also exposed an existing gRPC/NIO teardown assertion after both assertions passed; the complete containerization unit target passed, and both outcomes remain retained.

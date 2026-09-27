@@ -16,11 +16,14 @@ class TestRunnerTests(unittest.TestCase):
             runfiles = root / "runfiles with spaces"
             (runfiles / package / "Tests").mkdir(parents=True)
             (runfiles / package / "Tests/fixture").write_text("fixture")
+            (runfiles / package / ".github").mkdir()
+            (runfiles / package / ".github/workflow.yml").write_text("workflow")
             scratch = root / "scratch"
             scratch.mkdir()
             binary = root / "test binary"
             binary.write_text("#!/bin/bash\nset -eu\n"
                               'test "$(cat Tests/fixture)" = fixture\n'
+                              'test "$(cat .github/workflow.yml)" = workflow\n'
                               f'test "$(cat external/{package}/Tests/fixture)" = fixture\n'
                               'test "$1" = "argument with spaces"\n'
                               'test "$TMPDIR" = "$TEST_TMPDIR/"\n'

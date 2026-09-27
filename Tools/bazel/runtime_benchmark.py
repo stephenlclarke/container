@@ -16,21 +16,17 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 
-from fork_benchmark import BAZEL, BAZEL_SHA, PAIRS, ROOT, STORAGE, Runner, digest, prepare
+from fork_benchmark import BAZEL, BAZEL_SHA, PAIRS, ROOT, STORAGE, Runner, digest, prepare, install_signal_handlers
 
 INSTALLS = Path.home() / 'Library/Application Support/ContainerFamily/benchmarks/runtime'
 STATE = Path('/private/tmp') / f'cfb-{os.getuid()}'
 IDENTITY = 'BDDA5D3A8836437C2EFA24CDACE0FEBFBEF20633'
 NAMESPACE = 'io.github.stephenlclarke.container.benchmark'
 ALPINE = 'docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8'
-FORK_INIT = 'ghcr.io/stephenlclarke/containerization/vminit:7b9eb0a77ff615d764fbbf52125e2b6cdd846db8'
 STOCK_INIT = 'ghcr.io/apple/containerization/vminit@sha256:4c1836052eafcbc944c403fb23ded06562962d2402c9dcc651495a32300614df'
 BUILDERS = {
     'stock': 'ghcr.io/apple/container-builder-shim/builder@sha256:b5b3f7fa81e662db6929f1ad66d835d151a1b03f682cfe5f9fcb17fa46d6bcc9',
-    'fork': 'ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:a20bf1788286e46fb2c2025acdce6b6e9cdd11394e0875e0f3297415d1c4d108',
 }
-FORK_INIT_TAR = Path.home() / ('Library/Application Support/ContainerFamily/retained/release/authorities/'
-    '7b9eb0a77ff615d764fbbf52125e2b6cdd846db8/container-vminit-7b9eb0a77ff615d764fbbf52125e2b6cdd846db8-arm64.oci.tar')
 PLUGINS = {
     'container-runtime-linux': 'RuntimeLinux', 'container-network-vmnet': 'NetworkVmnet',
     'container-core-images': 'CoreImages', 'machine-apiserver': 'MachineAPIServer', 'k8s': 'K8s',
@@ -39,6 +35,28 @@ FIXTURES = ('start-exit', 'warm-exec', 'sha256-128m', 'write-sync-64m',
             'image-save', 'image-load-warm', 'build-no-cache', 'build-cached')
 KERNEL_SHA = '8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5'
 KERNEL_MEMBER = './opt/kata/share/kata-containers/vmlinux-6.18.35-197-debug'
+
+
+def verified_guest(receipt: Path, workspace: Path = ROOT) -> dict:
+    """Bind the exact init archive to the consumer's locked guest source."""
+    record = json.loads(receipt.read_text())
+    pin = next(p['state']['revision'] for p in json.loads((workspace / 'Package.resolved').read_text())['pins']
+               if p['identity'] == 'containerization')
+    if record.get('schema') != 1 or record['identity']['source'] != pin:
+        raise RuntimeError('Guest artifact source does not match the container dependency lock')
+    if record['reference'].rsplit(':', 1)[-1] != pin or digest(Path(record['archive'])) != record['archive_sha256']:
+        raise RuntimeError('Guest artifact reference or archive checksum changed')
+    return record
+
+
+def verified_builder(receipt: Path) -> dict:
+    from builder_artifact import source_pin
+    record = json.loads(receipt.read_text())
+    if record.get('schema') != 1 or record['identity']['source'] != source_pin():
+        raise RuntimeError('Builder artifact source does not match the container manifest')
+    if digest(Path(record['archive'])) != record['archive_sha256']:
+        raise RuntimeError('Builder artifact archive checksum changed')
+    return record
 
 
 def environment(lane: str) -> dict:
@@ -157,7 +175,7 @@ class RuntimeRunner(Runner):
         (self.evidence / 'operations.json').write_text(json.dumps(all_rows, indent=2) + '\n')
 
 
-def run_lane(runner: RuntimeRunner, lane: str, trials: int) -> None:
+def start_lane(runner: RuntimeRunner, lane: str) -> None:
     state = STATE / lane
     own(state, lane)
     metadata = json.loads((runner.evidence / f'{lane}-fingerprint.json').read_text())
@@ -170,9 +188,22 @@ def run_lane(runner: RuntimeRunner, lane: str, trials: int) -> None:
     start = ['system', 'start', '--app-root', str(state / 'app'), '--install-root', str(install),
              '--log-root', str(state / 'logs'), '--disable-kernel-install', '--timeout', '30']
     if lane == 'fork':
-        start += ['--init-image-archive', str(FORK_INIT_TAR)]
+        guest = verified_guest(runner.evidence / 'guest-artifact.json')
+        if guest['archive_sha256'] != metadata['init_archive_sha256']:
+            raise RuntimeError('Guest artifact changed after staging')
+        start += ['--init-image-archive', guest['archive']]
     runner.command(lane, 'setup-start', 0, start, 180)
     runner.command(lane, 'setup-images', 0, ['image', 'load', '--input', str(INSTALLS / 'assets/alpine.tar')])
+    if lane == 'fork':
+        builder = verified_builder(runner.evidence / 'builder-artifact.json')
+        if builder['archive_sha256'] != metadata['builder_archive_sha256']:
+            raise RuntimeError('Builder artifact changed after staging')
+        runner.command(lane, 'setup-builder-image', 0, ['image', 'load', '--input', builder['archive']], 180)
+
+
+def run_lane(runner: RuntimeRunner, lane: str, trials: int) -> None:
+    start_lane(runner, lane)
+    state = STATE / lane
     resources = ['--cpus', '1', '--memory', '512m', '--network', 'none']
     runner.command(lane, 'setup-vm', 0, ['run', *resources, '--rm', ALPINE, 'echo', 'runtime-ready'], expected='runtime-ready')
     warm = 'runtime-benchmark-warm'
@@ -207,7 +238,7 @@ def run_lane(runner: RuntimeRunner, lane: str, trials: int) -> None:
                        expected=hashlib.sha256(payload).hexdigest())
 
 
-def benchmark(evidence: Path, trials: int) -> None:
+def benchmark(evidence: Path, trials: int, reset: bool = False) -> None:
     runner = RuntimeRunner(evidence, STATE)
     slot = StockSlot(evidence)
     failures = []
@@ -226,6 +257,10 @@ def benchmark(evidence: Path, trials: int) -> None:
                 acquired = True
             else:
                 stop_owned(lane)
+            if reset:
+                metadata = json.loads((evidence / (lane + '-fingerprint.json')).read_text())
+                if reset_state(lane, metadata['init_image'], metadata['builder_image']) != metadata['kernel_sha256']:
+                    raise RuntimeError('Prepared benchmark kernel changed')
             run_lane(runner, lane, trials)
         except Exception as error:
             failures.append(f'{lane}: {error}')
@@ -298,13 +333,30 @@ def copy_replacing(source: Path, destination: Path) -> None:
         candidate.unlink(missing_ok=True)
 
 
+def reset_state(lane: str, init: str, builder_image: str) -> str:
+    """Reset only the marked runtime data; retain installations and compiler caches."""
+    state = STATE / lane
+    own(state, lane)
+    app = state / 'app'
+    for directory in (app, state / 'logs'):
+        if directory.is_symlink():
+            raise RuntimeError(f'Refusing symlinked benchmark data: {directory}')
+        if directory.exists():
+            shutil.rmtree(directory)
+    (app / 'kernels').mkdir(parents=True, exist_ok=True)
+    kernel = INSTALLS / 'assets/opt/kata/share/kata-containers/vmlinux-6.18.35-197-debug'
+    shutil.copy2(kernel, app / 'kernels/default.kernel-arm64')
+    config_dir = state / 'xdg/container'
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / 'config.toml').write_text(
+        f'[vminit]\nimage = "{init}"\n\n[build]\nimage = "{builder_image}"\n')
+    return digest(kernel)
+
+
 def stage(lane: str, workspace: Path, output_root: Path, evidence: Path) -> None:
     if lane == 'fork':
-        lock = json.loads((workspace / 'Package.resolved').read_text())
-        pin = next(p['state']['revision'] for p in lock['pins'] if p['identity'] == 'containerization')
-        manifest = (workspace / 'Package.swift').read_text()
-        if pin != FORK_INIT.rsplit(':', 1)[1] or not all(part in manifest for part in BUILDERS['fork'].split('@')):
-            raise RuntimeError('Fork dependencies changed; update the matched runtime benchmark image pins')
+        guest = verified_guest(evidence / 'guest-artifact.json', workspace)
+        builder = verified_builder(evidence / 'builder-artifact.json')
     install = INSTALLS / lane / 'install'
     own(install, lane)
     processes = checked(['ps', '-axo', 'comm=']).splitlines()
@@ -316,10 +368,10 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path) -> None
     bazel = [str(BAZEL), '--output_user_root=' + str(output_root)]
     execution = Path(checked(bazel + ['info', 'execution_root'], cwd=workspace, env=env))
     target = '//:container' if lane == 'fork' else '//:component'
-    files = checked(bazel + ['cquery', target, '--compilation_mode=opt', '--repo_env=GIT_COMMIT=' + revision, '--output=files'],
+    files = checked(bazel + ['cquery', target, '--config=release', '--repo_env=GIT_COMMIT=' + revision, '--output=files'],
                     cwd=workspace, env=env).splitlines()
     executables = {Path(p).name.removesuffix('.rspm.__impl'): execution / p
-                   for p in files if p.endswith('.rspm.__impl')}
+                   for p in files if p.endswith('.rspm.__impl') and '/Contents/Resources/DWARF/' not in p}
     names = ['container', 'container-apiserver', *PLUGINS]
     if lane == 'fork':
         names.append('container-engine')
@@ -357,31 +409,46 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path) -> None
             source = next(execution / p for p in files if p.endswith('/dist/' + name))
             copy_replacing(source, helpers / name)
             fingerprints[str((helpers / name).relative_to(install))] = digest(helpers / name)
+    if lane == 'fork':
+        products = evidence / 'debug-products'
+        products.mkdir()
+        for name in names:
+            source = executables[name]
+            shutil.copy2(source, products / name)
+            bundle = source.with_name(source.name + '.dSYM')
+            if not bundle.is_dir():
+                raise RuntimeError('Release build omitted debug symbols: ' + name)
+            debug_info = checked(['xcrun', 'dwarfdump', '--debug-info', '--recurse-depth=0', str(bundle)])
+            if 'DW_TAG_compile_unit' not in debug_info:
+                raise RuntimeError('Release debug-symbol bundle contains no compilation units: ' + name)
+            shutil.copytree(bundle, products / (name + '.dSYM'))
+        arguments = ['python3', str(ROOT / 'Tools/DebugSymbols/package.py'),
+                     '--build-directory', str(products), '--output-directory', str(evidence / 'container-dSYM'),
+                     '--archive', str(evidence / 'container-dSYM.zip')]
+        for name in names:
+            arguments += ['--product', name]
+        with (evidence / 'debug-symbols.log').open('w') as stream:
+            subprocess.run(arguments, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=600)
+        (evidence / 'debug-symbols.json').write_text(json.dumps({
+            'archive': str(evidence / 'container-dSYM.zip'),
+            'sha256': digest(evidence / 'container-dSYM.zip'),
+            'products': names, 'source': revision,
+        }, indent=2) + '\n')
+        shutil.rmtree(products)
+    init = guest['reference'] if lane == 'fork' else STOCK_INIT
+    builder_image = builder['reference'] if lane == 'fork' else BUILDERS['stock']
+    kernel_sha = reset_state(lane, init, builder_image)
     state = STATE / lane
-    own(state, lane)
-    app = state / 'app'
-    # Provider identities bind to a source revision. Disposable data from a
-    # previous binary must not be reused as though it belonged to this build.
-    for directory in (app, state / 'logs'):
-        if directory.is_symlink():
-            raise RuntimeError(f'Refusing symlinked benchmark data: {directory}')
-        if directory.exists():
-            shutil.rmtree(directory)
-    (app / 'kernels').mkdir(parents=True, exist_ok=True)
-    kernel = INSTALLS / 'assets/opt/kata/share/kata-containers/vmlinux-6.18.35-197-debug'
-    shutil.copy2(kernel, app / 'kernels/default.kernel-arm64')
-    config_dir = state / 'xdg/container'
-    config_dir.mkdir(parents=True, exist_ok=True)
-    init = FORK_INIT if lane == 'fork' else STOCK_INIT
-    (config_dir / 'config.toml').write_text(
-        f'[vminit]\nimage = "{init}"\n\n[build]\nimage = "{BUILDERS[lane]}"\n')
     metadata = {'lane': lane, 'workspace': str(workspace), 'install': str(install),
-                'state': str(state), 'binaries': fingerprints, 'kernel_sha256': digest(kernel),
-                'init_image': init, 'builder_image': BUILDERS[lane], 'workload_image': ALPINE,
+                'state': str(state), 'binaries': fingerprints, 'kernel_sha256': kernel_sha,
+                'init_image': init, 'builder_image': builder_image, 'workload_image': ALPINE,
                 'cli_version': checked([str(install / 'bin/container'), '--version']),
                 'package_lock_sha256': digest(workspace / 'Package.resolved')}
     if lane == 'fork':
-        metadata['init_archive_sha256'] = digest(FORK_INIT_TAR)
+        metadata['init_archive_sha256'] = guest['archive_sha256']
+        metadata['guest_artifact_identity'] = guest['identity']
+        metadata['builder_archive_sha256'] = builder['archive_sha256']
+        metadata['builder_artifact_identity'] = builder['identity']
     if revision[:7] not in metadata['cli_version']:
         raise RuntimeError('Built CLI source revision does not match the selected source')
     (evidence / f'{lane}-fingerprint.json').write_text(json.dumps(metadata, indent=2) + '\n')
@@ -406,13 +473,10 @@ def prepare_assets(evidence: Path) -> None:
     with tarfile.open(archive_path, 'w') as archive_file:
         for name in ('oci-layout', 'index.json', 'blobs'):
             archive_file.add(layout / name, arcname=name)
-    if not FORK_INIT_TAR.is_file():
-        raise RuntimeError(f'Matched fork guest image is required: {FORK_INIT_TAR}')
-    if digest(FORK_INIT_TAR) != 'd0ede6a2d535c3f5885a09ee207f43169188f98022b52ebd2d843a17a9411f85':
-        raise RuntimeError('Matched fork guest archive checksum mismatch')
+    guest = verified_guest(evidence / 'guest-artifact.json')
     (evidence / 'assets.json').write_text(json.dumps({
         'kernel_archive_sha256': KERNEL_SHA, 'alpine_archive_sha256': digest(archive_path),
-        'alpine_reference': ALPINE, 'fork_init_archive_sha256': digest(FORK_INIT_TAR)}, indent=2) + '\n')
+        'alpine_reference': ALPINE, 'fork_init_archive_sha256': guest['archive_sha256']}, indent=2) + '\n')
 
 
 def stock_lockfile(fork_lock: dict, native_lock: dict) -> dict:
@@ -431,7 +495,18 @@ def stock_workspace_key(root: Path, lockfile: dict) -> str:
     return hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest()[:12]
 
 
-def prepare_all(evidence: Path) -> None:
+def build_inputs(root: Path = ROOT) -> dict[str, str]:
+    """Bind prepared products to their manifests, compiler rules and helper source."""
+    paths = [root / name for name in ('Package.swift', 'Package.resolved', 'MODULE.bazel',
+                                     'MODULE.bazel.lock', 'BUILD.bazel', '.bazelrc', '.bazelversion')]
+    paths += [p for p in (root / 'Tools/bazel').iterdir()
+              if p.suffix in {'.bzl', '.patch'} or p.name == 'semantic_metadata.py']
+    paths += [p for p in (root / 'Tools/ContainerSemanticHelper').rglob('*')
+              if p.is_file() and p.suffix in {'.go', '.mod', '.sum', '.py', '.bazel'}]
+    return {str(p.relative_to(root)): digest(p) for p in sorted(paths)}
+
+
+def prepare_all(evidence: Path, context: str = 'colima') -> None:
     enrollment = Path.home() / 'Library/Application Support/ContainerFamily/retained/workflow/ssd-volume.uuid'
     disk = plistlib.loads(checked(['/usr/sbin/diskutil', 'info', '-plist', '/Volumes/SSD']).encode())
     if disk.get('VolumeUUID') != enrollment.read_text().strip() or disk.get('MountPoint') != '/Volumes/SSD' or disk.get('Internal'):
@@ -441,6 +516,17 @@ def prepare_all(evidence: Path) -> None:
     identities = checked(['security', 'find-identity', '-v', '-p', 'codesigning'])
     if IDENTITY not in identities:
         raise RuntimeError('The stable Steve Clarke signing identity is unavailable')
+    if not (evidence / 'guest-artifact.json').exists():
+        from guest_artifact import build
+        guest_evidence = evidence / 'guest-build'
+        guest_evidence.mkdir()
+        build(Path(PAIRS['containerization']['repo']), guest_evidence)
+        shutil.copy2(guest_evidence / 'guest-artifact.json', evidence / 'guest-artifact.json')
+    if not (evidence / 'builder-artifact.json').exists():
+        from builder_artifact import build as build_builder
+        builder_evidence = evidence / 'builder-build'
+        build_builder(builder_evidence, context, Path(PAIRS['container-builder-shim']['repo']))
+        shutil.copy2(builder_evidence / 'builder-artifact.json', evidence / 'builder-artifact.json')
     prepare_assets(evidence)
     # Fork-only revisions replaced by stock pins must not invalidate Apple's build.
     native = json.loads(checked(['git', '-C', PAIRS['container']['repo'], 'show',
@@ -455,6 +541,7 @@ def prepare_all(evidence: Path) -> None:
         'stock': PAIRS['container']['stock'], 'stock_native_pins': native['pins'],
         'fork': checked(['git', 'rev-parse', 'HEAD'], cwd=ROOT),
         'fork_pins': json.loads((ROOT / 'Package.resolved').read_text())['pins'],
+        'build_inputs': build_inputs(),
         'source_sha256': {lane: {str(p.relative_to(workspace)): digest(p)
                                for p in sorted((workspace / 'Sources').rglob('*')) if p.is_file()}
                           for lane, workspace in [('fork', ROOT), ('stock', stock)]},
@@ -464,7 +551,7 @@ def prepare_all(evidence: Path) -> None:
         revision = checked(['git', 'rev-parse', 'HEAD'], cwd=ROOT) if lane == 'fork' else PAIRS['container']['stock']
         target = '//:container' if lane == 'fork' else '//:component'
         arguments = [str(BAZEL), '--output_user_root=' + str(output_root), 'build', target,
-                     '--compilation_mode=opt', '--repo_env=GIT_COMMIT=' + revision,
+                     '--config=release', '--repo_env=GIT_COMMIT=' + revision,
                      '--repository_cache=' + str(STORAGE / 'repositories'),
                      '--build_event_json_file=' + str(evidence / f'{lane}-release.events.json')]
         print(f'Building optimized {lane}; see {evidence / (lane + "-release-build.log")}', flush=True)
@@ -475,11 +562,16 @@ def prepare_all(evidence: Path) -> None:
 
 
 def main() -> None:
+    install_signal_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--stage', choices=['stock', 'fork'])
     parser.add_argument('--prepare', action='store_true', help='Build optimized stacks, sign and stage before measuring')
+    parser.add_argument('--prepared', type=Path, help='Reuse a verified installation from earlier qualification evidence')
     parser.add_argument('--workspace', type=Path)
     parser.add_argument('--output-root', type=Path)
+    parser.add_argument('--guest-artifact', type=Path, help='Verified receipt for the pinned source-built guest')
+    parser.add_argument('--builder-artifact', type=Path, help='Verified receipt for the pinned source-built builder')
+    parser.add_argument('--context', default='colima', help='Running Docker context for builder qualification')
     parser.add_argument('--trials', type=int, default=3)
     parser.add_argument('--evidence', type=Path, required=True)
     args = parser.parse_args()
@@ -487,21 +579,37 @@ def main() -> None:
         parser.error('--trials must be positive')
     if args.stage and (not args.workspace or not args.output_root):
         parser.error('--stage requires --workspace and --output-root')
+    if args.prepared and (args.prepare or args.stage):
+        parser.error('--prepared cannot be combined with --prepare or --stage')
     args.evidence.mkdir(parents=True, exist_ok=True)
     if args.prepare and any(args.evidence.iterdir()):
         parser.error('--prepare requires a new evidence directory')
     if (args.evidence / 'operations.json').exists():
         parser.error('Evidence already contains a run; choose a new directory to preserve failures')
+    if args.guest_artifact:
+        guest = verified_guest(args.guest_artifact)
+        (args.evidence / 'guest-artifact.json').write_text(json.dumps(guest, indent=2) + '\n')
+    if args.builder_artifact:
+        builder = verified_builder(args.builder_artifact)
+        (args.evidence / 'builder-artifact.json').write_text(json.dumps(builder, indent=2) + '\n')
     INSTALLS.mkdir(parents=True, exist_ok=True)
     with (INSTALLS / 'benchmark.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
+            if args.prepared:
+                from runtime_integration import verify_prepared
+                verify_prepared(args.prepared)
+                for name in ('source-inputs.json', 'fork-fingerprint.json', 'stock-fingerprint.json',
+                             'guest-artifact.json', 'builder-artifact.json', 'assets.json'):
+                    shutil.copy2(args.prepared / name, args.evidence / name)
             if args.prepare:
-                prepare_all(args.evidence)
+                prepare_all(args.evidence, args.context)
             if args.stage:
                 stage(args.stage, args.workspace, args.output_root, args.evidence)
             else:
-                benchmark(args.evidence, args.trials)
+                benchmark(args.evidence, args.trials, reset=args.prepared is not None)
+            if args.prepared:
+                verify_prepared(args.prepared)
         except BaseException as error:
             (args.evidence / 'fatal.json').write_text(json.dumps({'error': str(error)}, indent=2) + '\n')
             raise

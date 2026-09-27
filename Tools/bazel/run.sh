@@ -1,14 +1,28 @@
 #!/usr/bin/env bash
-# USAGE: run.sh <build|test|query|cquery|aquery|info|shutdown> [Bazel arguments]
+# Copyright © 2026 Apple Inc. and the container project authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# USAGE: run.sh <build|test|coverage|query|cquery|aquery|info|shutdown> [Bazel arguments]
 # Uses the enrolled external SSD and pinned Bazel. Saves logs on internal storage.
 set -euo pipefail
 readonly SELF_PATH="${BASH_SOURCE[0]:-$0}"
 SCRIPT_NAME="$(basename "$SELF_PATH")"
 error() { printf '%s: %s\n' "$SCRIPT_NAME" "$*" >&2; }
-usage() { printf 'Usage: %s <build|test|query|cquery|aquery|info|shutdown> [Bazel arguments]\n' "$SCRIPT_NAME"; }
+usage() { printf 'Usage: %s <build|test|coverage|query|cquery|aquery|info|shutdown> [Bazel arguments]\n' "$SCRIPT_NAME"; }
 case "${1:-}" in
     -h|--help) usage; exit 0 ;;
-    build|test|query|cquery|aquery|info|shutdown) command_name="$1"; shift ;;
+    build|test|coverage|query|cquery|aquery|info|shutdown) command_name="$1"; shift ;;
     *) usage >&2; exit 2 ;;
 esac
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
@@ -51,7 +65,7 @@ find Tools/bazel Tools/ContainerSemanticHelper -type f -exec /usr/bin/shasum -a 
 /usr/bin/shasum -a 256 MODULE.bazel MODULE.bazel.lock BUILD.bazel .bazelrc .bazelversion Package.swift Package.resolved Makefile >> "$retained/$run_id.inputs.sha256"
 extra=()
 case "$command_name" in
-    build|test) extra+=("--build_event_json_file=$retained/$run_id.events.json") ;;
+    build|test|coverage) extra+=("--build_event_json_file=$retained/$run_id.events.json") ;;
     shutdown) exec "$bazel" --output_user_root="$storage/output" shutdown ;;
 esac
 set +e

@@ -36,3 +36,18 @@ diff --git a/swift/swift_test.bzl b/swift/swift_test.bzl
              "_swizzle_absolute_xcttestsourcelocation": attr.label(
                  default = Label(
                      "//swift/internal:swizzle_absolute_xcttestsourcelocation",
+diff --git a/tools/test_observer/SwiftTestingRunner.swift b/tools/test_observer/SwiftTestingRunner.swift
+--- a/tools/test_observer/SwiftTestingRunner.swift
++++ b/tools/test_observer/SwiftTestingRunner.swift
+@@ -144,6 +144,11 @@
+   ///   run by passing them as filters to the entry point. If nil, all tests will be run.
+   private func runTests(selectedTests: [Test]?) async throws {
+     var runTestsConfiguration: [String: JSON] = [:]
++    // A shared VM service requires deterministic test serialization. Ordinary
++    // library tests retain Swift Testing's parallel default.
++    if ProcessInfo.processInfo.environment["CONTAINER_RUNTIME_TESTS_SERIAL"] == "1" {
++      runTestsConfiguration["parallel"] = .bool(false)
++    }
+     if let selectedTests {
+       // If we applied a test filter and no tests were selected, setting the `filter` configuration
+       // value to an empty array will be treated by the runner as if there were no filter (and thus

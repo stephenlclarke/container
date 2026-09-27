@@ -250,6 +250,7 @@ chmod u+w "${CONTAINERIZATION_PATH}/Package.swift"
 INTEGRATION_SCRATCH_ROOT="${TEST_ROOT}/integration-scratch"
 INTEGRATION_DRY_RUN="$(
     make -n \
+        ROOT_DIR="$PWD" GIT_COMMIT=test RELEASE_VERSION=test \
         MAKE=true \
         SCRATCH_ROOT="${INTEGRATION_SCRATCH_ROOT}" \
         integration

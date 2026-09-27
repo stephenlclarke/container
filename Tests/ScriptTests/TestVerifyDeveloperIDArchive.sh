@@ -15,6 +15,9 @@
 
 set -euo pipefail
 
+# Synthetic payload assertions count file contents, not host AppleDouble metadata.
+export COPYFILE_DISABLE=1
+
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "${TEST_ROOT}"' EXIT
 

@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import statistics
 import subprocess
@@ -78,17 +79,30 @@ def output(args: list[str], cwd: Path | None = None) -> str:
 
 
 def digest(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    result = hashlib.sha256()
+    with path.open('rb') as stream:
+        while chunk := stream.read(1024 * 1024):
+            result.update(chunk)
+    return result.hexdigest()
 
 
 def archive(repo: str | Path, revision: str, dest: Path, paths: tuple | list = ()) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen(['git', '-C', str(repo), 'archive', revision, *paths],
                             stdout=subprocess.PIPE)
-    with tarfile.open(fileobj=proc.stdout, mode='r|') as tar:
-        tar.extractall(dest, filter='data')
+    with proc.stdout as stream:
+        with tarfile.open(fileobj=stream, mode='r|') as tar:
+            tar.extractall(dest, filter='data')
     if proc.wait():
         raise RuntimeError(f'git archive failed: {repo} {revision}')
+
+
+def install_signal_handlers() -> None:
+    """Let resource-owning Python commands execute their finally blocks on stop."""
+    def interrupted(signum, _frame):
+        raise SystemExit(128 + signum)
+    for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(number, interrupted)
 
 
 def prepare(component: str, lane: str, scratch: Path) -> Path:
@@ -183,19 +197,38 @@ class Runner:
         log = self.evidence / (stem + '.log')
         print(stem, flush=True)
         start = time.monotonic_ns()
-        interrupted = False
+        interrupted = None
         with log.open('w') as stream:
             try:
                 # POSIX wait(timeout=...) polls with sleeps of up to 50 ms.
                 # Keep the deadline on a watchdog so timing ends at child exit.
-                with subprocess.Popen(args, cwd=cwd, env=self.env, stdout=stream,
-                                      stderr=subprocess.STDOUT) as process:
+                with subprocess.Popen(args, cwd=cwd, env=self.env, stdin=subprocess.DEVNULL, stdout=stream,
+                                      stderr=subprocess.STDOUT, start_new_session=True) as process:
                     expired = threading.Event()
+
+                    def stop_group():
+                        try:
+                            os.killpg(process.pid, signal.SIGTERM)
+                            deadline = time.monotonic() + 10
+                            while time.monotonic() < deadline:
+                                # Darwin may return EPERM for a group containing
+                                # only reparented zombies. Check for live members
+                                # instead of treating signal-zero as a liveness API.
+                                groups = subprocess.check_output(
+                                    ['ps', '-axo', 'pgid=,stat='], text=True, timeout=3)
+                                live = any(parts[0] == str(process.pid) and not parts[1].startswith('Z')
+                                           for line in groups.splitlines() if len(parts := line.split()) == 2)
+                                if not live:
+                                    return
+                                time.sleep(0.05)
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass  # The owned process group already exited.
 
                     def expire():
                         if process.poll() is None:
                             expired.set()
-                            process.kill()
+                            stop_group()
 
                     watchdog = threading.Timer(timeout, expire)
                     watchdog.daemon = True
@@ -203,7 +236,7 @@ class Runner:
                     try:
                         status = process.wait()
                     except BaseException:
-                        process.kill()
+                        stop_group()
                         process.wait()
                         raise
                     finally:
@@ -211,9 +244,9 @@ class Runner:
                         watchdog.join()
                     if expired.is_set():
                         status = 124
-            except KeyboardInterrupt:
+            except (KeyboardInterrupt, SystemExit) as error:
                 status = 130
-                interrupted = True
+                interrupted = error
         elapsed = (time.monotonic_ns() - start) / 1e9
         row = dict(component=component, lane=lane, fixture=fixture, trial=trial,
                    seconds=elapsed, status=status, command=[str(a) for a in args], log=str(log))
@@ -223,7 +256,7 @@ class Runner:
         if status:
             print(log.read_text()[-6000:], flush=True)
         if interrupted:
-            raise KeyboardInterrupt
+            raise interrupted
         return row
 
     def bazel(self, component: str, lane: str, fixture: str, trial: int,
@@ -265,10 +298,13 @@ class Runner:
             trial_ratios = [r['seconds'] / stock_trials[r['trial']]['seconds']
                             for r in lanes['fork'] if r['trial'] in stock_trials]
             worst_ratio = max(trial_ratios, default=ratio)
-            passed = all(r['status'] == 0 for rows in lanes.values() for r in rows) and worst_ratio < 10
+            completed = all(r['status'] == 0 for rows in lanes.values() for r in rows)
+            passed = completed and worst_ratio < 10
+            if not completed:
+                ratio, worst_ratio = None, None
             matrix.append(dict(component=component, fixture=fixture, **medians,
                                ratio=ratio, worst_trial_ratio=worst_ratio, passed=passed))
-            if worst_ratio >= 10:
+            if worst_ratio is not None and worst_ratio >= 10:
                 case = ET.SubElement(suite, 'testcase', classname=component, name=fixture + '/ratio')
                 ET.SubElement(case, 'failure', message=f'{worst_ratio:.3f}x slowdown')
         ET.ElementTree(suite).write(self.evidence / 'timings.xml', encoding='unicode')
@@ -276,7 +312,9 @@ class Runner:
         lines = ['# Fork versus Apple benchmark', '',
                  '| Component | Fixture | Apple seconds | Fork seconds | Fork/Apple | Pass |',
                  '| --- | --- | ---: | ---: | ---: | --- |']
-        lines.extend(f"| {r['component']} | {r['fixture']} | {r['stock']:.3f} | {r['fork']:.3f} | {r['ratio']:.2f}x | {r['passed']} |" for r in matrix)
+        for row in matrix:
+            comparison = f"{row['ratio']:.2f}x" if row['ratio'] is not None else 'Not qualified'
+            lines.append(f"| {row['component']} | {row['fixture']} | {row['stock']:.3f} | {row['fork']:.3f} | {comparison} | {row['passed']} |")
         (self.evidence / 'matrix.md').write_text('\n'.join(lines) + '\n')
         go_path = self.evidence / 'go-benchmarks.json'
         if go_path.exists():
@@ -300,7 +338,7 @@ class Runner:
                 go_matrix.append(dict(fixture=fixture, **medians, ratio=ratio,
                                       worst_trial_ratio=worst_ratio, passed=worst_ratio < 10))
                 case = ET.SubElement(suite, 'testcase', classname='prefetch-throughput', name=fixture)
-                if worst_ratio >= 10:
+                if worst_ratio is not None and worst_ratio >= 10:
                     ET.SubElement(case, 'failure', message=f'{worst_ratio:.3f}x slowdown')
             (self.evidence / 'go-matrix.json').write_text(json.dumps(go_matrix, indent=2) + '\n')
             with (self.evidence / 'matrix.md').open('a') as stream:
@@ -412,6 +450,7 @@ class Runner:
 
 
 def main() -> None:
+    install_signal_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence', required=True, type=Path, help='New internal-storage evidence directory')
     parser.add_argument('--scratch', required=True, type=Path, help='New disposable directory on enrolled SSD')
@@ -423,6 +462,10 @@ def main() -> None:
     args = parser.parse_args()
     args.evidence = args.evidence.resolve()
     args.scratch = args.scratch.resolve()
+    # The active container checkpoint includes workflow and runtime fixes which
+    # may not yet be on the fork's main branch. Never benchmark an older main.
+    PAIRS['container'].update(repo=str(ROOT), fork=output(['git', 'rev-parse', 'HEAD'], ROOT))
+    PAIRS['containerization']['fork'] = next(pin['state']['revision'] for pin in json.loads((ROOT / 'Package.resolved').read_text())['pins'] if pin['identity'] == 'containerization')
     if digest(BAZEL) != BAZEL_SHA:
         raise SystemExit('Bazel checksum mismatch')
     # Reuse the established enrollment preflight before creating source snapshots.
@@ -506,8 +549,12 @@ def main() -> None:
     matrix = json.loads((args.evidence / 'matrix.json').read_text())
     if (args.evidence / 'go-matrix.json').exists():
         matrix += json.loads((args.evidence / 'go-matrix.json').read_text())
-    if any(row['status'] for row in runner.rows) or any(not row['passed'] for row in matrix):
+    from comparison_review import review
+    disposition = review(args.evidence)
+    if not disposition['completed']:
         raise SystemExit(1)
+    if not disposition['compatible']:
+        raise SystemExit(2)
 
 
 if __name__ == '__main__':

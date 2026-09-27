@@ -1,5 +1,8 @@
 common --enable_bzlmod
 common --enable_workspace=false
+# VM interface churn can make Bazel 8.8's Darwin network sampler fail sysctl
+# and abort the server. This monitoring flag does not change build/test actions.
+common --noexperimental_collect_system_network_usage
 build --compilation_mode=dbg
 build --jobs=6
 build --local_resources=cpu=6
@@ -15,3 +18,8 @@ test --local_test_jobs=2
 build --disk_cache=/Volumes/SSD/cf/container-only/cache
 build --run_under=//Tools/bazel:test_runner
 build --test_env=CI=1
+
+# Optimized products keep debug information for the original release symbol bundle.
+build:release --compilation_mode=opt
+build:release --apple_generate_dsym
+build:release --strip=never

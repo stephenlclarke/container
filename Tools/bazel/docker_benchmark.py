@@ -9,7 +9,7 @@ import statistics
 import subprocess
 import uuid
 
-from fork_benchmark import Runner
+from fork_benchmark import Runner, install_signal_handlers
 from runtime_benchmark import ALPINE, FIXTURES, INSTALLS
 
 
@@ -22,6 +22,11 @@ def benchmark(evidence: Path, context: str, trials: int) -> None:
     failures = []
 
     def command(fixture, trial, args, expected=None):
+        if args[0] == 'run':
+            ownership = ['--label', 'io.container-only.owner=' + prefix]
+            if '--name' not in args:
+                ownership += ['--name', prefix + '-' + fixture + '-' + str(trial)]
+            args = [args[0], *ownership, *args[1:]]
         row = runner.run('runtime-stack', 'docker', fixture, trial, docker + args, evidence)
         if expected is not None and expected not in Path(row['log']).read_text():
             row['status'] = row['status'] or 1
@@ -74,12 +79,23 @@ def benchmark(evidence: Path, context: str, trials: int) -> None:
             command('build-cached', trial, build)
             command('validate-build', trial, ['run', *resources, '--rm', tag, 'cat', '/result.txt'],
                     hashlib.sha256(payload).hexdigest())
-    except Exception as error:
+    except BaseException as error:
         failures.append(str(error))
+        if not isinstance(error, Exception):
+            raise
     finally:
+        # Short-lived `run --rm` containers can survive a killed Docker client.
+        # The invocation label also covers those without touching other work.
+        try:
+            owned = subprocess.check_output(docker + ['ps', '-aq', '--filter', 'label=io.container-only.owner=' + prefix],
+                                            text=True, timeout=20).split()
+            for container in owned:
+                command('cleanup-transient', 0, ['container', 'rm', '--force', container])
+        except (OSError, subprocess.SubprocessError, RuntimeError) as error:
+            failures.append('Owned Docker container cleanup failed: ' + str(error))
         # Only unique resources created by this invocation may be removed.
         for kind, name in [('container', warm), ('image', tag)]:
-            present = subprocess.run(docker + [kind, 'inspect', name], capture_output=True)
+            present = subprocess.run(docker + [kind, 'inspect', name], capture_output=True, timeout=20)
             if present.returncode == 0:
                 try:
                     command('cleanup-' + kind, 0, [kind, 'rm', '--force', name])
@@ -101,6 +117,7 @@ def benchmark(evidence: Path, context: str, trials: int) -> None:
 
 
 if __name__ == '__main__':
+    install_signal_handlers()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--context', required=True)
     parser.add_argument('--trials', type=int, default=7)

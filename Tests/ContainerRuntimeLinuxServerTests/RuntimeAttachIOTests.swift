@@ -23,6 +23,36 @@ import Testing
 @testable import ContainerRuntimeLinuxServer
 
 struct RuntimeAttachIOTests {
+    @Test("Regular-file input delivers every byte and EOF", arguments: [0, 262_145])
+    func regularFileInputFinishes(byteCount: Int) async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let payload = Data((0..<byteCount).map { UInt8($0 % 251) })
+        try payload.write(to: url)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer {
+            handle.readabilityHandler = nil
+            try? handle.close()
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        let received = try await withThrowingTaskGroup(of: Data.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                var result = Data()
+                for await chunk in handle.stream() {
+                    result.append(chunk)
+                }
+                return result
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw CancellationError()
+            }
+            return try #require(await group.next())
+        }
+        #expect(received == payload)
+    }
+
     @Test("Process output close cannot close a subsequently reused descriptor")
     func processOutputCloseTracksFileHandleOwnership() throws {
         let source = Pipe()

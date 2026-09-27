@@ -1,55 +1,39 @@
 <!-- markdownlint-disable MD013 -->
 
-# build: introduce a container-only Bazel workflow
-
-## Type of Change
-
-- Build workflow simplification and documentation.
+# build: qualify container through isolated Bazel layers
 
 ## Motivation and Context
 
-See [ISSUE-container-only-bazel.md](ISSUE-container-only-bazel.md). The existing family work is preserved before creating this isolated branch. Package.resolved remains the source of dependency pins.
+The family-wide workflow repeatedly rebuilt unrelated repositories and made failures difficult to locate. This change preserves that baseline and limits the active graph to container, its 39 required Swift dependencies, and the same-repository Go helper. See [ISSUE-container-only-bazel.md](ISSUE-container-only-bazel.md).
 
 ## Implementation
 
-Use native Bazel package targets, one macOS configuration and explicit upstream tests per dependency layer. The active graph includes container and 39 pinned Swift dependencies. The same-repository semantic helper uses its existing pinned Go SDK and module lockfiles. Its compiled source/oracle digests and manifest are validated by Go and Swift tests.
+Expose native Bazel library, executable and test targets by dependency layer, using immutable package pins, declared fixtures and persistent SSD caches. Keep host permissions, Linux, VM and CLI integration outside ordinary cached unit tests. The guest uses the pinned static Swift SDK; Linux tests and builder/service artifacts have independent caches and digest-pinned toolchains.
 
-Limit the AWS SDK to CloudWatch Logs plus required internal libraries. Represent the pinned Smithy generator as a Bazel action with declared settings, models, header and five Swift outputs. Select CRT offline test sources without changing their assertions; Smithy's empty placeholder test is not counted as coverage.
+Add an unattended qualification command with early credential checks, bounded stages, preserved failures, source and artifact hashes, Colima restoration and private runtime ownership. Original format/license, protocol generation, script, service and CLI checks use their existing assertions. Coverage rejects empty reports and exports source-bound Sonar XML; authoritative scans require a clean exact commit and Previous version policy. Packaging uses the original signed archive recipe, persists Apple's notarization result, and supports an isolated archive installation check.
 
-Import the local container source with selected tests and fixtures. Preserve native non-CI behavior while separating seven Keychain-backed API checks in CI. Make the executable-path assertion independent of the test runner name and rename the engine command's @main source file to avoid top-level entry-point interpretation; its contents are unchanged.
+Run component comparisons and repeated optimized Apple/fork/Docker workloads after functional work. Keep raw timings, failed upstream comparisons and platform skips visible. A manually dispatched self-hosted CI entry invokes the same command; no scheduler or release publication is added.
 
-Expose container, dependency, per-layer, host and runtime-integration Makefile commands. Keep a short launcher that verifies the SSD and Bazel executable, uses persistent scratch and retains raw evidence. No scheduler or release controller is added.
+Restoring live Kubernetes tests exposed a product defect in regular-file stdin. Darwin readability events delivered data but never EOF, leaving kubectl waiting during network setup. Bounded pull reads now finish regular files, with a regression covering empty and multi-chunk input. Pipes retain event-driven reads. Integration fixtures also materialize rootfs metadata before corrupting it, respect the isolated kubeconfig path, and use the current container restart command.
 
-## Testing
+## Validation
 
-Qualification is proceeding from leaf dependencies upward. Swift System passed 75 tests; Atomics passed 1,972; the selected Collections suites passed 349. Argument Parser's 238 unit tests now run with declared snapshots and the example executable in Bazel runfiles. Reports for each suite, including initial failures, are retained separately on internal storage. Repeat runs reuse passing results; the measured System repeat took 0.047 seconds inside Bazel.
+- All 101 normal Bazel targets passed before the latest runtime fix; the final coherent checkpoint is pending.
+- 69 Linux guest tests, builder formatting/vet/race checks, journald/GELF reproducibility checks and the Swift/journald wire test passed.
+- CLI layers for containers, run, volumes, network, images, build, system, registry and machines passed. The initial Build registry fetch failure is retained separately; the unchanged rerun passed 61 tests. Existing Run TCP-forwarding known issues remain visible.
+- The regular-file EOF regression failed for both inputs before the fix and passed afterward. Kubernetes image loading, pod scheduling and service networking then passed; all remaining Kubernetes cases passed in the recorded focused runs.
+- The original maintenance checks passed with pinned tools. Host unit line coverage is 63.38%; builder statement coverage is 49.2%, both below the 90% objective.
+- Apple accepted pilot submission `aa97fc82-3cd8-45f8-b9d2-48157926eb4b` through Keychain profile `container-only-release`. The final source package and installation gate are pending.
+- Workflow checks cover process deadlines and descendants, private ownership, source-bound artifacts, empty-test/report rejection, Colima restoration, immutable scan admission and blocked-stage reporting. Current counts and final results will be recorded at the checkpoint.
 
-The launcher passes shell syntax, help and shellcheck checks. Six regression tests verify report preservation, attempt isolation, paths with spaces/Unicode, missing-evidence failures, fixture lookup for main/external packages, argument forwarding and child exit status. Markdown lint passes on touched documents. Narrow Makefile targets bypass legacy configuration evaluation; the initial tools check dropped from approximately five seconds to 0.3 seconds; the expanded six-test check takes about 1.4 seconds.
-
-Networking, configuration and cryptography layers have also been added. The launcher can run host networking checks separately. Four upstream checks depend on macOS DNS events, TCP backlog behavior or path accounting; their observed failures are retained, and normal runs report explicit skips while the host command enables their unchanged assertions.
-
-Containerization now has separate OS/utilities, archive, EXT4, OCI and main-library layers. Live registries and login-Keychain checks are explicit host integration checks. Archive permission tests run locally because the sandbox strips set-ID bits; the original assertions pass. A private standalone test executable fixes strict code-signature validation without re-signing or installing products. Engine API core, transports, sessions, gateway and service checks are split into separate layers.
-
-All eight container executables and the same-repository Go semantic helper now build. The CLI passes version/help smoke checks. The runtime integration harness compiles separately; it has not been executed against a live installation.
-
-The container unit suites and AWS runtime suites pass individually with cached repeats. The combined run passes all 91 suites; a warm repeat caches all 91 with no compilation. See [the qualification report](Tools/bazel/QUALIFICATION.md) for wall times, exact evidence and skipped-test accounting. No coverage percentage or cloud Sonar quality-gate result is claimed; local shell checks, Swift formatting and the actual native builds/tests supply this branch's evidence.
+Evidence is retained below `~/Library/Application Support/ContainerFamily/retained/container-only/unattended/20260927T153550Z`; [Tools/bazel/README.md](Tools/bazel/README.md) describes runnable layers and current limits.
 
 ## Compatibility and Remaining Risks
 
-This does not change the existing SwiftPM build or install system. Generated dependency tests need all test-only dependencies pinned. Native runtime integration and release qualification are separate work and are not implied by library tests. No GitHub issue or PR has been published yet.
+Existing SwiftPM and upstream workflows remain available. Four upstream NIO host behavior checks are known failures on this macOS version and remain separately runnable with their original assertions. Common upstream benchmarks intentionally expose the fork's longer container-name limit and different rejected-certificate TLS alerts; failed workloads receive no qualified speed claim.
 
-## Benchmark follow-up
+The full immutable unattended checkpoint, authoritative Sonar result, final source package/install proof and final benchmarks are not yet claimed complete. API documentation and debug-symbol export passed their initial checks; native installer packaging and pinned local CodeQL are implemented and awaiting the final qualification. OCI publication is separate: local qualification imports exact guest/builder archives and does not assert that unpublished default references exist. No issue, PR, release or Apple-facing change has been published for this work; the tested dependency correction is saved on a Stephen-owned topic branch.
 
-[Repeated benchmark results](Tools/bazel/BENCHMARK.md) confirm unchanged builds around 1.04 seconds, cached full-suite checks around 1.10 seconds, and isolated unit-test edits around 3.33 seconds. Executing all container unit suites without cached results took 26.38-29.15 seconds. Shared-library changes correctly rebuild affected dependents; no external dependency libraries recompiled. All temporary edits were restored.
+The native VM suite found a real fork defect: closing a duplicated VSOCK handle left the retained original descriptor open. The dependency pin now includes `5ed9bc7490aa30c76337bd5b3d8ff251b63c678f`, which restores explicit descriptor transfer on accept and dial. The unchanged parallel-traffic regression and the full 213-case VM suite passed (191 passed, 22 platform skips). Kubernetes fixture fixes preserve isolated kubeconfig use, current restart commands, readiness and the original assertions. API documentation passes for all 15 original modules. The release configuration now emits debug symbols; native unsigned PKG and pinned CodeQL gates are implemented, pending the final exact-commit qualification.
 
-[Fork-versus-upstream comparisons](Tools/bazel/FORK_BENCHMARK.md) cover all five related forks, using identical upstream fixtures on both sides. The refreshed archive suite takes 2.05 times as long in the fork and container source recompilation takes twice as long. Cached component builds remain below a third of a second in the measured medians. Container naming limits and three SSL alert expectations remain explicit failed comparisons, separately from passing fork-specific tests. Timing claims exclude those failed suites. The command retains JSON, JUnit, exact sources and failures.
-
-The [runtime comparison](Tools/bazel/RUNTIME_BENCHMARK.md) adds optimized Apple/fork VM startup, warm execution, CPU/disk, image-save/load and cached/uncached image builds to `make bazel-final`. The final run passed all eight workloads with three trials per lane, output validation, bounded cleanup and restoration of the four original inactive service registrations. All 91 normal suites passed from cache. Seventeen focused tool tests cover evidence, process handling, ownership guards, asynchronous cleanup, registration restoration and incomplete-run failures.
-
-After the upstream refresh, container startup/exit was 0.738 seconds for the fork versus 0.613 seconds for Apple, about 20% longer. Warm image import was 71% longer, uncached builds 23% longer and cached builds 26% shorter. These are short, three-sample workloads; retain raw samples and do not infer repository-specific causes from whole-stack timings. Package import inherits and checks source revisions. Stable build environments retain action reuse; runtime data is separate from compiler caches.
-
-## Upstream refresh, 27 September
-
-The reduced branch now includes container main `193be5b7` and containerization `f58053cc`. All 91 normal suites and all container executables pass the updated graph. A zstd public-header patch supports the new streaming archive reader. The paired harness now also admits SSL and gRPC transport forks, with identical upstream test sources on both sides. Runtime benchmarks use the matching optimized fork guest archive and Apple 0.47 guest image. Older timing reports retain their original source fingerprints; refreshed timings are recorded separately.
-
-Containerization's two fork-only integration pods also now compile with the explicit VM-sizing API. That follow-up changes integration-test setup only; benchmark pins retain the measured production sources. Debug and optimized guest builds succeeded; guest unit tests remain blocked by missing Swift Testing in the installed musl SDK. The refreshed runtime benchmark passed with the retained source-matched guest archive. Remote guest-image publication was denied for insufficient package-write permissions and is not claimed complete. Cloud CI and the separate comprehensive runtime-integration suite are not qualified by these local checks.
+Known upstream contract differences remain failed compatibility assertions, with no speed ratio. Only the exact name-limit and rejected-certificate alert assertions receive a reviewed disposition; an additional error or timeout fails qualification. This avoids making an intentional product difference an impossible build gate while preserving its complete evidence.
