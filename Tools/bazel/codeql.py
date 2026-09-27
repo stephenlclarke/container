@@ -4,7 +4,6 @@
 import argparse
 import json
 from pathlib import Path
-import shlex
 import subprocess
 
 from fork_benchmark import BAZEL, ROOT, STORAGE, Runner, digest, install_signal_handlers
@@ -28,18 +27,35 @@ def run(evidence: Path) -> None:
         if version['version'] != '2.27.1':
             raise RuntimeError('Unexpected CodeQL version')
         result.update(source=revision, cli=version, archive_sha256=ARCHIVE_SHA, queries=QUERY)
-        # Tracing must see compiler execution. Use a separate output root with
-        # local one-shot compilers and no action cache, preserving normal builds.
+        database = evidence / 'database'
+        row = runner.run('codeql', 'fork', 'initialize', 0,
+                         [str(CLI), 'database', 'init', str(database), '--language=swift',
+                          '--source-root=' + str(ROOT), '--begin-tracing'], ROOT, 120)
+        if row['status']:
+            raise RuntimeError('CodeQL database initialization failed')
+        tracing = json.loads((database / 'temp/tracingEnvironment/start-tracing.json').read_text())
+        # The macOS tracer cannot relocate/re-sign Bazel's self-extracting
+        # launcher. Indirect tracing instruments its child compiler actions,
+        # with an explicit environment across Bazel's action boundary.
         command = [str(BAZEL), '--batch', '--output_user_root=' + str(STORAGE / 'codeql-output'),
                    'build', '//:container', '--spawn_strategy=local', '--strategy=SwiftCompile=local',
                    '--nouse_action_cache', '--noremote_accept_cached', '--disk_cache=',
-                   '--repository_cache=' + str(STORAGE / 'repositories')]
-        row = runner.run('codeql', 'fork', 'extract', 0,
-                         [str(CLI), 'database', 'create', str(evidence / 'database'), '--language=swift',
-                          '--source-root=' + str(ROOT), '--threads=6', '--ram=8192',
-                          '--command=' + shlex.join(command)], ROOT, 3600)
+                   '--repository_cache=' + str(STORAGE / 'repositories'),
+                   '--action_env=DEVELOPER_DIR', *['--action_env=' + key for key in sorted(tracing)]]
+        original_environment = runner.env
+        runner.env = dict(original_environment, **tracing)
+        runner.env['DEVELOPER_DIR'] = original_environment.get('DEVELOPER_DIR') or subprocess.check_output(
+            ['xcode-select', '-p'], text=True, timeout=30).strip()
+        try:
+            row = runner.run('codeql', 'fork', 'extract', 0, command, ROOT, 3600)
+        finally:
+            runner.env = original_environment
         if row['status']:
             raise RuntimeError('CodeQL Swift extraction failed')
+        row = runner.run('codeql', 'fork', 'finalize', 0,
+                         [str(CLI), 'database', 'finalize', str(database), '--threads=6', '--ram=8192'], ROOT, 900)
+        if row['status']:
+            raise RuntimeError('CodeQL database finalization failed or captured no Swift source')
         row = runner.run('codeql', 'fork', 'analyze', 0,
                          [str(CLI), 'database', 'analyze', str(evidence / 'database'), QUERY,
                           '--download', '--format=sarif-latest', '--output=' + str(evidence / 'results.sarif'),

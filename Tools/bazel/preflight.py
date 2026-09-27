@@ -110,6 +110,9 @@ def check(profile: str, config: dict) -> dict:
     if profile == 'release':
         record('tool-codeql', (STORAGE / 'toolchains/codeql-2.27.1/codeql/codeql').is_file(),
                'Install the checksum-pinned CodeQL 2.27.1 macOS toolchain in container-only storage before release qualification.')
+        status, _ = command([str(STORAGE / 'toolchains/codeql-2.27.1/codeql/swift/tools/osx64/extractor'), '--version'], timeout=45)
+        record('codeql-swift-extractor', status == 0,
+               'Install Apple Rosetta during setup and verify the pinned CodeQL Swift extractor launches before release qualification.')
         for name in ['sonar-scanner', 'crane']:
             record('tool-' + name, shutil.which(name) is not None, 'Install ' + name + ' before release qualification.')
         status, response = command(['gh', 'api', '--include', 'user'], env=github_environment())
@@ -117,6 +120,15 @@ def check(profile: str, config: dict) -> dict:
         record('github-repository-and-package-access', status == 0 and {'repo', 'write:packages'} <= scopes,
                'Run env -u GITHUB_TOKEN -u GH_TOKEN gh auth refresh --hostname github.com --scopes read:packages,write:packages and complete browser authorization.')
         record('sonar-authentication', sonar_authenticated(), 'Configure a valid Sonar token through the existing secure credential source.')
+        from quality import analysis_context
+        try:
+            revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
+            analysis_context(revision)
+            quality_context_ready = True
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            quality_context_ready = False
+        record('sonar-analysis-context', quality_context_ready,
+               'Push this committed topic branch to its existing Stephen-owned pull request targeting main before qualification.')
         notary_profile = config.get('notary_profile')
         status = 2
         if isinstance(notary_profile, str) and notary_profile.strip():

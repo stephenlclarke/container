@@ -10,7 +10,7 @@ Separate tests by dependency layer. Keep one configuration and persistent output
 
 ## Scope
 
-Existing package revisions remain pinned. Compose/devcontainer and other family products remain outside scope. Following the reduced build checkpoint, restore container-only integration, quality, packaging and notarization as explicit unattended layers. The implementation and evidence are tracked in [PR-container-only-bazel.md](PR-container-only-bazel.md).
+Existing package revisions remain pinned. Compose/devcontainer and other family products remain outside scope. Following the reduced build checkpoint, restore container-only integration, quality, packaging and notarization as explicit unattended layers. The implementation and evidence are tracked in [PR-289.md](PR-289.md).
 
 Compare each active fork with its matching stock Apple source. Keep common test workloads identical, report build and component performance separately, and record dependencies without an Apple counterpart as not applicable. Preserve functional differences and failed experiments in the evidence.
 

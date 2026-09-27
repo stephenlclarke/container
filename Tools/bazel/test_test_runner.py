@@ -10,7 +10,7 @@ RUNNER = Path(__file__).with_name("test_runner.sh").resolve()
 
 
 class TestRunnerTests(unittest.TestCase):
-    def check_workspace(self, label, package, exit_code):
+    def check_workspace(self, label, package, exit_code, serial=""):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             runfiles = root / "runfiles with spaces"
@@ -28,9 +28,11 @@ class TestRunnerTests(unittest.TestCase):
                               'test "$1" = "argument with spaces"\n'
                               'test "$TMPDIR" = "$TEST_TMPDIR/"\n'
                               'test "$0" = "$TEST_TMPDIR/executable/test binary"\n'
+                              f'test "${{CONTAINER_RUNTIME_TESTS_SERIAL:-}}" = "{serial}"\n'
                               f'exit {exit_code}\n')
             binary.chmod(0o755)
             env = dict(os.environ, TEST_TARGET=label, TEST_SRCDIR=str(runfiles), TEST_TMPDIR=str(scratch))
+            env.pop('CONTAINER_RUNTIME_TESTS_SERIAL', None)
             result = subprocess.run([str(RUNNER), str(binary), "argument with spaces"], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, exit_code, result.stderr)
             self.assertEqual((runfiles / package / "Tests/fixture").read_text(), "fixture")
@@ -44,6 +46,9 @@ class TestRunnerTests(unittest.TestCase):
 
     def test_main_workspace(self):
         self.check_workspace("//:tests", "_main", 0)
+
+    def test_socket_cases_are_isolated_without_changing_other_suites(self):
+        self.check_workspace("@@extension+package//:SocketForwarderTests.rspm.__impl", "extension+package", 0, "1")
 
 
 if __name__ == "__main__":

@@ -13,8 +13,10 @@ import urllib.request
 
 from coverage import source_files
 from fork_benchmark import ROOT, STORAGE, Runner, digest, install_signal_handlers
+from preflight import github_environment
 
 PROJECT = 'stephenlclarke_container'
+REPOSITORY = 'stephenlclarke/container'
 
 
 def api(endpoint: str, parameters: dict) -> dict:
@@ -43,12 +45,46 @@ def checkpoint() -> str:
     return revision
 
 
+def pull_request_context(pulls: list[dict], branch: str, revision: str) -> dict:
+    """Only analyze the real open PR for this exact pushed source checkpoint."""
+    if len(pulls) != 1:
+        raise RuntimeError('Quality analysis requires exactly one open pull request targeting main')
+    pull = pulls[0]
+    head, base = pull['head'], pull['base']
+    if (pull['state'] != 'open' or head['repo']['full_name'] != REPOSITORY
+            or base['repo']['full_name'] != REPOSITORY or head['ref'] != branch
+            or base['ref'] != 'main' or head['sha'] != revision):
+        raise RuntimeError('Pull request repository, branch, base or pushed revision does not match this checkpoint')
+    return {'kind': 'pull_request', 'key': str(pull['number']), 'branch': branch,
+            'base': base['ref'], 'base_revision': base['sha'], 'revision': revision}
+
+
+def analysis_context(revision: str) -> dict:
+    branch = subprocess.check_output(['git', 'branch', '--show-current'], cwd=ROOT, text=True).strip()
+    if not branch:
+        raise RuntimeError('Quality analysis requires a named source branch')
+    if branch == 'main':
+        return {'kind': 'branch', 'branch': branch, 'revision': revision}
+    query = urllib.parse.urlencode({'state': 'open', 'head': 'stephenlclarke:' + branch, 'base': 'main'})
+    pulls = json.loads(subprocess.check_output(['gh', 'api', 'repos/' + REPOSITORY + '/pulls?' + query],
+                                             env=github_environment(), text=True, timeout=30))
+    return pull_request_context(pulls, branch, revision)
+
+
+def context_arguments(context: dict) -> list[str]:
+    if context['kind'] == 'branch':
+        return ['-Dsonar.branch.name=' + context['branch']]
+    return ['-Dsonar.pullrequest.' + key + '=' + context[key] for key in ('key', 'branch', 'base')]
+
+
 def run(evidence: Path, coverage: Path) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
     result = {'passed': False, 'failures': []}
     try:
         revision = checkpoint()
         result['revision'] = revision
+        context = analysis_context(revision)
+        result['context'] = context
         report = json.loads((coverage / 'coverage.json').read_text())
         if not report['passed'] or report['source_files'] != source_files():
             raise RuntimeError('Coverage does not match the current source tree')
@@ -58,14 +94,11 @@ def run(evidence: Path, coverage: Path) -> None:
         policy = api('settings/values', {'component': PROJECT, 'keys': 'sonar.leak.period,sonar.leak.period.type'})
         (evidence / 'new-code-policy.json').write_text(json.dumps(policy, indent=2) + '\n')
         validate_policy(policy)
-        branch = subprocess.check_output(['git', 'branch', '--show-current'], cwd=ROOT, text=True).strip()
-        if not branch:
-            raise RuntimeError('Quality analysis requires a named source branch')
         runner = Runner(evidence, STORAGE)
         runner.env = dict(os.environ, SONAR_TOKEN=os.environ.get('SONAR_TOKEN') or os.environ['SONAR_TOKEN_PERSONAL'])
         row = runner.run('quality', 'fork', 'sonar', 0, ['sonar-scanner',
                          '-Dsonar.projectVersion=' + revision, '-Dsonar.scm.revision=' + revision,
-                         '-Dsonar.branch.name=' + branch, '-Dsonar.coverageReportPaths=' + str(xml),
+                         *context_arguments(context), '-Dsonar.coverageReportPaths=' + str(xml),
                          '-Dsonar.working.directory=' + str(evidence / 'scanner'),
                          '-Dsonar.qualitygate.wait=true', '-Dsonar.qualitygate.timeout=600'], ROOT, 1800)
         task_file = evidence / 'scanner/report-task.txt'
@@ -82,6 +115,8 @@ def run(evidence: Path, coverage: Path) -> None:
             raise RuntimeError('Sonar analysis or quality gate failed; see retained scanner output and gate conditions')
         if checkpoint() != revision:
             raise RuntimeError('Source changed during authoritative analysis')
+        if analysis_context(revision) != context:
+            raise RuntimeError('Pull request changed during authoritative analysis')
         result['passed'] = True
     except BaseException as error:
         result['failures'].append(str(error))

@@ -49,6 +49,12 @@ if [[ -x "$helper" ]]; then
 fi
 cd "$workspace"
 export TMPDIR="$TEST_TMPDIR/"
+# The rapid-connect stress case interferes with the TCP echo case on Darwin
+# when suites overlap (reproduced in both upstream and fork). Preserve all
+# assertions and each case's concurrent connections, but isolate the cases.
+if [[ "$TEST_TARGET" == *//:SocketForwarderTests.rspm* ]]; then
+    export CONTAINER_RUNTIME_TESTS_SERIAL=1
+fi
 if [[ "${COVERAGE:-0}" == 1 && -n "${TEST_BINARIES_FOR_LLVM_COV:-}" ]]; then
     set +e
     "$executable" "$@"
