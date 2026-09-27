@@ -26,3 +26,7 @@ The final release-policy pin is `9d6324ad5ba4d6487677bd6236f4d92eb0ad9eb8`: prod
 are identical to `47ded59`, and main-branch CI now publishes an optimized guest
 for that source rather than a debug guest. The local matching archive is retained
 with its build fingerprint; remote publication is not assumed from a source push.
+
+## Smaller guest helper
+
+The containerization pin now includes the vmexec dependency cleanup: the helper links the existing OS, Netlink and cgroup contracts without the complete guest server. Its optimized ARM64 binary is 16.3% smaller. Alternating trials found no material startup or exec speed change, so this is a footprint and incremental-build improvement. Kernel probing, runtime mount capacity and guest memory thresholds are unchanged.
