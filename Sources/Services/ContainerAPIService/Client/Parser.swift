@@ -1598,7 +1598,7 @@ public struct Parser {
                 if !entrypoint.isEmpty {
                     result = [entrypoint]
                 }
-            } else if let entrypoint = config?.entrypoint, !entrypoint.isEmpty {
+            } else if let entrypoint = config?.entrypoint, !entrypoint.isEmpty, entrypoint != [""] {
                 result = entrypoint
             }
             if !arguments.isEmpty {

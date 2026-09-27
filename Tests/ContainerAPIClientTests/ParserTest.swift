@@ -3479,4 +3479,43 @@ struct ParserTest {
         let result = try Parser.allEnv(imageEnvs: imageEnvs, envFiles: [], envs: envs)
         #expect(result.count == 100)
     }
+    @Test
+    func testProcessEmptyImageEntrypointUsesCommand() throws {
+        let result = try Parser.process(
+            arguments: ["/bin/sh", "-c", "echo ready"],
+            processFlags: try Flags.Process.parse([]),
+            managementFlags: try Flags.Management.parse([]),
+            config: .init(entrypoint: [""], cmd: ["/bin/false"])
+        )
+
+        #expect(result.executable == "/bin/sh")
+        #expect(result.arguments == ["-c", "echo ready"])
+    }
+
+    @Test
+    func testProcessEmptyImageEntrypointUsesImageCmd() throws {
+        let result = try Parser.process(
+            arguments: [],
+            processFlags: try Flags.Process.parse([]),
+            managementFlags: try Flags.Management.parse([]),
+            config: .init(entrypoint: [""], cmd: ["/bin/sh", "-c", "echo ready"])
+        )
+
+        #expect(result.executable == "/bin/sh")
+        #expect(result.arguments == ["-c", "echo ready"])
+    }
+
+    @Test
+    func testProcessNonEmptyImageEntrypointRemainsExecutable() throws {
+        let result = try Parser.process(
+            arguments: ["hello"],
+            processFlags: try Flags.Process.parse([]),
+            managementFlags: try Flags.Management.parse([]),
+            config: .init(entrypoint: ["/bin/echo"], cmd: ["unused"])
+        )
+
+        #expect(result.executable == "/bin/echo")
+        #expect(result.arguments == ["hello"])
+    }
+
 }

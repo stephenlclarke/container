@@ -64,6 +64,9 @@ public struct K8sCreate: AsyncParsableCommand {
         LoggingSystem.bootstrap { _ in StderrLogHandler() }
         let log = Logger(label: K8sHelper.pluginName)
 
+        // Fail before provisioning the node VM.
+        _ = try K8sHelper.kubernetesVersion(nodeImage: nodeImage)
+
         let isTTY = isatty(FileHandle.standardError.fileDescriptor) == 1
         let progressConfig = try ProgressConfig(
             showSpinner: isTTY,
@@ -106,7 +109,7 @@ public struct K8sCreate: AsyncParsableCommand {
             progress.set(description: "Running kubeadm init")
             try await K8sHelper.prepareNode(nodeID: name, client: client, log: log)
             try await K8sHelper.bootstrapControlPlane(
-                nodeID: name, apiServerSANs: sans, advertiseAddress: vmIP,
+                nodeID: name, nodeImage: nodeImage, apiServerSANs: sans, advertiseAddress: vmIP,
                 // All in-VM Kubernetes clients (including host-networked kube-proxy)
                 // can reach the single-node API through loopback. This endpoint is
                 // independent of the container's rotating vmnet address.

@@ -64,9 +64,9 @@ let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ??
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-34938703559-016040197215"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:a20bf1788286e46fb2c2025acdce6b6e9cdd11394e0875e0f3297415d1c4d108"
-let scVersion = "0.45.0"
+let scVersion = "0.47.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "51bf8a10e2036861f87ccdf2fd881a8726c534d2"
+let containerizationRevision = "f58053cc72dc5dfae419bfc1667220b35b61a1a1"
 let containerEngineAPIRevision = "48e44d74d738ca3d24351ba02c4869be1a3e6998"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
