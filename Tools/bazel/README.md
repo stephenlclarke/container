@@ -106,3 +106,19 @@ Normal builds produce debug artifacts. `bazel-final` also builds optimized binar
 ## Performance interpretation
 
 See [the performance diagnosis](PERFORMANCE_DIAGNOSIS.md) before comparing fork and upstream timings. Component rebuilds deliberately invalidate every component Swift file, and archive suite timings use debug builds. Runtime measurements use optimized binaries. The benchmark waits directly for child exit with a separate timeout watchdog, avoiding up to roughly 50 ms of parent polling delay on short commands. Exact fingerprints and earlier results remain retained.
+
+## Docker/Colima reference
+
+After the Apple/fork runtime comparison, use `make bazel-docker-benchmark`
+with an already running, idle Colima Docker engine. Set `DOCKER_CONTEXT` for
+another explicit context. Seven trials use the same immutable ARM64 Alpine
+image, workload resources, hashes and build payload. The command saves raw
+timings, engine information, validation results and cleanup results.
+It removes only its uniquely named container and result image; downloaded
+base images and build cache remain available. It does not start or stop an engine.
+
+Docker uses a warm shared VM; Apple/fork startup includes a fresh dedicated
+VM. Docker's default builder shares the Colima resources recorded in engine
+information, whereas Apple/fork builders use 2 CPUs and 2 GiB. Import/save
+formats and storage implementations differ. These are product-level latency
+comparisons, not controlled measurements of a common kernel or storage engine.

@@ -46,3 +46,9 @@ bazel-runtime-benchmark:
 bazel-final: bazel-tools-test
 	@$(MAKE) bazel-test-all
 	@$(MAKE) bazel-runtime-benchmark BENCHMARK_RUN="$(BENCHMARK_RUN)"
+
+DOCKER_CONTEXT ?= colima
+.PHONY: bazel-docker-benchmark
+bazel-docker-benchmark:
+	@python3 Tools/bazel/docker_benchmark.py --context "$(DOCKER_CONTEXT)" \
+		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/docker-benchmark/$(BENCHMARK_RUN)"
