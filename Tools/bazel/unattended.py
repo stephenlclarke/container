@@ -12,6 +12,7 @@ import subprocess
 from fork_benchmark import ROOT, STORAGE, Runner
 from preflight import CONFIG, check
 from runtime_benchmark import StockSlot
+from host_lease import HostLease
 
 
 def output(arguments: list[str]) -> str:
@@ -93,12 +94,14 @@ def main() -> None:
         raise SystemExit('Unattended preflight failed; see ' + str(args.evidence / 'preflight.json'))
     with (STORAGE / 'qualification.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        host = HostLease(args.evidence)
         lease = ColimaLease(args.evidence)
         slot = StockSlot(args.evidence)
         result = {'passed': False, 'target': args.target, 'failures': []}
         try:
             # Keep dormant originals aside across every runtime stage; restoring
             # between stages lets background clients reactivate them mid-run.
+            host.acquire()
             slot.acquire()
             lease.acquire()
             runner = Runner(args.evidence, STORAGE)
@@ -112,12 +115,23 @@ def main() -> None:
             result['failures'].append(str(error))
             raise
         finally:
+            # Restoration must finish even if cancellation is repeated.
+            for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+                signal.signal(number, signal.SIG_IGN)
+            cleanup_ok = True
             for resource in (lease, slot):
                 try:
                     resource.restore()
                 except BaseException as error:
+                    cleanup_ok = False
                     result['passed'] = False
                     result['failures'].append(str(error))
+            try:
+                host.restore(restore_workers=cleanup_ok)
+            except BaseException as error:
+                result['passed'] = False
+                result['failures'].append(str(error))
+            host.close()
             (args.evidence / 'acceptance.json').write_text(json.dumps(result, indent=2) + '\n')
         if not result['passed']:
             raise SystemExit(1)

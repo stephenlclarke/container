@@ -51,4 +51,13 @@ jobs:
             ${{ env.QUALIFICATION_EVIDENCE }}/qualification.json
             ${{ env.QUALIFICATION_EVIDENCE }}/acceptance.json
             ${{ env.QUALIFICATION_EVIDENCE }}/preflight.json
+            ${{ env.QUALIFICATION_EVIDENCE }}/host-lease.json
+            ${{ env.QUALIFICATION_EVIDENCE }}/BENCHMARK.md
+            ${{ env.QUALIFICATION_EVIDENCE }}/runtime-comparison.json
+            ${{ env.QUALIFICATION_EVIDENCE }}/components/matrix.*
+            ${{ env.QUALIFICATION_EVIDENCE }}/components/comparison-review.json
+            ${{ env.QUALIFICATION_EVIDENCE }}/coverage/coverage-summary.json
+            ${{ env.QUALIFICATION_EVIDENCE }}/integration/coverage/coverage-summary.json
+            ${{ env.QUALIFICATION_EVIDENCE }}/combined-coverage/coverage-summary.json
+            ${{ env.QUALIFICATION_EVIDENCE }}/quality/quality.json
           if-no-files-found: warn

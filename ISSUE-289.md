@@ -23,3 +23,5 @@ Keep dormant original Apple/Homebrew service registrations aside across the whol
 The reduced quality lane must preserve the original workflow's separate zero-unresolved-issues and zero-unreviewed-hotspots checks, even when Sonar's configurable quality gate passes. Manual GitHub qualification must also test its event SHA rather than the branch tip at runner startup, otherwise queued branch updates can misidentify the tested source.
 
 The reduced workflow also needs the original integration and combined coverage tiers. Unit-only evidence cannot replace these. Build tests share a private builder that must be removed at their layer boundary before System tests assert an empty image store.
+
+The container-only lock alone does not exclude existing family workers from the shared macOS service namespace. Full unattended qualification must hold the common host lock and recoverably quiesce authorized idle workers, without interrupting an active job. Restore original runtime state before workers and retain recovery authority when restoration fails.
