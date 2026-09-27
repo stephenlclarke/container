@@ -59,6 +59,8 @@ Argument Parser also declares its checked-in snapshots and example executable as
 
 The certificate suite also has a test-only patch removing an unsupported XCTest activity-reporting wrapper; its key generation and every assertion still run.
 
+The zstd importer exposes only its public headers to Swift. This supports upstream containerization's streaming zstd reader without importing private compression implementation headers as a Swift module.
+
 Additional retained compatibility patches cover rules_license provider fields and Swift test output/coverage handling. They do not change container product behavior.
 
 ## Preservation and recovery

@@ -185,14 +185,15 @@ struct ImageCleanupTests {
                     throw ConcurrencyTestError.expectedFailure
                 },
                 content: {
-                    await entrants.arrive()
-                    try await entrants.wait(timeout: .seconds(1))
-                    do {
+                    try await withTaskCancellationHandler {
+                        await entrants.arrive()
+                        try await entrants.wait(timeout: .seconds(1))
                         try await Task.sleep(for: .seconds(10))
                         return (deleted: [String](), freed: UInt64(0))
-                    } catch is CancellationError {
-                        await cancellations.arrive()
-                        throw CancellationError()
+                    } onCancel: {
+                        Task {
+                            await cancellations.arrive()
+                        }
                     }
                 }
             )

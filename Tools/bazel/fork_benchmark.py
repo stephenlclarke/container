@@ -26,8 +26,8 @@ BAZEL_SHA = 'f0ac192aba2ccaa373cdfd527d4c407cc492c1296a2f11a4b67563e4d5aa9acb'
 PAIRS = {
     'containerization': {
         'repo': '/Users/sclarke/github/containerization',
-        'stock': 'b44e17e1a4c135bc0168e615bf6a8e3798d070c0',
-        'fork': '51bf8a10e2036861f87ccdf2fd881a8726c534d2',
+        'stock': 'bc994b88df46207fad7775b0eabc51947e315881',
+        'fork': 'f58053cc72dc5dfae419bfc1667220b35b61a1a1',
         'products': ['ContainerizationExtras', 'ContainerizationArchive',
                      'ContainerizationEXT4', 'ContainerizationOCI', 'Containerization'],
         'tests': ['ContainerizationExtrasTests', 'ContainerizationArchiveTests',
@@ -35,8 +35,8 @@ PAIRS = {
     },
     'container': {
         'repo': '/Users/sclarke/github/container',
-        'stock': '57f0b9392bbee1998e6c7f3f25db222fe1dcdd12',
-        'fork': '2b4255631681e8e41cdc243f8f61c40348e18cc1',
+        'stock': '4a7d8615241b8ddecfd3bf225cd7c44f4b2ccf7c',
+        'fork': '193be5b77294d79c4120aa486603840508ded794',
         'products': ['container', 'container-apiserver', 'container-core-images',
                      'container-network-vmnet', 'container-runtime-linux',
                      'machine-apiserver', 'k8s'],
@@ -44,6 +44,20 @@ PAIRS = {
                   'ContainerPersistenceTests', 'ContainerResourceTests',
                   'ContainerNetworkServerTests', 'TerminalProgressTests',
                   'DNSServerTests', 'ContainerBuildTests'],
+    },
+    'swift-nio-ssl': {
+        'repo': '/Users/sclarke/github/swift-nio-ssl',
+        'stock': '322f3c2a4a21df31c84ca416bf65ee5e9059e440',
+        'fork': '17ab11cd2dac5cfc4760a37cb2e0f955d7629439',
+        'products': ['NIOSSL'],
+        'tests': ['NIOSSLTests'],
+    },
+    'grpc-swift-nio-transport': {
+        'repo': '/Users/sclarke/github/grpc-swift-nio-transport',
+        'stock': 'ff4420d7c33cc998a590b0761630d67f76bc291e',
+        'fork': 'bb91b124b6f20cf82edec4b379bdcf8838f98343',
+        'products': ['GRPCNIOTransportCore', 'GRPCNIOTransportHTTP2'],
+        'tests': ['GRPCNIOTransportCoreTests', 'GRPCNIOTransportHTTP2Tests'],
     },
     'container-builder-shim': {
         'repo': '/Users/sclarke/github/container-builder-shim',
@@ -99,7 +113,7 @@ def prepare(component: str, lane: str, scratch: Path) -> Path:
     root_revision = pair[lane] if component == 'container' else PAIRS['container']['fork']
     archive(PAIRS['container']['repo'], root_revision, workspace)
     source = workspace
-    if component == 'containerization':
+    if component != 'container':
         source = base / 'component'
         archive(pair['repo'], pair[lane], source)
     # Use the same stock tests on both sides, never compare different test counts.
@@ -131,10 +145,13 @@ def prepare(component: str, lane: str, scratch: Path) -> Path:
                         f'                test_targets = {pair["tests"]!r} if identity == "{component}" else []')
     data = data.replace('test_targets = list({target: True for target in test_targets}),',
                         'test_targets = test_targets,')
+    local_sources = {component: source} if component != 'container' else {}
     if containerization_source is not None:
+        local_sources['containerization'] = containerization_source
+    for identity, local_source in local_sources.items():
         data = data.replace('                pin = pins[identity]',
-                            '                if identity == "containerization":\n'
-                            f'                    local_swift_package(path = "{containerization_source}", **options)\n'
+                            f'                if identity == "{identity}":\n'
+                            f'                    local_swift_package(path = "{local_source}", **options)\n'
                             '                    continue\n'
                             '                pin = pins[identity]')
     dependencies.write_text(data)

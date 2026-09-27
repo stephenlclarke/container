@@ -19,6 +19,7 @@ TEST_DATA_GLOBS = {
     "swift-http-structured-headers": {"StructuredFieldValuesTests": ["Tests/TestFixtures/**/*.json"]},
 }
 PATCHES = {
+    "zstd": ["//Tools/bazel:zstd-public-module.patch"],
     "smithy-swift": ["//Tools/bazel:smithy-codegen-resource.patch"],
     "aws-crt-swift": ["//Tools/bazel:aws-crt-offline-tests.patch"],
     "aws-sdk-swift": ["//Tools/bazel:aws-sdk-runtime-tests.patch"],

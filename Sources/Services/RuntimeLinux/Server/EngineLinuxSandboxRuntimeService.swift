@@ -505,10 +505,9 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             let sandbox = try LinuxSandbox(
                 configuration.sandboxID,
                 vmm: vmm,
+                vm: VMResources(cpus: configuration.cpus, memoryInBytes: configuration.memoryInBytes),
                 logger: log
             ) { sandboxConfiguration in
-                sandboxConfiguration.cpus = configuration.cpus
-                sandboxConfiguration.memoryInBytes = configuration.memoryInBytes
                 sandboxConfiguration.virtualization = configuration.nestedVirtualization
                 sandboxConfiguration.bootLog = .file(
                     path: configuration.path.appendingPathComponent("boot.log")

@@ -353,7 +353,11 @@ public actor RuntimeService {
 
             let id = config.id
             let rootfs = try bundle.containerRootfs.asMount
-            let container = try LinuxContainer(id, rootfs: rootfs, vmm: vmm, logger: self.log) { czConfig in
+            let vmResources = VMResources(
+                cpus: config.resources.cpus + config.resources.cpuOverhead,
+                memoryInBytes: config.resources.memoryInBytes + VMResources.guestMemoryOverhead
+            )
+            let container = try LinuxContainer(id, rootfs: rootfs, vmm: vmm, vm: vmResources, logger: self.log) { czConfig in
                 try Self.configureContainer(
                     czConfig: &czConfig,
                     config: config,
@@ -1820,7 +1824,6 @@ public actor RuntimeService {
         czConfig.cpuQuotaInMicroseconds = config.resources.cpuQuotaInMicroseconds
         czConfig.cpuPeriodInMicroseconds = config.resources.cpuPeriodInMicroseconds
         czConfig.cpuSet = config.resources.cpuSet
-        czConfig.cpuOverhead = config.resources.cpuOverhead
         czConfig.memoryInBytes = config.resources.memoryInBytes
         if let runtimeData {
             let linuxData = try JSONDecoder().decode(LinuxRuntimeData.self, from: runtimeData)

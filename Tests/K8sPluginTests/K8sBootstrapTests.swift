@@ -25,8 +25,9 @@ struct K8sBootstrapTests {
         #expect(K8sHelper.nodeLocalControlPlaneEndpoint == "127.0.0.1:6443")
     }
 
-    @Test func nodeLocalControlPlaneEndpointIsRendered() {
-        let yaml = K8sHelper.initConfigYAML(
+    @Test func nodeLocalControlPlaneEndpointIsRendered() throws {
+        let yaml = try K8sHelper.initConfigYAML(
+            nodeImage: K8sHelper.nodeImage,
             advertiseAddress: "192.168.64.2",
             certSANs: ["127.0.0.1"],
             controlPlaneEndpoint: K8sHelper.nodeLocalControlPlaneEndpoint)
