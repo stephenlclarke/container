@@ -35,21 +35,19 @@ def run(evidence: Path) -> None:
             raise RuntimeError('CodeQL database initialization failed')
         tracing = json.loads((database / 'temp/tracingEnvironment/start-tracing.json').read_text())
         # The macOS tracer cannot relocate/re-sign Bazel's self-extracting
-        # launcher. Indirect tracing instruments its child compiler actions,
-        # with an explicit environment across Bazel's action boundary.
+        # launcher. Pass tracing directly into child compiler actions. Repository
+        # rules must remain untraced: SwiftPM runs its manifest via sandbox-exec,
+        # whose arm64e executable the current macOS tracer cannot relocate.
+        developer = runner.env.get('DEVELOPER_DIR') or subprocess.check_output(
+            ['xcode-select', '-p'], text=True, timeout=30).strip()
         command = [str(BAZEL), '--batch', '--output_user_root=' + str(STORAGE / 'codeql-output'),
                    'build', '//:container', '--spawn_strategy=local', '--strategy=SwiftCompile=local',
                    '--nouse_action_cache', '--noremote_accept_cached', '--disk_cache=',
                    '--repository_cache=' + str(STORAGE / 'repositories'),
-                   '--action_env=DEVELOPER_DIR', *['--action_env=' + key for key in sorted(tracing)]]
-        original_environment = runner.env
-        runner.env = dict(original_environment, **tracing)
-        runner.env['DEVELOPER_DIR'] = original_environment.get('DEVELOPER_DIR') or subprocess.check_output(
-            ['xcode-select', '-p'], text=True, timeout=30).strip()
-        try:
-            row = runner.run('codeql', 'fork', 'extract', 0, command, ROOT, 3600)
-        finally:
-            runner.env = original_environment
+                   '--action_env=DEVELOPER_DIR=' + developer,
+                   *['--action_env=' + key + '=' + value for key, value in sorted(tracing.items())],
+                   *['--repo_env=' + key + '=' for key in sorted(tracing)]]
+        row = runner.run('codeql', 'fork', 'extract', 0, command, ROOT, 3600)
         if row['status']:
             raise RuntimeError('CodeQL Swift extraction failed')
         row = runner.run('codeql', 'fork', 'finalize', 0,

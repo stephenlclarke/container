@@ -328,7 +328,9 @@ let package = Package(
             dependencies: [
                 .product(name: "ContainerEngineService", package: "container-engine-api")
             ],
-            path: "Sources/ContainerEngineServiceCommand"
+            path: "Sources/ContainerEngineServiceCommand",
+            // The @main entry point is explicit even though its file is named main.swift.
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         ),
         .target(
             name: "ContainerAPIService",
