@@ -180,18 +180,26 @@ public struct ServiceManager {
         }
     }
 
+    /// Drain stdout before waiting so a child writing more than a pipe buffer cannot block.
+    /// Foundation's run-loop wait adds polling latency to short launchctl queries.
+    static func runReadingOutput(_ process: Foundation.Process) throws -> Data {
+        let output = Pipe()
+        process.standardOutput = output
+        let completion = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in completion.signal() }
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        completion.wait()
+        return data
+    }
+
     private static func loadedPlistPath(fullServiceLabel: String) throws -> String? {
         let launchctl = Foundation.Process()
         launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         launchctl.arguments = ["print", fullServiceLabel]
 
-        let output = Pipe()
-        launchctl.standardOutput = output
         launchctl.standardError = FileHandle.nullDevice
-
-        try launchctl.run()
-        let outputData = output.fileHandleForReading.readDataToEndOfFile()
-        launchctl.waitUntilExit()
+        let outputData = try runReadingOutput(launchctl)
         guard launchctl.terminationStatus == 0,
             let outputText = String(data: outputData, encoding: .utf8)
         else {
@@ -311,14 +319,8 @@ public struct ServiceManager {
         launchctl.executableURL = URL(fileURLWithPath: "/bin/launchctl")
         launchctl.arguments = ["managername"]
 
-        let null = FileHandle.nullDevice
-        let stdoutPipe = Pipe()
-        launchctl.standardOutput = stdoutPipe
-        launchctl.standardError = null
-
-        try launchctl.run()
-        let outputData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        launchctl.waitUntilExit()
+        launchctl.standardError = FileHandle.nullDevice
+        let outputData = try runReadingOutput(launchctl)
         let status = launchctl.terminationStatus
         guard status == 0 else {
             throw ContainerizationError(.internalError, message: "command `launchctl managername` failed with status \(status)")

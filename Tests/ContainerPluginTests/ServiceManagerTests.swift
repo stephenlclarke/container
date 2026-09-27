@@ -21,6 +21,24 @@ import Testing
 @testable import ContainerPlugin
 
 struct ServiceManagerTests {
+    @Test func drainsOutputLargerThanPipeCapacityAndPreservesExitStatus() throws {
+        let process = Foundation.Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "head -c 1048576 /dev/zero; exit 7"]
+        let data = try ServiceManager.runReadingOutput(process)
+        #expect(data.count == 1_048_576)
+        #expect(data.allSatisfy { $0 == 0 })
+        #expect(process.terminationStatus == 7)
+    }
+
+    @Test func outputQueryPropagatesLaunchFailure() throws {
+        let process = Foundation.Process()
+        process.executableURL = URL(fileURLWithPath: "/nonexistent/launchctl")
+        #expect(throws: (any Error).self) {
+            try ServiceManager.runReadingOutput(process)
+        }
+    }
+
     @Test func acceptsSuccessfulLaunchctlStatus() throws {
         try ServiceManager.validateLaunchctlSuccess(
             status: 0,
