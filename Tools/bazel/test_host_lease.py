@@ -26,6 +26,9 @@ class HostLeaseTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
+        # Ordinary fixtures model a local caller; Actions ancestry tests opt in
+        # explicitly instead of inheriting the machine running this test suite.
+        self.stack.enter_context(patch.dict(os.environ, GITHUB_ACTIONS='false'))
         self.root = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
         self.stack.enter_context(patch.object(module, 'LOCK', self.root / 'runtime.lock'))
         self.stack.enter_context(patch.object(module, 'JOURNAL', self.root / 'recovery.json'))
