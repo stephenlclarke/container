@@ -8,6 +8,7 @@ Source checkouts and installed container services are never modified.
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -72,10 +73,24 @@ OCI_FILES = ['ContentWriterTests.swift', 'DescriptorDecodingTests.swift',
              'LocalOCILayoutClientTests.swift', 'OCIImageTests.swift',
              'OCIPlatformTests.swift', 'OCISpecTests.swift', 'ReferenceTests.swift',
              'SpecRedactionTests.swift']
+TLS_CASES = ('repeated_handshakes', 'many_writes_512b')
+
+
+def tls_samples(text: str, fixture: str) -> list[float]:
+    """Reject a debug build, skipped workload, or incomplete upstream measurement."""
+    if 'DEBUG MODE' in text:
+        raise ValueError('TLS performance executable was built in debug mode')
+    lines = re.findall(r'^measuring: ' + re.escape(fixture) + r': (.+)$', text, re.M)
+    if len(lines) != 1:
+        raise ValueError('TLS performance executable omitted the selected workload')
+    values = [float(value.strip()) for value in lines[0].split(',') if value.strip()]
+    if len(values) != 10 or any(not math.isfinite(value) or value <= 0 for value in values):
+        raise ValueError('TLS performance executable omitted ten valid measurements')
+    return values
 
 
 def output(args: list[str], cwd: Path | None = None) -> str:
-    return subprocess.check_output(args, cwd=cwd, text=True).strip()
+    return subprocess.check_output(args, cwd=cwd, text=True, timeout=60).strip()
 
 
 def digest(path: Path) -> str:
@@ -131,6 +146,11 @@ def prepare(component: str, lane: str, scratch: Path) -> Path:
     if component != 'container':
         source = base / 'component'
         archive(pair['repo'], pair[lane], source)
+    if component == 'swift-nio-ssl':
+        # Both libraries run Apple's identical workload and certificates.
+        performance = 'Sources/NIOSSLPerformanceTester'
+        shutil.rmtree(source / performance)
+        archive(pair['repo'], pair['stock'], source, [performance])
     # Use the same stock tests on both sides, never compare different test counts.
     for suite in pair['tests']:
         directory = source / 'Tests' / suite
@@ -273,11 +293,55 @@ class Runner:
                            check=True, stdout=subprocess.DEVNULL)
         return row
 
+    def tls(self) -> None:
+        """Measure identical optimized upstream workloads directly, without Bazel startup."""
+        component = 'swift-nio-ssl'
+        target = '@swiftpkg_swift_nio_ssl//:NIOSSLPerformanceTester.rspm'
+        bazel = [str(BAZEL), '--output_user_root=' + str(STORAGE / 'paired-output')]
+        binaries = {}
+        identity = {'source': PAIRS[component], 'configuration': 'release', 'binaries': {},
+                    'workloads': {}, 'method': 'Three alternating process trials; monotonic wall time includes startup, one warmup and ten upstream samples. Upstream Date-based samples are retained as diagnostics, not used for the speed ratio.'}
+        for lane in ('stock', 'fork'):
+            workspace = self.scratch / component / lane / 'workspace'
+            row = self.bazel(component, lane, 'prepare-tls', 0, 'build', [target], ['--config=release'])
+            if row['status']:
+                return
+            execution = Path(output(bazel + ['info', 'execution_root'], workspace))
+            files = output(bazel + ['cquery', target, '--config=release', '--output=files'], workspace).splitlines()
+            candidates = [execution / name for name in files if name.endswith('/NIOSSLPerformanceTester.rspm.__impl')]
+            if len(candidates) != 1:
+                raise RuntimeError('TLS benchmark build did not identify one executable')
+            binaries[lane] = candidates[0]
+            identity['binaries'][lane] = {'path': str(candidates[0]), 'sha256': digest(candidates[0])}
+            source = self.scratch / component / lane / 'component/Sources/NIOSSLPerformanceTester'
+            identity['workloads'][lane] = {str(p.relative_to(source)): digest(p)
+                                           for p in sorted(source.rglob('*')) if p.is_file()}
+        if identity['workloads']['stock'] != identity['workloads']['fork']:
+            raise RuntimeError('TLS performance workloads differ between lanes')
+        (self.evidence / 'tls-benchmarks.json').write_text(json.dumps(identity, indent=2) + '\n')
+        failed = set()
+        for trial in range(3):
+            for lane in (('stock', 'fork') if trial % 2 == 0 else ('fork', 'stock')):
+                for fixture in TLS_CASES:
+                    if (lane, fixture) in failed:
+                        continue
+                    if digest(binaries[lane]) != identity['binaries'][lane]['sha256']:
+                        raise RuntimeError('TLS benchmark executable changed during measurement')
+                    row = self.run(component, lane, 'tls-' + fixture, trial,
+                                   [str(binaries[lane]), fixture], binaries[lane].parent, timeout=120)
+                    if not row['status']:
+                        try:
+                            row['upstream_samples_seconds'] = tls_samples(Path(row['log']).read_text(), fixture)
+                        except ValueError as error:
+                            row.update(status=65, validation_error=str(error))
+                    if row['status']:
+                        failed.add((lane, fixture))
+
     def report(self) -> None:
         (self.evidence / 'results.json').write_text(json.dumps(self.rows, indent=2) + '\n')
         matrix = []
         fixtures = sorted({(r['component'], r['fixture']) for r in self.rows
-                           if r['fixture'] not in {'prepare-build', 'prepare-linux-build', 'toolchain'}})
+                           if r['fixture'] not in {'prepare-build', 'prepare-linux-build', 'prepare-tls', 'toolchain'}})
         suite = ET.Element('testsuite', name='fork-vs-apple')
         for row in self.rows:
             case = ET.SubElement(suite, 'testcase', classname=row['component'],
@@ -315,6 +379,8 @@ class Runner:
         for row in matrix:
             comparison = f"{row['ratio']:.2f}x" if row['ratio'] is not None else 'Not qualified'
             lines.append(f"| {row['component']} | {row['fixture']} | {row['stock']:.3f} | {row['fork']:.3f} | {comparison} | {row['passed']} |")
+        if any(row['fixture'].startswith('tls-') for row in matrix):
+            lines += ['', 'TLS workloads use the same upstream performance source with optimized libraries, run directly without Bazel. Each process includes startup, one warmup and ten samples of 1,000 handshakes or 200,000 encrypted 512-byte writes. Ratios use monotonic process durations; the upstream wall-clock samples are retained only as diagnostics. Compatibility-test failures remain separate.']
         (self.evidence / 'matrix.md').write_text('\n'.join(lines) + '\n')
         go_path = self.evidence / 'go-benchmarks.json'
         if go_path.exists():
@@ -524,6 +590,8 @@ def main() -> None:
                                            ['--nocache_test_results', '--test_timeout=120', '--local_test_jobs=1'])
                         if row['status']:
                             failed_fixtures.add((lane, name))
+            if component == 'swift-nio-ssl' and args.phase != 'recompile':
+                runner.tls()
             # No-op comments force the component's Swift source compilation.
             # Dependency sources are untouched; report first builds separately.
             for lane in ['stock', 'fork']:

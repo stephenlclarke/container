@@ -29,3 +29,5 @@ The container-only lock alone does not exclude existing family workers from the 
 A manual-only workflow absent from the default branch cannot provide pre-merge qualification. Add an opt-in same-repository PR label trigger with exact-head binding; require server-side approval for every external contributor because editable PR workflow conditions are not a trust boundary. Keep public-fork code off the persistent Mac.
 
 External DNS failure currently collapses to an empty test error because nslookup writes details to stdout. Retain the fixed-query output and check native host DNS readiness before expensive release qualification. Preserve the original guest lookup and its deadlines, without automatic retries or resolver overrides. Native resolution timing and response/cancellation logs must distinguish host lookup delay from a lost forwarded response without exposing query names.
+
+The SSL suite has a known rejected-certificate alert difference, so its failed suite duration cannot establish SSL runtime performance. Add identical optimized upstream handshake and encrypted-write workloads while retaining the complete compatibility result.

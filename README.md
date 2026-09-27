@@ -189,7 +189,7 @@ To retain your user data so that it is available should you reinstall later, run
 - Browse the [full command reference](./docs/command-reference.md).
 - [Build and run](./BUILDING.md) `container` on your own development system.
 - [Container-only Bazel build](./Tools/bazel/README.md): build, test, compare and package container and its dependencies in separate reusable layers. `make bazel-unattended` runs the explicit qualification pipeline and retains failures and cleanup evidence, with separate unit, integration and combined line coverage reports. A shared host lease protects runtime qualification and restores cooperating workers afterward. Release preflight checks host DNS readiness; an opt-in PR label starts the same command on the dedicated Mac runner.
-- [Apple versus fork runtime benchmarks](./Tools/bazel/RUNTIME_BENCHMARK.md): `make bazel-final` finishes the build with repeated speed comparisons.
+- [Apple versus fork runtime benchmarks](./Tools/bazel/RUNTIME_BENCHMARK.md): `make bazel-final` finishes the build with repeated speed comparisons. Component qualification also measures matching optimized TLS handshake and encrypted-write workloads independently of compatibility-test results.
 - View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
 - Compare the [Apple upstream API reference](https://apple.github.io/container/documentation/).
 

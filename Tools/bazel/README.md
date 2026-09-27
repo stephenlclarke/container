@@ -148,6 +148,8 @@ Normal builds produce debug artifacts. `bazel-final` also builds optimized binar
 
 ## Performance interpretation
 
+The SSL component additionally builds the unchanged upstream `NIOSSLPerformanceTester` in release mode and runs matching handshake and encrypted-write workloads directly. Three alternating process trials retain monotonic durations, executable and workload hashes, and the ten upstream samples. Speed ratios include process startup and one warmup; upstream wall-clock samples are diagnostic only. The known rejected-certificate compatibility assertions remain separately failed and receive no speed ratio.
+
 See [the performance diagnosis](PERFORMANCE_DIAGNOSIS.md) before comparing fork and upstream timings. Component rebuilds deliberately invalidate every component Swift file, and archive suite timings use debug builds. Runtime measurements use optimized binaries. The benchmark waits directly for child exit with a separate timeout watchdog, avoiding up to roughly 50 ms of parent polling delay on short commands. Exact fingerprints and earlier results remain retained.
 
 ## Docker/Colima reference

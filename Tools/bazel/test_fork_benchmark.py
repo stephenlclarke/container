@@ -8,10 +8,23 @@ import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-from fork_benchmark import Runner
+from fork_benchmark import Runner, tls_samples
 
 
 class ReportTests(unittest.TestCase):
+    def test_tls_accepts_ten_completed_release_samples(self):
+        text = 'measuring: repeated_handshakes: ' + '0.125, ' * 10 + '\n'
+        self.assertEqual(tls_samples(text, 'repeated_handshakes'), [0.125] * 10)
+
+    def test_tls_rejects_debug_skipped_incomplete_or_invalid_measurements(self):
+        good = 'measuring: repeated_handshakes: ' + '0.125, ' * 10 + '\n'
+        for text in ('DEBUG MODE\n' + good, 'skipping repeated_handshakes', good + good,
+                     good.replace('repeated_handshakes', 'many_writes_512b'),
+                     good.replace('0.125, ', '', 1), good.replace('0.125', 'nan', 1),
+                     good.replace('0.125', 'inf', 1), good.replace('0.125', '0', 1)):
+            with self.subTest(output=text), self.assertRaises(ValueError):
+                tls_samples(text, 'repeated_handshakes')
+
     def test_successful_command_does_not_sleep_polling_for_exit(self):
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory)
