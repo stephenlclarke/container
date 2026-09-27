@@ -23,14 +23,14 @@ STATE = Path('/private/tmp') / f'cfb-{os.getuid()}'
 IDENTITY = 'BDDA5D3A8836437C2EFA24CDACE0FEBFBEF20633'
 NAMESPACE = 'io.github.stephenlclarke.container.benchmark'
 ALPINE = 'docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8'
-FORK_INIT = 'ghcr.io/stephenlclarke/containerization/vminit:9d6324ad5ba4d6487677bd6236f4d92eb0ad9eb8'
+FORK_INIT = 'ghcr.io/stephenlclarke/containerization/vminit:7b9eb0a77ff615d764fbbf52125e2b6cdd846db8'
 STOCK_INIT = 'ghcr.io/apple/containerization/vminit@sha256:4c1836052eafcbc944c403fb23ded06562962d2402c9dcc651495a32300614df'
 BUILDERS = {
     'stock': 'ghcr.io/apple/container-builder-shim/builder@sha256:b5b3f7fa81e662db6929f1ad66d835d151a1b03f682cfe5f9fcb17fa46d6bcc9',
     'fork': 'ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:a20bf1788286e46fb2c2025acdce6b6e9cdd11394e0875e0f3297415d1c4d108',
 }
 FORK_INIT_TAR = Path.home() / ('Library/Application Support/ContainerFamily/retained/release/authorities/'
-    '9d6324ad5ba4d6487677bd6236f4d92eb0ad9eb8/container-vminit-9d6324ad5ba4d6487677bd6236f4d92eb0ad9eb8-arm64.oci.tar')
+    '7b9eb0a77ff615d764fbbf52125e2b6cdd846db8/container-vminit-7b9eb0a77ff615d764fbbf52125e2b6cdd846db8-arm64.oci.tar')
 PLUGINS = {
     'container-runtime-linux': 'RuntimeLinux', 'container-network-vmnet': 'NetworkVmnet',
     'container-core-images': 'CoreImages', 'machine-apiserver': 'MachineAPIServer', 'k8s': 'K8s',
@@ -408,7 +408,7 @@ def prepare_assets(evidence: Path) -> None:
             archive_file.add(layout / name, arcname=name)
     if not FORK_INIT_TAR.is_file():
         raise RuntimeError(f'Matched fork guest image is required: {FORK_INIT_TAR}')
-    if digest(FORK_INIT_TAR) != 'c6f095f55b35c8e8734277d4527d374e5cfb2f4615f31d52dbad0069e22de21f':
+    if digest(FORK_INIT_TAR) != 'd0ede6a2d535c3f5885a09ee207f43169188f98022b52ebd2d843a17a9411f85':
         raise RuntimeError('Matched fork guest archive checksum mismatch')
     (evidence / 'assets.json').write_text(json.dumps({
         'kernel_archive_sha256': KERNEL_SHA, 'alpine_archive_sha256': digest(archive_path),
