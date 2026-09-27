@@ -12,6 +12,21 @@ import preflight
 
 
 class PreflightTests(unittest.TestCase):
+    def test_available_swift_does_not_admit_command_line_tools_as_xcode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = Path(directory) / 'bazel'
+            binary.write_bytes(b'fixture')
+            def probe(arguments, **_kwargs):
+                return (1, '') if arguments[0] == '/usr/bin/xcodebuild' else (0, '')
+            with mock.patch.object(preflight, 'BAZEL', binary), \
+                    mock.patch.object(preflight, 'command', side_effect=probe):
+                report = preflight.check('build', {})
+            checks = {row['check']: row for row in report['checks']}
+            self.assertTrue(checks['swift-toolchain']['ready'])
+            self.assertFalse(checks['xcode-toolchain']['ready'])
+            self.assertIn('full Xcode', checks['xcode-toolchain']['action'])
+            self.assertFalse(report['ready'])
+
     def test_dns_probe_requires_both_native_families_within_proxy_deadline(self):
         rows = [{'type': kind, 'outcome': 'resolved', 'seconds': .1} for kind in ('A', 'AAAA')]
         with mock.patch.object(preflight, 'command', return_value=(0, json.dumps(rows))) as probe:

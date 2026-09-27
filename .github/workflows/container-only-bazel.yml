@@ -48,6 +48,7 @@ jobs:
       - name: Run the same local qualification command
         shell: bash
         env:
+          DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"

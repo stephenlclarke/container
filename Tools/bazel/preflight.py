@@ -129,6 +129,9 @@ def check(profile: str, config: dict) -> dict:
     record('pinned-bazel', bazel_ready, 'Restore the checksum-pinned Bazel executable recorded in the workflow.')
     for name in ['python3', 'shellcheck', 'git']:
         record('tool-' + name, shutil.which(name) is not None, 'Install ' + name + ' before starting verification.')
+    status, _ = command(['/usr/bin/xcodebuild', '-version'])
+    record('xcode-toolchain', status == 0,
+           'Select the supported full Xcode installation with DEVELOPER_DIR or xcode-select; Command Line Tools alone cannot build this workspace.')
     status, _ = command(['/usr/bin/xcrun', 'swift', '--version'])
     record('swift-toolchain', status == 0, 'Select the supported Xcode/Swift toolchain and finish its first-launch setup.')
 
