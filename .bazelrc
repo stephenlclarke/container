@@ -1,0 +1,15 @@
+common --enable_bzlmod
+common --enable_workspace=false
+build --compilation_mode=dbg
+build --jobs=6
+build --local_resources=cpu=6
+build --local_resources=memory=8192
+build --macos_minimum_os=15.0
+build --action_env=TMPDIR
+build --symlink_prefix=/
+build --test_env=TMPDIR
+build --test_env=HOME
+test --test_output=errors
+test --flaky_test_attempts=1
+test --local_test_jobs=2
+build --disk_cache=/Volumes/SSD/cf/container-only/cache

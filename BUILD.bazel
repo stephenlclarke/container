@@ -1,0 +1,4 @@
+load("//Tools/bazel:layers.bzl", "declare_layers")
+
+exports_files(["Package.resolved"])
+declare_layers()

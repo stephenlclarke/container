@@ -1,0 +1,35 @@
+diff --git a/swiftpkg/internal/repo_rules.bzl b/swiftpkg/internal/repo_rules.bzl
+--- a/swiftpkg/internal/repo_rules.bzl
++++ b/swiftpkg/internal/repo_rules.bzl
+@@ -158,7 +158,7 @@
+     for target in pkg_info.targets:
+         # Unfortunately, Package.resolved does not contain test-only external
+         # dependencies. So, we need to skip generating test targets.
+-        if target.type == "test":
++        if target.type == "test" and target.name not in getattr(repository_ctx.attr, "test_targets", []):
+             continue
+ 
+         artifact_infos = []
+diff --git a/swiftpkg/internal/swift_package.bzl b/swiftpkg/internal/swift_package.bzl
+--- a/swiftpkg/internal/swift_package.bzl
++++ b/swiftpkg/internal/swift_package.bzl
+@@ -226,6 +226,7 @@
+ }
+ 
+ TOOL_ATTRS = {
++    "test_targets": attr.string_list(doc = "Upstream test targets whose dependencies are pinned."),
+     "publicly_expose_all_targets": attr.bool(
+         default = False,
+         doc = """
+diff --git a/swiftpkg/internal/minimum_os_transition.bzl b/swiftpkg/internal/minimum_os_transition.bzl
+--- a/swiftpkg/internal/minimum_os_transition.bzl
++++ b/swiftpkg/internal/minimum_os_transition.bzl
+@@ -53,6 +53,8 @@
+     if import_error:
+         fail(import_error)
+ 
++    # A package minimum is a lower bound, not a request to downgrade the consumer.
++    minimum_os = str(settings[minimum_os_config.option] or minimum_os)
+     outputs[minimum_os_config.option] = minimum_os
+ 
+     # Set the minimum_os_version flag in addition to the OS specific flag

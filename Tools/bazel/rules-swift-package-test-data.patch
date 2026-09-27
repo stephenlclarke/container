@@ -1,0 +1,24 @@
+diff --git a/swiftpkg/internal/swift_package.bzl b/swiftpkg/internal/swift_package.bzl
+--- a/swiftpkg/internal/swift_package.bzl
++++ b/swiftpkg/internal/swift_package.bzl
+@@ -226,6 +226,7 @@
+ }
+ 
+ TOOL_ATTRS = {
++    "test_data": attr.string_list_dict(doc = "Additional declared runfiles for upstream tests."),
+     "test_targets": attr.string_list(doc = "Upstream test targets whose dependencies are pinned."),
+     "publicly_expose_all_targets": attr.bool(
+         default = False,
+diff --git a/swiftpkg/internal/swiftpkg_build_files.bzl b/swiftpkg/internal/swiftpkg_build_files.bzl
+--- a/swiftpkg/internal/swiftpkg_build_files.bzl
++++ b/swiftpkg/internal/swiftpkg_build_files.bzl
+@@ -277,6 +277,9 @@
+             ),
+         ]
+     elif target.type == target_types.test:
++        extra_data = getattr(repository_ctx.attr, "test_data", {}).get(target.name, [])
++        if extra_data:
++            attrs["data"] = attrs.get("data", []) + extra_data
+         load_stmts = [swift_test_load_stmt, spm_minimum_os_test_load_stmt]
+         decls = [
+             _minimum_os_wrapper_decl(

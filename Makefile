@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Narrow Bazel commands do not evaluate SwiftPM or release configuration.
+ifneq ($(filter bazel-%,$(MAKECMDGOALS)),)
+include Tools/bazel/Makefile
+else
 # Version and build configuration variables
 BUILD_CONFIGURATION ?= debug
 WARNINGS_AS_ERRORS ?= true
@@ -703,3 +707,5 @@ clean:
 	@rm -f $(COV_REPORT_FILE)
 	@rm -rf $(COVERAGE_OUTPUT_DIR)
 	@$(SWIFT) package clean
+
+endif

@@ -1,0 +1,16 @@
+module(name = "container")
+
+bazel_dep(name = "rules_swift", version = "3.6.1", repo_name = "build_bazel_rules_swift")
+bazel_dep(name = "apple_support", version = "1.24.2")
+bazel_dep(name = "rules_cc", version = "0.2.14")
+bazel_dep(name = "rules_swift_package_manager", version = "1.23.0")
+bazel_dep(name = "rules_license", version = "1.0.0")
+bazel_dep(name = "rules_apple", version = "4.3.3", repo_name = "build_bazel_rules_apple")
+
+single_version_override(module_name = "rules_license", version = "1.0.0", patches = ["//Tools/bazel:rules-license-empty-provider.patch"], patch_strip = 1)
+single_version_override(module_name = "rules_swift", version = "3.6.1", patches = ["//Tools/bazel:rules-swift-sandbox-output.patch"], patch_strip = 1)
+single_version_override(module_name = "rules_swift_package_manager", version = "1.23.0", patches = ["//Tools/bazel:rules-swift-package-tests.patch", "//Tools/bazel:rules-swift-package-test-data.patch"], patch_strip = 1)
+
+deps = use_extension("//Tools/bazel:dependencies.bzl", "dependencies")
+deps.lockfile(path = "//:Package.resolved")
+use_repo(deps, "swiftpkg_swift_algorithms", "swiftpkg_swift_argument_parser", "swiftpkg_swift_asn1", "swiftpkg_swift_atomics", "swiftpkg_swift_collections", "swiftpkg_swift_distributed_tracing", "swiftpkg_swift_http_types", "swiftpkg_swift_log", "swiftpkg_swift_metrics", "swiftpkg_swift_numerics", "swiftpkg_swift_protobuf", "swiftpkg_swift_service_context", "swiftpkg_swift_system", "swiftpkg_swift_toml")
