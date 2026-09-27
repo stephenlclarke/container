@@ -30,6 +30,7 @@ bazel-integration-test:
 	@test -n "$(CONTAINER_CLI_PATH)" && test -x "$(CONTAINER_CLI_PATH)" || { echo "Set CONTAINER_CLI_PATH to the CLI for the prepared test installation."; exit 2; }
 	@Tools/bazel/run.sh test //:runtime-integration-tests --test_env=CONTAINER_CLI_PATH="$(CONTAINER_CLI_PATH)" --strategy=TestRunner=local --nocache_test_results --test_timeout=1800
 
+BENCHMARK_TRIALS ?= 7
 BENCHMARK_RUN ?= $(shell date -u +%Y%m%dT%H%M%SZ)
 .PHONY: bazel-fork-benchmark
 bazel-fork-benchmark:
@@ -39,7 +40,7 @@ bazel-fork-benchmark:
 
 .PHONY: bazel-runtime-benchmark bazel-final
 bazel-runtime-benchmark:
-	@python3 Tools/bazel/runtime_benchmark.py --prepare \
+	@python3 Tools/bazel/runtime_benchmark.py --prepare --trials "$(BENCHMARK_TRIALS)" \
 		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/runtime-benchmark/$(BENCHMARK_RUN)"
 
 # Final qualification is explicit; normal layer tests remain VM-free and cached.
@@ -50,5 +51,5 @@ bazel-final: bazel-tools-test
 DOCKER_CONTEXT ?= colima
 .PHONY: bazel-docker-benchmark
 bazel-docker-benchmark:
-	@python3 Tools/bazel/docker_benchmark.py --context "$(DOCKER_CONTEXT)" \
+	@python3 Tools/bazel/docker_benchmark.py --context "$(DOCKER_CONTEXT)" --trials "$(BENCHMARK_TRIALS)" \
 		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/docker-benchmark/$(BENCHMARK_RUN)"

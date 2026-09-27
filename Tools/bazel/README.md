@@ -122,3 +122,7 @@ VM. Docker's default builder shares the Colima resources recorded in engine
 information, whereas Apple/fork builders use 2 CPUs and 2 GiB. Import/save
 formats and storage implementations differ. These are product-level latency
 comparisons, not controlled measurements of a common kernel or storage engine.
+
+Runtime Makefile targets use seven trials by default; override `BENCHMARK_TRIALS`
+for an explicitly shorter smoke run. The final optimization report is
+[PERFORMANCE_OPTIMIZATIONS.md](PERFORMANCE_OPTIMIZATIONS.md).
