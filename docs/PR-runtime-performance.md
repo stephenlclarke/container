@@ -21,3 +21,8 @@ The final dependency pin is `47ded59ac35d4a71d712cd41cb3382f3a3e9c4f6`.
 A later lazy-share experiment was reverted in the dependency main branch;
 production sources there match this pin. Retain existing filesystem attachment
 behavior because the experiment did not materially improve startup.
+
+The final release-policy pin is `9d6324ad5ba4d6487677bd6236f4d92eb0ad9eb8`: production Swift sources
+are identical to `47ded59`, and main-branch CI now publishes an optimized guest
+for that source rather than a debug guest. The local matching archive is retained
+with its build fingerprint; remote publication is not assumed from a source push.
