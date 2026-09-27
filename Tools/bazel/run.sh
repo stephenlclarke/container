@@ -66,10 +66,10 @@ find Tools/bazel Tools/ContainerSemanticHelper -type f -exec /usr/bin/shasum -a 
 extra=()
 case "$command_name" in
     build|test|coverage) extra+=("--build_event_json_file=$retained/$run_id.events.json") ;;
-    shutdown) exec "$bazel" --output_user_root="$storage/output" shutdown ;;
+    shutdown) exec /usr/bin/python3 "$repo/Tools/bazel/bazel_environment.py" "$bazel" --output_user_root="$storage/output" shutdown ;;
 esac
 set +e
-"$bazel" --output_user_root="$storage/output" "$command_name" \
+/usr/bin/python3 "$repo/Tools/bazel/bazel_environment.py" "$bazel" --output_user_root="$storage/output" "$command_name" \
     --repository_cache="$storage/repositories" "${extra[@]}" "$@" 2>&1 | tee "$retained/$run_id.log"
 status=${PIPESTATUS[0]}
 set -e

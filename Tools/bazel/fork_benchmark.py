@@ -6,6 +6,7 @@ Source checkouts and installed container services are never modified.
 """
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -21,6 +22,8 @@ import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
+
+from bazel_environment import bazel_environment
 
 ROOT = Path(__file__).resolve().parents[2]
 STORAGE = Path('/Volumes/SSD/cf/container-only')
@@ -89,8 +92,21 @@ def tls_samples(text: str, fixture: str) -> list[float]:
     return values
 
 
-def output(args: list[str], cwd: Path | None = None) -> str:
-    return subprocess.check_output(args, cwd=cwd, text=True, timeout=60).strip()
+def tls_executable(files: str, execution: Path) -> Path:
+    """Separate the linked executable from the same-named DWARF debug file."""
+    candidates = [execution / name for name in files.splitlines()
+                  if name.endswith('/NIOSSLPerformanceTester.rspm.__impl')
+                  and '/Contents/Resources/DWARF/' not in name]
+    if len(candidates) != 1:
+        raise RuntimeError('TLS benchmark build did not identify one executable')
+    return candidates[0]
+
+
+def output(args: list[str], cwd: Path | None = None, env: dict | None = None) -> str:
+    environment = os.environ if env is None else env
+    if str(args[0]) == str(BAZEL):
+        environment = bazel_environment(environment)
+    return subprocess.check_output(args, cwd=cwd, env=environment, text=True, timeout=60).strip()
 
 
 def digest(path: Path) -> str:
@@ -218,11 +234,12 @@ class Runner:
         print(stem, flush=True)
         start = time.monotonic_ns()
         interrupted = None
+        environment = bazel_environment(self.env) if str(args[0]) == str(BAZEL) else self.env
         with log.open('w') as stream:
             try:
                 # POSIX wait(timeout=...) polls with sleeps of up to 50 ms.
                 # Keep the deadline on a watchdog so timing ends at child exit.
-                with subprocess.Popen(args, cwd=cwd, env=self.env, stdin=subprocess.DEVNULL, stdout=stream,
+                with subprocess.Popen(args, cwd=cwd, env=environment, stdin=subprocess.DEVNULL, stdout=stream,
                                       stderr=subprocess.STDOUT, start_new_session=True) as process:
                     expired = threading.Event()
 
@@ -293,6 +310,25 @@ class Runner:
                            check=True, stdout=subprocess.DEVNULL)
         return row
 
+    @contextmanager
+    def bazel_session(self, component: str):
+        """Shut down both owned servers after success, failure, or interruption."""
+        try:
+            yield
+        finally:
+            failures = []
+            for lane in ('stock', 'fork'):
+                try:
+                    row = self.run(component, lane, 'cleanup-bazel', 0,
+                                   [str(BAZEL), '--output_user_root=' + str(STORAGE / 'paired-output'),
+                                    'shutdown'], self.scratch / component / lane / 'workspace', timeout=60)
+                    if row['status']:
+                        failures.append(lane)
+                except BaseException as error:
+                    failures.append(f'{lane}: {type(error).__name__}')
+            if failures:
+                raise RuntimeError('Bazel cleanup failed: ' + ', '.join(failures))
+
     def tls(self) -> None:
         """Measure identical optimized upstream workloads directly, without Bazel startup."""
         component = 'swift-nio-ssl'
@@ -306,13 +342,11 @@ class Runner:
             row = self.bazel(component, lane, 'prepare-tls', 0, 'build', [target], ['--config=release'])
             if row['status']:
                 return
-            execution = Path(output(bazel + ['info', 'execution_root'], workspace))
-            files = output(bazel + ['cquery', target, '--config=release', '--output=files'], workspace).splitlines()
-            candidates = [execution / name for name in files if name.endswith('/NIOSSLPerformanceTester.rspm.__impl')]
-            if len(candidates) != 1:
-                raise RuntimeError('TLS benchmark build did not identify one executable')
-            binaries[lane] = candidates[0]
-            identity['binaries'][lane] = {'path': str(candidates[0]), 'sha256': digest(candidates[0])}
+            execution = Path(output(bazel + ['info', 'execution_root'], workspace, self.env))
+            files = output(bazel + ['cquery', target, '--config=release', '--output=files'], workspace, self.env)
+            binary = tls_executable(files, execution)
+            binaries[lane] = binary
+            identity['binaries'][lane] = {'path': str(binary), 'sha256': digest(binary)}
             source = self.scratch / component / lane / 'component/Sources/NIOSSLPerformanceTester'
             identity['workloads'][lane] = {str(p.relative_to(source)): digest(p)
                                            for p in sorted(source.rglob('*')) if p.is_file()}
@@ -341,7 +375,7 @@ class Runner:
         (self.evidence / 'results.json').write_text(json.dumps(self.rows, indent=2) + '\n')
         matrix = []
         fixtures = sorted({(r['component'], r['fixture']) for r in self.rows
-                           if r['fixture'] not in {'prepare-build', 'prepare-linux-build', 'prepare-tls', 'toolchain'}})
+                           if r['fixture'] not in {'prepare-build', 'prepare-linux-build', 'prepare-tls', 'toolchain', 'cleanup-bazel'}})
         suite = ET.Element('testsuite', name='fork-vs-apple')
         for row in self.rows:
             case = ET.SubElement(suite, 'testcase', classname=row['component'],
@@ -420,10 +454,9 @@ class Runner:
     def cli(self, lane: str) -> None:
         workspace = self.scratch / 'container' / lane / 'workspace'
         prefix = [str(BAZEL), '--output_user_root=' + str(STORAGE / 'paired-output')]
-        execution_root = Path(subprocess.check_output(prefix + ['info', 'execution_root'],
-                             cwd=workspace, env=self.env, text=True).strip())
-        files = subprocess.check_output(prefix + ['cquery', '@swiftpkg_container//:container.rspm',
-                        '--output=files'], cwd=workspace, env=self.env, text=True).splitlines()
+        execution_root = Path(output(prefix + ['info', 'execution_root'], workspace, self.env))
+        files = output(prefix + ['cquery', '@swiftpkg_container//:container.rspm',
+                       '--output=files'], workspace, self.env).splitlines()
         binaries = [execution_root / p for p in files if p.endswith('/container.rspm.__impl')]
         if len(binaries) != 1:
             raise RuntimeError(f'Expected one CLI binary, got {files}')
@@ -523,9 +556,11 @@ def main() -> None:
     parser.add_argument('--component', choices=list(PAIRS), action='append')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--use-prepared', action='store_true', help='Use previously prepared source fixtures')
-    parser.add_argument('--phase', choices=['all', 'tests', 'recompile'], default='all',
-                        help='Run everything, tests/compilation, or only component compilation')
+    parser.add_argument('--phase', choices=['all', 'tests', 'recompile', 'tls'], default='all',
+                        help='Run everything, tests/compilation, only compilation, or only optimized SSL workloads')
     args = parser.parse_args()
+    if args.phase == 'tls' and args.component != ['swift-nio-ssl']:
+        parser.error('--phase tls requires only --component swift-nio-ssl')
     args.evidence = args.evidence.resolve()
     args.scratch = args.scratch.resolve()
     # The active container checkpoint includes workflow and runtime fixes which
@@ -542,7 +577,7 @@ def main() -> None:
     args.evidence.mkdir(parents=True, exist_ok=False)
     args.scratch.mkdir(parents=True, exist_ok=args.use_prepared)
     components = args.component or list(PAIRS)
-    metadata = dict(pairs=PAIRS, third_party_lock=digest(ROOT / 'Package.resolved'),
+    metadata = dict(phase=args.phase, components=components, pairs=PAIRS, third_party_lock=digest(ROOT / 'Package.resolved'),
                     harness_revision=output(['git', 'rev-parse', 'HEAD'], ROOT),
                     macos=output(['sw_vers']), swift=output(['xcrun', 'swift', '--version']),
                     hardware=output(['sysctl', '-n', 'machdep.cpu.brand_string', 'hw.memsize', 'hw.ncpu']),
@@ -567,51 +602,51 @@ def main() -> None:
             if component == 'container-builder-shim':
                 runner.builder()
                 continue
-            pair = PAIRS[component]
-            repo = '@swiftpkg_' + component.replace('-', '_') + '//:'
-            tests = [repo + t + '.rspm' for t in pair['tests']]
-            good = True
-            for lane in ['stock', 'fork']:
-                row = runner.bazel(component, lane, 'prepare-build', 0, 'build', ['//:component', *tests])
-                good = good and row['status'] == 0
-            if not good:
-                continue
-            if component == 'container' and args.phase == 'all':
+            with runner.bazel_session(component):
+                if args.phase == 'tls':
+                    runner.tls()
+                    continue
+                pair = PAIRS[component]
+                repo = '@swiftpkg_' + component.replace('-', '_') + '//:'
+                tests = [repo + t + '.rspm' for t in pair['tests']]
+                good = True
                 for lane in ['stock', 'fork']:
-                    runner.cli(lane)
-            failed_fixtures = set()
-            for trial in range(0 if args.phase == 'recompile' else 3):
-                for lane in (['stock', 'fork'] if trial % 2 == 0 else ['fork', 'stock']):
-                    runner.bazel(component, lane, 'cached-build', trial, 'build', ['//:component'])
-                    for name, target in zip(pair['tests'], tests):
-                        if (lane, name) in failed_fixtures:
-                            continue
-                        row = runner.bazel(component, lane, name, trial, 'test', [target],
-                                           ['--nocache_test_results', '--test_timeout=120', '--local_test_jobs=1'])
-                        if row['status']:
-                            failed_fixtures.add((lane, name))
-            if component == 'swift-nio-ssl' and args.phase != 'recompile':
-                runner.tls()
-            # No-op comments force the component's Swift source compilation.
-            # Dependency sources are untouched; report first builds separately.
-            for lane in ['stock', 'fork']:
-                base = args.scratch / component / lane
-                source = base / ('workspace' if component == 'container' else 'component')
-                originals = {}
-                marker = uuid.uuid4().hex
-                (args.evidence / f'{component}-{lane}-recompile-marker.txt').write_text(marker + '\n')
-                try:
-                    for path in (source / 'Sources').rglob('*.swift'):
-                        originals[path] = path.read_bytes()
-                        path.write_bytes(originals[path] + f'\n// Paired component recompile {marker}.\n'.encode())
-                    runner.bazel(component, lane, 'component-recompile', 0, 'build', ['//:component'])
-                finally:
-                    for path, content in originals.items():
-                        path.write_bytes(content)
-            for lane in ['stock', 'fork']:
-                subprocess.run([str(BAZEL), '--output_user_root=' + str(STORAGE / 'paired-output'),
-                                'shutdown'], cwd=args.scratch / component / lane / 'workspace',
-                               check=True, stdout=subprocess.DEVNULL)
+                    row = runner.bazel(component, lane, 'prepare-build', 0, 'build', ['//:component', *tests])
+                    good = good and row['status'] == 0
+                if not good:
+                    continue
+                if component == 'container' and args.phase == 'all':
+                    for lane in ['stock', 'fork']:
+                        runner.cli(lane)
+                failed_fixtures = set()
+                for trial in range(0 if args.phase == 'recompile' else 3):
+                    for lane in (['stock', 'fork'] if trial % 2 == 0 else ['fork', 'stock']):
+                        runner.bazel(component, lane, 'cached-build', trial, 'build', ['//:component'])
+                        for name, target in zip(pair['tests'], tests):
+                            if (lane, name) in failed_fixtures:
+                                continue
+                            row = runner.bazel(component, lane, name, trial, 'test', [target],
+                                               ['--nocache_test_results', '--test_timeout=120', '--local_test_jobs=1'])
+                            if row['status']:
+                                failed_fixtures.add((lane, name))
+                if component == 'swift-nio-ssl' and args.phase != 'recompile':
+                    runner.tls()
+                # No-op comments force the component's Swift source compilation.
+                # Dependency sources are untouched; report first builds separately.
+                for lane in ['stock', 'fork']:
+                    base = args.scratch / component / lane
+                    source = base / ('workspace' if component == 'container' else 'component')
+                    originals = {}
+                    marker = uuid.uuid4().hex
+                    (args.evidence / f'{component}-{lane}-recompile-marker.txt').write_text(marker + '\n')
+                    try:
+                        for path in (source / 'Sources').rglob('*.swift'):
+                            originals[path] = path.read_bytes()
+                            path.write_bytes(originals[path] + f'\n// Paired component recompile {marker}.\n'.encode())
+                        runner.bazel(component, lane, 'component-recompile', 0, 'build', ['//:component'])
+                    finally:
+                        for path, content in originals.items():
+                            path.write_bytes(content)
     finally:
         runner.report()
     matrix = json.loads((args.evidence / 'matrix.json').read_text())
@@ -621,7 +656,7 @@ def main() -> None:
     disposition = review(args.evidence)
     if not disposition['completed']:
         raise SystemExit(1)
-    if not disposition['compatible']:
+    if disposition['compatible'] is False:
         raise SystemExit(2)
 
 

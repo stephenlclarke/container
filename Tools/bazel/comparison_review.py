@@ -50,10 +50,18 @@ def review(evidence: Path) -> dict:
     go_path = evidence / 'go-matrix.json'
     if go_path.exists():
         invalid_timings += [row for row in json.loads(go_path.read_text()) if not row['passed']]
-    result = {'completed': bool(matrix) and not unexpected and not invalid_timings,
-              'compatible': not differences and not unexpected,
+    metadata = evidence / 'metadata.json'
+    scope = json.loads(metadata.read_text()) if metadata.exists() else {}
+    phase = scope.get('phase', 'all')
+    compatibility_measured = phase not in {'tls', 'recompile'}
+    result = {'phase': phase, 'components': scope.get('components'),
+              'compatibility_measured': compatibility_measured,
+              'completed': bool(matrix) and not unexpected and not invalid_timings,
+              'compatible': (not differences and not unexpected) if compatibility_measured else None,
               'expected_differences': differences, 'unexpected_failures': unexpected,
               'invalid_timings': invalid_timings,
               'interpretation': 'Reviewed name-length and rejected-certificate alert differences remain failed compatibility assertions. Their timings are not qualified performance comparisons.'}
+    if not compatibility_measured:
+        result['interpretation'] = 'Workload-only measurement; no compatibility suite was run and no whole-component compatibility claim is made.'
     (evidence / 'comparison-review.json').write_text(json.dumps(result, indent=2) + '\n')
     return result

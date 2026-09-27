@@ -31,3 +31,5 @@ A manual-only workflow absent from the default branch cannot provide pre-merge q
 External DNS failure currently collapses to an empty test error because nslookup writes details to stdout. Retain the fixed-query output and check native host DNS readiness before expensive release qualification. Preserve the original guest lookup and its deadlines, without automatic retries or resolver overrides. Native resolution timing and response/cancellation logs must distinguish host lookup delay from a lost forwarded response without exposing query names.
 
 The SSL suite has a known rejected-certificate alert difference, so its failed suite duration cannot establish SSL runtime performance. Add identical optimized upstream handshake and encrypted-write workloads while retaining the complete compatibility result.
+
+Bazel records inherited client environment values in raw build events. Its process boundary must admit only intentional build inputs, keeping scanner/notarization credentials separate, while preserving explicit CodeQL tracing and runtime-test arguments. Retained local event files need environment redaction without discarding test evidence.

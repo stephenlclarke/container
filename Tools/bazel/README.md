@@ -64,7 +64,7 @@ Additional dependencies are admitted only after the preceding layer passes. Runt
 
 ## Storage and evidence
 
-`Tools/bazel/run.sh` checks the enrolled external SSD and the SHA-256 of Bazel 8.8.0 before running. Scratch and compiler outputs live in `/Volumes/SSD/cf/container-only`. Each invocation saves its source status, toolchain version and raw output, Bazel events and copied JUnit/test logs under `~/Library/Application Support/ContainerFamily/retained/container-only`. Commands run immediately, without a scheduler. The unattended artifact check stops only its own temporary workloads and restores Colima when it started it; it does not clear compiler caches or install a system package.
+`Tools/bazel/run.sh` checks the enrolled external SSD and the SHA-256 of Bazel 8.8.0 before running. Scratch and compiler outputs live in `/Volumes/SSD/cf/container-only`. Each invocation saves its source status, toolchain version and raw output, Bazel events and copied JUnit/test logs under `~/Library/Application Support/ContainerFamily/retained/container-only`. Bazel receives an allowlisted environment (identity, locale, Xcode selectors, revision and optional CI, plus fixed PATH/temporary directories). Scanner and notarization credentials stay in their separate dispatch processes. Explicit compiler tracing and test-fixture arguments remain supported; secrets must never be passed as Bazel arguments. Raw Bazel events are excluded from CI uploads. Commands run immediately, without a scheduler. The unattended artifact check stops only its own temporary workloads and restores Colima when it started it; it does not clear compiler caches or install a system package.
 
 ## Unattended artifact checkpoint
 
@@ -148,7 +148,7 @@ Normal builds produce debug artifacts. `bazel-final` also builds optimized binar
 
 ## Performance interpretation
 
-The SSL component additionally builds the unchanged upstream `NIOSSLPerformanceTester` in release mode and runs matching handshake and encrypted-write workloads directly. Three alternating process trials retain monotonic durations, executable and workload hashes, and the ten upstream samples. Speed ratios include process startup and one warmup; upstream wall-clock samples are diagnostic only. The known rejected-certificate compatibility assertions remain separately failed and receive no speed ratio.
+The SSL component additionally builds the unchanged upstream `NIOSSLPerformanceTester` in release mode and runs matching handshake and encrypted-write workloads directly. Three alternating process trials retain monotonic durations, executable and workload hashes, and the ten upstream samples. Speed ratios include process startup and one warmup; upstream wall-clock samples are diagnostic only. The known rejected-certificate compatibility assertions remain separately failed and receive no speed ratio. Use `make bazel-fork-benchmark BENCHMARK_ARGS="--component swift-nio-ssl --phase tls"` to check only these optimized workloads during development; complete qualification still includes the compatibility suite.
 
 See [the performance diagnosis](PERFORMANCE_DIAGNOSIS.md) before comparing fork and upstream timings. Component rebuilds deliberately invalidate every component Swift file, and archive suite timings use debug builds. Runtime measurements use optimized binaries. The benchmark waits directly for child exit with a separate timeout watchdog, avoiding up to roughly 50 ms of parent polling delay on short commands. Exact fingerprints and earlier results remain retained.
 
@@ -187,3 +187,5 @@ Integration holds the private runtime lock, saves the original installation, sta
 Combined coverage accepts only passed unit evidence and a complete integration run for identical source hashes; focused selections remain partial. It verifies retained report checksums and combines source/line counters, never averages percentages. The Build layer removes its own shared default builder before System disk accounting tests. Original System assertions remain unchanged.
 
 The focused instrumented regression at `focused-coverage-20260927T203832Z` passed Warmup (1 test), Build (61) and System (25), retained 302 runtime profiles and verified restoration of every original binary. Its 22.89% integration line coverage is explicitly partial; full combined coverage cannot consume it. Export of the real unit LCOV also preserves the existing 63.38% result. All 74 workflow tests and the touched Markdown checks passed.
+
+TLS-only and compilation-only reports identify their phase and selected components and make no compatibility claim. Every paired Bazel component shuts down both owned servers through bounded cleanup, including failed builds and discovery; compiler caches remain intact.

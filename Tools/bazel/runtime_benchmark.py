@@ -17,6 +17,7 @@ import time
 import xml.etree.ElementTree as ET
 
 from fork_benchmark import BAZEL, BAZEL_SHA, PAIRS, ROOT, STORAGE, Runner, digest, prepare, install_signal_handlers
+from bazel_environment import bazel_environment
 
 INSTALLS = Path.home() / 'Library/Application Support/ContainerFamily/benchmarks/runtime'
 STATE = Path('/private/tmp') / f'cfb-{os.getuid()}'
@@ -68,10 +69,7 @@ def environment(lane: str) -> dict:
 
 
 def build_environment() -> dict:
-    # Match run.sh exactly: inherited PATH/TMP differences invalidate actions.
-    temporary = str(STORAGE / 'tmp') + '/'
-    return dict(os.environ, PATH='/usr/bin:/bin:/usr/sbin:/sbin',
-                TMPDIR=temporary, TMP=temporary, TEMP=temporary)
+    return bazel_environment(os.environ)
 
 
 def services(prefix: str) -> list[tuple[str, str]]:

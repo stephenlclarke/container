@@ -8,10 +8,28 @@ import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-from fork_benchmark import Runner, tls_samples
+from fork_benchmark import Runner, tls_executable, tls_samples
 
 
 class ReportTests(unittest.TestCase):
+    def test_cleanup_runs_both_lanes_when_measurement_or_first_cleanup_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = Runner(Path(directory), Path(directory))
+            with patch.object(runner, 'run', side_effect=[OSError('first lane'), {'status': 0}]) as command:
+                with self.assertRaisesRegex(RuntimeError, 'Bazel cleanup failed'):
+                    with runner.bazel_session('swift-nio-ssl'):
+                        raise ValueError('measurement failed')
+            self.assertEqual([call.args[1] for call in command.call_args_list], ['stock', 'fork'])
+            self.assertTrue(all(call.kwargs['timeout'] == 60 for call in command.call_args_list))
+
+    def test_tls_discovers_executable_among_release_debug_outputs(self):
+        name = 'bazel-out/opt/bin/NIOSSLPerformanceTester.rspm.__impl'
+        debug = name + '.dSYM/Contents/Resources/DWARF/NIOSSLPerformanceTester.rspm.__impl'
+        self.assertEqual(tls_executable(name + '\n' + debug, Path('/execroot')), Path('/execroot') / name)
+        for files in (debug, name + '\nother/' + name):
+            with self.subTest(files=files), self.assertRaises(RuntimeError):
+                tls_executable(files, Path('/execroot'))
+
     def test_tls_accepts_ten_completed_release_samples(self):
         text = 'measuring: repeated_handshakes: ' + '0.125, ' * 10 + '\n'
         self.assertEqual(tls_samples(text, 'repeated_handshakes'), [0.125] * 10)

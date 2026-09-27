@@ -6,10 +6,22 @@ import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 
-from comparison_review import DIFFERENCES, known_difference
+from comparison_review import DIFFERENCES, known_difference, review
 
 
 class ComparisonReviewTests(unittest.TestCase):
+    def test_workload_only_run_does_not_claim_compatibility(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'results.json').write_text(json.dumps([{'status': 0}]))
+            (root / 'matrix.json').write_text(json.dumps([{'passed': True}]))
+            (root / 'metadata.json').write_text(json.dumps({'phase': 'tls', 'components': ['swift-nio-ssl']}))
+            result = review(root)
+            self.assertTrue(result['completed'])
+            self.assertFalse(result['compatibility_measured'])
+            self.assertIsNone(result['compatible'])
+            self.assertEqual(result['components'], ['swift-nio-ssl'])
+
     def test_extra_failure_or_timeout_is_not_an_expected_difference(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
