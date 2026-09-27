@@ -4,7 +4,7 @@
 
 This workspace qualifies `container` and its required dependencies in order. It uses the exact revisions in `Package.resolved`, one macOS configuration and native Bazel compilation. SwiftPM supplies package descriptions only; it does not run a second build engine.
 
-See [QUALIFICATION.md](QUALIFICATION.md) for measured results and explicit limits.
+See [QUALIFICATION.md](QUALIFICATION.md) for validation and explicit limits, and [BENCHMARK.md](BENCHMARK.md) for repeated warm and incremental timings.
 
 ## Commands
 

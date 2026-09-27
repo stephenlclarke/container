@@ -37,3 +37,7 @@ The container unit suites and AWS runtime suites pass individually with cached r
 ## Compatibility and Remaining Risks
 
 This does not change the existing SwiftPM build or install system. Generated dependency tests need all test-only dependencies pinned. Native runtime integration and release qualification are separate work and are not implied by library tests. No GitHub issue or PR has been published yet.
+
+## Benchmark follow-up
+
+[Repeated benchmark results](Tools/bazel/BENCHMARK.md) confirm unchanged builds around 1.04 seconds, cached full-suite checks around 1.10 seconds, and isolated unit-test edits around 3.33 seconds. Executing all container unit suites without cached results took 26.38-29.15 seconds. Shared-library changes correctly rebuild affected dependents; no external dependency libraries recompiled. All temporary edits were restored.
