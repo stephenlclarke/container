@@ -1,3 +1,5 @@
+> Follow-up: the measured archive optimizations are now implemented and retested. See [PERFORMANCE_OPTIMIZATIONS.md](PERFORMANCE_OPTIMIZATIONS.md). The investigation below describes the earlier baseline.
+
 <!-- markdownlint-disable MD013 -->
 
 # Why the container fork is slower
