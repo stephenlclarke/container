@@ -1,1 +1,4 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
 exports_files(glob(["*.patch"]))
+sh_binary(name = "test_runner", srcs = ["test_runner.sh"], visibility = ["//visibility:public"])

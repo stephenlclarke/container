@@ -1,0 +1,30 @@
+diff --git a/Tests/AsyncHTTPClientTests/HTTPClientTests.swift b/Tests/AsyncHTTPClientTests/HTTPClientTests.swift
+--- a/Tests/AsyncHTTPClientTests/HTTPClientTests.swift
++++ b/Tests/AsyncHTTPClientTests/HTTPClientTests.swift
+@@ -918,6 +918,10 @@
+     }
+ 
+     func testConnectTimeout() throws {
++        try XCTSkipUnless(
++            ProcessInfo.processInfo.environment["CONTAINER_HOST_NETWORK_TESTS"] == "1",
++            "Host network behavior: run make bazel-host-test for this layer."
++        )
+         #if os(Linux)
+         // 198.51.100.254 is reserved for documentation only and therefore should not accept any TCP connection
+         let url = "http://198.51.100.254/get"
+diff --git a/Tests/AsyncHTTPClientTests/AsyncAwaitEndToEndTests.swift b/Tests/AsyncHTTPClientTests/AsyncAwaitEndToEndTests.swift
+--- a/Tests/AsyncHTTPClientTests/AsyncAwaitEndToEndTests.swift
++++ b/Tests/AsyncHTTPClientTests/AsyncAwaitEndToEndTests.swift
+@@ -525,7 +525,11 @@
+         }
+     }
+ 
+-    func testConnectTimeout() {
++    func testConnectTimeout() throws {
++        try XCTSkipUnless(
++            ProcessInfo.processInfo.environment["CONTAINER_HOST_NETWORK_TESTS"] == "1",
++            "Host network behavior: run make bazel-host-test for this layer."
++        )
+         let serverGroup = self.serverGroup!
+         let clientGroup = self.clientGroup!
+         XCTAsyncTest(timeout: 60) {

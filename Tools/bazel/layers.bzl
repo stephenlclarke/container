@@ -1,5 +1,7 @@
 """Explicitly admitted layers. Builds and executable tests are separate targets."""
 
+load(":layer_build.bzl", "layer_build")
+
 LAYERS = {
     "system": struct(
         package = "swift-system",
@@ -85,17 +87,140 @@ LAYERS = {
         tests = ["SwiftProtobufTests"],
         compile_checks = [],
     ),
+    "yaml": struct(
+        package = "yams",
+        products = ["Yams"],
+        tests = ["YamsTests"],
+        compile_checks = [],
+    ),
+    "zstd": struct(
+        package = "zstd",
+        products = ["libzstd"],
+        tests = [],
+        compile_checks = [],
+    ),
+    "punycode": struct(
+        package = "punycodeswift",
+        products = ["Punycode"],
+        tests = ["PunycodeSwiftTests"],
+        compile_checks = [],
+    ),
+    "domain-names": struct(
+        package = "tldextractswift",
+        products = ["TLDExtractSwift"],
+        tests = ["TLDExtractSwiftTests"],
+        compile_checks = [],
+    ),
+    "structured-headers": struct(
+        package = "swift-http-structured-headers",
+        products = ["StructuredFieldValues"],
+        tests = ["StructuredFieldValuesTests"],
+        compile_checks = [],
+    ),
+    "async-algorithms": struct(
+        package = "swift-async-algorithms",
+        products = ["AsyncAlgorithms"],
+        tests = ["AsyncAlgorithmsTests"],
+        compile_checks = [],
+    ),
+    "service-lifecycle": struct(
+        package = "swift-service-lifecycle",
+        products = ["ServiceLifecycle"],
+        tests = ["ServiceLifecycleTests"],
+        compile_checks = [],
+    ),
+    "engine-wire": struct(
+        package = "container-engine-api",
+        products = ["ContainerEngineWire"],
+        tests = ["ContainerEngineWireTests"],
+        compile_checks = [],
+    ),
+    "crypto": struct(
+        package = "swift-crypto",
+        products = ["Crypto", "_CryptoExtras"],
+        tests = ["CryptoTests", "_CryptoExtrasTests"],
+        compile_checks = [],
+    ),
+    "certificates": struct(
+        package = "swift-certificates",
+        products = ["X509"],
+        tests = ["X509Tests"],
+        compile_checks = [],
+    ),
+    "nio": struct(
+        package = "swift-nio",
+        products = ["NIOCore", "NIOPosix", "NIOHTTP1"],
+        tests = ["NIOCoreTests", "NIOEmbeddedTests", "NIOHTTP1Tests"],
+        compile_checks = [],
+    ),
+    "nio-ssl": struct(
+        package = "swift-nio-ssl",
+        products = ["NIOSSL"],
+        tests = ["NIOSSLTests"],
+        compile_checks = [],
+    ),
+    "nio-http2": struct(
+        package = "swift-nio-http2",
+        products = ["NIOHTTP2", "NIOHPACK"],
+        tests = ["NIOHTTP2Tests", "NIOHPACKTests"],
+        compile_checks = [],
+    ),
+    "nio-transport-services": struct(
+        package = "swift-nio-transport-services",
+        products = ["NIOTransportServices"],
+        tests = ["NIOTransportServicesTests"],
+        compile_checks = [],
+    ),
+    "nio-extras": struct(
+        package = "swift-nio-extras",
+        products = ["NIOExtras", "NIOHTTPCompression", "NIOSOCKS"],
+        tests = ["NIOExtrasTests", "NIOHTTPCompressionTests", "NIOSOCKSTests"],
+        compile_checks = [],
+    ),
+    "configuration": struct(
+        package = "swift-configuration",
+        products = ["Configuration"],
+        tests = ["ConfigurationTests"],
+        compile_checks = [],
+    ),
+    "configuration-toml": struct(
+        package = "swift-configuration-toml",
+        products = ["ConfigurationTOML"],
+        tests = ["ConfigurationTOMLTests"],
+        compile_checks = [],
+    ),
+    "async-http-client": struct(
+        package = "async-http-client",
+        products = ["AsyncHTTPClient"],
+        tests = ["AsyncHTTPClientTests"],
+        compile_checks = [],
+    ),
+}
+
+# These suites depend on host networking and are requested explicitly.
+HOST_TESTS = {
+    "nio-transport-services": ["NIOTransportServicesTests"],
+    "async-http-client": ["AsyncHTTPClientTests"],
 }
 
 def declare_layers():
     for name, layer in LAYERS.items():
         repo = "@swiftpkg_" + layer.package.replace("-", "_") + "//:"
-        native.filegroup(
+        layer_build(
             name = name,
             testonly = True,
-            srcs = [repo + product + ".rspm" for product in layer.products] + [repo + target + ".rspm" for target in layer.compile_checks],
+            deps = [repo + product + ".rspm" for product in layer.products] + [repo + target + ".rspm" for target in layer.compile_checks],
         )
+        if layer.tests:
+            native.test_suite(
+                name = name + "-tests",
+                tests = [repo + target + ".rspm" for target in layer.tests],
+            )
+
+    for name, tests in HOST_TESTS.items():
+        repo = "@swiftpkg_" + LAYERS[name].package.replace("-", "_") + "//:"
         native.test_suite(
-            name = name + "-tests",
-            tests = [repo + target + ".rspm" for target in layer.tests],
+            name = name + "-host-tests",
+            tests = [repo + target + ".rspm" for target in tests],
+            tags = ["manual"],
         )

@@ -1,22 +1,18 @@
 """Declared fixtures for upstream tests that assume SwiftPM source layouts."""
 
-TEST_DATA = {"swift-argument-parser": {"ArgumentParserUnitTests": [
-    "Tests/ArgumentParserUnitTests/Snapshots/.editorconfig",
-    "Tests/ArgumentParserUnitTests/Snapshots/testADumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testBDumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testBase_Bash().bash",
-    "Tests/ArgumentParserUnitTests/Snapshots/testBase_Fish().fish",
-    "Tests/ArgumentParserUnitTests/Snapshots/testBase_Zsh().zsh",
-    "Tests/ArgumentParserUnitTests/Snapshots/testCDumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testDefaultAsFlagCompletion_Bash().bash",
-    "Tests/ArgumentParserUnitTests/Snapshots/testDefaultAsFlagCompletion_Fish().fish",
-    "Tests/ArgumentParserUnitTests/Snapshots/testDefaultAsFlagCompletion_Zsh().zsh",
-    "Tests/ArgumentParserUnitTests/Snapshots/testDefaultAsFlagDumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testDefaultAsFlagWithTransformDumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testMathAddDumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testMathDumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testMathMultiplyDumpHelp().json",
-    "Tests/ArgumentParserUnitTests/Snapshots/testMathStatsDumpHelp().json",
-    ":math.rspm"
-]}}
-PATCHES = {"swift-argument-parser": ["//Tools/bazel:argument-parser-test-runfiles.patch"]}
+TEST_DATA = {
+    "swift-argument-parser": {"ArgumentParserUnitTests": [":math.rspm"]},
+    "yams": {"YamsTests": ["Tests/YamsTests/Fixtures/SourceKitten#289/debug.yaml"]},
+}
+TEST_DATA_GLOBS = {
+    "swift-crypto": {
+        "CryptoTests": ["Tests/Test Vectors/**"],
+        "_CryptoExtrasTests": ["Tests/_CryptoExtrasVectors/**", "Tests/Test Vectors/**"],
+    },
+    "swift-argument-parser": {"ArgumentParserUnitTests": ["Tests/ArgumentParserUnitTests/Snapshots/*"]},
+    "swift-http-structured-headers": {"StructuredFieldValuesTests": ["Tests/TestFixtures/**/*.json"]},
+}
+PATCHES = {
+    "swift-nio-transport-services": ["//Tools/bazel:swift-nio-transport-services-host-tests.patch"],
+    "async-http-client": ["//Tools/bazel:async-http-client-host-tests.patch"],
+"swift-certificates": ["//Tools/bazel:certificates-test-activity.patch"], "swift-argument-parser": ["//Tools/bazel:argument-parser-test-runfiles.patch"]}
