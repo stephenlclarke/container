@@ -29,3 +29,10 @@ bazel-integration-build:
 bazel-integration-test:
 	@test -n "$(CONTAINER_CLI_PATH)" && test -x "$(CONTAINER_CLI_PATH)" || { echo "Set CONTAINER_CLI_PATH to the CLI for the prepared test installation."; exit 2; }
 	@Tools/bazel/run.sh test //:runtime-integration-tests --test_env=CONTAINER_CLI_PATH="$(CONTAINER_CLI_PATH)" --strategy=TestRunner=local --nocache_test_results --test_timeout=1800
+
+BENCHMARK_RUN ?= $(shell date -u +%Y%m%dT%H%M%SZ)
+.PHONY: bazel-fork-benchmark
+bazel-fork-benchmark:
+	@python3 Tools/bazel/fork_benchmark.py \
+		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/fork-comparison/$(BENCHMARK_RUN)" \
+		--scratch "/Volumes/SSD/cf/container-only/fork-comparison/$(BENCHMARK_RUN)" $(BENCHMARK_ARGS)

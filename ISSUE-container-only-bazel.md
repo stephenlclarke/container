@@ -11,3 +11,5 @@ Separate tests by dependency layer. Keep one configuration and persistent output
 ## Scope
 
 Existing package revisions remain pinned. Compose/devcontainer, other family products and release automation are deferred. The implementation and evidence are tracked in [PR-container-only-bazel.md](PR-container-only-bazel.md).
+
+Compare each active fork with its matching stock Apple source. Keep common test workloads identical, report build and component performance separately, and record dependencies without an Apple counterpart as not applicable. Preserve functional differences and failed experiments in the evidence.

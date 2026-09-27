@@ -6,6 +6,8 @@ This workspace qualifies `container` and its required dependencies in order. It 
 
 See [QUALIFICATION.md](QUALIFICATION.md) for validation and explicit limits, and [BENCHMARK.md](BENCHMARK.md) for repeated warm and incremental timings.
 
+[FORK_BENCHMARK.md](FORK_BENCHMARK.md) compares the active forks with matching Apple revisions, including identical test workloads and explicit behavior differences.
+
 ## Commands
 
 Run these in the container checkout:
@@ -18,6 +20,7 @@ Run these in the container checkout:
 | `make bazel-test LAYER=system` | One layer's tests |
 | `make bazel-dependency-test` | Selected tests for all admitted dependencies |
 | `make bazel-test-all` | Container and dependency tests together |
+| `make bazel-fork-benchmark` | Isolated fork/Apple component comparisons; retains mismatches and timings |
 | `make bazel-tools-test` | Launcher, runner and retained-report checks |
 | `make bazel-check` | Tool checks, complete build, container unit tests |
 | `make bazel-host-test LAYER=container-api` | Explicit host checks; requires the relevant host services |
