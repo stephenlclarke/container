@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import plistlib
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -12,6 +13,19 @@ import runtime_benchmark as runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_cleanup_accepts_service_that_disappears_during_inspection(self):
+        label = runtime.NAMESPACE + '.container-runtime-linux.finished'
+        with patch.object(runtime, 'services', side_effect=[[('-', label)], [], []]), \
+                patch.object(runtime, 'checked', side_effect=subprocess.CalledProcessError(113, 'launchctl')):
+            runtime.stop_owned('fork')
+
+    def test_cleanup_preserves_error_when_service_still_exists(self):
+        label = runtime.NAMESPACE + '.apiserver'
+        with patch.object(runtime, 'services', return_value=[('-', label)]), \
+                patch.object(runtime, 'checked', side_effect=subprocess.CalledProcessError(1, 'launchctl')):
+            with self.assertRaises(subprocess.CalledProcessError):
+                runtime.stop_owned('fork')
+
     def test_restage_replaces_readonly_bazel_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / 'source'

@@ -28,7 +28,7 @@ PAIRS = {
     'containerization': {
         'repo': '/Users/sclarke/github/containerization',
         'stock': 'bc994b88df46207fad7775b0eabc51947e315881',
-        'fork': '80c564f82b9dba81ddcd5d13f21554f83854e0f5',
+        'fork': 'b9cdf5eab27dbf2f3a12edd6d70774a987cfbdc8',
         'products': ['ContainerizationExtras', 'ContainerizationArchive',
                      'ContainerizationEXT4', 'ContainerizationOCI', 'Containerization'],
         'tests': ['ContainerizationExtrasTests', 'ContainerizationArchiveTests',
@@ -37,7 +37,7 @@ PAIRS = {
     'container': {
         'repo': '/Users/sclarke/github/container',
         'stock': '4a7d8615241b8ddecfd3bf225cd7c44f4b2ccf7c',
-        'fork': '048919bcb5d9357820a0a66970c60c06ede3c6cf',
+        'fork': '3f3f2862fc93bd85bd0167bbc3dbb80f1d29ef7b',
         'products': ['container', 'container-apiserver', 'container-core-images',
                      'container-network-vmnet', 'container-runtime-linux',
                      'machine-apiserver', 'k8s'],
