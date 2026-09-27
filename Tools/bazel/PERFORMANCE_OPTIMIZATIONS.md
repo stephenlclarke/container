@@ -1,5 +1,7 @@
 # Container performance optimization results
 
+Follow-up: [startup investigation, smaller guest helper and final measurements](STARTUP_OPTIMIZATIONS.md).
+
 27 September 2026. Source changes are committed to the Stephen-owned container and containerization forks. Existing full preservation snapshots remain intact; this iteration also retains incremental Git recovery bundles.
 
 ## Outcome

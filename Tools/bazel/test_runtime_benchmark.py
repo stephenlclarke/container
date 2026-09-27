@@ -13,6 +13,35 @@ import runtime_benchmark as runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_stock_cache_ignores_replaced_fork_pins_but_tracks_effective_inputs(self):
+        def pin(identity, revision):
+            return {'identity': identity, 'state': {'revision': revision}}
+
+        native = {'version': 3, 'originHash': 'stock-manifest',
+                  'pins': [pin('containerization', 'apple'), pin('stock-only', 'one')]}
+        fork = {'version': 3, 'originHash': 'fork-manifest-one', 'pins': [pin('containerization', 'fork-one'), pin('extra', 'one')]}
+        changed = {'version': 3, 'originHash': 'fork-manifest-two', 'pins': [pin('containerization', 'fork-two'), pin('extra', 'one')]}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'Tools/bazel').mkdir(parents=True)
+            for name in ('MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc', '.bazelversion',
+                         'Tools/bazel/dependencies.bzl', 'Tools/bazel/rules.patch', 'Tools/bazel/BUILD.bazel'):
+                (root / name).write_text(name)
+            overlay = runtime.stock_lockfile(fork, native)
+            self.assertEqual(overlay['originHash'], 'stock-manifest')
+            self.assertEqual({p['identity'] for p in overlay['pins']}, {'containerization', 'extra', 'stock-only'})
+            original = runtime.stock_workspace_key(root, overlay)
+            self.assertEqual(original, runtime.stock_workspace_key(root, runtime.stock_lockfile(changed, native)))
+            self.assertEqual(fork['pins'][0]['state']['revision'], 'fork-one')
+            changed['pins'][1] = pin('extra', 'two')
+            self.assertNotEqual(original, runtime.stock_workspace_key(root, runtime.stock_lockfile(changed, native)))
+            upgraded = {'pins': [pin('containerization', 'apple-new')]}
+            self.assertNotEqual(original, runtime.stock_workspace_key(root, runtime.stock_lockfile(fork, upgraded)))
+            for name in ('Tools/bazel/dependencies.bzl', 'Tools/bazel/rules.patch', 'Tools/bazel/BUILD.bazel'):
+                (root / name).write_text('changed importer')
+                self.assertNotEqual(original, runtime.stock_workspace_key(root, runtime.stock_lockfile(fork, native)))
+                (root / name).write_text(name)
+
     def test_cleanup_accepts_service_that_disappears_during_inspection(self):
         label = runtime.NAMESPACE + '.container-runtime-linux.finished'
         with patch.object(runtime, 'services', side_effect=[[('-', label)], [], []]), \

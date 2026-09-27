@@ -415,6 +415,22 @@ def prepare_assets(evidence: Path) -> None:
         'alpine_reference': ALPINE, 'fork_init_archive_sha256': digest(FORK_INIT_TAR)}, indent=2) + '\n')
 
 
+def stock_lockfile(fork_lock: dict, native_lock: dict) -> dict:
+    """Resolve the exact stock overlay before deciding whether its cache is reusable."""
+    pins = {pin['identity']: pin for pin in fork_lock['pins']}
+    pins.update({pin['identity']: pin for pin in native_lock['pins']})
+    return dict(native_lock, pins=[pins[identity] for identity in sorted(pins)])
+
+
+def stock_workspace_key(root: Path, lockfile: dict) -> str:
+    inputs = [root / name for name in ('MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc', '.bazelversion')]
+    inputs += sorted(path for path in (root / 'Tools/bazel').iterdir()
+                     if path.suffix in {'.bzl', '.patch', '.sh'} or path.name == 'BUILD.bazel')
+    effective = {'lockfile': lockfile,
+                 'files': {str(path.relative_to(root)): digest(path) for path in inputs}}
+    return hashlib.sha256(json.dumps(effective, sort_keys=True).encode()).hexdigest()[:12]
+
+
 def prepare_all(evidence: Path) -> None:
     enrollment = Path.home() / 'Library/Application Support/ContainerFamily/retained/workflow/ssd-volume.uuid'
     disk = plistlib.loads(checked(['/usr/sbin/diskutil', 'info', '-plist', '/Volumes/SSD']).encode())
@@ -426,18 +442,14 @@ def prepare_all(evidence: Path) -> None:
     if IDENTITY not in identities:
         raise RuntimeError('The stable Steve Clarke signing identity is unavailable')
     prepare_assets(evidence)
-    # Importer changes create a new fixture; report-only changes reuse its cache.
-    inputs = [ROOT / name for name in ('MODULE.bazel', 'MODULE.bazel.lock', '.bazelrc', 'Package.resolved')]
-    inputs += sorted((ROOT / 'Tools/bazel').glob('*.bzl'))
-    key = hashlib.sha256(''.join(digest(p) for p in inputs).encode()).hexdigest()[:12]
+    # Fork-only revisions replaced by stock pins must not invalidate Apple's build.
+    native = json.loads(checked(['git', '-C', PAIRS['container']['repo'], 'show',
+                                 PAIRS['container']['stock'] + ':Package.resolved']))
+    lock = stock_lockfile(json.loads((ROOT / 'Package.resolved').read_text()), native)
+    key = stock_workspace_key(ROOT, lock)
     scratch = STORAGE / 'runtime-comparison' / f'{PAIRS["container"]["stock"][:12]}-{key}'
     own(scratch, 'paired')
     stock = prepare('container', 'stock', scratch)
-    native = json.loads(checked(['git', '-C', PAIRS['container']['repo'], 'show',
-                                 PAIRS['container']['stock'] + ':Package.resolved']))
-    pins = {p['identity']: p for p in native['pins']}
-    lock = json.loads((stock / 'Package.resolved').read_text())
-    lock['pins'] = [pins.get(p['identity'], p) for p in lock['pins']]
     (stock / 'Package.resolved').write_text(json.dumps(lock, indent=2) + '\n')
     (evidence / 'source-inputs.json').write_text(json.dumps({
         'stock': PAIRS['container']['stock'], 'stock_native_pins': native['pins'],
