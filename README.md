@@ -211,3 +211,6 @@ The `container-apiserver` XPC API compatibility preserves forward and backward c
 Other non-public XPC helpers do not guarantee CLI or API compatibility across different versions.
 
 The `container` application data provides forward compatibility only, guaranteed within one major version. Upgrading to a newer major version may require a specific upgrade path.
+
+Service registration queries wait directly for process completion while preserving
+installation ownership checks. See the [runtime performance changes](docs/PR-runtime-performance.md).
