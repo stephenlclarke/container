@@ -20,11 +20,12 @@ from runtime_benchmark import IDENTITY, BAZEL, BAZEL_SHA, STORAGE
 CONFIG = Path.home() / 'Library/Application Support/ContainerFamily/config/unattended.json'
 
 
-def command(args: list[str], *, env: dict | None = None, timeout: int = 20) -> tuple[int, str]:
+def command(args: list[str], *, env: dict | None = None, timeout: int = 20,
+            cwd: Path | None = None) -> tuple[int, str]:
     """Capture diagnostics privately: only explicit, safe fields reach the report."""
     try:
         result = subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, timeout=timeout, env=env)
+                                stderr=subprocess.PIPE, text=True, timeout=timeout, env=env, cwd=cwd)
         return result.returncode, result.stdout
     except (OSError, subprocess.TimeoutExpired):
         return 124, ''
@@ -39,6 +40,14 @@ def github_environment() -> dict:
 def token_scopes(headers: str) -> set[str]:
     match = re.search(r'^x-oauth-scopes:\s*(.*)$', headers, re.I | re.M)
     return {scope.strip() for scope in match[1].split(',')} if match else set()
+
+
+def swift_extractor_ready() -> bool:
+    # Even --version writes invocation TRAP files relative to the working directory.
+    with tempfile.TemporaryDirectory(prefix='codeql-preflight-') as directory:
+        status, _ = command([str(STORAGE / 'toolchains/codeql-2.27.1/codeql/swift/tools/osx64/extractor'),
+                             '--version'], timeout=45, cwd=Path(directory))
+    return status == 0
 
 
 def sonar_authenticated() -> bool:
@@ -110,8 +119,7 @@ def check(profile: str, config: dict) -> dict:
     if profile == 'release':
         record('tool-codeql', (STORAGE / 'toolchains/codeql-2.27.1/codeql/codeql').is_file(),
                'Install the checksum-pinned CodeQL 2.27.1 macOS toolchain in container-only storage before release qualification.')
-        status, _ = command([str(STORAGE / 'toolchains/codeql-2.27.1/codeql/swift/tools/osx64/extractor'), '--version'], timeout=45)
-        record('codeql-swift-extractor', status == 0,
+        record('codeql-swift-extractor', swift_extractor_ready(),
                'Install Apple Rosetta during setup and verify the pinned CodeQL Swift extractor launches before release qualification.')
         for name in ['sonar-scanner', 'crane']:
             record('tool-' + name, shutil.which(name) is not None, 'Install ' + name + ' before release qualification.')
