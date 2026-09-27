@@ -17,3 +17,5 @@ Compare each active fork with its matching stock Apple source. Keep common test 
 Final build qualification must also execute real speed benchmarks against stock Apple, including VM startup, warm process execution, CPU/disk workloads, image transfer and cached/uncached image builds. Record exact optimized binary and guest-image fingerprints and validate workload outputs.
 
 Release admission must preserve a clean checkout. CodeQL extractor version checks emit invocation diagnostics, so they must execute in a disposable directory before the immutable qualification check.
+
+Keep dormant original Apple/Homebrew service registrations aside across the whole unattended run. Restoring them between runtime stages allowed background clients to reactivate the original service and interfere with the next admission. The existing ownership guard still refuses active workloads; cleanup attempts both Colima and registration restoration even if either fails.

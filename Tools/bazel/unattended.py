@@ -11,6 +11,7 @@ import subprocess
 
 from fork_benchmark import ROOT, STORAGE, Runner
 from preflight import CONFIG, check
+from runtime_benchmark import StockSlot
 
 
 def output(arguments: list[str]) -> str:
@@ -93,8 +94,12 @@ def main() -> None:
     with (STORAGE / 'qualification.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         lease = ColimaLease(args.evidence)
+        slot = StockSlot(args.evidence)
         result = {'passed': False, 'target': args.target, 'failures': []}
         try:
+            # Keep dormant originals aside across every runtime stage; restoring
+            # between stages lets background clients reactivate them mid-run.
+            slot.acquire()
             lease.acquire()
             runner = Runner(args.evidence, STORAGE)
             row = runner.run('qualification', 'fork', args.target, 0,
@@ -107,14 +112,13 @@ def main() -> None:
             result['failures'].append(str(error))
             raise
         finally:
-            try:
-                lease.restore()
-            except BaseException as error:
-                result['passed'] = False
-                result['failures'].append(str(error))
-                raise
-            finally:
-                (args.evidence / 'acceptance.json').write_text(json.dumps(result, indent=2) + '\n')
+            for resource in (lease, slot):
+                try:
+                    resource.restore()
+                except BaseException as error:
+                    result['passed'] = False
+                    result['failures'].append(str(error))
+            (args.evidence / 'acceptance.json').write_text(json.dumps(result, indent=2) + '\n')
         if not result['passed']:
             raise SystemExit(1)
 

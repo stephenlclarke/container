@@ -7,10 +7,44 @@ import unittest
 from unittest.mock import patch
 
 from unattended import ColimaLease
+import unattended
 import linux_tests
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_original_services_are_held_until_qualification_and_cleanup_finish(self):
+        for failure in (None, 'build', 'colima-cleanup'):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                events = []
+                with patch.object(unattended, 'STORAGE', root), \
+                        patch.object(unattended, 'CONFIG', root / 'config.json'), \
+                        patch.object(unattended, 'check', return_value={'ready': True}), \
+                        patch.object(unattended, 'StockSlot') as slot, \
+                        patch.object(unattended, 'ColimaLease') as lease, \
+                        patch.object(unattended, 'Runner') as runner, \
+                        patch.object(unattended.signal, 'signal'), \
+                        patch('sys.argv', ['unattended', '--evidence', str(root / 'evidence')]):
+                    slot.return_value.acquire.side_effect = lambda: events.append('hold')
+                    lease.return_value.acquire.side_effect = lambda: events.append('colima')
+                    runner.return_value.run.side_effect = lambda *args, **kwargs: events.append('build') or {'status': 1 if failure == 'build' else 0, 'log': 'build.log'}
+
+                    def cleanup():
+                        events.append('colima-cleanup')
+                        if failure == 'colima-cleanup':
+                            raise RuntimeError('cleanup failed')
+
+                    lease.return_value.restore.side_effect = cleanup
+                    slot.return_value.restore.side_effect = lambda: events.append('restore')
+                    if failure:
+                        with self.assertRaises((RuntimeError, SystemExit)):
+                            unattended.main()
+                    else:
+                        unattended.main()
+                self.assertEqual(events, ['hold', 'colima', 'build', 'colima-cleanup', 'restore'])
+                result = json.loads((root / 'evidence/acceptance.json').read_text())
+                self.assertEqual(result['passed'], failure is None)
+
     def test_preexisting_vm_is_not_stopped(self):
         with tempfile.TemporaryDirectory() as directory, patch('unattended.subprocess.run') as run:
             lease = ColimaLease(Path(directory))
