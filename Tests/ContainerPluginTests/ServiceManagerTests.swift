@@ -191,4 +191,37 @@ struct ServiceManagerTests {
         #expect(result.status == 3)
         #expect(calls == [["bootout", "gui/501/com.apple.container.runtime.missing"]])
     }
+
+    @Test
+    func testInterpretPrintStatusSuccessMeansRegistered() throws {
+        #expect(try ServiceManager.interpretPrintStatus(0))
+    }
+
+    @Test
+    func testInterpretPrintStatusNoSuchServiceMeansUnregistered() throws {
+        #expect(try !ServiceManager.interpretPrintStatus(ServiceManager.LaunchctlStatus.noSuchService))
+    }
+
+    @Test
+    func testInterpretPrintStatusUnexpectedStatusThrows() throws {
+        let statuses: [Int32] = [1, 3, 64, 112]
+        for status in statuses {
+            #expect {
+                _ = try ServiceManager.interpretPrintStatus(
+                    status,
+                    target: "gui/501/com.apple.container.apiserver",
+                    standardError: "marker"
+                )
+            } throws: { error in
+                "\(error)".contains("status \(status), message: marker")
+            }
+        }
+    }
+
+    @Test
+    func testIsRegisteredUnknownLabel() throws {
+        let domain = try ServiceManager.getDomainString()
+        let label = "\(domain)/com.apple.container.bogus-\(UUID().uuidString)"
+        #expect(try !ServiceManager.isRegistered(fullServiceLabel: label))
+    }
 }

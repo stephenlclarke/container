@@ -157,9 +157,15 @@ extension Application {
             var containersTotal: Int? = nil
             var containersRunning: Int? = nil
             let containerClient = ContainerClient()
-            if let all = try? await containerClient.list(filters: ContainerListFilters.all.withoutMachines()) {
-                containersTotal = all.count
-                containersRunning = all.filter { $0.status == .running }.count
+            if let all = try? await containerClient.list(filters: ContainerListFilters.all.withoutPlugins([ResourcePluginValues.machine, ResourcePluginValues.cluster])) {
+                let running = all.filter { $0.status == .running }.count
+                resources = ResourceCounts(
+                    containersTotal: all.count,
+                    containersRunning: running
+                )
+            }
+            if let images = try? await ClientImage.list() {
+                resources = Self.withImageCount(resources, imageCount: images.count)
             }
             let imageCount = try? await ClientImage.list(responseTimeout: .seconds(10)).count
             let resources = Self.resourceCounts(

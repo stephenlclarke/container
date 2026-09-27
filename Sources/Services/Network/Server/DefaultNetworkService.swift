@@ -14,10 +14,12 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerNetworkClient
 import ContainerResource
 import ContainerXPC
 import ContainerizationError
 import ContainerizationExtras
+import DNSServer
 import Logging
 
 public actor DefaultNetworkService: NetworkService {
@@ -123,6 +125,13 @@ public actor DefaultNetworkService: NetworkService {
             throw ContainerizationError(.invalidState, message: "network \(network.id) must be running")
         }
 
+        do {
+            _ = try AliasPolicy.validate(aliases: aliases,
+                hostname: try? DNSName(AttachmentOptions.canonicalHostname(hostname)),
+                network: network.id, allowSharedLocalAliases: true)
+        } catch {
+            throw ContainerizationError(.invalidArgument, message: "invalid aliases for \(hostname): \(error)")
+        }
         if !enableIPv4, requestedIPv4Address != nil {
             throw ContainerizationError(.invalidArgument, message: "requested IPv4 address requires IPv4 to be enabled")
         }
@@ -272,6 +281,22 @@ public actor DefaultNetworkService: NetworkService {
             ])
 
         return attachments
+    }
+
+    @Sendable
+    public func lookup(name: String) async throws -> NetworkMatch? {
+        let status = try await self.status()
+        guard let match = try await allocator.match(name: name) else { return nil }
+        guard let macAddress = macAddresses[match.index] else {
+            throw ContainerizationError(.invalidState, message: "missing MAC address for network attachment '\(match.hostname)'")
+        }
+        let attachment = try attachment(status: status, hostname: match.hostname, aliases: [], index: match.index,
+            macAddress: macAddress, ipv6Address: ipv6Addresses[match.index])
+        switch match.kind {
+        case .hostname: return NetworkMatch(attachment: attachment, kind: .hostname)
+        case .alias: return NetworkMatch(attachment: attachment, kind: .alias)
+        case .subtree(let count): return NetworkMatch(attachment: attachment, kind: .subtree(baseLabelCount: count))
+        }
     }
 
     private func allocatableIPv4Index(_ address: IPv4Address, subnet: CIDRv4, gateway: IPv4Address?) throws -> UInt32 {

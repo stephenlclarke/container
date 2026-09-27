@@ -14,10 +14,31 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerResource
 import ContainerizationError
 import ContainerizationExtras
+import DNSServer
 
 actor AttachmentAllocator {
+    /// The kind of name that matched a query.
+    enum MatchKind: Sendable, Equatable {
+        /// The hostname of an attachment.
+        case hostname
+        /// An exact alias of an attachment.
+        case alias
+        /// A subtree alias of an attachment, with the number of labels in its base.
+        case subtree(baseLabelCount: Int)
+    }
+
+    /// The attachment that a name resolves to.
+    struct Match: Sendable, Equatable {
+        /// The allocator index of the attachment.
+        let index: UInt32
+        /// The canonical hostname of the attachment, which is not necessarily the name that matched.
+        let hostname: String
+        let kind: MatchKind
+    }
+
     private let allocator: any AddressAllocator<UInt32>
     private let dynamicAllocator: (any AddressAllocator<UInt32>)?
     private let dynamicRange: ClosedRange<UInt32>?
@@ -65,9 +86,10 @@ actor AttachmentAllocator {
     }
 
     /// Allocate a network address for a host and its aliases.
+    @discardableResult
     func allocate(hostname: String, aliases: [String] = [], requestedIndex: UInt32? = nil) async throws -> UInt32 {
         let hostname = try Self.normalized(hostname: hostname)
-        let names = Set(try ([hostname] + aliases).map(Self.normalized(hostname:)))
+        let names = Set([hostname] + (try aliases.map { try DNSMatchRule($0).description }))
 
         // Client is responsible for ensuring two containers don't use same hostname, so provide existing IP if hostname exists
         if let index = primaryHostnames[hostname] {
@@ -100,7 +122,7 @@ actor AttachmentAllocator {
         return index
     }
 
-    /// Free an allocated network address by hostname.
+    /// Free an allocated network address by hostname, along with the aliases registered for it.
     @discardableResult
     func deallocate(hostname: String) async throws -> UInt32? {
         let hostname = try Self.normalized(hostname: hostname)
@@ -121,7 +143,7 @@ actor AttachmentAllocator {
         return index
     }
 
-    /// Retrieve the allocator index for a hostname.
+    /// Retrieve the allocator index for a hostname. Aliases are not considered.
     func lookup(hostname: String) async throws -> UInt32? {
         try await lookupAll(hostname: hostname).first
     }
@@ -135,12 +157,38 @@ actor AttachmentAllocator {
     /// Retrieve all allocator indexes registered for a hostname or shared alias.
     func lookupAll(hostname: String) async throws -> [UInt32] {
         let hostname = try Self.normalized(hostname: hostname)
-        return hostnames[hostname, default: []].sorted()
+        if let indexes = hostnames[hostname] { return indexes.sorted() }
+        return try matchingIndexes(name: hostname).indexes
+    }
+
+    /// Match primary names before exact aliases, then the longest subtree alias.
+    /// Shared aliases return the lowest allocated address through the single-match API.
+    /// `lookupAll` retains every address for service discovery.
+    func match(name: String) async throws -> Match? {
+        guard let result = try? matchingIndexes(name: name) else { return nil }
+        guard let index = result.indexes.first,
+            let owner = primaryHostnames.first(where: { $0.value == index })?.key
+        else { return nil }
+        return Match(index: index, hostname: owner, kind: result.kind)
+    }
+
+    private func matchingIndexes(name: String) throws -> (indexes: [UInt32], kind: MatchKind) {
+        let name = try Self.normalized(hostname: name)
+        if let index = primaryHostnames[name] { return ([index], .hostname) }
+        if let indexes = hostnames[name], !indexes.isEmpty { return (indexes.sorted(), .alias) }
+        if let dnsName = try? DNSName(name) {
+            for base in DNSMatchRule.subtreeBases(of: dnsName) {
+                if let indexes = hostnames[DNSMatchRule.subtree(base).description], !indexes.isEmpty {
+                    return (indexes.sorted(), .subtree(baseLabelCount: base.labels.count))
+                }
+            }
+        }
+        return ([], .alias)
     }
 
     private func reserveAliases(_ aliases: [String], for index: UInt32) throws {
         var names = namesByIndex[index] ?? []
-        for alias in Set(try aliases.map(Self.normalized(hostname:))).sorted() {
+        for alias in Set(try aliases.map { try DNSMatchRule($0).description }).sorted() {
             hostnames[alias, default: []].insert(index)
             names.insert(alias)
         }

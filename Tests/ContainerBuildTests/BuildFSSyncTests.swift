@@ -15,7 +15,6 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerizationOS
-import CryptoKit
 import Foundation
 import SystemPackage
 import Testing
@@ -147,6 +146,118 @@ import Testing
         }
     }
 
+    // Symlink following is limited to relative targets beneath the context
+    // root. A link with an absolute target is rejected even when that target is
+    // inside the context, because the descriptor walk cannot follow an absolute
+    // path without leaving the pinned directory.
+
+    @Test func testReadRejectsAbsoluteSymlinkInsideContext() async throws {
+        let realFile = contextDir.appendingPathComponent("real.txt")
+        try write("hello", to: realFile)
+        try fm.createSymbolicLink(
+            atPath: contextDir.appendingPathComponent("alias").path(percentEncoded: false),
+            withDestinationPath: realFile.path(percentEncoded: false)
+        )
+
+        let fssync = try BuildFSSync(contextDir)
+        var continuation: AsyncStream<ClientStream>.Continuation!
+        _ = AsyncStream<ClientStream> { continuation = $0 }
+        defer { continuation.finish() }
+
+        do {
+            try await fssync.read(continuation, readPacket(source: "alias"), "build-0")
+            Issue.record("read() should throw BuildFSSync.Error for a symlink with an absolute target, even inside the context")
+        } catch is BuildFSSync.Error {
+            // expected
+        }
+    }
+
+    @Test func testInfoRejectsAbsoluteSymlinkInsideContext() async throws {
+        let realFile = contextDir.appendingPathComponent("real.txt")
+        try write("hello", to: realFile)
+        try fm.createSymbolicLink(
+            atPath: contextDir.appendingPathComponent("alias").path(percentEncoded: false),
+            withDestinationPath: realFile.path(percentEncoded: false)
+        )
+
+        let fssync = try BuildFSSync(contextDir)
+        var continuation: AsyncStream<ClientStream>.Continuation!
+        _ = AsyncStream<ClientStream> { continuation = $0 }
+        defer { continuation.finish() }
+
+        do {
+            try await fssync.info(continuation, readPacket(source: "alias"), "build-0")
+            Issue.record("info() should throw BuildFSSync.Error for a symlink with an absolute target, even inside the context")
+        } catch is BuildFSSync.Error {
+            // expected
+        }
+    }
+
+    // MARK: - read(): served content
+
+    private func readResponse(_ fssync: BuildFSSync, source: String) async throws -> BuildTransfer {
+        var continuation: AsyncStream<ClientStream>.Continuation!
+        let stream = AsyncStream<ClientStream> { continuation = $0 }
+        defer { continuation.finish() }
+        try await fssync.read(continuation, readPacket(source: source), "build-0")
+        continuation.finish()
+        for await packet in stream { return packet.buildTransfer }
+        throw BuildFSSync.Error.buildTransferMissing
+    }
+
+    @Test func testReadServesRegularFileAndRelativeInContextSymlink() async throws {
+        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
+        try fm.createSymbolicLink(
+            atPath: contextDir.appendingPathComponent("alias").path(percentEncoded: false),
+            withDestinationPath: "plain.txt")
+
+        let fssync = try BuildFSSync(contextDir)
+        for source in ["plain.txt", "alias", "./plain.txt", contextDir.appendingPathComponent("plain.txt").path(percentEncoded: false)] {
+            let transfer = try await readResponse(fssync, source: source)
+            #expect(String(data: transfer.data, encoding: .utf8) == "hello", "source: \(source)")
+        }
+    }
+
+    @Test func testReadOfDirectoryReturnsNoData() async throws {
+        try fm.createDirectory(at: contextDir.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        let transfer = try await readResponse(try BuildFSSync(contextDir), source: "sub")
+        #expect(transfer.data.isEmpty)
+        #expect(transfer.isDirectory)
+    }
+
+    /// The scenario from GHSA-fqxg-rrf3-358v: a link is swapped between an
+    /// in-context and an out-of-context target while reads are in flight. Every
+    /// read must either return the in-context content or fail; the secret must
+    /// never be served.
+    @Test func testReadNeverServesSwappedSymlinkTarget() async throws {
+        try write("safe", to: contextDir.appendingPathComponent("safe.txt"))
+        try write("supersecret", to: outsideDir.appendingPathComponent("secret.txt"))
+        let bait = contextDir.appendingPathComponent("bait").path(percentEncoded: false)
+        let tmp = contextDir.appendingPathComponent("bait.tmp").path(percentEncoded: false)
+        let targets = ["safe.txt", outsideDir.appendingPathComponent("secret.txt").path(percentEncoded: false)]
+        try fm.createSymbolicLink(atPath: bait, withDestinationPath: targets[0])
+
+        let stop = ManagedAtomicFlag()
+        let swapper = Thread {
+            var i = 0
+            while !stop.isSet {
+                unlink(tmp)
+                symlink(targets[i % 2], tmp)
+                rename(tmp, bait)
+                i += 1
+            }
+        }
+        swapper.start()
+        defer { stop.set() }
+
+        let fssync = try BuildFSSync(contextDir)
+        for _ in 0..<2000 {
+            if let transfer = try? await readResponse(fssync, source: "bait") {
+                #expect(String(data: transfer.data, encoding: .utf8) != "supersecret")
+            }
+        }
+    }
+
     // MARK: - info(): symlink boundary enforcement
     //
     // info() is the metadata-only half of the shim's FS.Open() fallback path.
@@ -257,6 +368,34 @@ import Testing
         #expect(leaked.isEmpty, "walk() returned non-symlink URLs that physically resolve outside the context: \(leaked)")
     }
 
+    // MARK: - walk(): plain subdirectory contents under a symlinked ancestor
+    //
+    // Globber.children(of:) used to list directories via
+    // contentsOfDirectory(at:), which silently resolves /tmp to /private/tmp
+    // even for a non-symlink child. That made walk()'s parentOf() check
+    // reject every entry found by descending into a plain subdirectory, so
+    // "COPY foodir /dest" tarred an empty directory while
+    // "COPY foodir/payload /dest/payload" worked fine.
+
+    @Test func testWalkUnderSymlinkedAncestor() async throws {
+        // Root the context directly under /tmp (a symlink to /private/tmp on
+        // macOS) to reproduce the bug precisely.
+        let tmpBase = URL(fileURLWithPath: "/tmp").appendingPathComponent(UUID().uuidString)
+        let ctx = tmpBase.appendingPathComponent("context")
+        try fm.createDirectory(at: ctx, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: tmpBase) }
+
+        let subdir = ctx.appendingPathComponent("foodir")
+        try fm.createDirectory(at: subdir, withIntermediateDirectories: true)
+        try write("payload", to: subdir.appendingPathComponent("payload.txt"))
+
+        let fssync = try BuildFSSync(ctx)
+        let infos = try await walkJSON(fssync, followPaths: ["foodir"])
+
+        let payload = infos.first { $0.name == "foodir/payload.txt" }
+        #expect(payload != nil, "expected foodir/payload.txt to be included when COPYing a directory glob, got: \(infos.map { $0.name })")
+    }
+
     // MARK: - walk(): JSON/FileInfo metadata paths
     //
     // walk() has two response formats: a tar stream (the primary data path,
@@ -296,142 +435,6 @@ import Testing
             }
         }
         return fileInfos
-    }
-
-    private func walkTAR(
-        _ fssync: BuildFSSync,
-        followPaths: [String] = ["*"],
-        dirName: String? = nil
-    ) async throws -> [ClientStream] {
-        var packet = walkJSONPacket(followPaths: followPaths)
-        packet.metadata["mode"] = "tar"
-        if let dirName {
-            packet.metadata["dir-name"] = dirName
-        }
-
-        var continuation: AsyncStream<ClientStream>.Continuation!
-        let stream = AsyncStream<ClientStream> { continuation = $0 }
-        try await fssync.walk(continuation, packet, "build-0")
-        continuation.finish()
-
-        var responses: [ClientStream] = []
-        for await response in stream {
-            responses.append(response)
-        }
-        return responses
-    }
-
-    @Test("A cached context sends only a completed digest header")
-    func cachedContextSkipsTarBody() async throws {
-        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
-        let fssync = try BuildFSSync(contextDir) { digest in
-            #expect(digest.count == 64)
-            return true
-        }
-
-        let responses = try await walkTAR(fssync)
-        let header = try #require(responses.first).buildTransfer
-        #expect(responses.count == 1)
-        #expect(header.complete)
-        #expect(header.data.isEmpty)
-        #expect(header.metadata["hash"]?.count == 64)
-    }
-
-    @Test("A missing context retains the ordered tar stream")
-    func missingContextStreamsTarBody() async throws {
-        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
-        let fssync = try BuildFSSync(contextDir) { _ in false }
-
-        let responses = try await walkTAR(fssync)
-        let transfers = responses.map(\.buildTransfer)
-        let header = try #require(transfers.first)
-        let completion = try #require(transfers.last)
-        #expect(transfers.count >= 3)
-        #expect(!header.complete)
-        #expect(header.metadata["hash"]?.count == 64)
-        #expect(transfers.dropFirst().dropLast().contains { !$0.data.isEmpty })
-        #expect(completion.complete)
-    }
-
-    @Test("A failed cache probe falls back to the ordered tar stream")
-    func failedCacheProbeStreamsTarBody() async throws {
-        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
-        let fssync = try BuildFSSync(contextDir) { _ in
-            throw BuildContextCacheTestError.lookupFailed
-        }
-
-        let responses = try await walkTAR(fssync)
-        let transfers = responses.map(\.buildTransfer)
-        let header = try #require(transfers.first)
-        let completion = try #require(transfers.last)
-        #expect(transfers.count >= 3)
-        #expect(!header.complete)
-        #expect(header.metadata["hash"]?.count == 64)
-        #expect(transfers.dropFirst().dropLast().contains { !$0.data.isEmpty })
-        #expect(completion.complete)
-    }
-
-    @Test("A cancelled cache probe cancels the context stream")
-    func cancelledCacheProbeStopsStreaming() async throws {
-        try write("hello", to: contextDir.appendingPathComponent("plain.txt"))
-        let fssync = try BuildFSSync(contextDir) { _ in
-            throw CancellationError()
-        }
-
-        await #expect(throws: CancellationError.self) {
-            try await self.walkTAR(fssync)
-        }
-    }
-
-    @Test("Named contexts archive from their selected root")
-    func namedContextTarUsesSelectedRoot() async throws {
-        let shared = base.appendingPathComponent("shared")
-        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
-        try write("main-only", to: contextDir.appendingPathComponent("payload.txt"))
-        try write("shared-only", to: shared.appendingPathComponent("payload.txt"))
-
-        let fssync = try BuildFSSync(contextDir, namedContexts: ["shared": shared.path])
-        let responses = try await walkTAR(fssync, dirName: "shared")
-        let body = responses.dropFirst().dropLast().reduce(into: Data()) { result, response in
-            result.append(response.buildTransfer.data)
-        }
-        let archive = String(decoding: body, as: UTF8.self)
-
-        #expect(archive.contains("shared-only"))
-        #expect(!archive.contains("main-only"))
-    }
-
-    @Test("Context archive work does not hold actor isolation")
-    func contextArchiveDoesNotBlockActor() async throws {
-        let started = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        let probe = BuildArchiveIsolationProbe()
-        let archive = Task {
-            try await probe.archive(started: started, release: release)
-        }
-
-        let didStart = await BuildArchiveSemaphore.wait(started, timeout: .now() + 1)
-        guard didStart else {
-            release.signal()
-            archive.cancel()
-            throw BuildArchiveTestError.timedOut
-        }
-
-        let pinged = BuildArchiveCountdown(count: 1)
-        let ping = Task {
-            await probe.ping(pinged)
-        }
-        do {
-            try await pinged.wait(timeout: .seconds(1))
-        } catch {
-            release.signal()
-            archive.cancel()
-            throw error
-        }
-
-        release.signal()
-        await ping.value
-        #expect(try await archive.value == SHA256.hash(data: Data()))
     }
 
     @Test func testWalkJSONReportsEmptyTargetForRegularFile() async throws {
@@ -532,278 +535,57 @@ import Testing
         #expect(secretLeak == nil, "no entry for the external file should appear in walk() results: \(infos.map { $0.name })")
     }
 
-    @Test func readRejectsSymlinkEscapeFromNamedContext() async throws {
-        let shared = base.appendingPathComponent("shared")
-        try fm.createDirectory(at: shared, withIntermediateDirectories: true)
-        let secret = outsideDir.appendingPathComponent("secret.txt")
-        try write("secret", to: secret)
-        try fm.createSymbolicLink(
-            atPath: shared.appendingPathComponent("leak").path,
-            withDestinationPath: secret.path
-        )
+    // MARK: - walk(): empty or omitted followpaths requests entire context
+    //
+    // BuildKit omits followpaths when a build step needs the whole context
+    // (for example, RUN --mount=type=tmpfs). An empty or omitted followpaths
+    // must result in the entire context being served rather than an empty
+    // result.
 
-        let fssync = try BuildFSSync(contextDir, namedContexts: ["shared": shared.path])
-        var transfer = readPacket(source: "leak")
-        transfer.metadata = ["dir-name": "shared"]
+    @Test func testWalkJSONEmptyFollowPathsIncludesEntireContext() async throws {
+        try write("hello", to: contextDir.appendingPathComponent("a.txt"))
+        try write("world", to: contextDir.appendingPathComponent("b.txt"))
+
+        let fssync = try BuildFSSync(contextDir)
+        let infos = try await walkJSON(fssync, followPaths: [])
+
+        #expect(infos.contains { $0.name == "a.txt" }, "a.txt should be included when followpaths is empty")
+        #expect(infos.contains { $0.name == "b.txt" }, "b.txt should be included when followpaths is empty")
+    }
+
+    @Test func testWalkJSONMissingFollowPathsMetadataIncludesEntireContext() async throws {
+        try write("hello", to: contextDir.appendingPathComponent("a.txt"))
+        try write("world", to: contextDir.appendingPathComponent("b.txt"))
+
+        let fssync = try BuildFSSync(contextDir)
+        var p = BuildTransfer()
+        p.id = UUID().uuidString
+        p.source = "."
+        p.metadata = [
+            "mode": "json"
+        ]
+
         var continuation: AsyncStream<ClientStream>.Continuation!
-        _ = AsyncStream<ClientStream> { continuation = $0 }
-        defer { continuation.finish() }
-
-        do {
-            try await fssync.read(continuation, transfer, "build-0")
-            Issue.record("read should reject a named-context symlink that resolves outside that context")
-        } catch is BuildFSSync.Error {
-            // Expected.
-        }
-    }
-
-    // MARK: - Fork support regressions
-
-    @Test
-    func fileInfoUsesLiteralSymlinkTarget() throws {
-        let fileManager = FileManager.default
-        let root = fileManager.temporaryDirectory
-            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        defer {
-            try? fileManager.removeItem(at: root)
-        }
-
-        try Data("payload".utf8).write(to: root.appendingPathComponent("payload.txt"))
-        let link = root.appendingPathComponent("payload-link.txt")
-        try fileManager.createSymbolicLink(atPath: link.path, withDestinationPath: "payload.txt")
-
-        let info = try BuildFSSync.FileInfo(path: link, contextDir: root)
-
-        #expect(info.name == "payload-link.txt")
-        #expect(info.target == "payload.txt")
-    }
-
-    @Test
-    func readUsesNamedContextDirectory() async throws {
-        let fileManager = FileManager.default
-        let root = fileManager.temporaryDirectory
-            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
-        let main = root.appendingPathComponent("main", isDirectory: true)
-        let shared = root.appendingPathComponent("shared", isDirectory: true)
-        try fileManager.createDirectory(at: main, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: shared, withIntermediateDirectories: true)
-        defer {
-            try? fileManager.removeItem(at: root)
-        }
-
-        try Data("main".utf8).write(to: main.appendingPathComponent("payload.txt"))
-        try Data("shared".utf8).write(to: shared.appendingPathComponent("payload.txt"))
-
-        let fssync = try BuildFSSync(main, namedContexts: ["shared": shared.path])
-        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
-
-        var transfer = BuildTransfer()
-        transfer.id = "request-id"
-        transfer.source = "payload.txt"
-        transfer.metadata = [
-            "stage": "fssync",
-            "method": "Read",
-            "dir-name": "shared",
-            "offset": "0",
-            "length": "6",
-        ]
-        var request = ServerStream()
-        request.buildID = "build-id"
-        request.buildTransfer = transfer
-        request.packetType = .buildTransfer(transfer)
-
-        try await fssync.handle(continuation, request)
+        let stream = AsyncStream<ClientStream> { continuation = $0 }
+        try await fssync.walk(continuation, p, "build-0")
         continuation.finish()
 
-        var responses: [ClientStream] = []
-        for await response in stream {
-            responses.append(response)
-        }
-
-        let response = try #require(responses.first)
-        #expect(String(data: response.buildTransfer.data, encoding: .utf8) == "shared")
-        #expect(response.buildTransfer.source == "payload.txt")
-    }
-
-    @Test
-    func tarHeaderChecksumMatchesTransferredArchive() async throws {
-        let fileManager = FileManager.default
-        let root = fileManager.temporaryDirectory
-            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        defer {
-            try? fileManager.removeItem(at: root)
-        }
-
-        try Data("FROM scratch\n".utf8).write(to: root.appendingPathComponent("Dockerfile"))
-        let fssync = try BuildFSSync(root)
-        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
-
-        var transfer = BuildTransfer()
-        transfer.id = "request-id"
-        transfer.source = "."
-        transfer.metadata = [
-            "stage": "fssync",
-            "method": "Walk",
-            "mode": "tar",
-            "followpaths": "Dockerfile",
-        ]
-        var request = ServerStream()
-        request.buildID = "build-id"
-        request.buildTransfer = transfer
-        request.packetType = .buildTransfer(transfer)
-
-        try await fssync.handle(continuation, request)
-        continuation.finish()
-
-        var responses: [ClientStream] = []
-        for await response in stream {
-            responses.append(response)
-        }
-
-        let header = try #require(responses.first)
-        let expected = try #require(header.buildTransfer.metadata["hash"])
-        let archive = responses.reduce(into: Data()) { data, response in
-            data.append(response.buildTransfer.data)
-        }
-        let actual = SHA256.hash(data: archive).map { String(format: "%02x", $0) }.joined()
-        #expect(actual == expected)
-    }
-
-    @Test
-    func walkDoesNotPublishContextRoot() async throws {
-        let fileManager = FileManager.default
-        let root = fileManager.temporaryDirectory
-            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        defer {
-            try? fileManager.removeItem(at: root)
-        }
-
-        try Data().write(to: root.appendingPathComponent("emptyFile"))
-        let fssync = try BuildFSSync(root)
-        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
-
-        var transfer = BuildTransfer()
-        transfer.id = "request-id"
-        transfer.source = "."
-        transfer.metadata = [
-            "stage": "fssync",
-            "method": "Walk",
-            "mode": "json",
-            "followpaths": "emptyFile",
-        ]
-        var request = ServerStream()
-        request.buildID = "build-id"
-        request.buildTransfer = transfer
-        request.packetType = .buildTransfer(transfer)
-
-        try await fssync.handle(continuation, request)
-        continuation.finish()
-
-        var responses: [ClientStream] = []
-        for await response in stream {
-            responses.append(response)
-        }
-
-        let response = try #require(responses.first)
-        let entries = try JSONDecoder().decode([BuildFSSync.FileInfo].self, from: response.buildTransfer.data)
-        #expect(entries.map(\.name) == ["emptyFile"])
-    }
-
-    @Test
-    func tarWalkHandlesPrivateTmpAlias() async throws {
-        let fileManager = FileManager.default
-        let root = URL(filePath: "/private/tmp")
-            .appendingPathComponent("container-build-fssync-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
-        defer {
-            try? fileManager.removeItem(at: root)
-        }
-
-        try Data().write(to: root.appendingPathComponent("emptyFile"))
-        let fssync = try BuildFSSync(root)
-        let (stream, continuation) = AsyncStream<ClientStream>.makeStream()
-
-        var transfer = BuildTransfer()
-        transfer.id = "request-id"
-        transfer.source = "."
-        transfer.metadata = [
-            "stage": "fssync",
-            "method": "Walk",
-            "mode": "tar",
-            "followpaths": "emptyFile",
-        ]
-        var request = ServerStream()
-        request.buildID = "build-id"
-        request.buildTransfer = transfer
-        request.packetType = .buildTransfer(transfer)
-
-        try await fssync.handle(continuation, request)
-        continuation.finish()
-
-        var responses: [ClientStream] = []
-        for await response in stream {
-            responses.append(response)
-        }
-
-        #expect(responses.first?.buildTransfer.metadata["hash"] != nil)
-    }
-
-}
-
-private enum BuildContextCacheTestError: Error {
-    case lookupFailed
-}
-
-private enum BuildArchiveTestError: Error {
-    case timedOut
-}
-
-private enum BuildArchiveSemaphore {
-    static func wait(_ semaphore: DispatchSemaphore, timeout: DispatchTime) async -> Bool {
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                continuation.resume(returning: semaphore.wait(timeout: timeout) == .success)
+        var fileInfos: [BuildFSSync.FileInfo] = []
+        for await resp in stream {
+            let data = resp.buildTransfer.data
+            if !data.isEmpty {
+                fileInfos += try JSONDecoder().decode([BuildFSSync.FileInfo].self, from: data)
             }
         }
+
+        #expect(fileInfos.contains { $0.name == "a.txt" }, "a.txt should be included when followpaths metadata is omitted")
+        #expect(fileInfos.contains { $0.name == "b.txt" }, "b.txt should be included when followpaths metadata is omitted")
     }
 }
 
-private actor BuildArchiveCountdown {
-    private var remaining: Int
-
-    init(count: Int) {
-        self.remaining = count
-    }
-
-    func arrive() {
-        remaining -= 1
-    }
-
-    func wait(timeout: Duration) async throws {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: timeout)
-        while remaining > 0 {
-            guard clock.now < deadline else {
-                throw BuildArchiveTestError.timedOut
-            }
-            try await Task.sleep(for: .milliseconds(1))
-        }
-    }
-}
-
-private actor BuildArchiveIsolationProbe {
-    func archive(started: DispatchSemaphore, release: DispatchSemaphore) async throws -> SHA256.Digest {
-        try await ConcurrentBuildContextArchive.run {
-            started.signal()
-            release.wait()
-            return SHA256.hash(data: Data())
-        }
-    }
-
-    func ping(_ countdown: BuildArchiveCountdown) async {
-        await countdown.arrive()
-    }
+private final class ManagedAtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
 }

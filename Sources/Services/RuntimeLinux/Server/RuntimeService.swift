@@ -353,7 +353,13 @@ public actor RuntimeService {
 
             let id = config.id
             let rootfs = try bundle.containerRootfs.asMount
-            let container = try LinuxContainer(id, rootfs: rootfs, vmm: vmm, logger: self.log) { czConfig in
+            // Give the VM headroom beyond the container's cgroup limits for the guest kernel,
+            // vminitd, and the overhead configured via `config.resources.cpuOverhead`.
+            let vmResources = VMResources(
+                cpus: config.resources.cpus + config.resources.cpuOverhead,
+                memoryInBytes: config.resources.memoryInBytes + VMResources.guestMemoryOverhead
+            )
+            let container = try LinuxContainer(id, rootfs: rootfs, vmm: vmm, vm: vmResources, logger: self.log) { czConfig in
                 try Self.configureContainer(
                     czConfig: &czConfig,
                     config: config,

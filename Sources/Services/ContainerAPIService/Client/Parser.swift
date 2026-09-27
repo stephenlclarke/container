@@ -21,6 +21,7 @@ import ContainerizationError
 import ContainerizationExtras
 import ContainerizationOCI
 import ContainerizationOS
+import DNSServer
 import Foundation
 import SystemPackage
 
@@ -177,12 +178,85 @@ public struct Parser {
         return (ids.dedupe(), names.dedupe())
     }
 
+    /// Resolve a username/uid/gid triple for an account that's about to be created (as opposed
+    /// to `user(user:uid:gid:defaultUser:)`, which selects an *existing* identity to run a
+    /// process as). `user` uses the same `<name|uid>[:<gid>]` format, but unlike
+    /// `user(user:uid:gid:defaultUser:)` the group component must be numeric — there's no existing
+    /// `/etc/group` on the not-yet-created account to resolve a group name against.
+    ///
+    /// Each of the three pieces is resolved independently, falling back in order from `user`, to
+    /// the matching `uid`/`gid` argument, to the default. `user` only wins outright over `uid`/`gid`
+    /// when it actually specifies that piece (e.g. `--user 1500 --uid 9999` keeps 1500) — a bare
+    /// name in `user` doesn't specify a uid/gid, so `uid`/`gid` still apply in that case.
+    public static func userAccount(
+        user: String?, uid: UInt32?, gid: UInt32?,
+        defaultUsername: String, defaultUID: UInt32, defaultGID: UInt32
+    ) throws -> (username: String, uid: UInt32, gid: UInt32) {
+        var username = defaultUsername
+        var resolvedUID: UInt32?
+        var resolvedGID: UInt32?
+
+        if let user, !user.isEmpty {
+            let parts = user.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            let primary = String(parts[0])
+
+            if !primary.isEmpty {
+                if let uidValue = UInt32(primary) {
+                    resolvedUID = uidValue
+                } else {
+                    username = primary
+                }
+            }
+
+            if parts.count == 2 {
+                guard let gidValue = UInt32(parts[1]) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "invalid group '\(parts[1])' in --user '\(user)': group must be numeric"
+                    )
+                }
+                resolvedGID = gidValue
+            }
+        }
+
+        return (username, resolvedUID ?? uid ?? defaultUID, resolvedGID ?? gid ?? defaultGID)
+    }
+
     public static func platform(os: String, arch: String) -> ContainerizationOCI.Platform {
         .init(arch: arch, os: os)
     }
 
     public static func platform(from platform: String) throws -> ContainerizationOCI.Platform {
         try .init(from: platform)
+    }
+
+    /// Validates a requested CPU count against the limits for creating a container.
+    ///
+    /// - Throws: `.invalidArgument` if `cpus` is less than 1 or more than the host's core count.
+    public static func cpus(_ cpus: Int64) throws -> Int {
+        try ContainerConfiguration.Resources.validate(cpus: cpus)
+        return Int(cpus)
+    }
+
+    public static func cpus(_ cpus: Double) throws -> Int {
+        guard cpus.isFinite, cpus > 0, cpus <= Double(ContainerConfiguration.Resources.maximumCPUs) else {
+            throw ContainerizationError(.invalidArgument, message: "cpus must be positive and no more than the host core count")
+        }
+        return Int(cpus.rounded(.up))
+    }
+
+    /// Parses a memory size such as `8g` and validates it against the limits for creating a container.
+    ///
+    /// - Throws: `.invalidArgument` if `memory` can't be parsed, is out of range, or is below the minimum.
+    public static func memoryInBytes(_ memory: String) throws -> UInt64 {
+        let mib = try Measurement.parse(parsing: memory).converted(to: .mebibytes).value
+        // Leave headroom so converting to bytes cannot overflow.
+        guard mib.isFinite, mib < Double(Int64.max / (1024 * 1024)) else {
+            throw ContainerizationError(.invalidArgument, message: "memory '\(memory)' is out of range")
+        }
+        let bytes = Int64(mib).mib()
+        try ContainerConfiguration.Resources.validate(memoryInBytes: bytes)
+        return bytes
     }
 
     public static func resources(
@@ -232,8 +306,8 @@ public struct Parser {
                 let vmCPUs = cpus.rounded(.up)
                 guard
                     quota >= 1,
-                    quota <= Double(Int64.max),
-                    vmCPUs <= Double(Int.max)
+                    quota < Double(Int64.max),
+                    vmCPUs < Double(Int.max)
                 else {
                     throw ContainerizationError(
                         .invalidArgument,
@@ -268,7 +342,7 @@ public struct Parser {
         resource.cpuSet = try Parser.cpuSet(cpuSet)
 
         if let memory {
-            resource.memoryInBytes = try Parser.memoryStringAsBytes(memory)
+            resource.memoryInBytes = try Parser.memoryInBytes(memory)
         }
 
         resource.adaptiveMemoryReclamation = try adaptiveMemoryReclamation(
@@ -1598,7 +1672,7 @@ public struct Parser {
                 if !entrypoint.isEmpty {
                     result = [entrypoint]
                 }
-            } else if let entrypoint = config?.entrypoint, !entrypoint.isEmpty {
+            } else if let entrypoint = config?.entrypoint, !entrypoint.isEmpty, entrypoint != [""] {
                 result = entrypoint
             }
             if !arguments.isEmpty {
@@ -2365,11 +2439,11 @@ public struct Parser {
 
             switch key {
             case "alias":
-                guard let alias = try hostname(value, option: "network alias") else {
-                    throw ContainerizationError(
-                        .invalidArgument,
-                        message: "network alias value cannot be empty"
-                    )
+                let alias: String
+                do {
+                    alias = try DNSMatchRule(value).description
+                } catch {
+                    throw ContainerizationError(.invalidArgument, message: "invalid alias '\(value)': \(error)")
                 }
                 if !aliases.contains(alias) {
                     aliases.append(alias)
