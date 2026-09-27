@@ -11,6 +11,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.request
@@ -18,6 +19,47 @@ import urllib.request
 from runtime_benchmark import IDENTITY, BAZEL, BAZEL_SHA, STORAGE
 
 CONFIG = Path.home() / 'Library/Application Support/ContainerFamily/config/unattended.json'
+
+DNS_PROBE = '''
+import concurrent.futures, json, socket, time
+def query(item):
+    kind, family = item
+    started = time.monotonic()
+    try:
+        addresses = socket.getaddrinfo('example.com.', None, family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+        outcome = 'resolved' if addresses else 'empty'
+    except OSError:
+        outcome = 'resolver-error'
+    return {'type': kind, 'outcome': outcome, 'seconds': time.monotonic() - started}
+with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+    print(json.dumps(list(pool.map(query, [('A', socket.AF_INET), ('AAAA', socket.AF_INET6)]))))
+'''
+
+
+def host_dns_probe() -> dict:
+    """Check the integration hostname through the same native resolver as the runtime."""
+    # A subprocess bounds getaddrinfo, which cannot be cancelled in a Python thread.
+    # The extra second permits interpreter startup; each lookup still has the real
+    # host/guest proxy's three-second budget. Do not retry or bypass the host resolver.
+    status, raw = command([sys.executable, '-c', DNS_PROBE], timeout=4)
+    result = {'hostname': 'example.com.', 'deadline_seconds': 3, 'ready': False, 'queries': []}
+    if status:
+        result['outcome'] = 'probe-timeout-or-error'
+        return result
+    try:
+        rows = json.loads(raw)
+        if (not isinstance(rows, list) or len(rows) != 2
+                or {row['type'] for row in rows} != {'A', 'AAAA'}
+                or any(row['outcome'] not in {'resolved', 'empty', 'resolver-error'}
+                       or not isinstance(row['seconds'], (float, int))
+                       or not 0 <= row['seconds'] < 4 for row in rows)):
+            raise ValueError('Invalid DNS probe result')
+        result['queries'] = [{key: row[key] for key in ('type', 'outcome', 'seconds')} for row in rows]
+        result['ready'] = all(row['outcome'] == 'resolved' and row['seconds'] < 3 for row in rows)
+        result['outcome'] = 'ready' if result['ready'] else 'resolver-unavailable-or-slow'
+    except (ValueError, TypeError, KeyError):
+        result['outcome'] = 'invalid-probe-result'
+    return result
 
 
 def command(args: list[str], *, env: dict | None = None, timeout: int = 20,
@@ -117,6 +159,10 @@ def check(profile: str, config: dict) -> dict:
                'Stop the existing Apple/Homebrew container installation after saving its workloads; the verifier will not displace an active installation.')
 
     if profile == 'release':
+        dns = host_dns_probe()
+        record('host-dns-forwarding', dns['ready'],
+               'The host must resolve example.com A and AAAA within the existing three-second DNS proxy deadline. Restore host DNS connectivity before qualification; no resolver override or retry is applied.')
+        checks[-1]['probe'] = dns
         record('tool-codeql', (STORAGE / 'toolchains/codeql-2.27.1/codeql/codeql').is_file(),
                'Install the checksum-pinned CodeQL 2.27.1 macOS toolchain in container-only storage before release qualification.')
         record('codeql-swift-extractor', swift_extractor_ready(),
@@ -148,6 +194,7 @@ def check(profile: str, config: dict) -> dict:
     return {'schema': 1, 'profile': profile, 'ready': all(row['ready'] for row in checks),
             'checks': checks,
             'limits': ['This does not grant or certify macOS privacy permissions. Live tests use bounded probes and report any missing approval.',
+                       'Host DNS admission is a point-in-time check; external guest forwarding remains an integration requirement.',
                        'Credential checks do not establish repository-specific quality gates or release qualification.']}
 
 

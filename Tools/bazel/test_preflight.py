@@ -1,6 +1,7 @@
 """Permission failures are bounded and never turn into a successful admission."""
 
 import os
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -11,6 +12,23 @@ import preflight
 
 
 class PreflightTests(unittest.TestCase):
+    def test_dns_probe_requires_both_native_families_within_proxy_deadline(self):
+        rows = [{'type': kind, 'outcome': 'resolved', 'seconds': .1} for kind in ('A', 'AAAA')]
+        with mock.patch.object(preflight, 'command', return_value=(0, json.dumps(rows))) as probe:
+            self.assertTrue(preflight.host_dns_probe()['ready'])
+            self.assertEqual(probe.call_args.kwargs['timeout'], 4)
+        for outcome, seconds in [('resolved', 3), ('resolved', 3.9), ('resolver-error', .1), ('empty', .1)]:
+            rows[1].update(outcome=outcome, seconds=seconds)
+            with self.subTest(outcome=outcome, seconds=seconds), mock.patch.object(preflight, 'command', return_value=(0, json.dumps(rows))):
+                self.assertFalse(preflight.host_dns_probe()['ready'])
+
+    def test_dns_probe_timeout_and_malformed_output_fail_without_retry(self):
+        for status, raw in [(124, ''), (1, ''), (0, '{}'), (0, '[]'), (0, 'invalid'),
+                            (0, '[{}, {}]'), (0, '[null, null]')]:
+            with self.subTest(status=status, raw=raw), mock.patch.object(preflight, 'command', return_value=(status, raw)) as probe:
+                self.assertFalse(preflight.host_dns_probe()['ready'])
+                probe.assert_called_once()
+
     def test_timeout_and_missing_program_are_blocked(self):
         for error in [FileNotFoundError(), subprocess.TimeoutExpired(['probe'], 1)]:
             with self.subTest(error=type(error).__name__), mock.patch.object(preflight.subprocess, 'run', side_effect=error):

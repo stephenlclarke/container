@@ -2,6 +2,9 @@ name: Container-only Bazel qualification
 
 on:
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
+    branches: [main]
 
 permissions:
   contents: read
@@ -12,6 +15,16 @@ concurrency:
 
 jobs:
   qualify:
+    # A maintainer must explicitly label a same-repository PR. Fork code never
+    # is admitted automatically. Repository settings separately require
+    # approval for every outside contributor; never approve untrusted work
+    # targeting this persistent machine. A PR can edit its own YAML guards.
+    if: >-
+      github.repository == 'stephenlclarke/container' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' &&
+        github.event.label.name == 'container-only-qualification' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
     # Enroll only the designated MacBook Pro with this label. Its local
     # preflight verifies the SSD, signing identity and credential profile.
     runs-on: [self-hosted, macOS, ARM64, container-only]
@@ -20,12 +33,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Bind the named branch to the requested revision
         shell: bash
         env:
-          REQUESTED_REVISION: ${{ github.sha }}
-          REQUESTED_BRANCH: ${{ github.ref_name }}
+          REQUESTED_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          REQUESTED_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
           REQUESTED_REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
@@ -45,7 +58,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: container-qualification-${{ github.sha }}
+          name: container-qualification-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             ${{ env.QUALIFICATION_EVIDENCE }}/QUALIFICATION.md
             ${{ env.QUALIFICATION_EVIDENCE }}/qualification.json
