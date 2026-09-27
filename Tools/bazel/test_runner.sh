@@ -23,6 +23,11 @@ if [[ -d "$TEST_SRCDIR/$package" ]]; then
         [[ "$name" == external ]] || ln -s "$entry" "$workspace/$name"
     done
 fi
+# rules_swift places a standalone executable in an incomplete .xctest bundle.
+# Run a private standalone copy so Security validates its actual linker signature.
+mkdir -p "$TEST_TMPDIR/executable"
+executable="$TEST_TMPDIR/executable/$(basename "$binary")"
+cp -p "$binary" "$executable"
 cd "$workspace"
 export TMPDIR="$TEST_TMPDIR/"
-exec "$binary" "$@"
+exec "$executable" "$@"

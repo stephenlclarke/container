@@ -22,6 +22,8 @@ The launcher passes shell syntax, help and shellcheck checks. Six regression tes
 
 Networking, configuration and cryptography layers have also been added. The launcher can run host networking checks separately. Four upstream checks depend on macOS DNS events, TCP backlog behavior or path accounting; their observed failures are retained, and normal runs report explicit skips while the host command enables their unchanged assertions.
 
+Containerization now has separate OS/utilities, archive, EXT4, OCI and main-library layers. Live registries and login-Keychain checks are explicit host integration checks. Archive permission tests run locally because the sandbox strips set-ID bits; the original assertions pass. A private standalone test executable fixes strict code-signature validation without re-signing or installing products. Engine API core, transports, sessions, gateway and service checks are split into separate layers.
+
 The full container build is not yet qualified. No coverage percentage is claimed for the imported upstream test suites.
 
 ## Compatibility and Remaining Risks

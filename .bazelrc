@@ -14,3 +14,4 @@ test --flaky_test_attempts=1
 test --local_test_jobs=2
 build --disk_cache=/Volumes/SSD/cf/container-only/cache
 build --run_under=//Tools/bazel:test_runner
+build --test_env=CI=1

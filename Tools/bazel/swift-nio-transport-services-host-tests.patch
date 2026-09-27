@@ -6,7 +6,7 @@ diff --git a/Tests/NIOTransportServicesTests/NIOTSConnectionChannelTests.swift b
  
      func testConnectingInvolvesWaiting() throws {
 +        try XCTSkipUnless(
-+            ProcessInfo.processInfo.environment["CONTAINER_HOST_NETWORK_TESTS"] == "1",
++            ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1",
 +            "Host network behavior: run make bazel-host-test for this layer."
 +        )
          let loop = self.group.next()
@@ -20,7 +20,7 @@ diff --git a/Tests/NIOTransportServicesTests/NIOTSChannelOptionsTests.swift b/Te
      @available(OSX 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, *)
      func testDataTransferReport() throws {
 +        try XCTSkipUnless(
-+            ProcessInfo.processInfo.environment["CONTAINER_HOST_NETWORK_TESTS"] == "1",
++            ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1",
 +            "Host network accounting: run make bazel-host-test for this layer."
 +        )
          let syncQueue = DispatchQueue(label: "syncQueue")

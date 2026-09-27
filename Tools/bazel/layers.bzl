@@ -195,10 +195,93 @@ LAYERS = {
         tests = ["AsyncHTTPClientTests"],
         compile_checks = [],
     ),
+    "grpc-core": struct(
+        package = "grpc-swift-2",
+        products = ["GRPCCore", "GRPCInProcessTransport"],
+        tests = ["GRPCCoreTests", "GRPCInProcessTransportTests"],
+        compile_checks = [],
+    ),
+    "grpc-protobuf": struct(
+        package = "grpc-swift-protobuf",
+        products = ["GRPCProtobuf"],
+        tests = ["GRPCProtobufTests"],
+        compile_checks = [],
+    ),
+    "grpc-transport": struct(
+        package = "grpc-swift-nio-transport",
+        products = ["GRPCNIOTransportHTTP2"],
+        tests = ["GRPCNIOTransportCoreTests", "GRPCNIOTransportHTTP2Tests"],
+        compile_checks = [],
+    ),
+    "containerization-os": struct(
+        package = "containerization",
+        products = ["ContainerizationError", "ContainerizationOS", "ContainerizationIO", "ContainerizationExtras"],
+        tests = ["ContainerizationOSTests", "ContainerizationExtrasTests"],
+        compile_checks = [],
+    ),
+    "containerization-archive": struct(
+        package = "containerization",
+        products = ["ContainerizationArchive"],
+        tests = ["ContainerizationArchiveTests"],
+        compile_checks = [],
+    ),
+    "containerization-ext4": struct(
+        package = "containerization",
+        products = ["ContainerizationEXT4"],
+        tests = ["ContainerizationEXT4Tests"],
+        compile_checks = [],
+    ),
+    "containerization-oci": struct(
+        package = "containerization",
+        products = ["ContainerizationOCI"],
+        tests = ["ContainerizationOCITests"],
+        compile_checks = [],
+    ),
+    "containerization": struct(
+        package = "containerization",
+        products = ["Containerization"],
+        tests = ["ContainerizationUnitTests"],
+        compile_checks = [],
+    ),
+    "engine-core": struct(
+        package = "container-engine-api",
+        products = ["ContainerEngineRuntimeSPI", "ContainerEngineRouter", "ContainerEngineLogging"],
+        tests = ["ContainerEngineRuntimeSPITests", "ContainerEngineRouterTests", "ContainerEngineLoggingTests"],
+        compile_checks = [],
+    ),
+    "engine-transport": struct(
+        package = "container-engine-api",
+        products = ["ContainerUnixHTTPServer", "ContainerUnixHTTPClient"],
+        tests = ["ContainerUnixHTTPServerTests", "ContainerUnixHTTPClientTests"],
+        compile_checks = [],
+    ),
+    "engine-session": struct(
+        package = "container-engine-api",
+        products = ["ContainerEngineProviderSession"],
+        tests = ["ContainerEngineProviderSessionTests"],
+        compile_checks = [],
+    ),
+    "engine-gateway": struct(
+        package = "container-engine-api",
+        products = ["ContainerEngineGateway"],
+        tests = ["ContainerEngineGatewayTests"],
+        compile_checks = [],
+    ),
+    "engine-service": struct(
+        package = "container-engine-api",
+        products = ["ContainerEngineService"],
+        tests = ["ContainerEngineServiceTests"],
+        compile_checks = [],
+    ),
 }
 
 # These suites depend on host networking and are requested explicitly.
 HOST_TESTS = {
+    "engine-service": ["ContainerEngineServiceTests"],
+    "engine-session": ["ContainerEngineProviderSessionTests"],
+    "engine-core": ["ContainerEngineRuntimeSPITests"],
+    "containerization-oci": ["ContainerizationOCITests"],
+    "containerization-os": ["ContainerizationOSTests"],
     "nio-transport-services": ["NIOTransportServicesTests"],
     "async-http-client": ["AsyncHTTPClientTests"],
 }

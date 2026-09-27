@@ -24,12 +24,14 @@ class TestRunnerTests(unittest.TestCase):
                               f'test "$(cat external/{package}/Tests/fixture)" = fixture\n'
                               'test "$1" = "argument with spaces"\n'
                               'test "$TMPDIR" = "$TEST_TMPDIR/"\n'
+                              'test "$0" = "$TEST_TMPDIR/executable/test binary"\n'
                               f'exit {exit_code}\n')
             binary.chmod(0o755)
             env = dict(os.environ, TEST_TARGET=label, TEST_SRCDIR=str(runfiles), TEST_TMPDIR=str(scratch))
             result = subprocess.run([str(RUNNER), str(binary), "argument with spaces"], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, exit_code, result.stderr)
             self.assertEqual((runfiles / package / "Tests/fixture").read_text(), "fixture")
+            self.assertEqual(binary.read_bytes(), (scratch / "executable/test binary").read_bytes())
 
     def test_canonical_external_package(self):
         self.check_workspace("@@extension+package//:tests", "extension+package", 0)

@@ -6,7 +6,7 @@ bazel-build:
 bazel-test:
 	@Tools/bazel/run.sh test //:$(LAYER)-tests
 bazel-host-test:
-	@Tools/bazel/run.sh test //:$(LAYER)-host-tests --test_env=CONTAINER_HOST_NETWORK_TESTS=1 --test_timeout=120
+	@env -u CI Tools/bazel/run.sh test //:$(LAYER)-host-tests --test_env=CI --test_env=CONTAINER_HOST_TESTS=1 --strategy=TestRunner=local --test_timeout=120
 bazel-tools-test:
 	@for script in Tools/bazel/*.sh; do bash -n "$$script" || exit; done
 	@shellcheck Tools/bazel/*.sh

@@ -3,7 +3,7 @@
 load("@rules_swift_package_manager//swiftpkg:defs.bzl", "swift_package")
 
 load(":layers.bzl", "HOST_TESTS", "LAYERS")
-load(":test_inputs.bzl", "PATCHES", "TEST_DATA", "TEST_DATA_GLOBS")
+load(":test_inputs.bzl", "PATCHES", "TEST_DATA", "TEST_DATA_GLOBS", "TEST_TAGS")
 
 def _dependencies_impl(ctx):
     packages = {}
@@ -27,6 +27,7 @@ def _dependencies_impl(ctx):
                     publicly_expose_all_targets = True,
                     test_targets = list({target: True for target in test_targets}),
                     test_data = TEST_DATA.get(identity, {}),
+                    test_tags = TEST_TAGS.get(identity, {}),
                     test_data_globs = TEST_DATA_GLOBS.get(identity, {}),
                     patches = PATCHES.get(identity, []),
                     patch_args = ["-p1"],

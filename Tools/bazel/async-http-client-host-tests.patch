@@ -6,7 +6,7 @@ diff --git a/Tests/AsyncHTTPClientTests/HTTPClientTests.swift b/Tests/AsyncHTTPC
  
      func testConnectTimeout() throws {
 +        try XCTSkipUnless(
-+            ProcessInfo.processInfo.environment["CONTAINER_HOST_NETWORK_TESTS"] == "1",
++            ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1",
 +            "Host network behavior: run make bazel-host-test for this layer."
 +        )
          #if os(Linux)
@@ -22,7 +22,7 @@ diff --git a/Tests/AsyncHTTPClientTests/AsyncAwaitEndToEndTests.swift b/Tests/As
 -    func testConnectTimeout() {
 +    func testConnectTimeout() throws {
 +        try XCTSkipUnless(
-+            ProcessInfo.processInfo.environment["CONTAINER_HOST_NETWORK_TESTS"] == "1",
++            ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1",
 +            "Host network behavior: run make bazel-host-test for this layer."
 +        )
          let serverGroup = self.serverGroup!
