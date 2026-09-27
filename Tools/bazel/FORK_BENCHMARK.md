@@ -6,6 +6,10 @@ Updated locally on 27 September 2026 after synchronizing the five relevant forks
 
 Two functional differences remain explicit failures when running identical upstream tests: the container fork accepts longer names, and the SSL fork reports a different TLS alert for three rejected-certificate cases. These failed suites are excluded from passing-workload speed claims. The comparison command returns nonzero and retains both failures; the normal fork-specific validation separately passed.
 
+## Interpretation correction
+
+The follow-up [performance diagnosis](PERFORMANCE_DIAGNOSIS.md) found that one deep-nesting test dominates the debug archive suite. That test takes only 29 ms for Apple and 46 ms for the fork when optimized. The seconds-long suite timings below must not be used as general production archive throughput. The forced compilation comparison deliberately changes every component Swift file; ordinary incremental builds have a smaller scope. Short command timings also include the original timeout-polling delay, now fixed in the harness. Original measurements remain below for traceability; corrected runtime results and causal experiments are in the diagnosis.
+
 ## Source revisions
 
 | Repository | Fork | Upstream main |

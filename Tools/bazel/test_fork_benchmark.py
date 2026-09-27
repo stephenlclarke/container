@@ -3,13 +3,48 @@
 import json
 from pathlib import Path
 import tempfile
+import sys
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from fork_benchmark import Runner
 
 
 class ReportTests(unittest.TestCase):
+    def test_successful_command_does_not_sleep_polling_for_exit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            runner = Runner(evidence, evidence)
+            # A measurement must not acquire a delay from the parent's timeout
+            # polling loop. This deterministically catches the old implementation.
+            with patch('subprocess.time.sleep', side_effect=AssertionError('polling delay')):
+                row = runner.run('probe', 'fork', 'precise-exit', 0,
+                                 [sys.executable, '-c', 'pass'], evidence, timeout=5)
+            self.assertEqual(row['status'], 0)
+
+    def test_command_preserves_output_and_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            runner = Runner(evidence, evidence)
+            row = runner.run('probe', 'fork', 'exit', 0,
+                             [sys.executable, '-c', 'print("retained-output"); raise SystemExit(7)'],
+                             evidence, timeout=5)
+            self.assertEqual(row['status'], 7)
+            self.assertIn('retained-output', Path(row['log']).read_text())
+
+    def test_deadline_kills_and_reaps_child_and_retains_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            runner = Runner(evidence, evidence)
+            row = runner.run('probe', 'fork', 'timeout', 0,
+                             [sys.executable, '-c', 'import time; print("started", flush=True); time.sleep(30)'],
+                             evidence, timeout=0.5)
+            self.assertEqual(row['status'], 124)
+            self.assertLess(row['seconds'], 5)
+            self.assertIn('started', Path(row['log']).read_text())
+            self.assertEqual(json.loads((evidence / 'results.json').read_text())[0]['status'], 124)
+
     def test_median_does_not_hide_a_tenfold_trial(self):
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory)

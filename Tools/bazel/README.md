@@ -102,3 +102,7 @@ The Smithy source-generation plugin is represented by a native Bazel action. It 
 The active graph contains this repository and 39 pinned Swift package dependencies, plus the same-repository Go helper's pinned module dependencies. The two DocC-only lockfile packages are not imported. The internal K8s module belongs to this container repository; no separate Kubernetes repository is admitted.
 
 Normal builds produce debug artifacts. `bazel-final` also builds optimized binaries, signs the private benchmark installations and runs VMs. Packaging, publishing and family-wide release gates remain outside this check. The engine command's source file is named after its type instead of `main.swift`, avoiding Swift's top-level entry-point interpretation when using `@main`; its contents are unchanged.
+
+## Performance interpretation
+
+See [the performance diagnosis](PERFORMANCE_DIAGNOSIS.md) before comparing fork and upstream timings. Component rebuilds deliberately invalidate every component Swift file, and archive suite timings use debug builds. Runtime measurements use optimized binaries. The benchmark waits directly for child exit with a separate timeout watchdog, avoiding up to roughly 50 ms of parent polling delay on short commands. Exact fingerprints and earlier results remain retained.

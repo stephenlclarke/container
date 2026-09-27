@@ -15,6 +15,7 @@ import shutil
 import statistics
 import subprocess
 import tarfile
+import threading
 import time
 import uuid
 import xml.etree.ElementTree as ET
@@ -185,11 +186,31 @@ class Runner:
         interrupted = False
         with log.open('w') as stream:
             try:
-                result = subprocess.run(args, cwd=cwd, env=self.env, stdout=stream,
-                                        stderr=subprocess.STDOUT, timeout=timeout)
-                status = result.returncode
-            except subprocess.TimeoutExpired:
-                status = 124
+                # POSIX wait(timeout=...) polls with sleeps of up to 50 ms.
+                # Keep the deadline on a watchdog so timing ends at child exit.
+                with subprocess.Popen(args, cwd=cwd, env=self.env, stdout=stream,
+                                      stderr=subprocess.STDOUT) as process:
+                    expired = threading.Event()
+
+                    def expire():
+                        if process.poll() is None:
+                            expired.set()
+                            process.kill()
+
+                    watchdog = threading.Timer(timeout, expire)
+                    watchdog.daemon = True
+                    watchdog.start()
+                    try:
+                        status = process.wait()
+                    except BaseException:
+                        process.kill()
+                        process.wait()
+                        raise
+                    finally:
+                        watchdog.cancel()
+                        watchdog.join()
+                    if expired.is_set():
+                        status = 124
             except KeyboardInterrupt:
                 status = 130
                 interrupted = True

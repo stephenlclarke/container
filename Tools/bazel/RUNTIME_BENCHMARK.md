@@ -4,7 +4,11 @@
 
 `make bazel-final` now finishes qualification with real runtime benchmarks. It checks the build tools, runs the 91 normal test suites, builds optimized Apple and fork executables, stages private signed installations, executes the same workloads and retains a comparison report. Ordinary per-layer tests remain separate and cached. Use `make bazel-runtime-benchmark` for the optimized runtime comparison alone.
 
-## Results: 27 September 2026
+## Follow-up: corrected timing and diagnosis
+
+The benchmark now waits for child exit without the old timeout polling, which could add roughly 50 ms to short commands. The unchanged optimized binaries were remeasured over seven trials per lane, with nine reverse-order trials for startup/import. Startup/exit remained 174-219 ms slower and warm import 32-38 ms slower. Uncached builds, cached builds and image saving were close in the corrected run. The original table below remains historical; its short-command percentages are superseded. See [the full diagnosis](PERFORMANCE_DIAGNOSIS.md) for corrected results, the small-write import bottleneck, debug archive overhead, startup wait probes and build critical paths. Both corrected runtime checks and all 20 tool tests passed.
+
+## Historical results: 27 September 2026, before timing correction
 
 The refreshed runtime comparison passed after the upstream synchronization. The 91 normal suites and 17 focused tool tests also passed separately. Each number below is the median of three trials on an Apple M5 Pro with 24 GiB RAM, connected to power, running macOS 27.0 build 26A428. Lower times are better.
 
