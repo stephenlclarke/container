@@ -28,6 +28,10 @@ fi
 mkdir -p "$TEST_TMPDIR/executable"
 executable="$TEST_TMPDIR/executable/$(basename "$binary")"
 cp -p "$binary" "$executable"
+helper="$TEST_SRCDIR/_main/Tools/ContainerSemanticHelper/dist/container-semantic-helper"
+if [[ -x "$helper" ]]; then
+    export CONTAINER_SEMANTIC_HELPER_PATH="$helper"
+fi
 cd "$workspace"
 export TMPDIR="$TEST_TMPDIR/"
 exec "$executable" "$@"

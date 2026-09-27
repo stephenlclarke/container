@@ -2,3 +2,13 @@ load("//Tools/bazel:layers.bzl", "declare_layers")
 
 exports_files(["Package.resolved"])
 declare_layers()
+
+alias(name = "semantic-helper", actual = "//Tools/ContainerSemanticHelper:payload")
+test_suite(name = "semantic-helper-tests", tests = ["//Tools/ContainerSemanticHelper:helper_tests"])
+
+filegroup(
+    name = "container",
+    testonly = True,
+    srcs = [":container-executables", ":semantic-helper"],
+)
+alias(name = "cli", actual = "@swiftpkg_container//:container.rspm")

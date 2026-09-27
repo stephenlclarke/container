@@ -12,7 +12,13 @@ See [ISSUE-container-only-bazel.md](ISSUE-container-only-bazel.md). The existing
 
 ## Implementation
 
-Use native Bazel package targets, one macOS configuration and explicit upstream tests per dependency layer. Keep a short launcher that verifies the SSD and Bazel executable, uses persistent scratch and retains raw evidence. No scheduler or release controller is added.
+Use native Bazel package targets, one macOS configuration and explicit upstream tests per dependency layer. The active graph includes container and 39 pinned Swift dependencies. The same-repository semantic helper uses its existing pinned Go SDK and module lockfiles. Its compiled source/oracle digests and manifest are validated by Go and Swift tests.
+
+Limit the AWS SDK to CloudWatch Logs plus required internal libraries. Represent the pinned Smithy generator as a Bazel action with declared settings, models, header and five Swift outputs. Select CRT offline test sources without changing their assertions; Smithy's empty placeholder test is not counted as coverage.
+
+Import the local container source with selected tests and fixtures. Preserve native non-CI behavior while separating seven Keychain-backed API checks in CI. Make the executable-path assertion independent of the test runner name and rename the engine command's @main source file to avoid top-level entry-point interpretation; its contents are unchanged.
+
+Expose container, dependency, per-layer, host and runtime-integration Makefile commands. Keep a short launcher that verifies the SSD and Bazel executable, uses persistent scratch and retains raw evidence. No scheduler or release controller is added.
 
 ## Testing
 
@@ -24,7 +30,9 @@ Networking, configuration and cryptography layers have also been added. The laun
 
 Containerization now has separate OS/utilities, archive, EXT4, OCI and main-library layers. Live registries and login-Keychain checks are explicit host integration checks. Archive permission tests run locally because the sandbox strips set-ID bits; the original assertions pass. A private standalone test executable fixes strict code-signature validation without re-signing or installing products. Engine API core, transports, sessions, gateway and service checks are split into separate layers.
 
-The full container build is not yet qualified. No coverage percentage is claimed for the imported upstream test suites.
+All eight container executables and the same-repository Go semantic helper now build. The CLI passes version/help smoke checks. The runtime integration harness compiles separately; it has not been executed against a live installation.
+
+The container unit suites and AWS runtime suites pass individually with cached repeats. The combined run passes all 91 suites; a warm repeat caches all 91 with no compilation. See [the qualification report](Tools/bazel/QUALIFICATION.md) for wall times, exact evidence and skipped-test accounting. No coverage percentage or cloud Sonar quality-gate result is claimed; local shell checks, Swift formatting and the actual native builds/tests supply this branch's evidence.
 
 ## Compatibility and Remaining Risks
 

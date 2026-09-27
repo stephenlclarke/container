@@ -1,0 +1,24 @@
+diff --git a/swiftpkg/internal/local_swift_package.bzl b/swiftpkg/internal/local_swift_package.bzl
+--- a/swiftpkg/internal/local_swift_package.bzl
++++ b/swiftpkg/internal/local_swift_package.bzl
+@@ -11,7 +11,7 @@
+ load(":repo_rules.bzl", "repo_rules")
+ 
+ # Ignore the .build directory because we will need to create our own
+-_CODE_IGNORE_LIST = [".", "..", ".build"]
++_CODE_IGNORE_LIST = [".", "..", ".build", ".git", "BUILD.bazel", "MODULE.bazel", "MODULE.bazel.lock", "WORKSPACE"]
+ 
+ def _list_contents(repository_ctx, repo_dir, path):
+     # Watch directory to ensure the repo is refetched if new files are added to the local package.
+@@ -111,6 +111,11 @@
+             doc = "When used, the provided BUILD file will be used instead of generating one.",
+         ),
+         "cached_json_directory": attr.string(),
++        "publicly_expose_all_targets": attr.bool(default = False),
++        "test_targets": attr.string_list(),
++        "test_data": attr.string_list_dict(),
++        "test_data_globs": attr.string_list_dict(),
++        "test_tags": attr.string_list_dict(),
+     },
+ )
+ 

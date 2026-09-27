@@ -273,10 +273,125 @@ LAYERS = {
         tests = ["ContainerEngineServiceTests"],
         compile_checks = [],
     ),
+    "container-version": struct(
+        package = "container",
+        products = ["ContainerVersion"],
+        tests = ["ContainerVersionTests"],
+        compile_checks = [],
+    ),
+    "container-semantic": struct(
+        package = "container",
+        products = ["DockerSemanticHelper"],
+        tests = ["DockerSemanticHelperTests"],
+        compile_checks = [],
+    ),
+    "container-sockets": struct(
+        package = "container",
+        products = ["SocketForwarder"],
+        tests = ["SocketForwarderTests"],
+        compile_checks = [],
+    ),
+    "container-base": struct(
+        package = "container",
+        products = ["ContainerLog", "ContainerXPC", "ContainerOS", "TerminalProgress", "DNSServer"],
+        tests = ["CLITests", "ContainerXPCTests", "ContainerOSTests", "TerminalProgressTests", "DNSServerTests"],
+        compile_checks = [],
+    ),
+    "container-state": struct(
+        package = "container",
+        products = ["ContainerResource", "ContainerPersistence", "ContainerPlugin", "ContainerTestSupport"],
+        tests = ["ContainerPersistenceTests", "ContainerPluginTests", "ContainerTestSupportTests"],
+        compile_checks = [],
+    ),
+    "container-client": struct(
+        package = "container",
+        products = ["ContainerAPIClient", "ContainerImagesServiceClient", "ContainerNetworkClient", "ContainerRuntimeClient", "ContainerRuntimeLinuxClient", "MachineAPIClient"],
+        tests = ["ContainerAPIClientTests", "MachineAPIClientTests"],
+        compile_checks = [],
+    ),
+    "container-logging": struct(
+        package = "container",
+        products = ["ContainerLoggingProviders", "ContainerLoggingStorage"],
+        tests = ["ContainerLoggingProvidersTests"],
+        compile_checks = [],
+    ),
+    "container-build": struct(
+        package = "container",
+        products = ["ContainerBuild"],
+        tests = ["ContainerBuildTests"],
+        compile_checks = [],
+    ),
+    "container-images": struct(
+        package = "container",
+        products = ["ContainerImagesService"],
+        tests = ["ContainerImagesServiceTests"],
+        compile_checks = [],
+    ),
+    "container-network": struct(
+        package = "container",
+        products = ["ContainerNetworkServer", "ContainerNetworkVmnetServer"],
+        tests = ["ContainerNetworkServerTests", "ContainerNetworkVmnetServerTests"],
+        compile_checks = [],
+    ),
+    "container-runtime": struct(
+        package = "container",
+        products = ["ContainerRuntimeLinuxServer"],
+        tests = ["ContainerRuntimeLinuxServerTests"],
+        compile_checks = [],
+    ),
+    "container-machine": struct(
+        package = "container",
+        products = ["MachineAPIService"],
+        tests = ["MachineAPIServiceTests"],
+        compile_checks = [],
+    ),
+    "container-api": struct(
+        package = "container",
+        products = ["ContainerAPIService"],
+        tests = ["ContainerAPIServiceTests", "ContainerResourceTests"],
+        compile_checks = [],
+    ),
+    "container-commands": struct(
+        package = "container",
+        products = ["ContainerCommands"],
+        tests = ["ContainerCommandsTests"],
+        compile_checks = [],
+    ),
+    "container-k8s": struct(
+        package = "container",
+        products = ["ContainerK8s"],
+        tests = ["K8sPluginTests"],
+        compile_checks = [],
+    ),
+    "aws-crt": struct(
+        package = "aws-crt-swift",
+        products = ["AwsCommonRuntimeKit"],
+        tests = ["AwsCommonRuntimeKitOfflineTests"],
+        compile_checks = [],
+    ),
+    "smithy": struct(
+        package = "smithy-swift",
+        products = ["ClientRuntime", "SmithyCodegenCLI"],
+        tests = [],
+        compile_checks = [],
+    ),
+    "aws-cloudwatch": struct(
+        package = "aws-sdk-swift",
+        products = ["AWSCloudWatchLogs", "AWSClientRuntime", "AWSSDKIdentity"],
+        tests = ["AWSClientRuntimeTests", "AWSSDKEventStreamsAuthTests", "AWSSDKHTTPAuthTests", "AWSSDKIdentityTests"],
+        compile_checks = [],
+    ),
+    "container-executables": struct(
+        package = "container",
+        products = ["container", "container-engine", "container-apiserver", "container-core-images", "container-network-vmnet", "container-runtime-linux", "machine-apiserver", "k8s"],
+        tests = [],
+        compile_checks = [],
+    ),
 }
 
-# These suites depend on host networking and are requested explicitly.
+# These suites include host networking or Keychain checks requested explicitly.
 HOST_TESTS = {
+    "container-api": ["ContainerAPIServiceTests"],
     "engine-service": ["ContainerEngineServiceTests"],
     "engine-session": ["ContainerEngineProviderSessionTests"],
     "engine-core": ["ContainerEngineRuntimeSPITests"],
@@ -285,6 +400,8 @@ HOST_TESTS = {
     "nio-transport-services": ["NIOTransportServicesTests"],
     "async-http-client": ["AsyncHTTPClientTests"],
 }
+
+RUNTIME_TESTS = ["IntegrationTests"]
 
 def declare_layers():
     for name, layer in LAYERS.items():
@@ -307,3 +424,28 @@ def declare_layers():
             tests = [repo + target + ".rspm" for target in tests],
             tags = ["manual"],
         )
+
+    native.test_suite(
+        name = "dependency-tests",
+        tests = [":" + name + "-tests" for name, layer in LAYERS.items() if layer.package != "container" and layer.tests],
+    )
+    native.test_suite(
+        name = "container-tests",
+        tests = [":" + name + "-tests" for name, layer in LAYERS.items() if layer.package == "container" and layer.tests] + [":semantic-helper-tests"],
+    )
+    native.test_suite(
+        name = "qualified-tests",
+        tests = [":dependency-tests", ":container-tests"],
+    )
+
+    layer_build(
+        name = "runtime-integration",
+        testonly = True,
+        tags = ["manual"],
+        deps = ["@swiftpkg_container//:" + target + ".rspm" for target in RUNTIME_TESTS],
+    )
+    native.test_suite(
+        name = "runtime-integration-tests",
+        tests = ["@swiftpkg_container//:" + target + ".rspm" for target in RUNTIME_TESTS],
+        tags = ["manual"],
+    )

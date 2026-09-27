@@ -28,7 +28,14 @@ import Testing
 @testable import ContainerAPIService
 
 // Each case exercises the gateway-exclusive Keychain-backed handoff lifecycle.
-@Suite(.serialized)
+@Suite(
+    .serialized,
+    .enabled(
+        if: ProcessInfo.processInfo.environment["CI"] != "1"
+            || ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1",
+        "Requires an accessible login Keychain; run the explicit host-test layer"
+    )
+)
 struct LoggingHandoffControlResponderTests {
     @Test
     func `gateway coordinator aborts and compensates staged logging with exact replay`() async throws {

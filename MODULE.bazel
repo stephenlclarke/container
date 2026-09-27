@@ -10,8 +10,22 @@ bazel_dep(name = "rules_apple", version = "4.3.3", repo_name = "build_bazel_rule
 
 single_version_override(module_name = "rules_license", version = "1.0.0", patches = ["//Tools/bazel:rules-license-empty-provider.patch"], patch_strip = 1)
 single_version_override(module_name = "rules_swift", version = "3.6.1", patches = ["//Tools/bazel:rules-swift-sandbox-output.patch"], patch_strip = 1)
-single_version_override(module_name = "rules_swift_package_manager", version = "1.23.0", patches = ["//Tools/bazel:rules-swift-package-tests.patch", "//Tools/bazel:rules-swift-package-test-data.patch", "//Tools/bazel:rules-swift-package-test-bundles.patch", "//Tools/bazel:rules-swift-package-test-tags.patch"], patch_strip = 1)
+single_version_override(module_name = "rules_swift_package_manager", version = "1.23.0", patches = ["//Tools/bazel:rules-swift-package-tests.patch", "//Tools/bazel:rules-swift-package-test-data.patch", "//Tools/bazel:rules-swift-package-test-bundles.patch", "//Tools/bazel:rules-swift-package-test-tags.patch", "//Tools/bazel:rules-swift-package-local-tests.patch", "//Tools/bazel:rules-swift-package-smithy.patch"], patch_strip = 1)
 
 deps = use_extension("//Tools/bazel:dependencies.bzl", "dependencies")
 deps.lockfile(path = "//:Package.resolved")
-use_repo(deps, "swiftpkg_async_http_client", "swiftpkg_container_engine_api", "swiftpkg_containerization", "swiftpkg_grpc_swift_2", "swiftpkg_grpc_swift_nio_transport", "swiftpkg_grpc_swift_protobuf", "swiftpkg_punycodeswift", "swiftpkg_swift_algorithms", "swiftpkg_swift_argument_parser", "swiftpkg_swift_asn1", "swiftpkg_swift_async_algorithms", "swiftpkg_swift_atomics", "swiftpkg_swift_certificates", "swiftpkg_swift_collections", "swiftpkg_swift_configuration", "swiftpkg_swift_configuration_toml", "swiftpkg_swift_crypto", "swiftpkg_swift_distributed_tracing", "swiftpkg_swift_http_structured_headers", "swiftpkg_swift_http_types", "swiftpkg_swift_log", "swiftpkg_swift_metrics", "swiftpkg_swift_nio", "swiftpkg_swift_nio_extras", "swiftpkg_swift_nio_http2", "swiftpkg_swift_nio_ssl", "swiftpkg_swift_nio_transport_services", "swiftpkg_swift_numerics", "swiftpkg_swift_protobuf", "swiftpkg_swift_service_context", "swiftpkg_swift_service_lifecycle", "swiftpkg_swift_system", "swiftpkg_swift_toml", "swiftpkg_tldextractswift", "swiftpkg_yams", "swiftpkg_zstd")
+use_repo(deps, "swiftpkg_async_http_client", "swiftpkg_aws_crt_swift", "swiftpkg_aws_sdk_swift", "swiftpkg_container", "swiftpkg_container_engine_api", "swiftpkg_containerization", "swiftpkg_grpc_swift_2", "swiftpkg_grpc_swift_nio_transport", "swiftpkg_grpc_swift_protobuf", "swiftpkg_punycodeswift", "swiftpkg_smithy_swift", "swiftpkg_swift_algorithms", "swiftpkg_swift_argument_parser", "swiftpkg_swift_asn1", "swiftpkg_swift_async_algorithms", "swiftpkg_swift_atomics", "swiftpkg_swift_certificates", "swiftpkg_swift_collections", "swiftpkg_swift_configuration", "swiftpkg_swift_configuration_toml", "swiftpkg_swift_crypto", "swiftpkg_swift_distributed_tracing", "swiftpkg_swift_http_structured_headers", "swiftpkg_swift_http_types", "swiftpkg_swift_log", "swiftpkg_swift_metrics", "swiftpkg_swift_nio", "swiftpkg_swift_nio_extras", "swiftpkg_swift_nio_http2", "swiftpkg_swift_nio_ssl", "swiftpkg_swift_nio_transport_services", "swiftpkg_swift_numerics", "swiftpkg_swift_protobuf", "swiftpkg_swift_service_context", "swiftpkg_swift_service_lifecycle", "swiftpkg_swift_system", "swiftpkg_swift_toml", "swiftpkg_tldextractswift", "swiftpkg_yams", "swiftpkg_zstd")
+
+# The semantic helper is part of this repository and retains its native Go pin.
+bazel_dep(name = "rules_go", version = "0.60.0")
+bazel_dep(name = "gazelle", version = "0.50.0")
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.download(
+    name = "semantic_go_sdk",
+    version = "1.25.6",
+    sdks = {"darwin_arm64": ["go1.25.6.darwin-arm64.tar.gz", "984521ae978a5377c7d782fd2dd953291840d7d3d0bd95781a1f32f16d94a006"]},
+)
+use_repo(go_sdk, "semantic_go_sdk")
+go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
+go_deps.from_file(go_mod = "//Tools/ContainerSemanticHelper:go.mod")
+use_repo(go_deps, "com_google_cloud_go_compute_metadata", "com_google_cloud_go_logging", "org_golang_google_genproto_googleapis_api")

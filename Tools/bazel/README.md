@@ -4,13 +4,29 @@
 
 This workspace qualifies `container` and its required dependencies in order. It uses the exact revisions in `Package.resolved`, one macOS configuration and native Bazel compilation. SwiftPM supplies package descriptions only; it does not run a second build engine.
 
+See [QUALIFICATION.md](QUALIFICATION.md) for measured results and explicit limits.
+
 ## Commands
 
-- `make bazel-tools-test`: validate the launcher and report preservation.
-- `make bazel-build LAYER=system`: build one layer and any compile-only checks.
-- `make bazel-test LAYER=system`: run that layer's executable tests.
-- `make bazel-host-test LAYER=nio-transport-services`: explicitly run host networking tests with a 120-second bound.
-- Replace `system` with a layer name in `layers.bzl`, such as `atomics` or `collections`.
+Run these in the container checkout:
+
+| Command | Scope |
+| --- | --- |
+| `make bazel-build` | Eight container executables and the semantic helper |
+| `make bazel-test` | Container unit suites and the helper's Go tests |
+| `make bazel-build LAYER=system` | One dependency layer and its prerequisites |
+| `make bazel-test LAYER=system` | One layer's tests |
+| `make bazel-dependency-test` | Selected tests for all admitted dependencies |
+| `make bazel-test-all` | Container and dependency tests together |
+| `make bazel-tools-test` | Launcher, runner and retained-report checks |
+| `make bazel-check` | Tool checks, complete build, container unit tests |
+| `make bazel-host-test LAYER=container-api` | Explicit host checks; requires the relevant host services |
+| `make bazel-integration-build` | Compile the runtime integration harness without running it |
+| `make bazel-integration-test CONTAINER_CLI_PATH=/absolute/path/to/container` | Run integration against an already prepared test installation |
+
+`LAYER` defaults to `container`. Pick individual layer names from [layers.bzl](layers.bzl). Build and test commands reuse the same outputs. Host and runtime integration runs deliberately disable result caching because their external state can change.
+
+Runtime integration requires a matching prepared installation, running services, kernel/images, permissions and network access. Its tests can create and remove runtime resources. The build workflow does not install or start these prerequisites. Compilation alone is not a runtime pass.
 
 ## Available layers
 
@@ -18,7 +34,7 @@ This workspace qualifies `container` and its required dependencies in order. It 
 
 Each executable test gets a private source directory presenting only its declared runfiles, with both package-relative and Bazel external-package paths. This supports upstream fixture lookup without writing into a checkout. `zstd` has no upstream Swift test target and is a build-only layer; its consumers provide later integration coverage.
 
-Additional dependencies are admitted only after the preceding layer passes. Runtime integration will have a separate explicit target; dependency and unit tests do not install or launch container services. Compose, devcontainer, Kubernetes repositories and family release automation are outside this workflow.
+Additional dependencies are admitted only after the preceding layer passes. Runtime integration has a separate explicit target; dependency and unit tests do not install or launch container services. Compose, devcontainer, Kubernetes repositories and family release automation are outside this workflow.
 
 ## Storage and evidence
 
@@ -36,7 +52,7 @@ Argument Parser also declares its checked-in snapshots and example executable as
 
 The certificate suite also has a test-only patch removing an unsupported XCTest activity-reporting wrapper; its key generation and every assertion still run.
 
-The other two patches are retained compatibility fixes for rules_license provider fields and Swift test output/coverage handling. They do not change container product behavior.
+Additional retained compatibility patches cover rules_license provider fields and Swift test output/coverage handling. They do not change container product behavior.
 
 ## Preservation and recovery
 
@@ -44,12 +60,36 @@ The pre-change snapshot is recorded in `/Users/sclarke/Documents/devcontainer/CU
 
 ## Host-dependent validation
 
-The `nio-transport-services` library builds successfully. Its upstream suite is kept in a separate explicit host-test target: on this macOS installation, `NIOTSConnectionChannelTests.testConnectingInvolvesWaiting` waited indefinitely for a DNS/connectivity event concerning `example.invalid`. The qualification run was interrupted after 94 seconds and its raw log retained; this suite is not claimed as passing. The HTTP client timeout test also fails because this host resets a full TCP backlog instead of timing out. The platform network accounting test also returns zero path reports where upstream expects one. Two test-only patches mark these four checks (including both HTTP client timeout variants) as explicit `XCTSkip` in normal runs. `make bazel-host-test LAYER=nio-transport-services` or `LAYER=async-http-client` enables the original checks with `CONTAINER_HOST_TESTS=1`; every assertion is retained. None of these four host checks is claimed as passing. Other tests in those suites remain in the normal layer.
+The `nio-transport-services` library builds successfully. Its upstream suite is kept in a separate explicit host-test target: on this macOS installation, `NIOTSConnectionChannelTests.testConnectingInvolvesWaiting` waited indefinitely for a DNS/connectivity event concerning `example.invalid`. The qualification run was interrupted after 94 seconds and its raw log retained; that host-dependent check is not claimed as passing. The HTTP client timeout test also fails because this host resets a full TCP backlog instead of timing out. The platform network accounting test also returns zero path reports where upstream expects one. Two test-only patches mark these four checks (including both HTTP client timeout variants) as explicit `XCTSkip` in normal runs. `make bazel-host-test LAYER=nio-transport-services` or `LAYER=async-http-client` enables the original checks with `CONTAINER_HOST_TESTS=1`; every assertion is retained. None of these four host checks is claimed as passing. Other tests in those suites remain in the normal layer.
 
-Normal tests set `CI=1`, respecting upstream opt-outs for interactive host services. Containerization uses this to skip its two login-Keychain checks; the initial sandbox run returned Keychain status 100001. The explicit host-test command clears `CI` and includes those checks. Skipped cases remain visible in retained JUnit reports.
+Normal tests set `CI=1`, respecting upstream opt-outs for interactive host services. Containerization uses this to skip its two login-Keychain checks; the initial sandbox run returned Keychain status 100001. The explicit host-test command clears `CI` and includes those checks. Skipped cases remain visible in retained test logs; XCTest also records its skips in JUnit XML.
 
 Archive permission tests run with the `no-sandbox` execution requirement because the macOS sandbox strips set-ID bits. A focused comparison failed in the sandbox and passed locally. This preserves the complete permission assertions; compilation remains sandboxed and test outputs/results are still cached normally.
 
 OCI tests that contact public registries also require the explicit host-test command (`LAYER=containerization-oci`). The initial Docker Hub ping timed out. A test-only trait gates live-registry methods while keeping local registry stubs, authentication validation, parsing and metadata checks in normal runs. Existing upstream credential requirements and disabled push tests remain unchanged.
 
-Engine API key-store tests require the explicit host command (`LAYER=engine-core`, `LAYER=engine-session`, or `LAYER=engine-service`): eleven cases need an accessible Keychain, which returned status 100001 in the sandbox. Ordinary cache, protocol, cryptographic, signing-identity and routing tests remain enabled. The test runner uses a private standalone copy of the executable because the incomplete `.xctest` layout emitted by rules_swift fails strict code-signature validation (status -67056). No product is re-signed or installed. Explicit host runs execute locally and still require an accessible Keychain; they are not part of normal qualification.
+Engine API key-store tests require the explicit host command (`LAYER=engine-core`, `LAYER=engine-session`, or `LAYER=engine-service`): eleven cases need an accessible Keychain, which returned status 100001 in the sandbox. Ordinary cache, protocol, cryptographic, signing-identity and routing tests remain enabled. The test runner uses a private standalone copy of the executable because the incomplete `.xctest` layout emitted by rules_swift fails strict code-signature validation (status -67056). No existing product is re-signed or installed by the test runner. Explicit host runs execute locally and still require an accessible Keychain; they are not part of normal qualification.
+
+## Container source and semantic helper
+
+The local container package is imported from this checkout with the same selected-test mechanism. Its tests declare their manifest, lockfile and helper fixtures. The executable-path test uses the invoked test binary name, which works with SwiftPM and Bazel.
+
+The same-repository semantic helper builds natively with rules_go, its existing Go 1.25.6 pin and go.mod/go.sum. Bazel generates the source/oracle digest constants used by the native helper, then signs the new output and generates its manifest using the existing manifest routine. The helper's Go tests and Swift attestation tests exercise the resulting payload. Unrelated Swift edits reuse this output.
+
+Seven API logging-handoff tests require Keychain access. In CI they are explicit skips unless CONTAINER_HOST_TESTS=1; native non-CI behavior is unchanged. Use the container-api host-test layer to request their original checks.
+
+## AWS dependency scope
+
+The AWS SDK import retains its exact lockfile revision and selects only the CloudWatch Logs service through that revision's native batch mechanism. Its internal authentication/runtime libraries remain available. A manifest patch keeps runtime unit tests available in this selected batch.
+
+The CRT import initializes its pinned recursive C submodules. A manifest-only patch selects upstream offline tests for cryptography, checksums, encoding, configuration, signing and local I/O. Network, MQTT, metadata-service and credential-provider integration suites are outside this normal target; their sources and assertions are untouched.
+
+Smithy's main-package test is an empty placeholder. Its real tests require generated SDK subprojects and a Java code generator, so this reduced workflow treats Smithy as build-only and exercises it through AWS and container consumers. It does not report the placeholder as meaningful test coverage.
+
+The Smithy source-generation plugin is represented by a native Bazel action. It builds the pinned Swift generator, reads each selected service's settings/model and declares all five generated Swift files. A narrow resource patch passes the generator's existing header file as a declared input. This avoids nested SwiftPM builds and allows generation results to be cached.
+
+## Build boundaries
+
+The active graph contains this repository and 39 pinned Swift package dependencies, plus the same-repository Go helper's pinned module dependencies. The two DocC-only lockfile packages are not imported. The internal K8s module belongs to this container repository; no separate Kubernetes repository is admitted.
+
+Normal builds produce debug artifacts. Release stamping, packaging, signing for installation, VM execution and family-wide release gates are outside this check. The engine command's source file is named after its type instead of `main.swift`, avoiding Swift's top-level entry-point interpretation when using `@main`; its contents are unchanged.

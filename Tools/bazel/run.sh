@@ -41,11 +41,13 @@ run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 {
     printf 'source=%s\nhead=%s\n' "$repo" "$(git rev-parse HEAD)"
     git status --short
+    /usr/bin/sw_vers
+    /usr/bin/xcodebuild -version
     /usr/bin/xcrun swift --version 2>&1
 } > "$retained/$run_id.source.txt"
 printf 'Evidence: %s/%s.log\n' "$retained" "$run_id"
 git diff --binary HEAD > "$retained/$run_id.diff"
-find Tools/bazel -type f -exec /usr/bin/shasum -a 256 {} \; > "$retained/$run_id.inputs.sha256"
+find Tools/bazel Tools/ContainerSemanticHelper -type f -exec /usr/bin/shasum -a 256 {} \; > "$retained/$run_id.inputs.sha256"
 /usr/bin/shasum -a 256 MODULE.bazel MODULE.bazel.lock BUILD.bazel .bazelrc .bazelversion Package.swift Package.resolved Makefile >> "$retained/$run_id.inputs.sha256"
 extra=()
 case "$command_name" in
