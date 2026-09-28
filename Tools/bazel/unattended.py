@@ -206,6 +206,14 @@ def main() -> None:
                 (args.evidence / 'preflight.json').write_text(json.dumps(admission, indent=2) + '\n')
             slot.acquire()
             lease.acquire()
+            # Startup is now complete, including readiness and config checks.
+            # Unlock its shared open description before closing it: persistent
+            # Lima helpers inherit that description but cannot dispatch tests.
+            # Runner opens independent leases for all subsequent controllers.
+            for descriptor in lease.command_descriptors:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            commands.close()
+            lease.command_descriptors = ()
             runner = Runner(args.evidence, STORAGE)
             runner.env[COMMAND_LOCK_ENV] = str(command_lock)
             row = runner.run('qualification', 'fork', args.target, 0,

@@ -8,6 +8,8 @@ The family-wide build/test workflow has become too expensive and difficult to di
 
 Separate tests by dependency layer. Keep one configuration and persistent outputs so unchanged work can be reused. Runtime integration, installation and release qualification must not happen implicitly during a library test.
 
+Retiring automatic GitHub packaging must also retire its runfile and workflow-text assertions while preserving the archive verifier and formula behavior tests. A live cancellation additionally exposed persistent Colima helpers inheriting the startup lock. Release that startup-only lock after successful readiness checks, preserve independent controller leases, and keep failed startup quarantined.
+
 ## Scope
 
 Existing package revisions remain pinned. Compose/devcontainer and other family products remain outside scope. Following the reduced build checkpoint, restore container-only integration, quality, packaging and notarization as explicit unattended layers. The implementation and evidence are tracked in [PR-289.md](PR-289.md).

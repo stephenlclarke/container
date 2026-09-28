@@ -30,7 +30,7 @@ alias(name = "cli", actual = "@swiftpkg_container//:container.rspm")
         ("machine-user-script-tests", "Tests/ScriptTests/TestCreateMachineUser.sh", ["Sources/Plugins/MachineAPIServer/Resources/create-user.sh", "Sources/Plugins/MachineAPIServer/Resources/init"]),
         ("archive-checksum-tests", "Tests/ScriptTests/TestHomebrewArchiveChecksum.sh", ["scripts/write-sha256-sidecar.sh"]),
         ("install-init-script-tests", "Tests/ScriptTests/TestInstallInit.sh", ["scripts/install-init.sh", "Makefile", "Protobuf.Makefile", "Package.resolved"]),
-        ("developer-id-archive-tests", "Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh", ["scripts/verify-developer-id-archive.sh", ".github/workflows/prebuilt-binaries.yml", "Makefile"]),
+        ("developer-id-archive-tests", "Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh", ["scripts/verify-developer-id-archive.sh", "Makefile"]),
         ("debug-symbol-packaging-tests", "Tools/DebugSymbols/test_package.py", ["Tools/DebugSymbols/package.py"]),
     ]
 ]

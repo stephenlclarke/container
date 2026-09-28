@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -16,6 +17,58 @@ import linux_tests
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_successful_startup_releases_only_its_inherited_daemon_lease(self):
+        for failed_start in (False, True):
+            with self.subTest(failed_start=failed_start), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                helper = None
+                with patch.object(unattended, 'STORAGE', root), \
+                        patch.object(unattended, 'CONFIG', root / 'config.json'), \
+                        patch.object(unattended, 'check', return_value={'ready': True}), \
+                        patch.object(unattended, 'HostLease') as host, \
+                        patch.object(unattended, 'StockSlot'), \
+                        patch.object(unattended, 'ColimaLease') as lease, \
+                        patch.object(unattended, 'Runner') as runner, \
+                        patch.object(unattended, 'verify_installations'), \
+                        patch.object(unattended.signal, 'signal'), \
+                        patch('sys.argv', ['unattended', '--evidence', str(root / 'evidence')]):
+                    def acquire():
+                        nonlocal helper
+                        helper = subprocess.Popen(
+                            [sys.executable, '-c', 'import sys; print("ready", flush=True); sys.stdin.read()'],
+                            pass_fds=lease.return_value.command_descriptors,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                        self.assertEqual(helper.stdout.readline(), 'ready\n')
+                        if failed_start:
+                            raise RuntimeError('Startup readiness failed')
+
+                    def qualify(*_args, **_kwargs):
+                        self.assertIsNone(helper.poll())
+                        environment = {unattended.COMMAND_LOCK_ENV: str(root / 'evidence/commands.lock')}
+                        with unattended.command_lease(environment, exclusive=True):
+                            pass
+                        with unattended.command_lease(environment):
+                            with self.assertRaises(BlockingIOError):
+                                with unattended.command_lease(environment, exclusive=True):
+                                    self.fail('An independent controller still owns the lease')
+                        return {'status': 0}
+
+                    lease.return_value.acquire.side_effect = acquire
+                    runner.return_value.run.side_effect = qualify
+                    try:
+                        if failed_start:
+                            with self.assertRaisesRegex(RuntimeError, 'readiness failed'):
+                                unattended.main()
+                            runner.assert_not_called()
+                            lease.return_value.restore.assert_not_called()
+                            host.return_value.restore.assert_called_once_with(restore_workers=False)
+                        else:
+                            unattended.main()
+                            host.return_value.restore.assert_called_once_with(restore_workers=True)
+                    finally:
+                        if helper is not None:
+                            helper.communicate('', timeout=5)
+
     def test_idle_server_shutdown_releases_lease_but_surviving_controller_does_not(self):
         for release in (True, False):
             with self.subTest(release=release), tempfile.TemporaryDirectory() as directory, ExitStack() as commands:
