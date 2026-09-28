@@ -77,9 +77,10 @@ def services(prefix: str) -> list[tuple[str, str]]:
             if len(parts := line.split()) == 3 and parts[2].startswith(prefix)]
 
 
-def stop_owned(lane: str) -> None:
+def stop_owned(lane: str, *, originals: list[dict] | None = None) -> None:
     prefix = (NAMESPACE if lane == 'fork' else 'com.apple.container') + '.'
     install = str(INSTALLS / lane / 'install') + '/'
+    preserved = set()
     for _, label in services(prefix):
         target = f'gui/{os.getuid()}/{label}'
         try:
@@ -90,6 +91,12 @@ def stop_owned(lane: str) -> None:
             raise
         program = re.search(r'^\s*program = (.+)$', description, re.M)
         if not program or not program[1].startswith(install):
+            original = next((row for row in originals or [] if row['label'] == label), None)
+            path = re.search(r'^\s*path = (.+)$', description, re.M)
+            if (original is not None and path is not None and path[1] == original['path']
+                    and digest(Path(path[1])) == original['sha256']):
+                preserved.add(label)
+                continue
             raise RuntimeError(f'Refusing to stop unrelated service {label}')
         try:
             checked(['launchctl', 'bootout', target])
@@ -97,7 +104,7 @@ def stop_owned(lane: str) -> None:
             if label in {name for _, name in services(prefix)}:
                 raise
     deadline = time.monotonic() + 5
-    while services(prefix):
+    while any(label not in preserved for _, label in services(prefix)):
         if time.monotonic() >= deadline:
             raise RuntimeError(f'Benchmark services survived cleanup: {prefix}')
         time.sleep(0.1)
@@ -137,12 +144,17 @@ class StockSlot:
     def restore(self) -> None:
         errors = []
         for row in self.saved:
-            if not row['unloaded']:
-                continue
             try:
                 if digest(Path(row['path'])) != row['sha256']:
                     raise RuntimeError(f'Original plist changed: {row["path"]}')
-                checked(['launchctl', 'bootstrap', f'gui/{os.getuid()}', row['path']])
+                loaded = {label for _, label in services(row['label'])}
+                if row['label'] in loaded:
+                    description = checked(['launchctl', 'print', f'gui/{os.getuid()}/{row["label"]}'])
+                    match = re.search(r'^\s*path = (.+)$', description, re.M)
+                    if match is None or match[1] != row['path']:
+                        raise RuntimeError('Original service was replaced: ' + row['label'])
+                else:
+                    checked(['launchctl', 'bootstrap', f'gui/{os.getuid()}', row['path']])
                 row['restored'] = True
             except Exception as error:
                 errors.append(str(error))

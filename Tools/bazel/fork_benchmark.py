@@ -7,6 +7,7 @@ Source checkouts and installed container services are never modified.
 
 import argparse
 from contextlib import contextmanager
+import fcntl
 import hashlib
 import json
 import math
@@ -16,6 +17,7 @@ import re
 import signal
 import shutil
 import statistics
+import stat
 import subprocess
 import tarfile
 import threading
@@ -219,6 +221,28 @@ def prepare(component: str, lane: str, scratch: Path) -> Path:
     return workspace
 
 
+COMMAND_LOCK_ENV = 'CONTAINER_QUALIFICATION_COMMAND_LOCK'
+
+
+@contextmanager
+def command_lease(environment: dict, *, exclusive: bool = False):
+    """Keep recovery excluded while a command or its controller can still act."""
+    path = environment.get(COMMAND_LOCK_ENV)
+    if not path:
+        yield ()
+        return
+    descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o022):
+            raise RuntimeError('Qualification command lease is not a private single-owner file')
+        fcntl.flock(descriptor, (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        yield (descriptor,)
+    finally:
+        os.close(descriptor)
+
+
 class Runner:
     def __init__(self, evidence: Path, scratch: Path) -> None:
         self.evidence = evidence
@@ -235,12 +259,13 @@ class Runner:
         start = time.monotonic_ns()
         interrupted = None
         environment = bazel_environment(self.env) if str(args[0]) == str(BAZEL) else self.env
-        with log.open('w') as stream:
+        with command_lease(self.env) as command_descriptors, log.open('w') as stream:
             try:
                 # POSIX wait(timeout=...) polls with sleeps of up to 50 ms.
                 # Keep the deadline on a watchdog so timing ends at child exit.
                 with subprocess.Popen(args, cwd=cwd, env=environment, stdin=subprocess.DEVNULL, stdout=stream,
-                                      stderr=subprocess.STDOUT, start_new_session=True) as process:
+                                      stderr=subprocess.STDOUT, start_new_session=True,
+                                      pass_fds=command_descriptors) as process:
                     expired = threading.Event()
 
                     def stop_group():

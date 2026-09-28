@@ -139,11 +139,13 @@ bazel-artifact-check: bazel-tools-test
 bazel-unattended-artifacts:
 	@python3 Tools/bazel/unattended.py --evidence "$(QUALIFICATION_EVIDENCE)"
 
-.PHONY: bazel-qualify bazel-unattended bazel-release-install
+.PHONY: bazel-qualify bazel-unattended bazel-recover bazel-release-install
 bazel-qualify:
 	@python3 Tools/bazel/qualification.py --evidence "$(QUALIFICATION_EVIDENCE)" --trials "$(BENCHMARK_TRIALS)"
 bazel-unattended:
 	@python3 Tools/bazel/unattended.py --profile release --target bazel-qualify --evidence "$(QUALIFICATION_EVIDENCE)"
+bazel-recover:
+	@python3 Tools/bazel/recover_unattended.py --evidence "$(QUALIFICATION_EVIDENCE)"
 bazel-release-install:
 	@python3 Tools/bazel/release_install.py --release "$(QUALIFICATION_EVIDENCE)/release" --evidence "$(QUALIFICATION_EVIDENCE)/install"
 

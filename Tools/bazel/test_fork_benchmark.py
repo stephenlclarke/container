@@ -1,14 +1,119 @@
 """Check that paired reporting retains failures and compares matching fixtures."""
 
 import json
+import fcntl
+import os
 from pathlib import Path
+import signal
+import subprocess
 import tempfile
 import sys
+import time
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-from fork_benchmark import Runner, tls_executable, tls_samples
+from fork_benchmark import COMMAND_LOCK_ENV, Runner, command_lease, tls_executable, tls_samples
+
+
+class CommandLeaseTests(unittest.TestCase):
+    def test_exclusive_recovery_prevents_command_dispatch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / 'commands.lock'
+            lock.touch(mode=0o600)
+            runner = Runner(root, root)
+            runner.env[COMMAND_LOCK_ENV] = str(lock)
+            with lock.open() as recovery, patch('fork_benchmark.subprocess.Popen') as spawn:
+                fcntl.flock(recovery, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    runner.run('probe', 'fork', 'blocked', 0, ['unused'], root)
+            spawn.assert_not_called()
+
+    def test_spawn_failure_closes_command_lease(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / 'commands.lock'
+            lock.touch(mode=0o600)
+            runner = Runner(root, root)
+            runner.env[COMMAND_LOCK_ENV] = str(lock)
+            with self.assertRaises(FileNotFoundError):
+                runner.run('probe', 'fork', 'missing', 0, [str(root / 'missing')], root)
+            with lock.open() as recovery:
+                fcntl.flock(recovery, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            lock.chmod(0o666)
+            with self.assertRaisesRegex(RuntimeError, 'private single-owner'):
+                with command_lease(runner.env):
+                    self.fail('Unsafe lock admitted')
+
+    def test_orphaned_make_controller_retains_lease_between_stages(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / 'commands.lock'
+            lock.touch(mode=0o600)
+            tools = str(Path(__file__).resolve().parent)
+            (root / 'controller.py').write_text(
+                'import json, os, pathlib, subprocess, sys, time\n'
+                f'sys.path.insert(0, {tools!r})\n'
+                'from fork_benchmark import Runner\n'
+                f'root = pathlib.Path({str(root)!r})\n'
+                'Runner(root, root).run("nested", "fork", "exit", 0, [sys.executable, "-c", "pass"], root)\n'
+                'parents = {int(p): int(q) for p, q in (line.split() for line in subprocess.check_output(\n'
+                '    ["/bin/ps", "-axo", "pid=,ppid="], text=True).splitlines())}\n'
+                'driver = int((root / "driver.pid").read_text())\n'
+                'owned, pid = [], os.getpid()\n'
+                'while pid != driver and pid in parents:\n'
+                '    owned.append(pid); pid = parents[pid]\n'
+                'assert pid == driver\n'
+                '(root / "ready.json").write_text(json.dumps(owned))\n'
+                'time.sleep(30)\n')
+            (root / 'Makefile').write_text(f'probe:\n\t@/bin/sh -c \'"{sys.executable}" "{root / "controller.py"}"\'\n')
+            driver_code = (
+                'import os, pathlib, sys\n'
+                f'sys.path.insert(0, {tools!r})\n'
+                'from fork_benchmark import COMMAND_LOCK_ENV, Runner\n'
+                f'root = pathlib.Path({str(root)!r})\n'
+                '(root / "driver.pid").write_text(str(os.getpid()))\n'
+                'runner = Runner(root, root)\n'
+                'runner.env[COMMAND_LOCK_ENV] = str(root / "commands.lock")\n'
+                'runner.run("controller", "fork", "make", 0, ["make", "probe"], root, timeout=30)\n')
+            owned = []
+            driver = subprocess.Popen([sys.executable, '-c', driver_code], stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                deadline = time.monotonic() + 8
+                while not (root / 'ready.json').exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue((root / 'ready.json').exists(), 'make/controller chain did not reach its stage boundary')
+                owned = json.loads((root / 'ready.json').read_text())
+                driver.kill()
+                driver.wait(timeout=5)
+                for pid in owned[1:]:
+                    os.kill(pid, signal.SIGKILL)
+                # The controller has finished its nested command. Only the
+                # descriptor inherited through make/sh excludes recovery now.
+                with lock.open() as recovery:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(recovery, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    os.kill(owned[0], signal.SIGKILL)
+                    deadline = time.monotonic() + 5
+                    while True:
+                        try:
+                            fcntl.flock(recovery, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            break
+                        except BlockingIOError:
+                            if time.monotonic() >= deadline:
+                                self.fail('Command lease survived every owned controller')
+                            time.sleep(0.02)
+            finally:
+                if driver.poll() is None:
+                    driver.kill()
+                driver.wait(timeout=5)
+                for pid in owned:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass  # The explicitly owned test process is already gone.
 
 
 class ReportTests(unittest.TestCase):

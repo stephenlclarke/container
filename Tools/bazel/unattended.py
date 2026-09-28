@@ -2,18 +2,21 @@
 """Run a qualification target with bounded commands and restore an owned Colima start."""
 
 import argparse
+from contextlib import ExitStack
 import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
 
-from fork_benchmark import ROOT, STORAGE, Runner
+from fork_benchmark import COMMAND_LOCK_ENV, ROOT, STORAGE, Runner, command_lease
 from preflight import CONFIG, check
-from runtime_benchmark import StockSlot
+from runtime_benchmark import INSTALLS, StockSlot
 from host_lease import HostLease
 from release_install import require_restored
+from runtime_coverage import require_idle, verify_binaries
 
 
 def output(arguments: list[str]) -> str:
@@ -26,6 +29,7 @@ class ColimaLease:
     def __init__(self, evidence: Path):
         self.evidence = evidence
         self.record = {'started_by_this_run': False, 'restored': False}
+        self.command_descriptors: tuple[int, ...] = ()
 
     def save(self) -> None:
         (self.evidence / 'colima-lease.json').write_text(json.dumps(self.record, indent=2) + '\n')
@@ -47,7 +51,7 @@ class ColimaLease:
                 subprocess.run(['colima', 'start', '--activate=false', '--save-config=false',
                                 '--mount', str(Path.home()) + ':w', '--mount', str(STORAGE) + ':w'],
                                stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                               timeout=180, check=True)
+                               timeout=180, check=True, pass_fds=self.command_descriptors)
         elif current['status'] != 'Running':
             raise RuntimeError('Colima is changing state; refusing to interfere')
         if output(['docker', '--context', 'colima', 'ps', '-q']):
@@ -68,7 +72,8 @@ class ColimaLease:
                     raise RuntimeError('Containers remain active; preserving Colima and reporting incomplete cleanup')
                 with (self.evidence / 'colima-stop.log').open('w') as log:
                     subprocess.run(['colima', 'stop'], stdin=subprocess.DEVNULL,
-                                   stdout=log, stderr=subprocess.STDOUT, timeout=120, check=True)
+                                   stdout=log, stderr=subprocess.STDOUT, timeout=120, check=True,
+                                   pass_fds=self.command_descriptors)
             elif current['status'] != 'Stopped':
                 raise RuntimeError('Colima state is uncertain after a failed start; inspect retained startup logs')
         self.record['restored'] = True
@@ -77,6 +82,57 @@ class ColimaLease:
 
 def interrupted(signum, _frame):
     raise SystemExit(128 + signum)
+
+
+def verify_installations(evidence: Path) -> None:
+    """An uncertain binary replacement keeps workers quiesced for recovery."""
+    for installation in (INSTALLS / 'fork/install', INSTALLS / 'stock/install',
+                         INSTALLS / 'containerization-integration/bin'):
+        require_idle(installation)
+    require_restored(evidence / 'install')
+    coverage = evidence / 'integration/coverage'
+    if coverage.exists():
+        record = json.loads((coverage / 'coverage.json').read_text())
+        expected = record.get('original_binaries')
+        if record.get('restored') is not True or not isinstance(expected, dict) or not expected:
+            raise RuntimeError('Instrumented installation restoration is unconfirmed; inspect ' + str(coverage))
+        verify_binaries(INSTALLS / 'fork/install', expected)
+
+
+def restore_host(evidence: Path, host: HostLease, lease: ColimaLease, slot: StockSlot,
+                 commands: ExitStack, result: dict) -> None:
+    """Restore only after surviving command holders have released their leases."""
+    cleanup_ok = True
+    # Close rather than unlock: an inherited child descriptor must retain its
+    # shared lease. A separate open description must win exclusive ownership.
+    commands.close()
+    try:
+        lease.command_descriptors = commands.enter_context(command_lease(
+            {COMMAND_LOCK_ENV: str(evidence.resolve() / 'commands.lock')}, exclusive=True))
+    except BaseException as error:
+        cleanup_ok = False
+        result['failures'].append('Commands have not finished or their lease is unavailable: ' + str(error))
+    else:
+        try:
+            verify_installations(evidence)
+        except BaseException as error:
+            cleanup_ok = False
+            result['failures'].append(str(error))
+        for resource in (lease, slot):
+            try:
+                resource.restore()
+            except BaseException as error:
+                cleanup_ok = False
+                result['failures'].append(str(error))
+    try:
+        host.restore(restore_workers=cleanup_ok)
+    except BaseException as error:
+        cleanup_ok = False
+        result['failures'].append(str(error))
+    finally:
+        host.close()
+    if not cleanup_ok:
+        result['passed'] = False
 
 
 def main() -> None:
@@ -93,7 +149,7 @@ def main() -> None:
     (args.evidence / 'preflight.json').write_text(json.dumps(admission, indent=2) + '\n')
     if not admission['ready']:
         raise SystemExit('Unattended preflight failed; see ' + str(args.evidence / 'preflight.json'))
-    with (STORAGE / 'qualification.lock').open('w') as lock:
+    with (STORAGE / 'qualification.lock').open('w') as lock, ExitStack() as commands:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         host = HostLease(args.evidence)
         lease = ColimaLease(args.evidence)
@@ -102,10 +158,16 @@ def main() -> None:
         try:
             # Keep dormant originals aside across every runtime stage; restoring
             # between stages lets background clients reactivate them mid-run.
+            command_lock = args.evidence.resolve() / 'commands.lock'
+            host.record['command_lock'] = str(command_lock)
+            descriptor = os.open(command_lock, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            os.close(descriptor)
+            lease.command_descriptors = commands.enter_context(command_lease({COMMAND_LOCK_ENV: str(command_lock)}))
             host.acquire()
             slot.acquire()
             lease.acquire()
             runner = Runner(args.evidence, STORAGE)
+            runner.env[COMMAND_LOCK_ENV] = str(command_lock)
             row = runner.run('qualification', 'fork', args.target, 0,
                              ['make', args.target, 'QUALIFICATION_EVIDENCE=' + str(args.evidence)],
                              ROOT, timeout=21600 if args.target == 'bazel-qualify' else 7200)
@@ -119,26 +181,7 @@ def main() -> None:
             # Restoration must finish even if cancellation is repeated.
             for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                 signal.signal(number, signal.SIG_IGN)
-            cleanup_ok = True
-            try:
-                require_restored(args.evidence / 'install')
-            except BaseException as error:
-                cleanup_ok = False
-                result['passed'] = False
-                result['failures'].append(str(error))
-            for resource in (lease, slot):
-                try:
-                    resource.restore()
-                except BaseException as error:
-                    cleanup_ok = False
-                    result['passed'] = False
-                    result['failures'].append(str(error))
-            try:
-                host.restore(restore_workers=cleanup_ok)
-            except BaseException as error:
-                result['passed'] = False
-                result['failures'].append(str(error))
-            host.close()
+            restore_host(args.evidence, host, lease, slot, commands, result)
             (args.evidence / 'acceptance.json').write_text(json.dumps(result, indent=2) + '\n')
         if not result['passed']:
             raise SystemExit(1)

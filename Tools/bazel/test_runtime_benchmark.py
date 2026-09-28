@@ -134,13 +134,48 @@ class RuntimeTests(unittest.TestCase):
             plist.write_bytes(plistlib.dumps({'Label': label}))
             before = plist.read_bytes()
             slot = runtime.StockSlot(evidence)
-            with patch.object(runtime, 'services', side_effect=[[('-', label)], []]), \
+            with patch.object(runtime, 'services', side_effect=[[('-', label)], [], []]), \
                     patch.object(runtime, 'checked', side_effect=[f'path = {plist}', '', '']) as command:
                 slot.acquire()
                 slot.restore()
             self.assertEqual(plist.read_bytes(), before)
             self.assertTrue(slot.saved[0]['restored'])
             self.assertEqual(command.call_args.args[0][1], 'bootstrap')
+
+    def test_stock_restore_reconciles_bootout_before_receipt_update(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            plist = evidence / 'original.plist'
+            plist.write_text('original')
+            label = 'com.apple.container.apiserver'
+            slot = runtime.StockSlot(evidence)
+            slot.saved = [dict(label=label, path=str(plist), sha256=runtime.digest(plist), unloaded=False)]
+            with patch.object(runtime, 'services', return_value=[]), patch.object(runtime, 'checked') as command:
+                slot.restore()
+            self.assertEqual(command.call_args.args[0][1], 'bootstrap')
+            with patch.object(runtime, 'services', return_value=[('-', label)]), \
+                    patch.object(runtime, 'checked', return_value=f'path = {plist}') as command:
+                slot.restore()
+            self.assertEqual(command.call_args.args[0][1], 'print')
+            with patch.object(runtime, 'services', return_value=[('-', label)]), \
+                    patch.object(runtime, 'checked', return_value='path = /unrelated'):
+                with self.assertRaisesRegex(RuntimeError, 'was replaced'):
+                    slot.restore()
+
+    def test_cleanup_preserves_loaded_original_while_stopping_private_stock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            plist = Path(temporary) / 'original.plist'
+            plist.write_text('original')
+            label = 'com.apple.container.apiserver'
+            private = 'com.apple.container.container-runtime-linux.owned'
+            original = dict(label=label, path=str(plist), sha256=runtime.digest(plist), restored=False)
+            program = runtime.INSTALLS / 'stock/install/libexec/container-runtime-linux'
+            with patch.object(runtime, 'services', side_effect=[[('-', label), ('42', private)], [('-', label)]]), \
+                    patch.object(runtime, 'checked', side_effect=[
+                        f'path = {plist}\nprogram = /original/bin', f'program = {program}', '']) as command:
+                runtime.stop_owned('stock', originals=[original])
+            bootouts = [call.args[0] for call in command.call_args_list if call.args[0][1] == 'bootout']
+            self.assertEqual(bootouts, [['launchctl', 'bootout', f'gui/{runtime.os.getuid()}/{private}']])
 
     def test_missing_workloads_fail_acceptance_and_junit(self):
         with tempfile.TemporaryDirectory() as temporary:

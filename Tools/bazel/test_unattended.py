@@ -1,10 +1,11 @@
 """Admission and cleanup never stop a pre-existing or newly occupied Docker VM."""
 
+from contextlib import ExitStack
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from unattended import ColimaLease
 import unattended
@@ -24,7 +25,7 @@ class OwnershipTests(unittest.TestCase):
                         patch.object(unattended, 'StockSlot') as slot, \
                         patch.object(unattended, 'ColimaLease') as lease, \
                         patch.object(unattended, 'Runner') as runner, \
-                        patch.object(unattended, 'require_restored') as restored, \
+                        patch.object(unattended, 'verify_installations') as restored, \
                         patch.object(unattended.signal, 'signal'), \
                         patch('sys.argv', ['unattended', '--evidence', str(root / 'evidence')]):
                     host.return_value.acquire.side_effect = lambda: events.append('host-lock')
@@ -63,6 +64,41 @@ class OwnershipTests(unittest.TestCase):
                 result = json.loads((root / 'evidence/acceptance.json').read_text())
                 self.assertEqual(result['passed'], failure is None)
 
+    def test_surviving_controller_also_blocks_normal_wrapper_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as commands:
+            root = Path(directory)
+            lock = root / 'commands.lock'
+            lock.touch(mode=0o600)
+            environment = {unattended.COMMAND_LOCK_ENV: str(lock)}
+            commands.enter_context(unattended.command_lease(environment))
+            host, lease, slot = Mock(), Mock(), Mock()
+            result = {'passed': True, 'failures': []}
+            with unattended.command_lease(environment), patch.object(unattended, 'verify_installations') as verify:
+                unattended.restore_host(root, host, lease, slot, commands, result)
+            self.assertFalse(result['passed'])
+            verify.assert_not_called()
+            lease.restore.assert_not_called()
+            slot.restore.assert_not_called()
+            host.restore.assert_called_once_with(restore_workers=False)
+            host.close.assert_called_once()
+
+    def test_unrestored_instrumented_binaries_quarantine_normal_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as commands, \
+                patch.object(unattended, 'require_idle'):
+            root = Path(directory)
+            (root / 'commands.lock').touch(mode=0o600)
+            coverage = root / 'integration/coverage'
+            coverage.mkdir(parents=True)
+            (coverage / 'coverage.json').write_text('{"restored": false}')
+            host, lease, slot = Mock(), Mock(), Mock()
+            result = {'passed': True, 'failures': []}
+            unattended.restore_host(root, host, lease, slot, commands, result)
+            self.assertFalse(result['passed'])
+            self.assertIn('Instrumented installation', ' '.join(result['failures']))
+            lease.restore.assert_called_once()
+            slot.restore.assert_called_once()
+            host.restore.assert_called_once_with(restore_workers=False)
+
     def test_preexisting_vm_is_not_stopped(self):
         with tempfile.TemporaryDirectory() as directory, patch('unattended.subprocess.run') as run:
             lease = ColimaLease(Path(directory))
@@ -87,8 +123,10 @@ class OwnershipTests(unittest.TestCase):
                 patch('unattended.subprocess.run') as run:
             lease = ColimaLease(Path(directory))
             lease.record['started_by_this_run'] = True
+            lease.command_descriptors = (55,)
             lease.restore()
             self.assertEqual(run.call_args.args[0], ['colima', 'stop'])
+            self.assertEqual(run.call_args.kwargs['pass_fds'], (55,))
             self.assertTrue(lease.record['restored'])
 
     def test_linux_cleanup_rejects_unrelated_container(self):
