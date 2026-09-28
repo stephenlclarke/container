@@ -13,7 +13,7 @@ import linux_tests
 
 class OwnershipTests(unittest.TestCase):
     def test_original_services_are_held_until_qualification_and_cleanup_finish(self):
-        for failure in (None, 'build', 'colima-cleanup', 'stock-cleanup'):
+        for failure in (None, 'build', 'colima-cleanup', 'stock-cleanup', 'install-cleanup'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 events = []
@@ -24,6 +24,7 @@ class OwnershipTests(unittest.TestCase):
                         patch.object(unattended, 'StockSlot') as slot, \
                         patch.object(unattended, 'ColimaLease') as lease, \
                         patch.object(unattended, 'Runner') as runner, \
+                        patch.object(unattended, 'require_restored') as restored, \
                         patch.object(unattended.signal, 'signal'), \
                         patch('sys.argv', ['unattended', '--evidence', str(root / 'evidence')]):
                     host.return_value.acquire.side_effect = lambda: events.append('host-lock')
@@ -32,6 +33,13 @@ class OwnershipTests(unittest.TestCase):
                     slot.return_value.acquire.side_effect = lambda: events.append('hold')
                     lease.return_value.acquire.side_effect = lambda: events.append('colima')
                     runner.return_value.run.side_effect = lambda *args, **kwargs: events.append('build') or {'status': 1 if failure == 'build' else 0, 'log': 'build.log'}
+
+                    def restore_install(_evidence):
+                        events.append('install-check')
+                        if failure == 'install-cleanup':
+                            raise RuntimeError('installation restoration unconfirmed')
+
+                    restored.side_effect = restore_install
 
                     def cleanup():
                         events.append('colima-cleanup')
@@ -50,8 +58,8 @@ class OwnershipTests(unittest.TestCase):
                             unattended.main()
                     else:
                         unattended.main()
-                self.assertEqual(events, ['host-lock', 'hold', 'colima', 'build', 'colima-cleanup', 'restore',
-                                         'workers-quarantined' if failure in ('colima-cleanup', 'stock-cleanup') else 'workers-restore', 'host-unlock'])
+                self.assertEqual(events, ['host-lock', 'hold', 'colima', 'build', 'install-check', 'colima-cleanup', 'restore',
+                                         'workers-quarantined' if failure in ('colima-cleanup', 'stock-cleanup', 'install-cleanup') else 'workers-restore', 'host-unlock'])
                 result = json.loads((root / 'evidence/acceptance.json').read_text())
                 self.assertEqual(result['passed'], failure is None)
 

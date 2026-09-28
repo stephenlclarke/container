@@ -10,7 +10,8 @@ import tarfile
 import tempfile
 
 from fork_benchmark import digest, install_signal_handlers
-from runtime_benchmark import INSTALLS, STATE, RuntimeRunner, checked, own, reset_state, run_lane, stop_owned
+from runtime_benchmark import INSTALLS, STATE, RuntimeRunner, own, reset_state, run_lane, stop_owned
+from runtime_coverage import require_idle, verify_binaries
 from runtime_integration import verify_prepared
 
 
@@ -22,15 +23,59 @@ def checked_payload(archive: Path, destination: Path, expected: dict[str, str]) 
         raise RuntimeError('Installed package payload differs from the verified release')
 
 
+def persist(evidence: Path, result: dict) -> None:
+    temporary = evidence / 'install.json.tmp'
+    temporary.write_text(json.dumps(result, indent=2) + '\n')
+    temporary.replace(evidence / 'install.json')
+
+
+def require_restored(evidence: Path) -> None:
+    """A started install must prove restoration before shared workers resume."""
+    if not evidence.exists():
+        return
+    result = json.loads((evidence / 'install.json').read_text())
+    if result.get('replacement_started') is False:
+        return
+    if result.get('replacement_started') is not True or result.get('previous_installation_restored') is not True:
+        raise RuntimeError('Private release installation restoration is unconfirmed; inspect ' + str(evidence))
+    expected = result.get('original_binaries')
+    if not isinstance(expected, dict) or not expected:
+        raise RuntimeError('Private release installation has no original binary fingerprints')
+    installation = INSTALLS / 'fork/install'
+    require_idle(installation)
+    own(installation, 'fork')
+    verify_binaries(installation, expected)
+
+
+def restore_previous(installation: Path, backup: Path, expected: dict[str, str], evidence: Path) -> None:
+    stop_owned('fork')
+    require_idle(installation)
+    try:
+        logs = STATE / 'fork/logs'
+        if logs.exists():
+            shutil.copytree(logs, evidence / 'server-logs')
+    finally:
+        # Log retention must never prevent restoration. Surviving processes do.
+        require_idle(installation)
+        if backup.exists():
+            if installation.exists():
+                own(installation, 'fork')
+                shutil.rmtree(installation)
+            backup.rename(installation)
+        own(installation, 'fork')
+        verify_binaries(installation, expected)
+
+
 def run(evidence: Path, release: Path) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
-    result = {'passed': False, 'failures': []}
+    result = {'passed': False, 'failures': [], 'replacement_started': False,
+              'previous_installation_restored': False}
     runner = RuntimeRunner(evidence, STATE)
     installation = INSTALLS / 'fork/install'
-    moved = False
     with (INSTALLS / 'benchmark.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
+            persist(evidence, result)
             verify_prepared(release)
             qualification = json.loads((release / 'release-artifact.json').read_text())
             if not qualification['passed']:
@@ -41,13 +86,14 @@ def run(evidence: Path, release: Path) -> None:
             for name in ['source-inputs.json', 'guest-artifact.json', 'builder-artifact.json']:
                 shutil.copy2(release / name, evidence / name)
             metadata = json.loads((release / 'fork-fingerprint.json').read_text())
+            result['original_binaries'] = metadata['binaries']
             metadata['binaries'] = qualification['payload']
             metadata['installed_archive_sha256'] = digest(archive)
             (evidence / 'fork-fingerprint.json').write_text(json.dumps(metadata, indent=2) + '\n')
             stop_owned('fork')
             own(installation, 'fork')
-            if any(path.startswith(str(installation) + '/') for path in checked(['ps', '-axo', 'comm=']).splitlines()):
-                raise RuntimeError('Private installation still has active processes; refusing replacement')
+            require_idle(installation)
+            verify_binaries(installation, result['original_binaries'])
             temporary = Path(tempfile.mkdtemp(prefix='release-install-', dir=installation.parent))
             result['recovery_directory'] = str(temporary)
             try:
@@ -58,9 +104,11 @@ def run(evidence: Path, release: Path) -> None:
                 marker = installation / '.runtime-benchmark-owner.json'
                 shutil.copy2(marker, payload / marker.name)
                 backup = temporary / 'previous'
-                installation.rename(backup)
-                moved = True
+                result['replacement_started'] = True
+                # Persist recovery authority before moving the only original.
+                persist(evidence, result)
                 try:
+                    installation.rename(backup)
                     payload.rename(installation)
                     own(installation, 'fork')
                     kernel = reset_state('fork', metadata['init_image'], metadata['builder_image'])
@@ -71,18 +119,18 @@ def run(evidence: Path, release: Path) -> None:
                                   notarized=qualification['notarized'], source=qualification['source'],
                                   scope='Signed tar installation, explicit matching guest/builder configuration and eight live workloads')
                 finally:
-                    stop_owned('fork')
-                    logs = STATE / 'fork/logs'
-                    if logs.exists():
-                        shutil.copytree(logs, evidence / 'server-logs')
-                    if installation.exists():
-                        own(installation, 'fork')
-                        shutil.rmtree(installation)
-                    backup.rename(installation)
-                    moved = False
-                    result['previous_installation_restored'] = True
+                    try:
+                        restore_previous(installation, backup, result['original_binaries'], evidence)
+                    finally:
+                        # Even a log-copy error may leave the original restored.
+                        # Verify that fact independently instead of trusting exit status.
+                        if not backup.exists():
+                            require_idle(installation)
+                            own(installation, 'fork')
+                            verify_binaries(installation, result['original_binaries'])
+                            result['previous_installation_restored'] = True
             finally:
-                if not moved:
+                if not result['replacement_started'] or result['previous_installation_restored']:
                     shutil.rmtree(temporary)
                     result.pop('recovery_directory', None)
         except BaseException as error:
@@ -90,11 +138,11 @@ def run(evidence: Path, release: Path) -> None:
             result['failures'].append(str(error))
             raise
         finally:
-            if moved:
+            if result['replacement_started'] and not result['previous_installation_restored']:
                 result['passed'] = False
                 result['failures'].append('Installation restoration did not complete')
             result['operations'] = runner.rows
-            (evidence / 'install.json').write_text(json.dumps(result, indent=2) + '\n')
+            persist(evidence, result)
 
 
 def main() -> None:

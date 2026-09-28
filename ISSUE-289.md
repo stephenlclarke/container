@@ -26,6 +26,8 @@ The reduced workflow also needs the original integration and combined coverage t
 
 The container-only lock alone does not exclude existing family workers from the shared macOS service namespace. Full unattended qualification must hold the common host lock and recoverably quiesce authorized idle workers, without interrupting an active job. Restore original runtime state before workers and retain recovery authority when restoration fails.
 
+Release-install cleanup previously let a log-copy error skip restoration and checked only launchd registrations before replacing executable files. The outer wrapper also resumed workers without checking the private installation. Persist recovery evidence before moving the original, reject surviving processes, restore despite log-retention failure, and require verified original binaries before workers can resume.
+
 A manual-only workflow absent from the default branch cannot provide pre-merge qualification. Add an opt-in same-repository PR label trigger with exact-head binding; require server-side approval for every external contributor because editable PR workflow conditions are not a trust boundary. Keep public-fork code off the persistent Mac.
 
 External DNS failure currently collapses to an empty test error because nslookup writes details to stdout. Retain the fixed-query output and check native host DNS readiness before expensive release qualification. Preserve the original guest lookup and its deadlines, without automatic retries or resolver overrides. Native resolution timing and response/cancellation logs must distinguish host lookup delay from a lost forwarded response without exposing query names.

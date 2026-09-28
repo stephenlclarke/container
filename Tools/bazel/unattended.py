@@ -13,6 +13,7 @@ from fork_benchmark import ROOT, STORAGE, Runner
 from preflight import CONFIG, check
 from runtime_benchmark import StockSlot
 from host_lease import HostLease
+from release_install import require_restored
 
 
 def output(arguments: list[str]) -> str:
@@ -119,6 +120,12 @@ def main() -> None:
             for number in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
                 signal.signal(number, signal.SIG_IGN)
             cleanup_ok = True
+            try:
+                require_restored(args.evidence / 'install')
+            except BaseException as error:
+                cleanup_ok = False
+                result['passed'] = False
+                result['failures'].append(str(error))
             for resource in (lease, slot):
                 try:
                     resource.restore()
