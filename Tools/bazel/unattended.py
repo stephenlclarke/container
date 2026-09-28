@@ -12,7 +12,8 @@ import signal
 import subprocess
 
 from fork_benchmark import COMMAND_LOCK_ENV, ROOT, STORAGE, Runner, command_lease
-from preflight import CONFIG, check
+from preflight import CONFIG, apple_runtime_slot_ready, check
+from failed_api_hold import hold_failed_api
 from runtime_benchmark import INSTALLS, StockSlot
 from host_lease import HostLease
 from release_install import require_restored
@@ -147,7 +148,10 @@ def main() -> None:
     config = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
     admission = check(args.profile, config)
     (args.evidence / 'preflight.json').write_text(json.dumps(admission, indent=2) + '\n')
-    if not admission['ready']:
+    failed_checks = [row['check'] for row in admission.get('checks', []) if not row['ready']]
+    pending_api_hold = (not admission['ready'] and failed_checks == ['apple-runtime-slot']
+                        and config.get('failed_api_hold') is not None)
+    if not admission['ready'] and not pending_api_hold:
         raise SystemExit('Unattended preflight failed; see ' + str(args.evidence / 'preflight.json'))
     with (STORAGE / 'qualification.lock').open('w') as lock, ExitStack() as commands:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -164,6 +168,16 @@ def main() -> None:
             os.close(descriptor)
             lease.command_descriptors = commands.enter_context(command_lease({COMMAND_LOCK_ENV: str(command_lock)}))
             host.acquire()
+            if pending_api_hold:
+                hold_failed_api(slot, config['failed_api_hold'])
+                if not apple_runtime_slot_ready():
+                    raise RuntimeError('Original runtime slot remains unavailable after explicit API stop')
+                (args.evidence / 'preflight-before-api-hold.json').write_text(json.dumps(admission, indent=2) + '\n')
+                for item in admission['checks']:
+                    if item['check'] == 'apple-runtime-slot':
+                        item.update(ready=True, action='', explicit_failed_api_hold=True)
+                admission['ready'] = True
+                (args.evidence / 'preflight.json').write_text(json.dumps(admission, indent=2) + '\n')
             slot.acquire()
             lease.acquire()
             runner = Runner(args.evidence, STORAGE)

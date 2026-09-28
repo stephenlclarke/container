@@ -142,6 +142,8 @@ class StockSlot:
             shutil.copy2(path, self.evidence / (label + '.original.plist'))
         self.persist()
         for row in self.saved:
+            if row['unloaded']:
+                continue  # An explicitly held failed API is already journalled.
             self.verify_remaining()
             checked(['launchctl', 'bootout', f'gui/{os.getuid()}/{row["label"]}'])
             row['unloaded'] = True

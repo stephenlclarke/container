@@ -39,3 +39,5 @@ The self-hosted runner also needs its own Local Network consent. The original HT
 The SSL suite has a known rejected-certificate alert difference, so its failed suite duration cannot establish SSL runtime performance. Add identical optimized upstream handshake and encrypted-write workloads while retaining the complete compatibility result.
 
 Bazel records inherited client environment values in raw build events. Its process boundary must admit only intentional build inputs, keeping scanner/notarization credentials separate, while preserving explicit CodeQL tracing and runtime-test arguments. Retained local event files need environment redaction without discarding test evidence.
+
+A stable runner app must make Local Network setup distinguishable from obsolete Node entries. The installed API also has a pre-existing provider-binding failure. Permit a separately authorized, exact-identity operational stop under the existing host lock and recovery transaction; never interpret its PID gap as inactivity, modify its keys, or claim a successful live inventory.

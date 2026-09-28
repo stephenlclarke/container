@@ -13,6 +13,44 @@ import linux_tests
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_explicit_failed_api_hold_is_admitted_only_after_other_checks_pass(self):
+        for other_failure in (False, True):
+            with self.subTest(other_failure=other_failure), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                config = root / 'config.json'
+                config.write_text('{"failed_api_hold":{"approved":"identity"}}')
+                checks = [{'check': 'apple-runtime-slot', 'ready': False},
+                          {'check': 'signing', 'ready': not other_failure}]
+                events = []
+                with patch.object(unattended, 'STORAGE', root), \
+                        patch.object(unattended, 'CONFIG', config), \
+                        patch.object(unattended, 'check', return_value={'ready': False, 'checks': checks}), \
+                        patch.object(unattended, 'HostLease') as host, \
+                        patch.object(unattended, 'StockSlot') as slot, \
+                        patch.object(unattended, 'ColimaLease'), \
+                        patch.object(unattended, 'Runner') as runner, \
+                        patch.object(unattended, 'verify_installations'), \
+                        patch.object(unattended, 'hold_failed_api', side_effect=lambda *args: events.append('api-hold')) as hold, \
+                        patch.object(unattended, 'apple_runtime_slot_ready', return_value=True), \
+                        patch.object(unattended.signal, 'signal'), \
+                        patch('sys.argv', ['unattended', '--evidence', str(root / 'evidence')]):
+                    host.return_value.acquire.side_effect = lambda: events.append('host-lock')
+                    slot.return_value.acquire.side_effect = lambda: events.append('slot')
+                    runner.return_value.run.return_value = {'status': 0}
+                    if other_failure:
+                        with self.assertRaises(SystemExit):
+                            unattended.main()
+                        host.assert_not_called()
+                        hold.assert_not_called()
+                    else:
+                        unattended.main()
+                        self.assertEqual(events, ['host-lock', 'api-hold', 'slot'])
+                        before = json.loads((root / 'evidence/preflight-before-api-hold.json').read_text())
+                        after = json.loads((root / 'evidence/preflight.json').read_text())
+                        self.assertFalse(before['ready'])
+                        self.assertTrue(after['ready'])
+                        self.assertTrue(after['checks'][0]['explicit_failed_api_hold'])
+
     def test_original_services_are_held_until_qualification_and_cleanup_finish(self):
         for failure in (None, 'build', 'colima-cleanup', 'stock-cleanup', 'install-cleanup'):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:

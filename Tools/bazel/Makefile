@@ -15,6 +15,17 @@
 # Container-only Bazel qualification. See Tools/bazel/README.md.
 LAYER ?= container
 PREFLIGHT_PROFILE ?= build
+RUNNER_APP_OUTPUT ?= $(QUALIFICATION_EVIDENCE)/Container Build Runner.app
+RUNNER_SIGNING_IDENTITY ?= BDDA5D3A8836437C2EFA24CDACE0FEBFBEF20633
+.PHONY: bazel-runner-app
+# Build only; an operator must associate an idle runner during one-time setup.
+bazel-runner-app:
+	@test ! -e "$(RUNNER_APP_OUTPUT)" || { printf '%s\n' 'Choose a new RUNNER_APP_OUTPUT; existing apps are preserved.'; exit 2; }
+	@mkdir -p "$(RUNNER_APP_OUTPUT)/Contents/MacOS"
+	@cp Tools/bazel/runner/Info.plist "$(RUNNER_APP_OUTPUT)/Contents/Info.plist"
+	@xcrun swiftc -O Tools/bazel/runner/RunnerMain.swift -o "$(RUNNER_APP_OUTPUT)/Contents/MacOS/ContainerBuildRunner"
+	@codesign --force --options runtime --timestamp=none --sign "$(RUNNER_SIGNING_IDENTITY)" "$(RUNNER_APP_OUTPUT)"
+	@codesign --verify --strict "$(RUNNER_APP_OUTPUT)"
 .PHONY: bazel-preflight bazel-repository-test
 bazel-preflight:
 	@python3 Tools/bazel/preflight.py --profile "$(PREFLIGHT_PROFILE)"
