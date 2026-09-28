@@ -77,11 +77,13 @@ bazel-release-artifact:
 bazel-service-artifacts:
 	@python3 Tools/bazel/service_artifacts.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/services"
 
-.PHONY: bazel-service-integration bazel-quality
+.PHONY: bazel-service-integration bazel-quality bazel-github-quality
 bazel-service-integration:
 	@python3 Tools/bazel/service_integration.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/service-integration"
 bazel-quality:
 	@python3 Tools/bazel/quality.py --coverage "$(QUALIFICATION_EVIDENCE)/combined-coverage" --evidence "$(QUALIFICATION_EVIDENCE)/quality"
+bazel-github-quality:
+	@python3 Tools/bazel/github_quality.py --evidence "$(QUALIFICATION_EVIDENCE)/github-quality"
 
 .PHONY: bazel-vm-integration
 bazel-vm-integration:

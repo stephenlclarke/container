@@ -47,15 +47,14 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
         ('coverage', ['container'], script('coverage', '--evidence', evidence / 'coverage'), 1800),
         ('combined-coverage', ['coverage', 'integration'], script('combined_coverage', '--unit', evidence / 'coverage',
                     '--integration', evidence / 'integration/coverage', '--evidence', evidence / 'combined-coverage'), 600),
-        ('codeql', ['container'], script('codeql', '--evidence', evidence / 'codeql'), 5400),
-        ('quality', ['combined-coverage'], script('quality', '--coverage', evidence / 'combined-coverage', '--evidence', evidence / 'quality'), 1800),
         ('component-benchmarks', ['dependencies', 'container', 'builder'], script('fork_benchmark',
                     '--evidence', evidence / 'components', '--scratch', component_scratch, *component_args), 10800),
         ('runtime-benchmark', ['integration'], script('runtime_benchmark', '--prepared', prepared,
                     '--trials', trials, '--evidence', evidence / 'runtime-benchmark'), 1800),
         ('docker-benchmark', ['runtime-smoke'], script('docker_benchmark', '--context', 'colima',
                     '--trials', trials, '--evidence', evidence / 'docker-benchmark'), 1800),
-        ('release', ['maintenance', 'documentation', 'host', 'services', 'service-integration', 'integration', 'combined-coverage', 'quality', 'codeql'], script('release_artifact',
+        ('github-quality', [], script('github_quality', '--evidence', evidence / 'github-quality'), 1860),
+        ('release', ['maintenance', 'documentation', 'host', 'services', 'service-integration', 'integration', 'combined-coverage', 'github-quality'], script('release_artifact',
                     '--prepared', prepared, '--service-artifacts', evidence / 'services/service-artifacts.json',
                     '--notarize', '--evidence', evidence / 'release'), 3600),
         ('install', ['release'], script('release_install', '--release', evidence / 'release', '--evidence', evidence / 'install'), 900),
@@ -133,6 +132,7 @@ def run(evidence: Path, trials: int) -> None:
         lines += ['', 'Complete: **' + str(result['passed']) + '**', '',
                   'Raw outcomes, blocked dependencies and logs are retained in qualification.json.',
                   'Reviewed differences are expected compatibility mismatches, not passing speed measurements. Host-specific NIO checks remain separately runnable and are not claimed as passing.',
+                  'SonarCloud, CodeQL and unit coverage run in GitHub; the github-quality layer verifies that workflow at this exact commit.',
                   'No release is published by this command.']
         (evidence / 'QUALIFICATION.md').write_text('\n'.join(lines) + '\n')
     if not result['passed']:

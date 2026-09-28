@@ -1,8 +1,24 @@
-import Foundation
+//===----------------------------------------------------------------------===//
+// Copyright © 2026 Apple Inc. and the container project authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//===----------------------------------------------------------------------===//
+
 import AppKit
-import SystemConfiguration
-import Network
 import Darwin
+import Foundation
+import Network
+import SystemConfiguration
 
 // The service retains the runner's existing launchd login session and environment.
 if CommandLine.arguments.dropFirst().elementsEqual(["--service"]) {
@@ -21,14 +37,17 @@ let application = NSApplication.shared
 application.setActivationPolicy(.regular)
 let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 150), styleMask: [.titled, .closable], backing: .buffered, defer: false)
 window.title = "Container Build Runner Setup"
-let message = NSTextField(wrappingLabelWithString: "Allow Local Network access for Container Build Runner when macOS asks. This permits the dedicated build runner to test temporary local virtual machines.")
+let message = NSTextField(
+    wrappingLabelWithString:
+        "Allow Local Network access for Container Build Runner when macOS asks. This permits the dedicated build runner to test temporary local virtual machines.")
 message.frame = NSRect(x: 24, y: 32, width: 412, height: 90)
 window.contentView?.addSubview(message)
 window.center()
 window.makeKeyAndOrderFront(nil)
 application.activate(ignoringOtherApps: true)
 guard let configuration = SCDynamicStoreCopyValue(nil, "State:/Network/Global/IPv4" as CFString) as? [String: Any],
-      let router = configuration["Router"] as? String else {
+    let router = configuration["Router"] as? String
+else {
     fputs("No IPv4 router available for Local Network setup\n", stderr)
     exit(1)
 }

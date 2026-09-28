@@ -2,7 +2,6 @@
 """Bounded, noninteractive admission checks; never emit credential values."""
 
 import argparse
-import base64
 import hashlib
 import json
 import os
@@ -13,8 +12,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import urllib.error
-import urllib.request
 
 from runtime_benchmark import IDENTITY, BAZEL, BAZEL_SHA, STORAGE, service_is_inactive
 
@@ -100,28 +97,6 @@ def token_scopes(headers: str) -> set[str]:
     return {scope.strip() for scope in match[1].split(',')} if match else set()
 
 
-def swift_extractor_ready() -> bool:
-    # Even --version writes invocation TRAP files relative to the working directory.
-    with tempfile.TemporaryDirectory(prefix='codeql-preflight-') as directory:
-        status, _ = command([str(STORAGE / 'toolchains/codeql-2.27.1/codeql/swift/tools/osx64/extractor'),
-                             '--version'], timeout=45, cwd=Path(directory))
-    return status == 0
-
-
-def sonar_authenticated() -> bool:
-    token = os.environ.get('SONAR_TOKEN') or os.environ.get('SONAR_TOKEN_PERSONAL')
-    if not token:
-        return False
-    encoded = base64.b64encode((token + ':').encode()).decode()
-    request = urllib.request.Request('https://sonarcloud.io/api/authentication/validate',
-                                     headers={'Authorization': 'Basic ' + encoded})
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            return json.load(response).get('valid') is True
-    except (OSError, ValueError, urllib.error.URLError):
-        return False
-
-
 def check(profile: str, config: dict) -> dict:
     checks = []
 
@@ -179,26 +154,20 @@ def check(profile: str, config: dict) -> dict:
         record('host-dns-forwarding', dns['ready'],
                'The host must resolve example.com A and AAAA within the existing three-second DNS proxy deadline. Restore host DNS connectivity before qualification; no resolver override or retry is applied.')
         checks[-1]['probe'] = dns
-        record('tool-codeql', (STORAGE / 'toolchains/codeql-2.27.1/codeql/codeql').is_file(),
-               'Install the checksum-pinned CodeQL 2.27.1 macOS toolchain in container-only storage before release qualification.')
-        record('codeql-swift-extractor', swift_extractor_ready(),
-               'Install Apple Rosetta during setup and verify the pinned CodeQL Swift extractor launches before release qualification.')
-        for name in ['sonar-scanner', 'crane']:
-            record('tool-' + name, shutil.which(name) is not None, 'Install ' + name + ' before release qualification.')
+        record('tool-crane', shutil.which('crane') is not None, 'Install crane before release qualification.')
         status, response = command(['gh', 'api', '--include', 'user'], env=github_environment())
         scopes = token_scopes(response)
         record('github-repository-and-package-access', status == 0 and {'repo', 'write:packages'} <= scopes,
                'Run env -u GITHUB_TOKEN -u GH_TOKEN gh auth refresh --hostname github.com --scopes read:packages,write:packages and complete browser authorization.')
-        record('sonar-authentication', sonar_authenticated(), 'Configure a valid Sonar token through the existing secure credential source.')
-        from quality import analysis_context
+        from github_quality import current_context
         try:
             revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True, timeout=10).strip()
-            analysis_context(revision)
+            current_context(revision)
             quality_context_ready = True
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
             quality_context_ready = False
-        record('sonar-analysis-context', quality_context_ready,
-               'Push this committed topic branch to its existing Stephen-owned pull request targeting main before qualification.')
+        record('github-quality-context', quality_context_ready,
+               'Match current pushed main, or push this committed topic branch to its Stephen-owned pull request targeting main, before qualification.')
         notary_profile = config.get('notary_profile')
         status = 2
         if isinstance(notary_profile, str) and notary_profile.strip():

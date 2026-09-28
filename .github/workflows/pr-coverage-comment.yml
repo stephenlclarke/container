@@ -13,7 +13,7 @@ jobs:
   comment:
     name: Post coverage comment
     runs-on: ubuntu-24.04
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: github.repository != 'stephenlclarke/container' && github.event.workflow_run.conclusion == 'success'
     permissions:
       contents: read
       actions: read

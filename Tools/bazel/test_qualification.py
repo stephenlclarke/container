@@ -10,8 +10,8 @@ import qualification
 
 
 class QualificationTests(unittest.TestCase):
-    def test_quality_requires_complete_combined_coverage(self):
-        for failed in ('integration', 'combined-coverage', None):
+    def test_local_release_requires_hosted_quality_without_rerunning_scanners(self):
+        for failed in ('integration', 'github-quality', None):
             with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
                 evidence = Path(directory)
                 commands = {}
@@ -28,14 +28,15 @@ class QualificationTests(unittest.TestCase):
                     else:
                         qualification.run(evidence, 1)
                 report = json.loads((evidence / 'qualification.json').read_text())
-                quality = next(row for row in report['stages'] if row['name'] == 'quality')
+                release = next(row for row in report['stages'] if row['name'] == 'release')
+                self.assertNotIn('codeql', commands)
+                self.assertNotIn('quality', commands)
+                self.assertIn('github-quality', commands)
                 if failed:
-                    self.assertNotIn('quality', commands)
-                    self.assertEqual(quality['blocked_by'], ['combined-coverage'])
+                    self.assertNotIn('release', commands)
+                    self.assertIn(failed, release['blocked_by'])
                 else:
-                    command = commands['quality']
-                    self.assertEqual(command[command.index('--coverage') + 1], str(evidence / 'combined-coverage'))
-                    self.assertEqual(quality['state'], 'passed')
+                    self.assertEqual(release['state'], 'passed')
 
     def test_failed_gate_is_retained_and_blocks_only_its_dependents(self):
         with tempfile.TemporaryDirectory() as directory:

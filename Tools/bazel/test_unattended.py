@@ -1,8 +1,11 @@
 """Admission and cleanup never stop a pre-existing or newly occupied Docker VM."""
 
 from contextlib import ExitStack
+import fcntl
 import json
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -13,6 +16,41 @@ import linux_tests
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_idle_server_shutdown_releases_lease_but_surviving_controller_does_not(self):
+        for release in (True, False):
+            with self.subTest(release=release), tempfile.TemporaryDirectory() as directory, ExitStack() as commands:
+                root = Path(directory).resolve()
+                descriptor = os.open(root / 'commands.lock', os.O_CREAT | os.O_RDWR, 0o600)
+                fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                def shutdown(*_args):
+                    if release:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                try:
+                    with patch.object(unattended, 'shutdown_idle_bazel', side_effect=shutdown) as stop:
+                        if release:
+                            self.assertEqual(len(unattended.acquire_cleanup_commands(root, commands, str(root))), 1)
+                        else:
+                            with self.assertRaises(BlockingIOError):
+                                unattended.acquire_cleanup_commands(root, commands, str(root))
+                        stop.assert_called_once_with(root, str(root))
+                finally:
+                    os.close(descriptor)
+
+    def test_shutdown_is_bounded_nonblocking_and_requires_recorded_workspace(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(unattended.subprocess, 'run') as run:
+            root = Path(directory).resolve()
+            for workspace in ('relative', str(root / 'missing')):
+                with self.assertRaisesRegex(RuntimeError, 'workspace is unavailable'):
+                    unattended.shutdown_idle_bazel(root, workspace)
+            run.assert_not_called()
+            unattended.shutdown_idle_bazel(root, str(root))
+            self.assertEqual(run.call_args.args[0][-2:], ['--noblock_for_lock', 'shutdown'])
+            self.assertEqual(run.call_args.kwargs['timeout'], 30)
+            self.assertTrue(run.call_args.kwargs['check'])
+            run.side_effect = subprocess.CalledProcessError(9, 'busy Bazel server')
+            with self.assertRaises(subprocess.CalledProcessError):
+                unattended.shutdown_idle_bazel(root, str(root))
+
     def test_explicit_failed_api_hold_is_admitted_only_after_other_checks_pass(self):
         for other_failure in (False, True):
             with self.subTest(other_failure=other_failure), tempfile.TemporaryDirectory() as directory:

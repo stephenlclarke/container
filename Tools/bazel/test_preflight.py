@@ -71,18 +71,21 @@ class PreflightTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs['stdin'], subprocess.DEVNULL)
             self.assertEqual(run.call_args.kwargs['timeout'], 20)
 
-    def test_extractor_probe_writes_only_to_disposable_directory(self):
+    def test_local_release_does_not_require_cloud_scanners_or_sonar_secret(self):
         with tempfile.TemporaryDirectory() as directory:
-            storage = Path(directory)
-            extractor = storage / 'toolchains/codeql-2.27.1/codeql/swift/tools/osx64/extractor'
-            extractor.parent.mkdir(parents=True)
-            extractor.write_text('#!/bin/sh\nmkdir -p extractor-out\npwd > extractor-out/invocation\npwd\n')
-            extractor.chmod(0o700)
-            with mock.patch.object(preflight, 'STORAGE', storage), mock.patch.object(preflight, 'command', wraps=preflight.command) as probe:
-                self.assertTrue(preflight.swift_extractor_ready())
-                working_directory = probe.call_args.kwargs['cwd']
-                self.assertNotEqual(working_directory, Path.cwd())
-                self.assertFalse(working_directory.exists())
+            binary = Path(directory) / 'bazel'
+            binary.write_bytes(b'fixture')
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                    mock.patch.object(preflight, 'BAZEL', binary), \
+                    mock.patch.object(preflight, 'command', return_value=(0, '')) as command, \
+                    mock.patch.object(preflight.subprocess, 'check_output', return_value='a' * 40), \
+                    mock.patch('github_quality.current_context', return_value={'kind': 'branch', 'branch': 'main'}):
+                report = preflight.check('release', {'notary_profile': 'fixture'})
+            checks = {row['check']: row for row in report['checks']}
+            self.assertFalse(any('sonar' in name or 'codeql' in name for name in checks))
+            self.assertTrue(checks['github-quality-context']['ready'])
+            self.assertTrue(checks['apple-notarization']['ready'])
+            self.assertFalse(any('extractor' in str(call.args) for call in command.call_args_list))
 
     def test_refreshed_keyring_is_not_shadowed_by_inherited_tokens(self):
         with mock.patch.dict(os.environ, {'GITHUB_TOKEN': 'secret', 'GH_TOKEN': 'secret', 'KEEP': 'yes'}, clear=True):
@@ -93,10 +96,6 @@ class PreflightTests(unittest.TestCase):
         self.assertNotIn('write:packages', preflight.token_scopes('{"write:packages":true}'))
         self.assertIn('write:packages', preflight.token_scopes('x-oauth-scopes: repo, write:packages\n'))
 
-    def test_missing_sonar_token_does_not_make_request(self):
-        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(preflight.urllib.request, 'urlopen') as request:
-            self.assertFalse(preflight.sonar_authenticated())
-            request.assert_not_called()
 
 
 if __name__ == '__main__':

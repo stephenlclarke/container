@@ -11,7 +11,8 @@ from pathlib import Path
 import signal
 import subprocess
 
-from fork_benchmark import COMMAND_LOCK_ENV, ROOT, STORAGE, Runner, command_lease
+from fork_benchmark import BAZEL, COMMAND_LOCK_ENV, ROOT, STORAGE, Runner, command_lease
+from bazel_environment import bazel_environment
 from preflight import CONFIG, apple_runtime_slot_ready, check
 from failed_api_hold import hold_failed_api
 from runtime_benchmark import INSTALLS, StockSlot
@@ -85,6 +86,31 @@ def interrupted(signum, _frame):
     raise SystemExit(128 + signum)
 
 
+def shutdown_idle_bazel(evidence: Path, workspace: str) -> None:
+    """An inherited lease must not keep an idle workspace server alive forever."""
+    directory = Path(workspace)
+    if not directory.is_absolute() or not directory.is_dir():
+        raise RuntimeError('Recorded Bazel workspace is unavailable; manual recovery is required')
+    with (evidence / f'bazel-shutdown-{os.getpid()}.log').open('w') as log:
+        subprocess.run([str(BAZEL), '--output_user_root=' + str(STORAGE / 'output'),
+                        '--noblock_for_lock', 'shutdown'], cwd=directory,
+                       env=bazel_environment(os.environ), stdin=subprocess.DEVNULL,
+                       stdout=log, stderr=subprocess.STDOUT, timeout=30, check=True)
+
+
+def acquire_cleanup_commands(evidence: Path, commands: ExitStack, workspace: str | None) -> tuple[int, ...]:
+    environment = {COMMAND_LOCK_ENV: str(evidence.resolve() / 'commands.lock')}
+    try:
+        return commands.enter_context(command_lease(environment, exclusive=True))
+    except BlockingIOError:
+        if not isinstance(workspace, str):
+            raise
+        # The official non-blocking shutdown refuses a busy server. Any other
+        # surviving command still prevents the second exclusive-lock attempt.
+        shutdown_idle_bazel(evidence, workspace)
+        return commands.enter_context(command_lease(environment, exclusive=True))
+
+
 def verify_installations(evidence: Path) -> None:
     """An uncertain binary replacement keeps workers quiesced for recovery."""
     for installation in (INSTALLS / 'fork/install', INSTALLS / 'stock/install',
@@ -108,8 +134,7 @@ def restore_host(evidence: Path, host: HostLease, lease: ColimaLease, slot: Stoc
     # shared lease. A separate open description must win exclusive ownership.
     commands.close()
     try:
-        lease.command_descriptors = commands.enter_context(command_lease(
-            {COMMAND_LOCK_ENV: str(evidence.resolve() / 'commands.lock')}, exclusive=True))
+        lease.command_descriptors = acquire_cleanup_commands(evidence, commands, host.record.get('bazel_workspace'))
     except BaseException as error:
         cleanup_ok = False
         result['failures'].append('Commands have not finished or their lease is unavailable: ' + str(error))
@@ -164,6 +189,7 @@ def main() -> None:
             # between stages lets background clients reactivate them mid-run.
             command_lock = args.evidence.resolve() / 'commands.lock'
             host.record['command_lock'] = str(command_lock)
+            host.record['bazel_workspace'] = str(ROOT)
             descriptor = os.open(command_lock, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
             os.close(descriptor)
             lease.command_descriptors = commands.enter_context(command_lease({COMMAND_LOCK_ENV: str(command_lock)}))

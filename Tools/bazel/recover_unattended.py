@@ -10,7 +10,7 @@ import stat
 
 from host_lease import HostLease, JOURNAL, LOCK, processes
 from runtime_benchmark import INSTALLS, STORAGE, StockSlot, stop_owned
-from unattended import ColimaLease, verify_installations
+from unattended import ColimaLease, shutdown_idle_bazel, verify_installations
 
 
 def recover(evidence: Path) -> dict:
@@ -57,7 +57,14 @@ def recover(evidence: Path) -> dict:
             raise RuntimeError('Qualification command lease is not a private single-owner file')
         # Runner passes its shared descriptor to each command, including
         # separate-session controllers that can outlive a killed wrapper.
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            workspace = record.get('bazel_workspace')
+            if not isinstance(workspace, str):
+                raise
+            shutdown_idle_bazel(evidence, workspace)
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         command_descriptors = (descriptor,)
         result.update(needed=True, original_owner=record['owner'])
         host = HostLease(evidence)

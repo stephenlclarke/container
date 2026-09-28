@@ -95,6 +95,21 @@ class RecoveryTests(unittest.TestCase):
                 finally:
                     os.close(descriptor)
 
+    def test_idle_bazel_shutdown_allows_recovery_but_live_command_remains_protected(self):
+        self.record['bazel_workspace'] = str(self.storage)
+        self.save()
+        descriptor = os.open(self.command_lock, os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            with patch.object(recovery, 'shutdown_idle_bazel') as stop:
+                self.assert_rejected('temporarily unavailable')
+                stop.assert_called_once_with(self.evidence.resolve(), str(self.storage))
+            with patch.object(recovery, 'shutdown_idle_bazel',
+                              side_effect=lambda *_: fcntl.flock(descriptor, fcntl.LOCK_UN)):
+                self.assertTrue(recovery.recover(self.evidence)['restored'])
+        finally:
+            os.close(descriptor)
+
     def test_unsafe_lock_and_legacy_or_missing_command_lease_fail_closed(self):
         self.command_lock.unlink()
         target = self.evidence / 'unrelated'

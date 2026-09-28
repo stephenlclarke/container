@@ -8,7 +8,6 @@ on:
     paths:
       - "Formula/container.rb"
       - ".github/workflows/homebrew.yml"
-      - ".github/workflows/prebuilt-binaries.yml"
       - "scripts/test_update_homebrew_formula.py"
       - "scripts/update-homebrew-formula.py"
   push:
@@ -19,7 +18,6 @@ on:
     paths:
       - "Formula/container.rb"
       - ".github/workflows/homebrew.yml"
-      - ".github/workflows/prebuilt-binaries.yml"
       - "scripts/test_update_homebrew_formula.py"
       - "scripts/update-homebrew-formula.py"
 
@@ -66,6 +64,7 @@ jobs:
           brew audit --formula --strict stephenlclarke/container/container
 
       - name: Check retained template archive
+        if: github.repository != 'stephenlclarke/container'
         id: template_archive
         run: |
           set -euo pipefail
@@ -84,13 +83,13 @@ jobs:
           fi
 
       - name: Fetch formula archive
-        if: steps.template_archive.outputs.available == 'true'
+        if: github.repository != 'stephenlclarke/container' && steps.template_archive.outputs.available == 'true'
         run: |
           set -euo pipefail
           brew fetch --formula --force stephenlclarke/container/container
 
       - name: Install and test formula
-        if: steps.template_archive.outputs.available == 'true'
+        if: github.repository != 'stephenlclarke/container' && steps.template_archive.outputs.available == 'true'
         run: |
           set -euo pipefail
           brew install --formula stephenlclarke/container/container
