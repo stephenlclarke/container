@@ -16,6 +16,12 @@ import xml.etree.ElementTree as ET
 from fork_benchmark import BAZEL, ROOT, STORAGE, Runner, digest, install_signal_handlers
 from runtime_benchmark import IDENTITY, INSTALLS, build_environment, checked, copy_replacing, own, verified_guest
 
+GPU_SKIPS = {
+    'container virtio graphics device attachment',
+    'container virtio graphics non-root render access',
+}
+GPU_SKIP_REASON = 'the selected Linux guest kernel does not expose the virtio-GPU render node /dev/dri/renderD128'
+
 
 def processes(executables: set[str]) -> dict[int, tuple[str, str]]:
     rows = checked(['ps', '-axo', 'pid=,lstart=,comm=']).splitlines()
@@ -29,14 +35,57 @@ def retain_results(log: Path, evidence: Path) -> dict:
     if not totals or int(totals[3]) == 0:
         raise RuntimeError('VM suite omitted a nonempty completion result')
     suite = ET.Element('testsuite', name='containerization-vm')
-    for name, seconds in re.findall(r'test (.+) complete in ([\d.]+)s\.', text):
+    completed = re.findall(r'test (.+) complete in ([\d.]+(?:[eE][+-]?\d+)?)s\.', text)
+    for name, seconds in completed:
         ET.SubElement(suite, 'testcase', name=name, time=seconds)
-    for reason in re.findall(r'skipped test: (.+)', text):
-        ET.SubElement(ET.SubElement(suite, 'testcase', name=reason), 'skipped', message=reason)
-    for name, error in re.findall(r'test (.+) failed: (.+)', text):
+    skips = []
+    current = None
+    # The driver fixes max-concurrency to one, so a skip belongs to the last
+    # started test. Retain its name instead of conflating identical reasons.
+    for line in text.splitlines():
+        started = re.search(r'test (.+) started\.\.\.$', line)
+        skipped = re.search(r'skipped test: (.+)$', line)
+        if started:
+            current = started[1]
+        elif skipped:
+            if current is None:
+                raise RuntimeError('VM skip has no test identity')
+            skips.append({'test': current, 'reason': skipped[1]})
+            ET.SubElement(ET.SubElement(suite, 'testcase', name=current), 'skipped', message=skipped[1])
+            current = None
+        elif re.search(r'test .+ (?:complete in|failed:)', line):
+            current = None
+    failures = re.findall(r'test (.+) failed: (.+)', text)
+    for name, error in failures:
         ET.SubElement(ET.SubElement(suite, 'testcase', name=name), 'failure', message=error)
     ET.ElementTree(suite).write(evidence / 'tests.xml', encoding='unicode')
-    return {'passed_tests': int(totals[2]), 'total_tests': int(totals[3]), 'skipped_tests': int(totals[4] or 0)}
+    result = {'passed_tests': int(totals[2]), 'total_tests': int(totals[3]),
+              'skipped_tests': int(totals[4] or 0), 'skips': skips}
+    if (len(completed) != result['passed_tests'] or len(skips) != result['skipped_tests']
+            or len(suite) != result['total_tests']):
+        raise RuntimeError('VM individual results disagree with the completion totals')
+    return result
+
+
+def validate_skips(result: dict) -> None:
+    if any(skip['test'] not in GPU_SKIPS or skip['reason'] != GPU_SKIP_REASON for skip in result['skips']):
+        raise RuntimeError('VM suite skipped required tests; see named skip reasons in vm-integration.json')
+
+
+def stage_runc(guest: dict, binaries: Path) -> dict:
+    """The host presence check must name the binary included in this exact guest."""
+    pin = guest['identity'].get('runc')
+    if not pin or not guest.get('runc_binary'):
+        raise RuntimeError('VM qualification requires a guest built with guest_artifact.py --with-runc')
+    source = Path(guest['runc_binary'])
+    if source.is_symlink() or digest(source) != pin['sha256'] or guest['binaries'].get('runc') != pin['sha256']:
+        raise RuntimeError('VM runc fixture differs from the guest artifact')
+    destination = binaries / 'runc-arm64'
+    copy_replacing(source, destination)
+    destination.chmod(0o755)
+    if digest(destination) != pin['sha256']:
+        raise RuntimeError('Staged VM runc fixture changed')
+    return pin
 
 
 def run(evidence: Path, guest_receipt: Path, selection: str | None) -> None:
@@ -54,6 +103,7 @@ def run(evidence: Path, guest_receipt: Path, selection: str | None) -> None:
             raise RuntimeError('The private VM integration installation is already active')
         try:
             guest = verified_guest(guest_receipt)
+            result['runc'] = stage_runc(guest, binaries)
             shutil.copy2(guest_receipt, evidence / 'guest-artifact.json')
             labels = ['@swiftpkg_containerization//:' + name + '.rspm' for name in ('cctl', 'containerization-integration')]
             row = runner.run('vm', 'fork', 'build', 0, [str(ROOT / 'Tools/bazel/run.sh'), 'build',
@@ -102,6 +152,7 @@ def run(evidence: Path, guest_receipt: Path, selection: str | None) -> None:
                 args += ['--filter', selection]
             row = runner.run('vm', 'fork', 'integration', 0, args, directory, 1800)
             result.update(retain_results(Path(row['log']), evidence))
+            validate_skips(result)
             if row['status'] or result['passed_tests'] + result['skipped_tests'] != result['total_tests']:
                 raise RuntimeError('Containerization VM suite failed')
             panics = [str(path) for path in (evidence / 'bootlogs').glob('*.log')

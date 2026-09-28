@@ -74,7 +74,7 @@ bazel-quality:
 
 .PHONY: bazel-vm-integration
 bazel-vm-integration:
-	@python3 Tools/bazel/vm_integration.py --guest-artifact "$(QUALIFICATION_EVIDENCE)/guest/guest-artifact.json" \
+	@python3 Tools/bazel/vm_integration.py --guest-artifact "$(QUALIFICATION_EVIDENCE)/guest-runc/guest-artifact.json" \
 		--evidence "$(QUALIFICATION_EVIDENCE)/vm-integration" $(VM_INTEGRATION_ARGS)
 
 .PHONY: bazel-maintenance
@@ -91,10 +91,13 @@ bazel-combined-coverage:
 
 BENCHMARK_TRIALS ?= 7
 BENCHMARK_RUN ?= $(shell date -u +%Y%m%dT%H%M%SZ)
-.PHONY: bazel-guest-build
+.PHONY: bazel-guest-build bazel-guest-runc-build
 bazel-guest-build:
 	@python3 Tools/bazel/preflight.py --profile build
 	@python3 Tools/bazel/guest_artifact.py --evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/guest-build/$(BENCHMARK_RUN)"
+bazel-guest-runc-build:
+	@python3 Tools/bazel/preflight.py --profile build
+	@python3 Tools/bazel/guest_artifact.py --with-runc --evidence "$(QUALIFICATION_EVIDENCE)/guest-runc"
 .PHONY: bazel-fork-benchmark
 bazel-fork-benchmark:
 	@python3 Tools/bazel/fork_benchmark.py \

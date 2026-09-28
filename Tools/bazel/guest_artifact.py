@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -57,7 +58,33 @@ def snapshot(repository: Path, revision: str, destination: Path) -> dict:
     return result
 
 
-def rootfs(binary_directory: Path, destination: Path) -> None:
+def runc_asset(source: Path, cache: Path) -> tuple[dict, Path]:
+    """Fetch only the ARM64 runtime pinned by the immutable guest source."""
+    makefile = (source / 'Makefile').read_text()
+    versions = re.findall(r'^RUNC_VERSION := (v[0-9]+\.[0-9]+\.[0-9]+)$', makefile, re.M)
+    hashes = re.findall(r'^RUNC_SHA256_arm64 := ([a-f0-9]{64})$', makefile, re.M)
+    if len(versions) != 1 or len(hashes) != 1:
+        raise RuntimeError('Pinned guest source has no unambiguous ARM64 runc release')
+    pin = {'version': versions[0], 'sha256': hashes[0],
+           'url': 'https://github.com/opencontainers/runc/releases/download/' + versions[0] + '/runc.arm64'}
+    cache.mkdir(parents=True, exist_ok=True)
+    binary = cache / ('runc-arm64-' + pin['sha256'])
+    if not binary.exists():
+        with tempfile.TemporaryDirectory(prefix='runc-download-', dir=cache) as temporary:
+            download = Path(temporary) / 'runc'
+            subprocess.run(['/usr/bin/curl', '--fail', '--silent', '--show-error', '--location',
+                            '--max-time', '120', '--output', str(download), pin['url']],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=130, check=True)
+            if digest(download) != pin['sha256']:
+                raise RuntimeError('Downloaded runc checksum does not match the pinned guest source')
+            download.chmod(0o755)
+            download.replace(binary)
+    if binary.is_symlink() or digest(binary) != pin['sha256']:
+        raise RuntimeError('Cached runc checksum does not match the pinned guest source')
+    return pin, binary
+
+
+def rootfs(binary_directory: Path, destination: Path, runc: Path | None = None) -> None:
     """Preserve the established init root layout, including pre-proc exe lookup."""
     with destination.open('wb') as stream, gzip.GzipFile(fileobj=stream, mode='wb', filename='', mtime=0) as compressed:
         with tarfile.open(fileobj=compressed, mode='w|') as tar:
@@ -65,8 +92,10 @@ def rootfs(binary_directory: Path, destination: Path) -> None:
                 entry = tarfile.TarInfo(name)
                 entry.type, entry.mode = tarfile.DIRTYPE, 0o755
                 tar.addfile(entry)
-            for name in ['vminitd', 'vmexec']:
-                binary = binary_directory / name
+            binaries = {name: binary_directory / name for name in ['vminitd', 'vmexec']}
+            if runc is not None:
+                binaries['runc'] = runc
+            for name, binary in binaries.items():
                 entry = tarfile.TarInfo('sbin/' + name)
                 entry.mode, entry.size = 0o755, binary.stat().st_size
                 with binary.open('rb') as stream:
@@ -76,7 +105,8 @@ def rootfs(binary_directory: Path, destination: Path) -> None:
             tar.addfile(entry)
 
 
-def build(repository: Path, evidence: Path, swift: Path = SWIFT, sdk: Path = MACOS_SDK) -> dict:
+def build(repository: Path, evidence: Path, swift: Path = SWIFT, sdk: Path = MACOS_SDK,
+          *, with_runc: bool = False) -> dict:
     pin = next(pin for pin in json.loads((ROOT / 'Package.resolved').read_text())['pins']
                if pin['identity'] == 'containerization')
     revision = pin['state']['revision']
@@ -89,6 +119,7 @@ def build(repository: Path, evidence: Path, swift: Path = SWIFT, sdk: Path = MAC
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         source = base / 'source'
         source_manifest = snapshot(repository, revision, source)
+        runc = runc_asset(source, base / 'tools') if with_runc else None
         toolchain = output([str(swift), '--version'])
         if 'Swift version 6.3' not in toolchain or not (sdk / 'SDKSettings.json').is_file():
             raise RuntimeError('The guest requires Swift 6.3 and its compatible macOS manifest SDK')
@@ -102,6 +133,8 @@ def build(repository: Path, evidence: Path, swift: Path = SWIFT, sdk: Path = MAC
                     'build_time': environment['BUILD_TIME'],
                     'packagers': {name: digest(Path(__file__).with_name(name)) for name in
                                  ['guest_artifact.py', 'create-vminit-oci-archive.py', 'validate-oci-image-layout.py']}}
+        if runc is not None:
+            identity['runc'] = runc[0]
         key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         retained = RETAINED / revision / key
         receipt = retained / 'artifact.json'
@@ -124,9 +157,10 @@ def build(repository: Path, evidence: Path, swift: Path = SWIFT, sdk: Path = MAC
             binaries = base / 'build/release'
             retained.mkdir(parents=True, exist_ok=True)
             layer = retained / 'rootfs.tar.gz'
-            rootfs(binaries, layer)
+            rootfs(binaries, layer, runc[1] if runc else None)
             image = retained / 'guest.oci.tar'
-            reference = 'ghcr.io/stephenlclarke/containerization/vminit:' + revision
+            image_name = 'vminit-runc' if with_runc else 'vminit'
+            reference = 'ghcr.io/stephenlclarke/containerization/' + image_name + ':' + revision
             subprocess.run([sys.executable, str(Path(__file__).with_name('create-vminit-oci-archive.py')),
                             '--rootfs', str(layer), '--output', str(image), '--reference', reference,
                             '--source-url', pin['location'].removesuffix('.git')], check=True, timeout=120)
@@ -135,6 +169,9 @@ def build(repository: Path, evidence: Path, swift: Path = SWIFT, sdk: Path = MAC
             record = {'schema': 1, 'identity': identity, 'reference': reference,
                       'archive': str(image), 'archive_sha256': digest(image), 'reused': False,
                       'binaries': {name: digest(binaries / name) for name in ['vminitd', 'vmexec']}}
+            if runc is not None:
+                record['runc_binary'] = str(runc[1])
+                record['binaries']['runc'] = runc[0]['sha256']
             receipt.write_text(json.dumps(record, indent=2) + '\n')
         (evidence / 'guest-artifact.json').write_text(json.dumps(record, indent=2) + '\n')
         return record
@@ -147,9 +184,10 @@ def main() -> None:
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--swift', type=Path, default=SWIFT)
     parser.add_argument('--sdk', type=Path, default=MACOS_SDK)
+    parser.add_argument('--with-runc', action='store_true', help='Build the separately identified optional runc guest variant')
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=False)
-    build(args.repository, args.evidence, args.swift, args.sdk)
+    build(args.repository, args.evidence, args.swift, args.sdk, with_runc=args.with_runc)
     print('Guest artifact: ' + str(args.evidence / 'guest-artifact.json'))
 
 
