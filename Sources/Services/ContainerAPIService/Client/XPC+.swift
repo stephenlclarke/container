@@ -28,6 +28,8 @@ public enum XPCKeys: String {
     case id
     // ID for a process.
     case processIdentifier
+    /// Finish init stdin after the bootstrap descriptor reaches EOF.
+    case closeStdinOnEOF
     /// Container configuration key.
     case containerConfig
     /// Lossless logging request resolved by the Container authority.

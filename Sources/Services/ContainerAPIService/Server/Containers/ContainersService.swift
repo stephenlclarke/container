@@ -2231,16 +2231,20 @@ public actor ContainersService {
     }
 
     /// Bootstrap the init process of the container.
-    public func bootstrap(id: String, stdio: [FileHandle?], dynamicEnv: [String: String]) async throws {
+    public func bootstrap(
+        id: String, stdio: [FileHandle?], dynamicEnv: [String: String],
+        closeStdinOnEOF: Bool = false
+    ) async throws {
         try await withLifecycleMutation(id: id) {
-            if try await self.consumeDedicatedPrewarm(id: id, stdio: stdio) {
+            if try await self.consumeDedicatedPrewarm(id: id, stdio: stdio, closeStdinOnEOF: closeStdinOnEOF) {
                 return
             }
             _ = try await self.bootstrap(
                 id: id,
                 stdio: stdio,
                 dynamicEnv: dynamicEnv,
-                onlyIfNeverStarted: false
+                onlyIfNeverStarted: false,
+                closeStdinOnEOF: closeStdinOnEOF
             )
         }
     }
@@ -2274,7 +2278,8 @@ public actor ContainersService {
         stdio: [FileHandle?],
         dynamicEnv: [String: String],
         onlyIfNeverStarted: Bool,
-        prewarming: Bool = false
+        prewarming: Bool = false,
+        closeStdinOnEOF: Bool = false
     ) async throws -> Bool {
         log.debug(
             "ContainersService: enter",
@@ -2487,7 +2492,8 @@ public actor ContainersService {
                     stdio: runtimeStdio,
                     networkBootstrapInfos: networkBootstrapInfos,
                     dynamicEnv: dynamicEnv,
-                    prewarming: prewarming
+                    prewarming: prewarming,
+                    closeStdinOnEOF: closeStdinOnEOF
                 )
             } catch {
                 let bootstrapFinishedAt = ProcessInfo.processInfo.systemUptime
@@ -2668,7 +2674,8 @@ public actor ContainersService {
 
     private func consumeDedicatedPrewarm(
         id: String,
-        stdio: [FileHandle?]
+        stdio: [FileHandle?],
+        closeStdinOnEOF: Bool = false
     ) async throws -> Bool {
         let prepared = try await self.lock.withLock(
             logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
@@ -2694,7 +2701,8 @@ public actor ContainersService {
             _ = try await client.state()
             try await client.attach(
                 stdio: stdio,
-                closeStdin: Self.deferredStdinNeedsEOF(stdio)
+                closeStdin: Self.deferredStdinNeedsEOF(stdio),
+                closeStdinOnEOF: closeStdinOnEOF
             )
         } catch {
             log.warning(
