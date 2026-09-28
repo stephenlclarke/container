@@ -16,7 +16,7 @@ import tempfile
 import urllib.error
 import urllib.request
 
-from runtime_benchmark import IDENTITY, BAZEL, BAZEL_SHA, STORAGE
+from runtime_benchmark import IDENTITY, BAZEL, BAZEL_SHA, STORAGE, service_is_inactive
 
 CONFIG = Path.home() / 'Library/Application Support/ContainerFamily/config/unattended.json'
 
@@ -77,6 +77,22 @@ def github_environment() -> dict:
     # Interactive `gh auth refresh` updates the keyring, not an inherited token.
     # Use the keyring consistently for publication and permission admission.
     return {k: v for k, v in os.environ.items() if k not in {'GH_TOKEN', 'GITHUB_TOKEN'}}
+
+
+def apple_runtime_slot_ready() -> bool:
+    status, output = command(['/bin/launchctl', 'list'])
+    if status:
+        return False
+    for line in output.splitlines():
+        parts = line.split()
+        if len(parts) != 3 or not parts[2].startswith(('com.apple.container.', 'sh.brew.container')):
+            continue
+        if parts[0] != '-':
+            return False
+        status, description = command(['/bin/launchctl', 'print', f'gui/{os.getuid()}/{parts[2]}'])
+        if status or not service_is_inactive(description):
+            return False
+    return True
 
 
 def token_scopes(headers: str) -> set[str]:
@@ -155,11 +171,8 @@ def check(profile: str, config: dict) -> dict:
         record('unattended-signing', signing_ready, 'Unlock the signing Keychain and authorize codesign for the configured Developer ID key during setup.')
         for name in ['docker', 'colima']:
             record('tool-' + name, shutil.which(name) is not None, 'Install ' + name + ' before runtime verification.')
-        status, output = command(['/bin/launchctl', 'list'])
-        active = [parts[2] for line in output.splitlines() if len(parts := line.split()) == 3
-                  and parts[0] != '-' and parts[2].startswith(('com.apple.container.', 'sh.brew.container'))]
-        record('apple-runtime-slot', status == 0 and not active,
-               'Stop the existing Apple/Homebrew container installation after saving its workloads; the verifier will not displace an active installation.')
+        record('apple-runtime-slot', apple_runtime_slot_ready(),
+               'Stop the existing Apple/Homebrew container installation after saving its workloads; active, restarting or uninspectable services cannot be displaced.')
 
     if profile == 'release':
         dns = host_dns_probe()

@@ -77,6 +77,12 @@ def services(prefix: str) -> list[tuple[str, str]]:
             if len(parts := line.split()) == 3 and parts[2].startswith(prefix)]
 
 
+def service_is_inactive(description: str) -> bool:
+    """Inspect the top-level state; a PID gap during respawn is not inactivity."""
+    return (re.search(r'^\tstate = not running$', description, re.M) is not None
+            and re.search(r'^\tpid = ', description, re.M) is None)
+
+
 def stop_owned(lane: str, *, originals: list[dict] | None = None) -> None:
     prefix = (NAMESPACE if lane == 'fork' else 'com.apple.container') + '.'
     install = str(INSTALLS / lane / 'install') + '/'
@@ -122,7 +128,9 @@ class StockSlot:
             if pid != '-':
                 raise RuntimeError(f'Existing {label} is active; stock benchmark cannot safely replace it')
             target = f'gui/{os.getuid()}/{label}'
-            description = checked(['launchctl', 'print', target])
+            description = checked(['launchctl', 'print', target], timeout=20)
+            if not service_is_inactive(description):
+                raise RuntimeError(f'Existing {label} is not inactive; stop it before qualification')
             match = re.search(r'^\s*path = (.+)$', description, re.M)
             if not match:
                 raise RuntimeError(f'Cannot preserve registration {label}')
@@ -134,9 +142,27 @@ class StockSlot:
             shutil.copy2(path, self.evidence / (label + '.original.plist'))
         self.persist()
         for row in self.saved:
+            self.verify_remaining()
             checked(['launchctl', 'bootout', f'gui/{os.getuid()}/{row["label"]}'])
             row['unloaded'] = True
             self.persist()
+
+    def verify_remaining(self) -> None:
+        """Reject activation or changed registrations before each displacement."""
+        current = {label: pid for pid, label in services('com.apple.container.') + services('sh.brew.container')}
+        remaining = [row for row in self.saved if not row['unloaded']]
+        if set(current) != {row['label'] for row in remaining}:
+            raise RuntimeError('Original service registrations changed before preservation')
+        for row in remaining:
+            label = row['label']
+            if current[label] != '-':
+                raise RuntimeError(f'Existing {label} became active before preservation')
+            description = checked(['launchctl', 'print', f'gui/{os.getuid()}/{label}'], timeout=20)
+            match = re.search(r'^\s*path = (.+)$', description, re.M)
+            if not service_is_inactive(description):
+                raise RuntimeError(f'Existing {label} is no longer inactive before preservation')
+            if match is None or match[1] != row['path'] or digest(Path(row['path'])) != row['sha256']:
+                raise RuntimeError(f'Original service registration changed: {label}')
 
     def persist(self) -> None:
         (self.evidence / 'service-restoration.json').write_text(json.dumps(self.saved, indent=2) + '\n')

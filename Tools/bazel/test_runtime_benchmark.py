@@ -126,6 +126,24 @@ class RuntimeTests(unittest.TestCase):
                 runtime.StockSlot(Path(temporary)).acquire()
             command.assert_not_called()
 
+    def test_inactivity_requires_top_level_state_without_pid(self):
+        self.assertTrue(runtime.service_is_inactive('service = {\n\tstate = not running\n\tlast exit code = 1\n}'))
+        for description in ['', '\t\tstate = not running',
+                            'service = {\n\tstate = spawn scheduled\n}',
+                            'service = {\n\tstate = unknown\n}',
+                            'service = {\n\tstate = not running\n\tpid = 42\n}']:
+            with self.subTest(description=description):
+                self.assertFalse(runtime.service_is_inactive(description))
+
+    def test_respawn_gap_is_never_stopped(self):
+        label = 'com.apple.container.apiserver'
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch.object(runtime, 'services', side_effect=[[('-', label)], []]), \
+                patch.object(runtime, 'checked', return_value='service = {\n\tstate = spawn scheduled\n}') as command:
+            with self.assertRaisesRegex(RuntimeError, 'not inactive'):
+                runtime.StockSlot(Path(temporary)).acquire()
+            self.assertEqual([call.args[0][1] for call in command.call_args_list], ['print'])
+
     def test_stock_registration_preserved_and_restored(self):
         with tempfile.TemporaryDirectory() as temporary:
             evidence = Path(temporary)
@@ -134,13 +152,84 @@ class RuntimeTests(unittest.TestCase):
             plist.write_bytes(plistlib.dumps({'Label': label}))
             before = plist.read_bytes()
             slot = runtime.StockSlot(evidence)
-            with patch.object(runtime, 'services', side_effect=[[('-', label)], [], []]), \
-                    patch.object(runtime, 'checked', side_effect=[f'path = {plist}', '', '']) as command:
+            description = f'path = {plist}\n\tstate = not running'
+            with patch.object(runtime, 'services', side_effect=[[('-', label)], [], [('-', label)], [], []]), \
+                    patch.object(runtime, 'checked', side_effect=[description, description, '', '']) as command:
                 slot.acquire()
                 slot.restore()
             self.assertEqual(plist.read_bytes(), before)
             self.assertTrue(slot.saved[0]['restored'])
             self.assertEqual(command.call_args.args[0][1], 'bootstrap')
+
+    def test_stock_recheck_rejects_changed_state_path_or_contents(self):
+        label = 'com.apple.container.apiserver'
+        for change in ['state', 'path', 'contents', 'new-registration', 'pid', 'inspection']:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as temporary:
+                evidence = Path(temporary)
+                plist = evidence / 'original.plist'
+                plist.write_bytes(plistlib.dumps({'Label': label}))
+                description = f'path = {plist}\n\tstate = not running'
+                second = description
+                current = [('-', label)]
+                if change == 'state':
+                    second = description.replace('not running', 'spawn scheduled')
+                elif change == 'path':
+                    second = description.replace(str(plist), '/changed.plist')
+                elif change == 'new-registration':
+                    current.append(('-', 'com.apple.container.new'))
+                elif change == 'pid':
+                    current = [('123', label)]
+                def inspect(args, **_kwargs):
+                    self.assertEqual(args[1], 'print')
+                    if command.call_count == 1:
+                        return description
+                    if change == 'contents':
+                        plist.write_text('changed')
+                    if change == 'inspection':
+                        raise subprocess.CalledProcessError(1, args)
+                    return second
+                with patch.object(runtime, 'services', side_effect=[[('-', label)], [], current, []]), \
+                        patch.object(runtime, 'checked', side_effect=inspect) as command:
+                    with self.assertRaises((RuntimeError, subprocess.CalledProcessError)):
+                        runtime.StockSlot(evidence).acquire()
+                    self.assertFalse(any(call.args[0][1] == 'bootout' for call in command.call_args_list))
+
+    def test_later_activation_restores_already_unloaded_registration(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            evidence = Path(temporary)
+            labels = ['com.apple.container.apiserver', 'com.apple.container.images']
+            paths = {label: evidence / (label + '.plist') for label in labels}
+            for label, path in paths.items():
+                path.write_bytes(plistlib.dumps({'Label': label}))
+            loaded = set(labels)
+            displaced = []
+            def inventory(prefix):
+                return [('-', label) for label in labels if label in loaded and label.startswith(prefix)]
+            def command(args, **_kwargs):
+                if args[1] == 'print':
+                    label = args[2].rsplit('/', 1)[-1]
+                    state = 'spawn scheduled' if displaced and label == labels[1] else 'not running'
+                    return f'path = {paths[label]}\n\tstate = {state}'
+                if args[1] == 'bootout':
+                    label = args[2].rsplit('/', 1)[-1]
+                    loaded.remove(label)
+                    displaced.append(label)
+                elif args[1] == 'bootstrap':
+                    loaded.add(plistlib.loads(Path(args[3]).read_bytes())['Label'])
+                else:
+                    self.fail('Unexpected operation ' + args[1])
+                return ''
+            slot = runtime.StockSlot(evidence)
+            with patch.object(runtime, 'services', side_effect=inventory), \
+                    patch.object(runtime, 'checked', side_effect=command):
+                try:
+                    with self.assertRaisesRegex(RuntimeError, 'no longer inactive'):
+                        slot.acquire()
+                finally:
+                    slot.restore()
+            self.assertEqual(displaced, [labels[0]])
+            self.assertEqual(loaded, set(labels))
+            self.assertTrue(all(row['restored'] for row in slot.saved))
 
     def test_stock_restore_reconciles_bootout_before_receipt_update(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -12,6 +12,22 @@ import preflight
 
 
 class PreflightTests(unittest.TestCase):
+    def test_runtime_admission_requires_current_inactive_state(self):
+        label = 'com.apple.container.apiserver'
+        for state, pid, status, ready in [
+                ('not running', '-', 0, True), ('spawn scheduled', '-', 0, False),
+                ('running', '123', 0, False), ('waiting', '-', 0, False),
+                ('', '-', 0, False), ('not running', '-', 124, False)]:
+            with self.subTest(state=state, pid=pid, status=status), \
+                    mock.patch.object(preflight, 'command', side_effect=[
+                        (0, f'{pid}\t1\t{label}'), (status, f'{label} = {{\n\tstate = {state}\n}}')]) as command:
+                self.assertEqual(preflight.apple_runtime_slot_ready(), ready)
+                self.assertTrue(all(call.args[0][1] in ('list', 'print') for call in command.call_args_list))
+        with mock.patch.object(preflight, 'command', return_value=(124, '')):
+            self.assertFalse(preflight.apple_runtime_slot_ready())
+        with mock.patch.object(preflight, 'command', return_value=(0, 'PID Status Label\n1 0 unrelated')):
+            self.assertTrue(preflight.apple_runtime_slot_ready())
+
     def test_available_swift_does_not_admit_command_line_tools_as_xcode(self):
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / 'bazel'
