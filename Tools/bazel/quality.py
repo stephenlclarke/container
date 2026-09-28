@@ -92,6 +92,21 @@ def clean_code_checks(context: dict, evidence: Path) -> dict:
     return counts
 
 
+def verified_coverage(coverage: Path) -> dict:
+    """Admit only the complete source-bound report for an authoritative scan."""
+    receipt = coverage / 'coverage.json'
+    report = json.loads(receipt.read_text())
+    if (report.get('passed') is not True or report.get('kind') != 'unit-and-full-integration'
+            or report.get('source_files') != source_files()):
+        raise RuntimeError('Quality requires passed combined coverage for the current sources')
+    xml = coverage / 'coverage.xml'
+    sha = digest(xml)
+    if sha != report.get('reports', {}).get('coverage.xml'):
+        raise RuntimeError('Coverage report changed after collection')
+    return {'kind': report['kind'], 'receipt_sha256': digest(receipt),
+            'xml': str(xml), 'xml_sha256': sha}
+
+
 def run(evidence: Path, coverage: Path) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
     result = {'passed': False, 'failures': []}
@@ -100,12 +115,8 @@ def run(evidence: Path, coverage: Path) -> None:
         result['revision'] = revision
         context = analysis_context(revision)
         result['context'] = context
-        report = json.loads((coverage / 'coverage.json').read_text())
-        if not report['passed'] or report['source_files'] != source_files():
-            raise RuntimeError('Coverage does not match the current source tree')
-        xml = coverage / 'coverage.xml'
-        if digest(xml) != report['reports']['coverage.xml']:
-            raise RuntimeError('Coverage report changed after collection')
+        result['coverage'] = verified_coverage(coverage)
+        xml = result['coverage']['xml']
         policy = api('settings/values', {'component': PROJECT, 'keys': 'sonar.leak.period,sonar.leak.period.type'})
         (evidence / 'new-code-policy.json').write_text(json.dumps(policy, indent=2) + '\n')
         validate_policy(policy)

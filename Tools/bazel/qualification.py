@@ -48,7 +48,7 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
         ('combined-coverage', ['coverage', 'integration'], script('combined_coverage', '--unit', evidence / 'coverage',
                     '--integration', evidence / 'integration/coverage', '--evidence', evidence / 'combined-coverage'), 600),
         ('codeql', ['container'], script('codeql', '--evidence', evidence / 'codeql'), 5400),
-        ('quality', ['coverage'], script('quality', '--coverage', evidence / 'coverage', '--evidence', evidence / 'quality'), 1800),
+        ('quality', ['combined-coverage'], script('quality', '--coverage', evidence / 'combined-coverage', '--evidence', evidence / 'quality'), 1800),
         ('component-benchmarks', ['dependencies', 'container', 'builder'], script('fork_benchmark',
                     '--evidence', evidence / 'components', '--scratch', component_scratch, *component_args), 10800),
         ('runtime-benchmark', ['integration'], script('runtime_benchmark', '--prepared', prepared,

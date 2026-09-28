@@ -10,6 +10,33 @@ import qualification
 
 
 class QualificationTests(unittest.TestCase):
+    def test_quality_requires_complete_combined_coverage(self):
+        for failed in ('integration', 'combined-coverage', None):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                commands = {}
+
+                def execute(component, lane, fixture, trial, command, cwd, timeout):
+                    commands[fixture] = command
+                    return {'status': int(fixture == failed), 'log': fixture + '.log', 'seconds': 1}
+
+                with patch.object(qualification, 'checkpoint', return_value='a' * 40), \
+                        patch.object(qualification.Runner, 'run', side_effect=execute):
+                    if failed:
+                        with self.assertRaises(SystemExit):
+                            qualification.run(evidence, 1)
+                    else:
+                        qualification.run(evidence, 1)
+                report = json.loads((evidence / 'qualification.json').read_text())
+                quality = next(row for row in report['stages'] if row['name'] == 'quality')
+                if failed:
+                    self.assertNotIn('quality', commands)
+                    self.assertEqual(quality['blocked_by'], ['combined-coverage'])
+                else:
+                    command = commands['quality']
+                    self.assertEqual(command[command.index('--coverage') + 1], str(evidence / 'combined-coverage'))
+                    self.assertEqual(quality['state'], 'passed')
+
     def test_failed_gate_is_retained_and_blocks_only_its_dependents(self):
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory)

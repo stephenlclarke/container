@@ -33,7 +33,8 @@ def run(evidence: Path, unit: Path, integration: Path) -> None:
         result.update(export_reports(runner, evidence, text))
         if source_files() != sources:
             raise RuntimeError('Sources changed while combining coverage')
-        result.update(passed=True, inputs={str(p): digest(p / 'coverage.json') for p in (unit, integration)},
+        result.update(passed=True, kind='unit-and-full-integration',
+                      inputs={str(p): digest(p / 'coverage.json') for p in (unit, integration)},
                       scope='Union of container host unit and full CLI integration/runtime executable lines')
     except BaseException as error:
         result['failures'].append(str(error))

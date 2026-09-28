@@ -17,7 +17,13 @@ concurrency:
 jobs:
   analyze:
     name: Analyze Swift
-    if: github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
+    # Opted-in main-targeted PRs use explicit checkpoint qualification instead.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]' &&
+       !(github.event.pull_request.base.ref == 'main' &&
+         contains(github.event.pull_request.labels.*.name, 'container-only-qualification')))
     runs-on: macos-26
     timeout-minutes: 90
     env:

@@ -7,10 +7,33 @@ from pathlib import Path
 import tempfile
 from unittest.mock import patch
 
-from quality import REPOSITORY, checkpoint, clean_code_checks, context_arguments, pull_request_context, validate_policy
+from fork_benchmark import digest
+from quality import REPOSITORY, checkpoint, clean_code_checks, context_arguments, pull_request_context, validate_policy, verified_coverage
 
 
 class QualityAdmissionTests(unittest.TestCase):
+    def test_scan_rejects_partial_foreign_and_changed_coverage(self):
+        with tempfile.TemporaryDirectory() as directory, patch('quality.source_files', return_value={'Sources/A.swift': 'source-hash'}):
+            root = Path(directory)
+            xml = root / 'coverage.xml'
+            xml.write_text('<coverage version="1"/>')
+            receipt = root / 'coverage.json'
+            report = {'passed': True, 'kind': 'unit-and-full-integration',
+                      'source_files': {'Sources/A.swift': 'source-hash'}, 'reports': {'coverage.xml': digest(xml)}}
+            receipt.write_text(json.dumps(report))
+            self.assertEqual(verified_coverage(root),
+                             {'kind': report['kind'], 'receipt_sha256': digest(receipt),
+                              'xml': str(xml), 'xml_sha256': digest(xml)})
+            for change in ({'passed': False}, {'kind': None}, {'kind': 'unit'},
+                           {'kind': 'integration', 'full_suite': False}, {'source_files': {}}):
+                receipt.write_text(json.dumps(dict(report, **change)))
+                with self.subTest(change=change), self.assertRaisesRegex(RuntimeError, 'passed combined coverage'):
+                    verified_coverage(root)
+            receipt.write_text(json.dumps(report))
+            xml.write_text('<coverage version="1"><file path="changed"/></coverage>')
+            with self.assertRaisesRegex(RuntimeError, 'report changed'):
+                verified_coverage(root)
+
     def test_clean_code_checks_keep_pr_new_code_and_main_full_scope(self):
         for context, expected in [({'kind': 'pull_request', 'key': '289'},
                                    {'pullRequest': '289', 'inNewCodePeriod': 'true'}),

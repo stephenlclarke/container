@@ -70,7 +70,7 @@ bazel-service-artifacts:
 bazel-service-integration:
 	@python3 Tools/bazel/service_integration.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/service-integration"
 bazel-quality:
-	@python3 Tools/bazel/quality.py --coverage "$(QUALIFICATION_EVIDENCE)/coverage" --evidence "$(QUALIFICATION_EVIDENCE)/quality"
+	@python3 Tools/bazel/quality.py --coverage "$(QUALIFICATION_EVIDENCE)/combined-coverage" --evidence "$(QUALIFICATION_EVIDENCE)/quality"
 
 .PHONY: bazel-vm-integration
 bazel-vm-integration:
