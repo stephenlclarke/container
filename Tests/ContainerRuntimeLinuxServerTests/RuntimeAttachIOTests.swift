@@ -53,6 +53,41 @@ struct RuntimeAttachIOTests {
         #expect(received == payload)
     }
 
+    @Test("Pipe input delivers bytes, EOF, and clears its readability handler")
+    func pipeInputFinishes() async throws {
+        let pipe = Pipe()
+        let input = pipe.fileHandleForReading
+        let output = pipe.fileHandleForWriting
+        defer {
+            input.readabilityHandler = nil
+            try? input.close()
+            try? output.close()
+        }
+
+        let stream = input.stream()
+        let payload = Data("attached input\n".utf8)
+        try output.write(contentsOf: payload)
+        try output.close()
+
+        let received = try await withThrowingTaskGroup(of: Data.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                var result = Data()
+                for await chunk in stream {
+                    result.append(chunk)
+                }
+                return result
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw CancellationError()
+            }
+            return try #require(await group.next())
+        }
+        #expect(received == payload)
+        #expect(input.readabilityHandler == nil)
+    }
+
     @Test("Process output close cannot close a subsequently reused descriptor")
     func processOutputCloseTracksFileHandleOwnership() throws {
         let source = Pipe()

@@ -22,6 +22,8 @@ class GitHubQualityTests(unittest.TestCase):
                                             base={'sha': 'b' * 40, 'ref': 'main'})])
         self.job = dict(id=34, name='Analyze Swift', head_sha='a' * 40, status='completed',
                         conclusion='success', html_url='https://github.com/example/job/34')
+        self.codeql_job = dict(self.job, id=35, name='Analyze CodeQL',
+                               html_url='https://github.com/example/job/35')
 
     def test_latest_failed_or_pending_run_outranks_old_success(self):
         for status, conclusion in [('completed', 'failure'), ('in_progress', None)]:
@@ -69,7 +71,7 @@ class GitHubQualityTests(unittest.TestCase):
                 with patch.object(quality, 'checkpoint', return_value='a' * 40), \
                         patch.object(quality, 'analysis_context', side_effect=contexts), \
                         patch.object(quality.subprocess, 'check_output', side_effect=[
-                            json.dumps(response), json.dumps({'jobs': [self.job]})]):
+                            json.dumps(response), json.dumps({'jobs': [self.job, self.codeql_job]})]):
                     if outcome == 'success':
                         quality.run(evidence, timeout=0)
                     else:
@@ -77,6 +79,8 @@ class GitHubQualityTests(unittest.TestCase):
                             quality.run(evidence, timeout=0)
                 report = json.loads((evidence / 'quality.json').read_text())
                 self.assertEqual(report['passed'], outcome == 'success')
+                if outcome == 'success':
+                    self.assertEqual(set(report['analysis_jobs']), {'Analyze Swift', 'Analyze CodeQL'})
 
     def test_pending_job_can_complete_without_rerunning_tests(self):
         pending = dict(self.run, status='in_progress', conclusion=None)
@@ -85,20 +89,42 @@ class GitHubQualityTests(unittest.TestCase):
                 patch.object(quality, 'analysis_context', return_value=self.context), \
                 patch.object(quality.subprocess, 'check_output', side_effect=[
                     json.dumps({'workflow_runs': [pending]}), json.dumps({'workflow_runs': [self.run]}),
-                    json.dumps({'jobs': [self.job]})]) as api, \
+                    json.dumps({'jobs': [self.job, self.codeql_job]})]) as api, \
                 patch.object(quality.time, 'sleep') as wait:
             quality.run(Path(directory) / 'quality')
             self.assertEqual(api.call_count, 3)
             wait.assert_called_once()
 
     def test_skipped_missing_failed_or_wrong_revision_analysis_cannot_qualify(self):
-        for jobs in ([], [dict(self.job, conclusion='skipped')], [dict(self.job, conclusion='failure')],
-                     [dict(self.job, status='in_progress')], [dict(self.job, head_sha='b' * 40)],
-                     [self.job, self.job]):
-            with self.subTest(jobs=jobs), patch.object(quality.subprocess, 'check_output',
-                                                     return_value=json.dumps({'jobs': jobs})):
-                with self.assertRaisesRegex(RuntimeError, 'actually pass'):
-                    quality.require_analysis_job(self.run, 'a' * 40)
+        for name in ('Analyze Swift', 'Analyze CodeQL'):
+            for change in ('missing', 'skipped', 'failure', 'pending', 'wrong-revision', 'duplicate'):
+                jobs = [self.job, self.codeql_job]
+                selected = next(job for job in jobs if job['name'] == name)
+                if change == 'missing':
+                    jobs = [job for job in jobs if job['name'] != name]
+                elif change == 'duplicate':
+                    jobs = [*jobs, selected]
+                else:
+                    field, value = {
+                        'skipped': ('conclusion', 'skipped'),
+                        'failure': ('conclusion', 'failure'),
+                        'pending': ('status', 'in_progress'),
+                        'wrong-revision': ('head_sha', 'b' * 40),
+                    }[change]
+                    jobs = [dict(job, **{field: value}) if job['name'] == name else job for job in jobs]
+                with self.subTest(name=name, change=change), \
+                        patch.object(quality.subprocess, 'check_output',
+                                     return_value=json.dumps({'jobs': jobs})):
+                    with self.assertRaisesRegex(RuntimeError, 'actually pass'):
+                        quality.require_analysis_jobs(self.run, 'a' * 40)
+
+    def test_both_jobs_must_belong_to_selected_attempt(self):
+        selected = dict(self.run, run_attempt=2)
+        with patch.object(quality.subprocess, 'check_output',
+                          return_value=json.dumps({'jobs': [self.job, self.codeql_job]})) as api:
+            admitted = quality.require_analysis_jobs(selected, 'a' * 40)
+        self.assertEqual(set(admitted), {'Analyze Swift', 'Analyze CodeQL'})
+        self.assertIn('/runs/12/attempts/2/jobs?', api.call_args.args[0][4])
 
 
 if __name__ == '__main__':

@@ -41,17 +41,21 @@ def select_run(runs: list[dict], context: dict) -> dict | None:
                                          run['id'], run['run_attempt']), default=None)
 
 
-def require_analysis_job(selected: dict, revision: str) -> dict:
-    """A successful workflow with a skipped analysis is not quality evidence."""
+def require_analysis_jobs(selected: dict, revision: str) -> dict[str, dict]:
+    """A successful workflow with either analysis skipped is not quality evidence."""
     response = json.loads(subprocess.check_output([
         'gh', 'api', '--hostname', 'github.com',
         f'repos/{REPOSITORY}/actions/runs/{selected["id"]}/attempts/{selected["run_attempt"]}/jobs?per_page=100'],
         env=github_environment(), text=True, timeout=30))
-    jobs = [job for job in response['jobs'] if job.get('name') == 'Analyze Swift']
-    if (len(jobs) != 1 or jobs[0].get('head_sha') != revision
-            or jobs[0].get('status') != 'completed' or jobs[0].get('conclusion') != 'success'):
-        raise RuntimeError('Hosted Analyze Swift job must actually pass for this exact commit')
-    return {key: jobs[0][key] for key in ('id', 'head_sha', 'name', 'status', 'conclusion', 'html_url')}
+    admitted = {}
+    for name in ('Analyze Swift', 'Analyze CodeQL'):
+        jobs = [job for job in response['jobs'] if job.get('name') == name]
+        if (len(jobs) != 1 or jobs[0].get('head_sha') != revision
+                or jobs[0].get('status') != 'completed' or jobs[0].get('conclusion') != 'success'):
+            raise RuntimeError(f'Hosted {name} job must actually pass for this exact commit')
+        admitted[name] = {key: jobs[0][key] for key in
+                          ('id', 'head_sha', 'name', 'status', 'conclusion', 'html_url')}
+    return admitted
 
 
 def run(evidence: Path, timeout: float = 1800) -> None:
@@ -74,7 +78,7 @@ def run(evidence: Path, timeout: float = 1800) -> None:
                 if selected['status'] == 'completed':
                     if selected['conclusion'] != 'success':
                         raise RuntimeError('Hosted quality workflow did not pass: ' + selected['html_url'])
-                    result['analysis_job'] = require_analysis_job(selected, revision)
+                    result['analysis_jobs'] = require_analysis_jobs(selected, revision)
                     break
             remaining = deadline - time.monotonic()
             if remaining <= 0:

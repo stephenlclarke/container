@@ -46,26 +46,17 @@ jobs:
       - name: Test workflow helpers
         run: python3 -m unittest discover -s Tools/bazel -p 'test_*.py'
 
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          languages: swift
-          build-mode: manual
+      - name: Verify native Swift architecture
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          /usr/bin/swift --version | tee swift-toolchain.txt
+          grep -q 'Target: arm64-apple-macosx' swift-toolchain.txt
 
-      - name: Generate unit coverage and build CodeQL database
+      - name: Generate unit coverage
         env:
           SWIFT_TEST_FLAGS: --no-parallel
-        # This builds products and tests once, then skips CLI/integration tests.
         run: make coverage-sonar
-
-      - name: Analyze CodeQL
-        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
-        with:
-          category: "/language:swift"
-          output: codeql-results
-          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref }}
-          sha: ${{ env.ANALYSIS_SHA }}
-          wait-for-processing: true
 
       - name: Validate SonarQube project policy
         env:
@@ -140,6 +131,73 @@ jobs:
           jq -e '.total == 0' <<< "${issues}" >/dev/null
           jq -e '.paging.total == 0' <<< "${hotspots}" >/dev/null
 
+      - name: Upload unit coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unit-coverage-${{ env.ANALYSIS_SHA }}
+          path: |
+            coverage-reports/unit/coverage.lcov
+            coverage.xml
+            .scannerwork/report-task.txt
+            swift-toolchain.txt
+          include-hidden-files: true
+          if-no-files-found: error
+
+  codeql:
+    name: Analyze CodeQL
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]')
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      ANALYSIS_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CODEQL_ACTION_FILE_COVERAGE_ON_PRS: 'true'
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify the analysis revision and runner
+        run: |
+          set -euo pipefail
+          [[ "$ANALYSIS_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$ANALYSIS_SHA"
+          test "$(uname -m)" = arm64
+          git ls-files Sources | grep '\.swift$' | sort > codeql-source-inventory.txt
+          test -s codeql-source-inventory.txt
+          wc -l codeql-source-inventory.txt
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: swift
+          build-mode: manual
+
+      - name: Build all production products for CodeQL
+        run: |
+          set -euo pipefail
+          /usr/bin/swift --version | tee swift-toolchain.txt
+          test ! -e "$RUNNER_TEMP/codeql-swift-build"
+          # A new scratch directory ensures every product compiles under tracing.
+          # --build-tests would also trace thousands of dependency/test actions.
+          /usr/bin/swift build --arch arm64 -c debug -Xswiftc -warnings-as-errors \
+            --scratch-path "$RUNNER_TEMP/codeql-swift-build"
+
+      - name: Analyze CodeQL
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: "/language:swift"
+          output: codeql-results
+          ref: ${{ github.event_name == 'pull_request' && format('refs/pull/{0}/head', github.event.pull_request.number) || github.ref }}
+          sha: ${{ env.ANALYSIS_SHA }}
+          wait-for-processing: true
+
       - name: Require successful CodeQL analysis with zero findings
         run: |
           set -euo pipefail
@@ -166,15 +224,13 @@ jobs:
           print(f'CodeQL completed with zero findings in {len(reports)} report(s)')
           PY
 
-      - name: Upload unit coverage and analysis evidence
+      - name: Upload CodeQL analysis evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: unit-analysis-${{ env.ANALYSIS_SHA }}
+          name: codeql-analysis-${{ env.ANALYSIS_SHA }}
           path: |
-            coverage-reports/unit/coverage.lcov
-            coverage.xml
             codeql-results/*.sarif
-            .scannerwork/report-task.txt
-          include-hidden-files: true
+            codeql-source-inventory.txt
+            swift-toolchain.txt
           if-no-files-found: error
