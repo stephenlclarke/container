@@ -215,3 +215,5 @@ The `container` application data provides forward compatibility only, guaranteed
 
 Service registration queries wait directly for process completion while preserving
 installation ownership checks. See the [runtime performance changes](docs/PR-runtime-performance.md).
+
+Container create and start revalidate the selected logging driver against the current registry. Unrelated journald readiness is deferred until journald is selected; see the [selected-driver readiness change](docs/PR-selected-logging-readiness.md) for validation status.

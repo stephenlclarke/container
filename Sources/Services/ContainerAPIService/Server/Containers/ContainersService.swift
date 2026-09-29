@@ -2091,7 +2091,19 @@ public actor ContainersService {
         configuration: ContainerLogConfiguration,
         request: ContainerLogRequest?
     ) async throws -> ContainerLoggingCreatePlan {
-        let catalog = try await logDriverCatalogProvider.logDriverCatalog()
+        guard let request else {
+            return try Self.prepareLoggingForCreate(
+                configuration: configuration,
+                request: nil,
+                defaults: containerSystemConfig.logging
+            )
+        }
+        let selectedDriver =
+            request.driver.flatMap { $0.isEmpty ? nil : $0 }
+            ?? containerSystemConfig.logging.driver
+        let catalog = try await logDriverCatalogProvider.logDriverCatalog(
+            forSelectedDriver: selectedDriver
+        )
         return try Self.prepareLoggingForCreate(
             configuration: configuration,
             request: request,
@@ -3036,7 +3048,14 @@ public actor ContainersService {
             } else {
                 protectedOptions = [:]
             }
-            let catalog = try await logDriverCatalogProvider.logDriverCatalog()
+            let catalog: LogDriverCatalog
+            if let resolved = configuration.resolved {
+                catalog = try await logDriverCatalogProvider.logDriverCatalog(
+                    forSelectedDriver: resolved.driver
+                )
+            } else {
+                catalog = try await logDriverCatalogProvider.advertisedLogDriverCatalog()
+            }
             try ContainerLogStartValidator(
                 catalog: catalog
             ).validate(

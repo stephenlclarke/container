@@ -1183,16 +1183,24 @@ public struct LogDriverCatalog: Codable, Equatable, Sendable {
 public protocol LogDriverCatalogProviding: Sendable {
     func logDriverCatalog() async throws -> LogDriverCatalog
 
+    /// Revalidates readiness for the driver selected by a create or start
+    /// operation without activating unrelated provider workloads.
+    func logDriverCatalog(forSelectedDriver driver: String) async throws -> LogDriverCatalog
+
     /// Returns the drivers that this authority can advertise without probing
     /// or activating provider workloads.
     ///
-    /// Create and start boundaries use ``logDriverCatalog()`` so dynamic
-    /// readiness is still revalidated before effects. Discovery surfaces such
-    /// as Docker `/info` use this catalogue and must remain side-effect free.
+    /// Discovery surfaces such as Docker `/info` use this catalogue and must
+    /// remain side-effect free. Create and start use the selected-driver
+    /// catalogue so dynamic readiness is revalidated before its effects.
     func advertisedLogDriverCatalog() async throws -> LogDriverCatalog
 }
 
 extension LogDriverCatalogProviding {
+    public func logDriverCatalog(forSelectedDriver driver: String) async throws -> LogDriverCatalog {
+        try await logDriverCatalog()
+    }
+
     public func advertisedLogDriverCatalog() async throws -> LogDriverCatalog {
         try await logDriverCatalog()
     }

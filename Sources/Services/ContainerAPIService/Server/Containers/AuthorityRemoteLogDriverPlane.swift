@@ -308,6 +308,34 @@ public actor AuthorityRemoteLogDriverPlane: LogDriverCatalogProviding {
         }
     }
 
+    public func logDriverCatalog(forSelectedDriver driver: String) async throws -> LogDriverCatalog {
+        let catalog = try await advertisedLogDriverCatalog()
+        guard
+            let journald = providers.journald,
+            catalog.descriptor(named: driver)?.providerIdentity.id
+                == JournaldLogDriverContract.providerIdentity.id
+        else {
+            return catalog
+        }
+        do {
+            _ = try await journald.activeSandboxGeneration()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            let descriptor = try await journald.descriptor
+            let providerID = descriptor.providerIdentity.id
+            let currentCatalog = try await advertisedLogDriverCatalog()
+            return try LogDriverCatalog(
+                descriptors: currentCatalog.descriptors.filter {
+                    $0.providerIdentity.id != providerID
+                }
+            )
+        }
+        // A provider upgrade can change the registry while readiness is
+        // awaited. Resolve again so create and start see its current contract.
+        return try await advertisedLogDriverCatalog()
+    }
+
     public func logDriverCatalog() async throws -> LogDriverCatalog {
         var unavailableProviderIDs = Set<String>()
         if let journald = providers.journald {
