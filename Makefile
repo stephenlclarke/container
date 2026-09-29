@@ -443,7 +443,6 @@ COV_OBJECT_FLAGS := $(patsubst %,-object %,$(COV_BINARIES))
 LLVM_COV_IGNORE := \
 	--ignore-filename-regex=".build/" \
 	--ignore-filename-regex="/Tests/" \
-	--ignore-filename-regex="/ContainerTestSupport/" \
 	--ignore-filename-regex=".pb.swift" \
 	--ignore-filename-regex=".proto" \
 	--ignore-filename-regex=".grpc.swift"
