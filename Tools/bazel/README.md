@@ -32,7 +32,7 @@ Run these in the container checkout:
 | `make bazel-vm-integration` | Run the complete pinned VM suite against `QUALIFICATION_EVIDENCE/guest-runc/guest-artifact.json` |
 | `make bazel-linux-test` | Guest core/netlink and vmexec Linux tests, with separate build caches and coverage |
 | `make bazel-builder-build` | Production-toolchain formatting, vet, race tests and coverage, then a pinned builder OCI archive |
-| `make bazel-unattended-artifacts` | Preflight, tool checks, guest/Linux/builder qualification and one live fork candidate smoke trial; restore a Colima VM started by this run |
+| `make bazel-unattended-artifacts` | Preflight, tool checks, exact published guest/builder import, Linux tests and one live fork candidate smoke trial; restore a Colima VM started by this run |
 | `make bazel-unattended` | Run full laptop qualification from a clean committed checkpoint; require matching hosted quality before packaging |
 | `make bazel-unattended-reference-admission` | Check published benchmark and live Docker resource identity under the existing host lease, then restore; diagnostic only, without builds or workloads |
 | `make bazel-recover QUALIFICATION_EVIDENCE=...` | Recover the recorded host state after a killed wrapper, once every owned command has exited; retain failures for manual recovery |
@@ -57,6 +57,8 @@ Run these in the container checkout:
 | `make bazel-runtime-integration PREPARED_RUNTIME=/absolute/evidence/path` | Reset owned runtime data and run original CLI suites by layer; select one with `INTEGRATION_ARGS='--layer System'` |
 
 `LAYER` defaults to `container`. Pick individual layer names from [layers.bzl](layers.bzl). Build and test commands reuse the same outputs. Host and runtime integration runs deliberately disable result caching because their external state can change.
+
+The normal unattended guest, runc-guest and builder stages consume checksum-pinned GitHub release assets with reviewed qualification sidecars. Each import verifies the owning source commit, release and asset identity, complete OCI archive, exact reference and original executable or builder-test hashes before writing the existing local receipt. Missing or incompatible locks stop qualification; the guest and builder source-build commands above remain explicit producer tools for a newly reviewed dependency source. Published imports do not stand in for the current Container integration, coverage, benchmarks or hosted gates.
 
 The separate runtime integration suite requires a matching prepared installation, running services, kernel/images, permissions and network access. Its tests can create and remove runtime resources. Ordinary build/test commands do not start these prerequisites. The explicit runtime benchmark stages and starts its own signed installations, restores inactive default registrations afterward, and fails if an active default installation would be displaced. Compilation alone is not a runtime pass.
 

@@ -14,6 +14,16 @@ from docker_benchmark import historical_samples
 
 
 class QualificationTests(unittest.TestCase):
+    def test_full_run_imports_published_lower_layers(self):
+        with patch.object(qualification, 'checkpoint', return_value='a' * 40):
+            stages = {name: command for name, _, command, _ in qualification.stages(Path('/evidence'), 7)}
+        for name, kind in (('guest', 'guest'), ('guest-runc', 'guest-runc'), ('builder', 'builder')):
+            self.assertIn('published_lower.py', ' '.join(map(str, stages[name])))
+            self.assertIn('--kind', stages[name])
+            self.assertIn(kind, stages[name])
+            self.assertNotIn('guest_artifact.py', ' '.join(map(str, stages[name])))
+            self.assertNotIn('builder_artifact.py', ' '.join(map(str, stages[name])))
+
     def test_comparison_revalidates_pinned_rows_and_recomputes_apple_ratio(self):
         for mutation in (None, 'docker', 'apple', 'matrix'):
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:

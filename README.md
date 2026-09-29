@@ -194,6 +194,8 @@ To retain your user data so that it is available should you reinstall later, run
 
 Foreground interactive commands without a TTY, such as `container run -i --rm IMAGE sh`, now close the guest's primary stdin after all supplied bytes are drained. This lets a finite shell script exit at EOF. TTY, detached, and later attach sessions retain their existing input behavior. The dedicated, prewarmed and shared routes passed live integration at checkpoint `44a42b3c`, including all 412 CLI cases and warmup. Its hosted Swift/Sonar job passed at 81.1% new-code coverage. The whole run remains unqualified because historical benchmark admission rejected a first-launch timing comparison and a guest usable-memory difference; both failed records are preserved, and the reviewed comparison corrections require a new complete qualification.
 
+Normal qualification now [imports published guest and builder artifacts](./docs/ISSUE-published-lower-artifacts.md) with exact source, asset and OCI checks instead of rebuilding previously qualified lower layers. The unchanged builder's published import and 213 tools tests pass; the new guest release locks and complete Q qualification remain pending.
+
 ## Contributing
 
 Contributions to `container` are welcome and encouraged. Please see our

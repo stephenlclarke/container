@@ -581,15 +581,14 @@ def prepare_all(evidence: Path, context: str = 'colima', *, candidate_only: bool
     if IDENTITY not in identities:
         raise RuntimeError('The stable Steve Clarke signing identity is unavailable')
     if not (evidence / 'guest-artifact.json').exists():
-        from guest_artifact import build
-        guest_evidence = evidence / 'guest-build'
-        guest_evidence.mkdir()
-        build(Path(PAIRS['containerization']['repo']), guest_evidence)
+        from published_lower import import_layer
+        guest_evidence = evidence / 'guest-import'
+        import_layer('guest', guest_evidence)
         shutil.copy2(guest_evidence / 'guest-artifact.json', evidence / 'guest-artifact.json')
     if not (evidence / 'builder-artifact.json').exists():
-        from builder_artifact import build as build_builder
-        builder_evidence = evidence / 'builder-build'
-        build_builder(builder_evidence, context, Path(PAIRS['container-builder-shim']['repo']))
+        from published_lower import import_layer
+        builder_evidence = evidence / 'builder-import'
+        import_layer('builder', builder_evidence)
         shutil.copy2(builder_evidence / 'builder-artifact.json', evidence / 'builder-artifact.json')
     prepare_assets(evidence)
     workspaces = [('fork', ROOT)]

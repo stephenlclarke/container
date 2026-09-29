@@ -146,12 +146,12 @@ bazel-linux-test:
 	@python3 Tools/bazel/linux_tests.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/linux"
 bazel-builder-build:
 	@python3 Tools/bazel/builder_artifact.py --context "$(DOCKER_CONTEXT)" --evidence "$(QUALIFICATION_EVIDENCE)/builder"
-# This checkpoint proves source-built guest/builder artifacts through a live CLI.
+# This checkpoint consumes published guest/builder artifacts through a live CLI.
 # Complete release qualification also requires the integration and release gates.
 bazel-artifact-check: bazel-tools-test
-	@python3 Tools/bazel/guest_artifact.py --evidence "$(QUALIFICATION_EVIDENCE)/guest"
+	@python3 Tools/bazel/published_lower.py --kind guest --evidence "$(QUALIFICATION_EVIDENCE)/guest"
 	@$(MAKE) bazel-linux-test
-	@$(MAKE) bazel-builder-build
+	@python3 Tools/bazel/published_lower.py --kind builder --evidence "$(QUALIFICATION_EVIDENCE)/builder"
 	@python3 Tools/bazel/runtime_benchmark.py --prepare --candidate-only --trials 1 --context "$(DOCKER_CONTEXT)" \
 		--guest-artifact "$(QUALIFICATION_EVIDENCE)/guest/guest-artifact.json" \
 		--builder-artifact "$(QUALIFICATION_EVIDENCE)/builder/builder-artifact.json" \
