@@ -10,6 +10,7 @@ import sys
 
 from fork_benchmark import ROOT, STORAGE, Runner, install_signal_handlers
 from quality import checkpoint
+from github_quality import DEFAULT_WAIT_SECONDS
 from runtime_benchmark import FIXTURES
 
 
@@ -59,7 +60,8 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
                     '--trials', trials, '--evidence', evidence / 'docker-benchmark'), 1800),
         ('runtime-comparison', ['runtime-benchmark', 'docker-benchmark'], script('qualification',
                     '--compare-only', '--trials', trials, '--evidence', evidence), 60),
-        ('github-quality', ['benchmark-reference'], script('github_quality', '--evidence', evidence / 'github-quality'), 1860),
+        # Four bounded 30-second context/poll/job calls plus 60 seconds for process/report exit.
+        ('github-quality', ['benchmark-reference'], script('github_quality', '--evidence', evidence / 'github-quality'), DEFAULT_WAIT_SECONDS + 180),
         ('release', ['maintenance', 'documentation', 'host', 'services', 'service-integration', 'integration', 'combined-coverage', 'github-quality', 'runtime-comparison'], script('release_artifact',
                     '--prepared', prepared, '--service-artifacts', evidence / 'services/service-artifacts.json',
                     '--notarize', '--evidence', evidence / 'release'), 3600),

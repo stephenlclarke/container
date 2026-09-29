@@ -95,6 +95,73 @@ class GitHubQualityTests(unittest.TestCase):
             self.assertEqual(api.call_count, 3)
             wait.assert_called_once()
 
+    def run_with_fake_clock(self, complete_at, conclusion='success', api_seconds=0):
+        elapsed = 0
+        pending = dict(self.run, status='in_progress', conclusion=None)
+
+        def sleep(seconds):
+            nonlocal elapsed
+            elapsed += seconds
+
+        def context(_revision):
+            sleep(api_seconds)
+            return self.context
+
+        def response(command, **_kwargs):
+            sleep(api_seconds)
+            if '/jobs?' in command[4]:
+                return json.dumps({'jobs': [self.job, self.codeql_job]})
+            selected = (dict(self.run, conclusion=conclusion)
+                        if complete_at is not None and elapsed >= complete_at else pending)
+            return json.dumps({'workflow_runs': [selected]})
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(quality, 'checkpoint', return_value='a' * 40), \
+                patch.object(quality, 'analysis_context', side_effect=context), \
+                patch.object(quality.subprocess, 'check_output', side_effect=response) as api, \
+                patch.object(quality.time, 'monotonic', side_effect=lambda: elapsed), \
+                patch.object(quality.time, 'sleep', side_effect=sleep) as wait:
+            evidence = Path(directory) / 'quality'
+            if complete_at is None or conclusion != 'success':
+                message = 'still pending' if complete_at is None else 'did not pass'
+                with self.assertRaisesRegex(RuntimeError, message):
+                    quality.run(evidence)
+            else:
+                quality.run(evidence)
+            report = json.loads((evidence / 'quality.json').read_text())
+        return elapsed, report, api, wait
+
+    def test_default_wait_admits_success_after_thirty_minutes_before_ninety(self):
+        elapsed, report, api, _wait = self.run_with_fake_clock(80 * 60)
+        self.assertEqual(elapsed, 80 * 60)
+        self.assertTrue(report['passed'])
+        self.assertEqual(set(report['analysis_jobs']), {'Analyze Swift', 'Analyze CodeQL'})
+        self.assertEqual(sum('/jobs?' in call.args[0][4] for call in api.call_args_list), 1)
+
+    def test_near_deadline_success_with_bounded_api_latency_fits_outer_budget(self):
+        elapsed, report, api, _wait = self.run_with_fake_clock(5420, api_seconds=29)
+        self.assertGreater(elapsed, quality.DEFAULT_WAIT_SECONDS + 60)
+        self.assertLess(elapsed, quality.DEFAULT_WAIT_SECONDS + 180)
+        self.assertTrue(report['passed'])
+        self.assertEqual(set(report['analysis_jobs']), {'Analyze Swift', 'Analyze CodeQL'})
+        self.assertEqual(sum('/jobs?' in call.args[0][4] for call in api.call_args_list), 1)
+
+    def test_default_wait_rejects_pending_at_ninety_minutes(self):
+        elapsed, report, api, _wait = self.run_with_fake_clock(None)
+        self.assertEqual(quality.DEFAULT_WAIT_SECONDS, 90 * 60)
+        self.assertEqual(elapsed, 90 * 60)
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['run']['status'], 'in_progress')
+        self.assertFalse(any('/jobs?' in call.args[0][4] for call in api.call_args_list))
+
+    def test_terminal_failure_does_not_wait_for_budget(self):
+        elapsed, report, api, wait = self.run_with_fake_clock(0, 'failure')
+        self.assertEqual(elapsed, 0)
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['run']['conclusion'], 'failure')
+        self.assertEqual(api.call_count, 1)
+        wait.assert_not_called()
+
     def test_skipped_missing_failed_or_wrong_revision_analysis_cannot_qualify(self):
         for name in ('Analyze Swift', 'Analyze CodeQL'):
             for change in ('missing', 'skipped', 'failure', 'pending', 'wrong-revision', 'duplicate'):

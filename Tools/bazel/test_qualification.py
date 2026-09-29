@@ -49,6 +49,13 @@ class QualificationTests(unittest.TestCase):
                         qualification.benchmark_summary(evidence)
                         self.assertEqual(json.loads((evidence / 'runtime-comparison-acceptance.json').read_text()), receipt)
 
+    def test_hosted_outer_timeout_allows_bounded_api_calls_and_report_exit(self):
+        with patch.object(qualification, 'checkpoint', return_value='a' * 40):
+            stages = qualification.stages(Path('/evidence'), 7)
+        stage = next(row for row in stages if row[0] == 'github-quality')
+        self.assertEqual(stage[3], qualification.DEFAULT_WAIT_SECONDS + 180)
+        self.assertEqual(stage[3], 5580)
+
     def test_release_workflow_never_dispatches_historical_lanes(self):
         with patch.object(qualification, 'checkpoint', return_value='a' * 40):
             stages = {name: (dependencies, command) for name, dependencies, command, _ in qualification.stages(Path('/evidence'), 7)}

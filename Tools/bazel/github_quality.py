@@ -11,6 +11,9 @@ from preflight import github_environment
 from quality import REPOSITORY, analysis_context, checkpoint
 
 
+DEFAULT_WAIT_SECONDS = 90 * 60
+
+
 def current_context(revision: str) -> dict:
     context = analysis_context(revision)
     if context['kind'] == 'branch':
@@ -58,7 +61,7 @@ def require_analysis_jobs(selected: dict, revision: str) -> dict[str, dict]:
     return admitted
 
 
-def run(evidence: Path, timeout: float = 1800) -> None:
+def run(evidence: Path, timeout: float = DEFAULT_WAIT_SECONDS) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
     result = {'passed': False, 'failures': []}
     try:
