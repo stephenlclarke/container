@@ -126,7 +126,13 @@ struct ContainerTestSupportTests {
         }
 
         try await withFakeContainerCLI {
-            try await ContainerFixture.with { fixture in
+            try await ContainerFixture.with(
+                identity: .init(
+                    name: Test.current?.name,
+                    identifier: Test.current.map { "\($0.id)" },
+                    isParameterized: Test.Case.current?.isParameterized ?? false
+                )
+            ) { fixture in
                 for command in ["build", "create", "run"] {
                     let result = try fixture.run([command, "example"])
                     #expect(
@@ -171,7 +177,13 @@ struct ContainerTestSupportTests {
     @Test
     func assertionsReportCommandFailuresWithoutTestingRuntime() async throws {
         try await withFakeContainerCLI {
-            try await ContainerFixture.with { fixture in
+            try await ContainerFixture.with(
+                identity: .init(
+                    name: Test.current?.name,
+                    identifier: Test.current.map { "\($0.id)" },
+                    isParameterized: Test.Case.current?.isParameterized ?? false
+                )
+            ) { fixture in
                 try fixture.assertContainerHasFile("fixture", at: "present")
                 try fixture.assertContainerMissingFile("fixture", at: "missing")
                 try fixture.assertImageBuilt("expected")
