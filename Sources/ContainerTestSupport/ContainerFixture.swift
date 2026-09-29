@@ -189,8 +189,7 @@ public final class ContainerFixture: Sendable {
         env: [String: String] = [:],
         pty: Bool = false,
         dnsOverride: Bool = true,
-        timeout: TimeInterval? = nil,
-        executable: URL? = nil
+        timeout: TimeInterval? = nil
     ) throws -> CommandResult {
         let arguments = argumentsWithDNSOverride(arguments, enabled: dnsOverride)
         let seq = Self.commandSeq.withLock { n in
@@ -202,7 +201,7 @@ public final class ContainerFixture: Sendable {
             metadata: ["seq": "\(seq)", "args": "\(arguments.joined(separator: " "))"])
 
         let process = Process()
-        process.executableURL = try executable ?? executableURL
+        process.executableURL = try executableURL
         process.arguments = arguments
         if let dir = currentDirectory { process.currentDirectoryURL = URL(filePath: dir.string) }
         if !env.isEmpty {
@@ -252,7 +251,8 @@ public final class ContainerFixture: Sendable {
             throw CommandError.executionFailed("process launch failed: \(error)")
         }
         let timedOut = Mutex(false)
-        let deadline: DispatchSourceTimer? = timeout.map { seconds in
+        let deadline: DispatchSourceTimer?
+        if let seconds = timeout {
             let timer = DispatchSource.makeTimerSource(queue: .global())
             timer.schedule(deadline: .now() + seconds)
             timer.setEventHandler {
@@ -261,7 +261,9 @@ public final class ContainerFixture: Sendable {
                 process.terminate()
             }
             timer.resume()
-            return timer
+            deadline = timer
+        } else {
+            deadline = nil
         }
         defer { deadline?.cancel() }
         if pty {

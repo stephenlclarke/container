@@ -24,12 +24,15 @@ struct ContainerTestSupportTests {
 
     @Test
     func timedFixtureCommandRetainsBothOutputStreams() async throws {
+        let originalPath = ProcessInfo.processInfo.environment["CONTAINER_CLI_PATH"]
+        setenv("CONTAINER_CLI_PATH", "/bin/sh", 1)
+        defer { restoreEnvironment("CONTAINER_CLI_PATH", to: originalPath) }
+
         try await ContainerFixture.with { fixture in
             do {
                 _ = try fixture.run(
                     ["-c", "printf host-stdout; printf host-stderr >&2; exec sleep 5"],
-                    timeout: 0.2,
-                    executable: URL(fileURLWithPath: "/bin/sh"))
+                    timeout: 0.2)
                 Issue.record("host child should have exceeded its deadline")
             } catch CommandError.executionFailed(let message) {
                 let prefix = "output: "

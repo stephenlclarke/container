@@ -452,8 +452,7 @@ public actor EngineLinuxSandboxAuthorityV1:
             workloadConfigurationDigest: configurationDigest,
             dynamicEnvironment: dynamicEnvironment,
             networkEndpoints: networkEndpoints,
-            stdio: stdio,
-            closeStdinOnEOF: closeStdinOnEOF,
+            stdio: .init(handles: stdio, closeStdinOnEOF: closeStdinOnEOF),
             monitorTerminal: monitorTerminal
         )
         if registered.state == .running {

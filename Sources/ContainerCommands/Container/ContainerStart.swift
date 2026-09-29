@@ -16,10 +16,28 @@
 
 import ArgumentParser
 import ContainerAPIClient
+import ContainerResource
 import ContainerizationError
 import ContainerizationOS
 import Foundation
 import TerminalProgress
+
+protocol ContainerStartClient: Sendable {
+    func get(id: String) async throws -> ContainerSnapshot
+    func bootstrap(
+        id: String,
+        stdio: [FileHandle?],
+        dynamicEnv: [String: String],
+        closeStdinOnEOF: Bool
+    ) async throws -> any ClientProcess
+    func stopForFailedStart(id: String) async throws
+}
+
+extension ContainerClient: ContainerStartClient {
+    func stopForFailedStart(id: String) async throws {
+        try await stop(id: id)
+    }
+}
 
 extension Application {
     public struct ContainerStart: AsyncLoggableCommand {
@@ -42,6 +60,10 @@ extension Application {
         var containerId: String
 
         public func run() async throws {
+            try await run(client: ContainerClient())
+        }
+
+        func run(client: any ContainerStartClient) async throws {
             var exitCode: Int32 = 127
 
             let progressConfig = try ProgressConfig(
@@ -54,7 +76,6 @@ extension Application {
             progress.start()
 
             let detach = !self.attach && !self.interactive
-            let client = ContainerClient()
             let container = try await client.get(id: containerId)
 
             // Bootstrap and process start are both idempotent and don't fail the second time
@@ -119,7 +140,7 @@ extension Application {
 
                 exitCode = try await io.handleProcess(process: process, log: log)
             } catch {
-                try? await client.stop(id: container.id)
+                try? await client.stopForFailedStart(id: container.id)
 
                 if error is ContainerizationError {
                     throw error

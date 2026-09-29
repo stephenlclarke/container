@@ -52,6 +52,7 @@ struct EngineLinuxSandboxAuthorityTests {
             closeStdinOnEOF: true
         )
         #expect(await runtime.lastWorkloadStart?.closeStdinOnEOF == true)
+        #expect(await runtime.lastWorkloadDescriptors == [input.fileHandleForReading.fileDescriptor])
 
         await #expect(throws: EngineWorkloadLedgerError.idempotencyConflict) {
             _ = try await authority.startWorkload(
@@ -1057,6 +1058,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
     private(set) var bootObservationCount = 0
     private(set) var workloadStartCount = 0
     private(set) var lastWorkloadStart: EngineLinuxSandboxWorkloadStartRequestV1?
+    private(set) var lastWorkloadDescriptors: [Int32?] = []
     private(set) var workloadObservationCount = 0
     private(set) var workloadStopCount = 0
     private(set) var pauseCount = 0
@@ -1136,6 +1138,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         stdio: [FileHandle?]
     ) async throws -> WorkloadProcessReceiptV1 {
         lastWorkloadStart = request
+        lastWorkloadDescriptors = stdio.map { $0?.fileDescriptor }
         if let workloadReceipt,
             workloadReceipt.containerID == request.context.containerID,
             workloadReceipt.operationGeneration == request.context.operationGeneration,
@@ -1157,7 +1160,6 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         workloadReceipt = receipt
         workloadTerminal = false
         workloadStatus = .running
-        _ = stdio
         return receipt
     }
 

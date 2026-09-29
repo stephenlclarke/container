@@ -229,6 +229,23 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func descriptorOwnedEOFRejectsMissingInitialInputBeforeMaterialization() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let request = try workloadRequest(root: fixture.root, closeStdinOnEOF: true)
+
+        let error = await #expect(throws: ContainerizationError.self) {
+            _ = try await service.startWorkload(request, stdio: [])
+        }
+        #expect(error?.message == "descriptor-owned stdin EOF requires an initial stdin handle")
+        #expect(await sandbox.addCount == 0)
+        #expect(await sandbox.startCount == 0)
+    }
+
+    @Test
     func potentiallySharedWorkloadStartsSerializeMaterialization() async throws {
         let sandbox = FakeEngineLinuxSandbox(delayStartContainer: true)
         let service = try makeService(sandbox: sandbox)

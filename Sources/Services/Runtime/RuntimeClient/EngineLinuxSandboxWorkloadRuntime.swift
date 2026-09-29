@@ -221,13 +221,23 @@ public protocol EngineLinuxSandboxWorkloadRuntimeV1: Sendable {
 
 /// Binds one sealed workload intent to the generic transaction resolver.
 public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarterV1 {
+    /// Standard streams and the primary input descriptor's guest EOF ownership.
+    public struct StandardIO: Sendable {
+        public let handles: [FileHandle?]
+        public let closeStdinOnEOF: Bool
+
+        public init(handles: [FileHandle?] = [], closeStdinOnEOF: Bool = false) {
+            self.handles = handles
+            self.closeStdinOnEOF = closeStdinOnEOF
+        }
+    }
+
     private let runtime: any EngineLinuxSandboxWorkloadRuntimeV1
     private let workloadRoot: URL
     private let workloadConfigurationDigest: String
     private let dynamicEnvironment: [String: String]
     private let networkEndpoints: [WorkloadNetworkEndpoint]
-    private let stdio: [FileHandle?]
-    private let closeStdinOnEOF: Bool
+    private let stdio: StandardIO
     private let monitorTerminal: Bool
 
     public init(
@@ -236,8 +246,7 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
         workloadConfigurationDigest: String,
         dynamicEnvironment: [String: String] = [:],
         networkEndpoints: [WorkloadNetworkEndpoint] = [],
-        stdio: [FileHandle?] = [],
-        closeStdinOnEOF: Bool = false,
+        stdio: StandardIO = .init(),
         monitorTerminal: Bool = false
     ) {
         self.runtime = runtime
@@ -246,12 +255,11 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
         self.dynamicEnvironment = dynamicEnvironment
         self.networkEndpoints = networkEndpoints
         self.stdio = stdio
-        self.closeStdinOnEOF = closeStdinOnEOF
         self.monitorTerminal = monitorTerminal
     }
 
     public func start(context: WorkloadStartContextV1) async throws -> WorkloadProcessReceiptV1 {
-        try await runtime.startWorkload(request(for: context), stdio: stdio)
+        try await runtime.startWorkload(request(for: context), stdio: stdio.handles)
     }
 
     public func observe(context: WorkloadStartContextV1) async throws -> WorkloadProcessObservationV1 {
@@ -265,7 +273,7 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
             workloadConfigurationDigest: workloadConfigurationDigest,
             dynamicEnvironment: dynamicEnvironment,
             networkEndpoints: networkEndpoints,
-            closeStdinOnEOF: closeStdinOnEOF,
+            closeStdinOnEOF: stdio.closeStdinOnEOF,
             monitorTerminal: monitorTerminal
         )
     }

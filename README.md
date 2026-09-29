@@ -192,7 +192,7 @@ To retain your user data so that it is available should you reinstall later, run
 - View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
 - Compare the [Apple upstream API reference](https://apple.github.io/container/documentation/).
 
-Foreground interactive commands without a TTY, such as `container run -i --rm IMAGE sh`, now close the guest's primary stdin after all supplied bytes are drained. This lets a finite shell script exit at EOF. TTY, detached, and later attach sessions retain their existing input behavior. The change is covered by focused runtime, client, command, and service tests; a new live integration run is still required before release qualification.
+Foreground interactive commands without a TTY, such as `container run -i --rm IMAGE sh`, now close the guest's primary stdin after all supplied bytes are drained. This lets a finite shell script exit at EOF. TTY, detached, and later attach sessions retain their existing input behavior. The dedicated, prewarmed and shared routes passed live integration at checkpoint `0c7278b3`, including all 412 CLI cases and warmup. That checkpoint remains unqualified because hosted Sonar rejected its new-code coverage; final release requires the corrected checkpoint to pass both local and hosted gates.
 
 ## Contributing
 
@@ -200,7 +200,7 @@ Contributions to `container` are welcome and encouraged. Please see our
 [main contributing guide](https://github.com/apple/containerization/blob/main/CONTRIBUTING.md)
 for more information.
 
-`make coverage-sonar` runs the instrumented unit suite and emits project-confined LCOV plus SonarQube generic XML. `make sonar-scan` submits that report with the exact current commit as the previous-version baseline; the hosted workflow performs both steps for pull requests and `main`.
+`make coverage-sonar` runs the instrumented unit suite and emits project-confined LCOV plus SonarQube generic XML. The export includes `Sources/ContainerTestSupport`, which Sonar scans alongside the other source modules; tests and external dependencies remain outside the production report. `make sonar-scan` submits that report with the exact current commit as the previous-version baseline; the hosted workflow performs both steps for pull requests and `main`.
 
 ## Project Status
 
