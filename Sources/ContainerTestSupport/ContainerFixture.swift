@@ -188,7 +188,9 @@ public final class ContainerFixture: Sendable {
         currentDirectory: FilePath? = nil,
         env: [String: String] = [:],
         pty: Bool = false,
-        dnsOverride: Bool = true
+        dnsOverride: Bool = true,
+        timeout: TimeInterval? = nil,
+        executable: URL? = nil
     ) throws -> CommandResult {
         let arguments = argumentsWithDNSOverride(arguments, enabled: dnsOverride)
         let seq = Self.commandSeq.withLock { n in
@@ -200,7 +202,7 @@ public final class ContainerFixture: Sendable {
             metadata: ["seq": "\(seq)", "args": "\(arguments.joined(separator: " "))"])
 
         let process = Process()
-        process.executableURL = try executableURL
+        process.executableURL = try executable ?? executableURL
         process.arguments = arguments
         if let dir = currentDirectory { process.currentDirectoryURL = URL(filePath: dir.string) }
         if !env.isEmpty {
@@ -249,6 +251,19 @@ public final class ContainerFixture: Sendable {
         } catch {
             throw CommandError.executionFailed("process launch failed: \(error)")
         }
+        let timedOut = Mutex(false)
+        let deadline: DispatchSourceTimer? = timeout.map { seconds in
+            let timer = DispatchSource.makeTimerSource(queue: .global())
+            timer.schedule(deadline: .now() + seconds)
+            timer.setEventHandler {
+                guard process.isRunning else { return }
+                timedOut.withLock { $0 = true }
+                process.terminate()
+            }
+            timer.resume()
+            return timer
+        }
+        defer { deadline?.cancel() }
         if pty {
             // Write through the master side; the kernel tty buffers input until the
             // child reads it, so this works even before the child is ready (e.g. a
@@ -264,6 +279,26 @@ public final class ContainerFixture: Sendable {
 
         let outputData = (try? Data(contentsOf: URL(filePath: stdoutPath.string))) ?? Data()
         let errorData = (try? Data(contentsOf: URL(filePath: stderrPath.string))) ?? Data()
+
+        if timedOut.withLock({ $0 }) {
+            let root =
+                ProcessInfo.processInfo.environment["CLITEST_LOG_ROOT"]
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent("container-test-timeouts").path
+            let retained = URL(fileURLWithPath: root)
+                .appendingPathComponent("command-timeouts")
+                .appendingPathComponent("\(testID)-\(seq)")
+            try FileManager.default.createDirectory(
+                at: retained, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            for (name, data) in [("stdout", outputData), ("stderr", errorData)] {
+                let file = retained.appendingPathComponent(name)
+                try data.write(to: file, options: .atomic)
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: file.path)
+            }
+            log.error("command deadline", metadata: ["seq": "\(seq)", "evidence": "\(retained.path)"])
+            throw CommandError.executionFailed("command exceeded \(timeout ?? 0) seconds; output: \(retained.path)")
+        }
 
         log.info(
             "command end",

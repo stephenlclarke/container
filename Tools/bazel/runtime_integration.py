@@ -18,6 +18,38 @@ from runtime_coverage import RuntimeCoverage
 from runtime_benchmark import INSTALLS, PLUGINS, STATE, RuntimeRunner, build_inputs, environment, own, reset_state, start_lane, stop_owned
 
 LAYERS = ['Containers', 'Run', 'Volumes', 'Network', 'Images', 'Build', 'System', 'Registry', 'Machine', 'K8s']
+EOF_SELECTION = '^TestCLIPrimaryInputEOF/'
+EOF_CASES = {
+    'foregroundDedicatedRunClosesFiniteInput()',
+    'prewarmedDedicatedStartClosesFiniteInput()',
+    'foregroundSharedRunClosesFiniteInput()',
+}
+
+
+class EOFIntegrationRunner(RuntimeRunner):
+    """Expose the focused prewarm completion marker without changing benchmark startup."""
+
+    def command(self, lane: str, fixture: str, trial: int, args: list[str],
+                timeout: int = 120, expected: str | None = None) -> dict:
+        if fixture == 'setup-start':
+            if lane != 'fork' or args[:2] != ['system', 'start']:
+                raise RuntimeError('Focused EOF probe encountered an unexpected service startup')
+            args = [*args, '--debug']
+        return super().command(lane, fixture, trial, args, timeout, expected)
+
+
+def require_eof_cases(reports: Path) -> None:
+    cases = [(suite.get('name'), case.get('name'), case)
+             for xml in reports.rglob('test.xml')
+             for suite in ET.parse(xml).iter('testsuite')
+             for case in suite.findall('testcase')]
+    identities = [(suite, name) for suite, name, _ in cases]
+    expected = {('IntegrationTests.TestCLIPrimaryInputEOF', name) for name in EOF_CASES}
+    if len(identities) != 3 or set(identities) != expected or any(
+            case.find('skipped') is not None or case.find('failure') is not None
+            or case.find('error') is not None or case.get('result') != 'completed'
+            for _, _, case in cases):
+        raise RuntimeError('Focused EOF integration did not complete all three original cases')
 
 
 def owned_cli_processes(executable: Path, records: Path) -> dict[int, str]:
@@ -103,7 +135,7 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
     verify_prepared(prepared)
     for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json']:
         shutil.copy2(prepared / name, evidence / name)
-    runner = RuntimeRunner(evidence, STATE)
+    runner = (EOFIntegrationRunner if selection == EOF_SELECTION else RuntimeRunner)(evidence, STATE)
     executable = INSTALLS / 'fork/install/bin/container'
     records = evidence / 'processes'
     records.mkdir()
@@ -127,6 +159,7 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
             env = dict(environment('fork'), CONTAINER_CLI_PATH=str(ROOT / 'Tools/bazel/integration_cli.py'),
                        CLITEST_REAL_CLI=str(executable), CLITEST_PROCESS_DIRECTORY=str(records),
                        CONTAINER_RUNTIME_TESTS_SERIAL='1', CLITEST_LOG_ROOT=str(evidence / 'fixtures'),
+                       CLITEST_APISERVER_LOG=str(STATE / 'fork/logs/container-apiserver.log'),
                        CONTAINER_REGISTRY_ANONYMOUS_HOSTS='ghcr.io,docker.io,registry-1.docker.io',
                        CLITEST_SCRATCH_ROOT=str(state / 'scratch'),
                        KUBECONFIG=str(config / 'kubeconfig'), DOCKER_CONFIG=str(config / '.docker'))
@@ -135,6 +168,7 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
             names = ['CONTAINER_APP_ROOT', 'CONTAINER_INSTALL_ROOT', 'CONTAINER_SERVICE_NAMESPACE',
                      'XDG_CONFIG_HOME', 'CONTAINER_REGISTRY_ANONYMOUS_HOSTS', 'CONTAINER_CLI_PATH',
                      'CONTAINER_RUNTIME_TESTS_SERIAL', 'CLITEST_LOG_ROOT', 'CLITEST_SCRATCH_ROOT', 'CLITEST_REAL_CLI', 'CLITEST_PROCESS_DIRECTORY',
+                     'CLITEST_APISERVER_LOG',
                      'KUBECONFIG', 'DOCKER_CONFIG', 'CLITEST_RUNTIME_PROFILE']
             flags = ['--test_env=' + name + '=' + env[name] for name in names if name in env]
             mode = 'coverage' if profiling else 'test'
@@ -143,14 +177,18 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
                 flags += ['--combined_report=lcov', '--repo_env=GIT_COMMIT=' + profiling.result['revision']]
             for layer in ['Warmup', *layers]:
                 selected = '^ImageWarmup/' if layer == 'Warmup' else selection or test_filter(layer)
+                test_timeout = 300 if selection == EOF_SELECTION else 1800
                 runner.env = env
                 row = runner.run('integration', 'fork', layer.lower(), 0,
                                  [str(ROOT / 'Tools/bazel/run.sh'), mode, '//:runtime-integration-tests',
                                   '--test_filter=' + selected, '--strategy=TestRunner=local',
                                   '--config=' + configuration, '--nocache_test_results',
-                                  '--test_timeout=1800', *flags], ROOT, timeout=1860)
+                                  '--test_timeout=' + str(test_timeout), *flags],
+                                 ROOT, timeout=test_timeout + 60)
                 try:
                     row['executed_tests'] = retain_layer_reports(Path(row['log']), evidence / (layer.lower() + '-reports'))
+                    if layer == 'Run' and selection == EOF_SELECTION:
+                        require_eof_cases(evidence / 'run-reports')
                 except (OSError, RuntimeError) as error:
                     row['report_error'] = str(error)
                     if row['status'] == 0:

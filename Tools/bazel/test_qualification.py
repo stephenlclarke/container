@@ -7,9 +7,88 @@ import unittest
 from unittest.mock import patch
 
 import qualification
+import benchmark_reference
+from test_docker_benchmark import sample_reference
+from docker_benchmark import historical_samples
 
 
 class QualificationTests(unittest.TestCase):
+    def test_comparison_revalidates_pinned_rows_and_recomputes_apple_ratio(self):
+        for mutation in (None, 'docker', 'apple', 'matrix'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                runtime, docker = evidence / 'runtime-benchmark', evidence / 'docker-benchmark'
+                runtime.mkdir()
+                docker.mkdir()
+                reference = sample_reference()
+                reference['protocol']['runtimeTrials'] = 7
+                reference['runtime'] = {'raw': [dict(component='runtime-stack', lane='stock', fixture=name,
+                                                     trial=trial, seconds=1, status=0)
+                                               for name in qualification.FIXTURES for trial in range(1, 8)]}
+                apple = benchmark_reference.runtime_samples(reference, qualification.FIXTURES, 7)
+                current = [dict(row, lane='fork', seconds=2, historical=False) for row in apple]
+                docker_rows, medians = historical_samples(reference, 'colima', 7)
+                if mutation == 'docker': docker_rows[0]['seconds'] = 100
+                if mutation == 'apple': apple[0]['seconds'] = 100
+                (runtime / 'results.json').write_text(json.dumps(apple + current))
+                (runtime / 'matrix.json').write_text(json.dumps([
+                    dict(fixture=name, stock=1, fork=2, ratio=0.1 if mutation == 'matrix' else 2,
+                         passed=True, historical_lanes=['stock']) for name in qualification.FIXTURES]))
+                (docker / 'results.json').write_text(json.dumps(docker_rows))
+                (docker / 'acceptance.json').write_text(json.dumps(dict(passed=True, historical=True, medians=medians)))
+                with patch.object(benchmark_reference, 'fetch', return_value=reference):
+                    if mutation in ('docker', 'apple'):
+                        with self.assertRaises(RuntimeError):
+                            qualification.benchmark_summary(evidence, verify_reference=True)
+                        self.assertFalse((evidence / 'runtime-comparison-acceptance.json').exists())
+                    else:
+                        self.assertEqual(qualification.benchmark_summary(evidence, verify_reference=True), mutation is None)
+                        receipt = json.loads((evidence / 'runtime-comparison-acceptance.json').read_text())
+                        self.assertTrue(receipt['reference_verified'])
+                        qualification.benchmark_summary(evidence)
+                        self.assertEqual(json.loads((evidence / 'runtime-comparison-acceptance.json').read_text()), receipt)
+
+    def test_release_workflow_never_dispatches_historical_lanes(self):
+        with patch.object(qualification, 'checkpoint', return_value='a' * 40):
+            stages = {name: (dependencies, command) for name, dependencies, command, _ in qualification.stages(Path('/evidence'), 7)}
+        self.assertEqual(next(iter(stages)), 'benchmark-reference')
+        self.assertEqual(stages['tools'][0], ['benchmark-reference'])
+        self.assertIn('--candidate-only', stages['runtime-smoke'][1])
+        for name in ('runtime-benchmark', 'component-benchmarks', 'docker-benchmark'):
+            self.assertIn('--reuse-reference', stages[name][1])
+        self.assertEqual(stages['runtime-comparison'][0], ['runtime-benchmark', 'docker-benchmark'])
+        self.assertIn('runtime-comparison', stages['release'][0])
+
+    def test_docker_timing_gate_rejects_missing_timeout_and_tenfold_samples(self):
+        for fault in (None, 'tenfold', 'missing', 'timeout', 'failed-reference', 'nan', 'historical-candidate'):
+            with self.subTest(fault=fault), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                candidate = evidence / 'runtime-benchmark'
+                docker = evidence / 'docker-benchmark'
+                candidate.mkdir()
+                docker.mkdir()
+                raw = [dict(fixture=name, lane='fork', trial=trial, seconds=2, status=0)
+                       for name in qualification.FIXTURES for trial in range(1, 8)]
+                if fault == 'tenfold': raw[0]['seconds'] = 10
+                if fault == 'missing': raw.pop()
+                if fault == 'timeout': raw[0]['status'] = 124
+                if fault == 'nan': raw[0]['seconds'] = float('nan')
+                if fault == 'historical-candidate': raw[0]['historical'] = True
+                (candidate / 'results.json').write_text(json.dumps(raw))
+                (candidate / 'matrix.json').write_text(json.dumps([
+                    dict(fixture=name, stock=1, fork=2, ratio=2, passed=True, historical_lanes=['stock'])
+                    for name in qualification.FIXTURES]))
+                (docker / 'results.json').write_text(json.dumps([
+                    dict(fixture=name, lane='docker', trial=trial, seconds=1, status=0, historical=True)
+                    for name in qualification.FIXTURES for trial in range(1, 8)]))
+                (docker / 'acceptance.json').write_text(json.dumps(dict(
+                    passed=fault != 'failed-reference', historical=True,
+                    medians={name: 1 for name in qualification.FIXTURES})))
+                self.assertEqual(qualification.benchmark_summary(evidence), fault is None)
+                result = json.loads((evidence / 'runtime-comparison-acceptance.json').read_text())
+                self.assertEqual(result['passed'], fault is None)
+                self.assertIn('not contemporaneous', (evidence / 'BENCHMARK.md').read_text())
+
     def test_local_release_requires_hosted_quality_without_rerunning_scanners(self):
         for failed in ('integration', 'github-quality', None):
             with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:

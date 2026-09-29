@@ -280,18 +280,27 @@ def run_lane(runner: RuntimeRunner, lane: str, trials: int) -> None:
                        expected=hashlib.sha256(payload).hexdigest())
 
 
-def benchmark(evidence: Path, trials: int, reset: bool = False) -> None:
+def benchmark(evidence: Path, trials: int, reset: bool = False, *,
+              candidate_only: bool = False, reference: dict | None = None) -> None:
     runner = RuntimeRunner(evidence, STATE)
+    lanes = ('fork',) if candidate_only or reference is not None else ('fork', 'stock')
+    if reference is not None:
+        import benchmark_reference
+        fingerprint = json.loads((evidence / 'fork-fingerprint.json').read_text())
+        benchmark_reference.validate_runtime(reference, Path(__file__), ALPINE, fingerprint)
+        runner.rows.extend(benchmark_reference.runtime_samples(reference, FIXTURES, trials))
+        benchmark_reference.retain(evidence, reference)
     slot = StockSlot(evidence)
     failures = []
     (evidence / 'host.json').write_text(json.dumps({
         'system': checked(['sw_vers']), 'hardware': checked(['sysctl', 'hw.model', 'hw.memsize', 'machdep.cpu.brand_string']),
         'power': checked(['pmset', '-g', 'batt']), 'load_average_before': os.getloadavg(),
-        'lane_order': ['fork', 'stock'], 'trials': trials,
+        'lane_order': list(lanes), 'trials': trials,
+        'historical_reference': reference is not None,
         'method': 'serial optimized stacks; preloaded image; fresh VM per start; warm host caches; builder 2 CPU/2GiB; workloads 1 CPU/512MiB',
     }, indent=2) + '\n')
     # Serial lanes avoid VM resource contention. Setup and registry traffic are untimed.
-    for lane in ('fork', 'stock'):
+    for lane in lanes:
         acquired = False
         try:
             if lane == 'stock':
@@ -320,20 +329,27 @@ def benchmark(evidence: Path, trials: int, reset: bool = False) -> None:
             logs = STATE / lane / 'logs'
             if logs.exists():
                 shutil.copytree(logs, evidence / (lane + '-service-logs'), dirs_exist_ok=True)
-    finish(runner, trials, failures)
+    if reference is not None:
+        try:
+            benchmark_reference.validate_runtime(reference, Path(__file__), ALPINE, fingerprint)
+        except Exception as error:
+            failures.append('Historical comparison environment changed: ' + str(error))
+    finish(runner, trials, failures, candidate_only=candidate_only, historical=reference is not None)
 
 
-def finish(runner: RuntimeRunner, trials: int, failures: list[str]) -> None:
+def finish(runner: RuntimeRunner, trials: int, failures: list[str], *,
+           candidate_only: bool = False, historical: bool = False) -> None:
     evidence = runner.evidence
     runner.report()
     matrix = json.loads((evidence / 'matrix.json').read_text())
-    for lane in ('stock', 'fork'):
+    for lane in (('fork',) if candidate_only else ('stock', 'fork')):
         for fixture in FIXTURES:
             rows = [r for r in runner.rows if r['lane'] == lane and r['fixture'] == fixture]
             if len(rows) != trials or {r['trial'] for r in rows} != set(range(1, trials + 1)) or any(r['status'] for r in rows):
                 failures.append(f'{lane}/{fixture}: incomplete or failed')
     failures += [f'{r["fixture"]}: timing regression' for r in matrix if not r['passed']]
-    (evidence / 'acceptance.json').write_text(json.dumps({'passed': not failures, 'failures': failures}, indent=2) + '\n')
+    (evidence / 'acceptance.json').write_text(json.dumps({'passed': not failures, 'failures': failures,
+        'candidate_only': candidate_only, 'historical_reference': historical}, indent=2) + '\n')
     suite = ET.parse(evidence / 'timings.xml')
     for failure in failures:
         case = ET.SubElement(suite.getroot(), 'testcase', classname='runtime-acceptance', name=failure)
@@ -341,6 +357,10 @@ def finish(runner: RuntimeRunner, trials: int, failures: list[str]) -> None:
     suite.write(evidence / 'timings.xml', encoding='unicode')
     with (evidence / 'matrix.md').open('a') as stream:
         stream.write('\nResult: **' + ('FAILED / INCOMPLETE' if failures else 'PASSED') + '**\n')
+        if historical:
+            stream.write('\nApple samples are reused from the pinned GitHub release. This is a historical comparison, not a contemporaneous paired run. The tenfold gate conservatively compares the slowest candidate sample with the fastest historical reference sample. See historical-reference.json for measurement and binary identity limits.\n')
+        if candidate_only:
+            stream.write('\nCandidate smoke only; every workload and output check runs, without a reference speed claim.\n')
         stream.write('\nThree trials by default; medians shown. Serial optimized stacks, warm host caches, preloaded identical Alpine image and kernel. No-cache builds reuse the downloaded base image. Ratios describe the whole stack and cannot attribute a difference to an individual dependency.\n')
         stream.write('\nSetup, output checks and cleanup: `operations.json`; exact binaries/images: `*-fingerprint.json`; service restoration: `service-restoration.json`.\n')
         for failure in failures:
@@ -550,7 +570,7 @@ def build_inputs(root: Path = ROOT) -> dict[str, str]:
     return {str(p.relative_to(root)): digest(p) for p in sorted(paths)}
 
 
-def prepare_all(evidence: Path, context: str = 'colima') -> None:
+def prepare_all(evidence: Path, context: str = 'colima', *, candidate_only: bool = False) -> None:
     enrollment = Path.home() / 'Library/Application Support/ContainerFamily/retained/workflow/ssd-volume.uuid'
     disk = plistlib.loads(checked(['/usr/sbin/diskutil', 'info', '-plist', '/Volumes/SSD']).encode())
     if disk.get('VolumeUUID') != enrollment.read_text().strip() or disk.get('MountPoint') != '/Volumes/SSD' or disk.get('Internal'):
@@ -572,25 +592,30 @@ def prepare_all(evidence: Path, context: str = 'colima') -> None:
         build_builder(builder_evidence, context, Path(PAIRS['container-builder-shim']['repo']))
         shutil.copy2(builder_evidence / 'builder-artifact.json', evidence / 'builder-artifact.json')
     prepare_assets(evidence)
-    # Fork-only revisions replaced by stock pins must not invalidate Apple's build.
-    native = json.loads(checked(['git', '-C', PAIRS['container']['repo'], 'show',
-                                 PAIRS['container']['stock'] + ':Package.resolved']))
-    lock = stock_lockfile(json.loads((ROOT / 'Package.resolved').read_text()), native)
-    key = stock_workspace_key(ROOT, lock)
-    scratch = STORAGE / 'runtime-comparison' / f'{PAIRS["container"]["stock"][:12]}-{key}'
-    own(scratch, 'paired')
-    stock = prepare('container', 'stock', scratch)
-    (stock / 'Package.resolved').write_text(json.dumps(lock, indent=2) + '\n')
+    workspaces = [('fork', ROOT)]
+    native = {}
+    if not candidate_only:
+        # Fork-only revisions replaced by stock pins must not invalidate Apple's build.
+        native = json.loads(checked(['git', '-C', PAIRS['container']['repo'], 'show',
+                                     PAIRS['container']['stock'] + ':Package.resolved']))
+        lock = stock_lockfile(json.loads((ROOT / 'Package.resolved').read_text()), native)
+        key = stock_workspace_key(ROOT, lock)
+        scratch = STORAGE / 'runtime-comparison' / f'{PAIRS["container"]["stock"][:12]}-{key}'
+        own(scratch, 'paired')
+        stock = prepare('container', 'stock', scratch)
+        (stock / 'Package.resolved').write_text(json.dumps(lock, indent=2) + '\n')
+        workspaces.append(('stock', stock))
     (evidence / 'source-inputs.json').write_text(json.dumps({
-        'stock': PAIRS['container']['stock'], 'stock_native_pins': native['pins'],
+        'stock': None if candidate_only else PAIRS['container']['stock'],
+        'stock_native_pins': native.get('pins'),
         'fork': checked(['git', 'rev-parse', 'HEAD'], cwd=ROOT),
         'fork_pins': json.loads((ROOT / 'Package.resolved').read_text())['pins'],
         'build_inputs': build_inputs(),
         'source_sha256': {lane: {str(p.relative_to(workspace)): digest(p)
                                for p in sorted((workspace / 'Sources').rglob('*')) if p.is_file()}
-                          for lane, workspace in [('fork', ROOT), ('stock', stock)]},
+                          for lane, workspace in workspaces},
     }, indent=2) + '\n')
-    for lane, workspace in [('fork', ROOT), ('stock', stock)]:
+    for lane, workspace in workspaces:
         output_root = STORAGE / ('output' if lane == 'fork' else 'runtime-output')
         revision = checked(['git', 'rev-parse', 'HEAD'], cwd=ROOT) if lane == 'fork' else PAIRS['container']['stock']
         target = '//:container' if lane == 'fork' else '//:component'
@@ -611,6 +636,8 @@ def main() -> None:
     parser.add_argument('--stage', choices=['stock', 'fork'])
     parser.add_argument('--prepare', action='store_true', help='Build optimized stacks, sign and stage before measuring')
     parser.add_argument('--prepared', type=Path, help='Reuse a verified installation from earlier qualification evidence')
+    parser.add_argument('--candidate-only', action='store_true', help='Run candidate smoke without a reference comparison')
+    parser.add_argument('--reuse-reference', action='store_true', help='Reuse published Apple measurements without building or running Apple')
     parser.add_argument('--workspace', type=Path)
     parser.add_argument('--output-root', type=Path)
     parser.add_argument('--guest-artifact', type=Path, help='Verified receipt for the pinned source-built guest')
@@ -619,6 +646,12 @@ def main() -> None:
     parser.add_argument('--trials', type=int, default=3)
     parser.add_argument('--evidence', type=Path, required=True)
     args = parser.parse_args()
+    if args.candidate_only and args.reuse_reference:
+        parser.error('Candidate smoke and historical comparison are separate phases')
+    if args.reuse_reference and (not args.prepared or args.prepare or args.stage):
+        parser.error('Historical comparison requires an already prepared candidate')
+    if args.candidate_only and args.stage:
+        parser.error('Candidate smoke cannot be combined with standalone staging')
     if args.trials < 1:
         parser.error('--trials must be positive')
     if args.stage and (not args.workspace or not args.output_root):
@@ -643,15 +676,23 @@ def main() -> None:
             if args.prepared:
                 from runtime_integration import verify_prepared
                 verify_prepared(args.prepared)
-                for name in ('source-inputs.json', 'fork-fingerprint.json', 'stock-fingerprint.json',
-                             'guest-artifact.json', 'builder-artifact.json', 'assets.json'):
+                names = ['source-inputs.json', 'fork-fingerprint.json',
+                         'guest-artifact.json', 'builder-artifact.json', 'assets.json']
+                if not args.candidate_only and not args.reuse_reference:
+                    names.append('stock-fingerprint.json')
+                for name in names:
                     shutil.copy2(args.prepared / name, args.evidence / name)
             if args.prepare:
-                prepare_all(args.evidence, args.context)
+                prepare_all(args.evidence, args.context, candidate_only=args.candidate_only)
             if args.stage:
                 stage(args.stage, args.workspace, args.output_root, args.evidence)
             else:
-                benchmark(args.evidence, args.trials, reset=args.prepared is not None)
+                reference = None
+                if args.reuse_reference:
+                    import benchmark_reference
+                    reference = benchmark_reference.fetch()
+                benchmark(args.evidence, args.trials, reset=args.prepared is not None,
+                          candidate_only=args.candidate_only, reference=reference)
             if args.prepared:
                 verify_prepared(args.prepared)
         except BaseException as error:

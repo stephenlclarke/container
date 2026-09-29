@@ -2,15 +2,95 @@
 """Run the runtime workloads against an explicitly selected, running Docker engine."""
 
 import argparse
+import ast
 import hashlib
 import json
+import math
 from pathlib import Path
 import statistics
 import subprocess
 import uuid
 
-from fork_benchmark import Runner, install_signal_handlers
+from fork_benchmark import ROOT, Runner, install_signal_handlers
 from runtime_benchmark import ALPINE, FIXTURES, INSTALLS
+
+
+def historical_samples(reference: dict, context: str, trials: int) -> tuple[list[dict], dict]:
+    """A historical lane has the original complete protocol, never a new capture."""
+    from benchmark_reference import ARCHIVE_SHA256
+    protocol = reference['protocol']
+    expected = {'dockerContext': context, 'dockerTrials': trials, 'dockerImage': ALPINE,
+                'dockerArchitecture': 'linux/arm64', 'dockerServiceCPUs': 1,
+                'dockerServiceMemory': '512m'}
+    if any(protocol.get(key) != value for key, value in expected.items()):
+        raise RuntimeError('Historical Docker workload protocol differs')
+    rows = reference['docker']['raw']
+    if (len(rows) != 72 or len({(r['fixture'], r['trial']) for r in rows}) != 72
+            or any(r['lane'] != 'docker' or r['status'] != 0 or not math.isfinite(r['seconds'])
+                   or r['seconds'] <= 0 for r in rows)):
+        raise RuntimeError('Historical Docker raw outcomes are incomplete or failed')
+    medians = {}
+    for fixture in FIXTURES:
+        samples = [row for row in rows if row['fixture'] == fixture]
+        if len(samples) != trials or {r['trial'] for r in samples} != set(range(1, trials + 1)):
+            raise RuntimeError('Historical Docker fixture samples are incomplete: ' + fixture)
+        medians[fixture] = statistics.median(row['seconds'] for row in samples)
+    if medians != reference['docker']['medians']:
+        raise RuntimeError('Historical Docker medians differ from raw measurements')
+    return [dict(row, historical=True, reference_archive_sha256=ARCHIVE_SHA256) for row in rows], medians
+
+
+def engine_identity(version: dict, info: dict, compose_version: str) -> dict:
+    return {'architecture': info['Architecture'], 'cgroupVersion': info['CgroupVersion'],
+            'clientVersion': version['Client']['Version'], 'serverVersion': version['Server']['Version'],
+            'composePluginVersion': compose_version.lstrip('v'), 'cpus': info['NCPU'],
+            'memoryBytes': info['MemTotal'], 'kernelVersion': info['KernelVersion'],
+            'operatingSystem': info['OperatingSystem'], 'storageDriver': info['Driver']}
+
+
+def reuse(evidence: Path, context: str, trials: int) -> None:
+    """Validate the selected engine read-only and retain the published Docker lane."""
+    from benchmark_reference import fetch, retain, validate_contract, RUNNER_CONTRACT
+    from component_reference import original, command
+    reference = fetch()
+    rows, medians = historical_samples(reference, context, trials)
+    old = ast.parse(original(ROOT, 'Tools/bazel/docker_benchmark.py').decode())
+    current = ast.parse(Path(__file__).read_text())
+    definition = lambda tree: next(ast.dump(node, include_attributes=False) for node in tree.body
+                                   if isinstance(node, ast.FunctionDef) and node.name == 'benchmark')
+    if definition(old) != definition(current):
+        raise RuntimeError('Docker workload or timing boundary differs from the historical reference')
+    validate_contract(ROOT / 'Tools/bazel/fork_benchmark.py', RUNNER_CONTRACT)
+    host = reference['phaseHosts']['runtimeBenchmark']
+    for key, arguments in {'model': ['sysctl', '-n', 'hw.model'], 'memoryBytes': ['sysctl', '-n', 'hw.memsize'],
+                           'macOSVersion': ['sw_vers', '-productVersion'], 'macOSBuild': ['sw_vers', '-buildVersion'],
+                           'architecture': ['uname', '-m']}.items():
+        if command(arguments, ROOT) != str(host[key]):
+            raise RuntimeError('Historical Docker host differs: ' + key)
+    evidence.mkdir(parents=True, exist_ok=False)
+    runner = Runner(evidence, evidence)
+    observed = []
+    for fixture, arguments in [('engine', ['version', '--format', '{{json .}}']),
+                               ('engine-info', ['info', '--format', '{{json .}}']),
+                               ('compose-version', ['compose', 'version', '--short'])]:
+        row = runner.run('reference-admission', 'docker', fixture, 0,
+                         ['docker', '--context', context, *arguments], evidence, timeout=30)
+        if row['status']:
+            raise RuntimeError('Cannot verify selected historical Docker engine: ' + fixture)
+        observed.append(Path(row['log']).read_text().strip())
+    actual = engine_identity(json.loads(observed[0]), json.loads(observed[1]), observed[2])
+    expected = {key: value for key, value in reference['protocol']['dockerEngine'].items() if key != 'sourceLogSHA256'}
+    if actual != expected:
+        raise RuntimeError('Selected Docker engine differs from the historical reference')
+    retain(evidence, reference)
+    (evidence / 'engine-admission.json').write_text(json.dumps({'current': actual, 'historical': expected,
+                                                             'checks': runner.rows}, indent=2) + '\n')
+    (evidence / 'results.json').write_text(json.dumps(rows, indent=2) + '\n')
+    (evidence / 'acceptance.json').write_text(json.dumps({
+        'passed': True, 'historical': True, 'workloads_executed': False,
+        'assertions_replayed': False, 'failures': [], 'medians': medians,
+        'interpretation': 'Published measurements reused after read-only host/engine admission; no Docker workload rerun.',
+    }, indent=2) + '\n')
 
 
 def benchmark(evidence: Path, context: str, trials: int) -> None:
@@ -122,7 +202,8 @@ if __name__ == '__main__':
     parser.add_argument('--context', required=True)
     parser.add_argument('--trials', type=int, default=7)
     parser.add_argument('--evidence', type=Path, required=True)
+    parser.add_argument('--reuse-reference', action='store_true', help='Reuse pinned historical measurements after read-only engine admission')
     args = parser.parse_args()
     if args.trials < 1:
         parser.error('--trials must be positive')
-    benchmark(args.evidence, args.context, args.trials)
+    (reuse if args.reuse_reference else benchmark)(args.evidence, args.context, args.trials)

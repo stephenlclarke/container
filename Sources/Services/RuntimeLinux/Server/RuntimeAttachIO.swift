@@ -48,8 +48,8 @@ final class AttachableInput: ReaderStream, @unchecked Sendable {
         streamStorage
     }
 
-    /// Registers a client-owned read handle. End-of-file detaches that client
-    /// only; it does not close the process stdin stream.
+    /// Registers a client-owned read handle. By default EOF detaches only that
+    /// client; explicit ownership finishes guest stdin after queued bytes drain.
     func add(_ handle: FileHandle, closeOnEOF: Bool = false) {
         let identifier = UUID()
         let accepted = state.withLock { state in

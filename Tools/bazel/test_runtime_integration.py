@@ -8,11 +8,51 @@ import tempfile
 import sys
 import time
 import unittest
+from unittest import mock
 
-from runtime_integration import owned_cli_processes, retain_layer_reports, stop_test_children, test_filter
+from runtime_benchmark import RuntimeRunner
+from runtime_integration import EOFIntegrationRunner, owned_cli_processes, require_eof_cases, retain_layer_reports, stop_test_children, test_filter
 
 
 class IntegrationReportsTests(unittest.TestCase):
+    def test_focused_eof_requires_exact_three_completed_cases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reports = Path(directory)
+            xml = reports / 'test.xml'
+            def report(names):
+                xml.write_text('<testsuites><testsuite name="IntegrationTests.TestCLIPrimaryInputEOF">'
+                               + ''.join(f'<testcase name="{name}" result="completed"/>' for name in names)
+                               + '</testsuite></testsuites>')
+            expected = ['foregroundDedicatedRunClosesFiniteInput()',
+                        'prewarmedDedicatedStartClosesFiniteInput()',
+                        'foregroundSharedRunClosesFiniteInput()']
+            report(expected)
+            require_eof_cases(reports)
+            for invalid in (expected[:-1], [*expected[:2], 'unrelated()'], [*expected, expected[0]]):
+                report(invalid)
+                with self.assertRaisesRegex(RuntimeError, 'all three original cases'):
+                    require_eof_cases(reports)
+            report(expected)
+            xml.write_text(xml.read_text().replace('result="completed"', 'result="skipped"', 1))
+            with self.assertRaisesRegex(RuntimeError, 'all three original cases'):
+                require_eof_cases(reports)
+            report(expected)
+            xml.write_text(xml.read_text().replace('</testsuites>',
+                '<testsuite name="IntegrationTests.Unrelated"><testcase name="extra()" result="completed"/></testsuite></testsuites>'))
+            with self.assertRaisesRegex(RuntimeError, 'all three original cases'):
+                require_eof_cases(reports)
+
+    def test_focused_eof_start_enables_debug_without_changing_other_commands(self):
+        runner = EOFIntegrationRunner(Path('/unused'), Path('/unused'))
+        with mock.patch.object(RuntimeRunner, 'command', return_value={'status': 0}) as command:
+            runner.command('fork', 'setup-start', 0, ['system', 'start', '--app-root', '/private/app'])
+            self.assertEqual(command.call_args.args[3],
+                             ['system', 'start', '--app-root', '/private/app', '--debug'])
+            runner.command('fork', 'setup-images', 0, ['image', 'load', '--input', '/archive'])
+            self.assertEqual(command.call_args.args[3], ['image', 'load', '--input', '/archive'])
+            with self.assertRaisesRegex(RuntimeError, 'unexpected service startup'):
+                runner.command('fork', 'setup-start', 0, ['system', 'stop'])
+
     def test_cleanup_stops_only_recorded_children(self):
         with tempfile.TemporaryDirectory() as directory:
             executable = Path('/bin/sleep')

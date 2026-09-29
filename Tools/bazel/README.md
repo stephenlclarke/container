@@ -32,7 +32,7 @@ Run these in the container checkout:
 | `make bazel-vm-integration` | Run the complete pinned VM suite against `QUALIFICATION_EVIDENCE/guest-runc/guest-artifact.json` |
 | `make bazel-linux-test` | Guest core/netlink and vmexec Linux tests, with separate build caches and coverage |
 | `make bazel-builder-build` | Production-toolchain formatting, vet, race tests and coverage, then a pinned builder OCI archive |
-| `make bazel-unattended-artifacts` | Preflight, tool checks, guest/Linux/builder qualification and one live Apple/fork smoke trial; restore a Colima VM started by this run |
+| `make bazel-unattended-artifacts` | Preflight, tool checks, guest/Linux/builder qualification and one live fork candidate smoke trial; restore a Colima VM started by this run |
 | `make bazel-unattended` | Run full laptop qualification from a clean committed checkpoint; require matching hosted quality before packaging |
 | `make bazel-recover QUALIFICATION_EVIDENCE=...` | Recover the recorded host state after a killed wrapper, once every owned command has exited; retain failures for manual recovery |
 | `make bazel-service-artifacts` | Original journald/GELF race, coverage and reproducibility checks, with reusable verified OCI outputs |
@@ -40,6 +40,7 @@ Run these in the container checkout:
 | `make bazel-maintenance` | Original format/license checks and isolated protobuf regeneration/diff |
 | `make bazel-coverage` | Unit line coverage with LCOV, Sonar XML, JSON summary and HTML source reports |
 | `make bazel-runtime-integration PREPARED_RUNTIME=... INTEGRATION_ARGS=--coverage` | CLI layers and runtime coverage using a temporary profiled installation; restore original binaries afterward |
+| `PREPARED_RUNTIME=... python3 Tools/bazel/unattended.py --profile runtime --target bazel-eof-integration --evidence ...` | Host-guarded, source-matched dedicated, prewarmed, and shared finite-input EOF checks; restore the original host afterward |
 | `make bazel-combined-coverage` | Combine qualified unit and complete integration line coverage for the same sources |
 | `make bazel-docs` | Original 15 API modules, extracted through Bazel and merged with DocC |
 | `make bazel-codeql` | Optional local diagnostic scan with a traced Bazel build; excluded from unattended qualification |
@@ -172,9 +173,17 @@ The active graph contains this repository and 39 pinned Swift package dependenci
 
 Normal builds produce debug artifacts. `bazel-final` also builds optimized binaries, signs the private benchmark installations and runs VMs. Packaging, publishing and family-wide release gates remain outside this check. The engine command keeps its original `main.swift` filename and explicitly selects Swift's library parsing mode for its `@main` entry point.
 
+## Reusing published benchmark results
+
+Normal unattended qualification admits the existing `historical-container-benchmark-15361ce5.zip` GitHub release asset by its exact SHA-256 before runtime work. It builds and measures the new Container candidate, reuses all original Apple and Docker measurements, and reuses unchanged dependency performance results only when source, workload, importer and toolchain identities match. Current dependency unit tests and all candidate functional, VM, integration, coverage, packaging and restoration gates remain required. Missing or incompatible historical evidence fails admission rather than silently rebuilding or remeasuring an old version.
+
+Runtime preparation uses `runtime_benchmark.py --candidate-only --prepare` for the original eight smoke workloads. The final seven-trial candidate run uses `--reuse-reference --prepared PATH`; it performs every original output check and compares with the 56 saved Apple samples. Workload, setup, output-validation and timing code, image, kernel, host hardware, macOS and power source are checked before comparison. Historical samples are identified in raw evidence and reports; they are not newly executed functional assertions or a contemporaneous paired benchmark. The existing tenfold slowdown and timeout gates remain. The historical asset explicitly distinguishes its measured private executable from the later signed release executable, so those timings are not attributed to byte-identical released binaries.
+
+The pinned public asset is cached under the retained Container benchmark-reference directory. Cache reads verify its digest and work offline. An incompatible future dependency or benchmark contract requires a reviewed candidate measurement path; it never authorizes automatic reference recapture. The original explicit benchmark commands below remain diagnostic entry points and can create fresh references only when deliberately requested.
+
 ## Performance interpretation
 
-The SSL component additionally builds the unchanged upstream `NIOSSLPerformanceTester` in release mode and runs matching handshake and encrypted-write workloads directly. Three alternating process trials retain monotonic durations, executable and workload hashes, and the ten upstream samples. Speed ratios include process startup and one warmup; upstream wall-clock samples are diagnostic only. The known rejected-certificate compatibility assertions remain separately failed and receive no speed ratio. Use `make bazel-fork-benchmark BENCHMARK_ARGS="--component swift-nio-ssl --phase tls"` to check only these optimized workloads during development; complete qualification still includes the compatibility suite.
+The SSL component additionally builds the unchanged upstream `NIOSSLPerformanceTester` in release mode and runs matching handshake and encrypted-write workloads directly. Three alternating process trials retain monotonic durations, executable and workload hashes, and the ten upstream samples. Speed ratios include process startup and one warmup; upstream wall-clock samples are diagnostic only. The known rejected-certificate compatibility assertions remain separately failed and receive no speed ratio. Use `make bazel-fork-benchmark BENCHMARK_ARGS="--component swift-nio-ssl --phase tls"` to check only these optimized workloads during development; the stored compatibility differences remain visible, while current dependency functional tests run in their own qualification layer.
 
 See [the performance diagnosis](PERFORMANCE_DIAGNOSIS.md) before comparing fork and upstream timings. Component rebuilds deliberately invalidate every component Swift file, and archive suite timings use debug builds. Runtime measurements use optimized binaries. The benchmark waits directly for child exit with a separate timeout watchdog, avoiding up to roughly 50 ms of parent polling delay on short commands. Exact fingerprints and earlier results remain retained.
 

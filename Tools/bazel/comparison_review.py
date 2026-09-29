@@ -44,7 +44,20 @@ def review(evidence: Path) -> dict:
     matrix = json.loads((evidence / 'matrix.json').read_text())
     differences = [row for row in rows if row['status'] and known_difference(row)]
     unexpected = [row for row in rows if row['status'] and row not in differences]
-    reviewed = {(row['component'], row['fixture']) for row in differences}
+    historical = []
+    superseded = []
+    historical_path = evidence / 'historical-differences.json'
+    if historical_path.exists():
+        from benchmark_reference import fetch
+        from component_reference import retained_rows
+        scope = json.loads((evidence / 'metadata.json').read_text())
+        reference = fetch()
+        _, historical = retained_rows(reference, scope['measured_components'])
+        superseded = [dict(row, historical=True) for row in reference['components']['knownCompatibilityDifferences']
+                      if row['component'] in scope['measured_components']]
+        if json.loads(historical_path.read_text()) != historical:
+            raise RuntimeError('Historical compatibility disposition differs from the pinned archive')
+    reviewed = {(row['component'], row['fixture']) for row in differences + historical}
     invalid_timings = [row for row in matrix if not row['passed'] and
                        ((row['component'], row['fixture']) not in reviewed or row['fork'] >= 10 * row['stock'])]
     go_path = evidence / 'go-matrix.json'
@@ -54,11 +67,16 @@ def review(evidence: Path) -> dict:
     scope = json.loads(metadata.read_text()) if metadata.exists() else {}
     phase = scope.get('phase', 'all')
     compatibility_measured = phase not in {'tls', 'recompile'}
+    if scope.get('historical_reference') and not scope.get('measured_components'):
+        compatibility_measured = False
     result = {'phase': phase, 'components': scope.get('components'),
               'compatibility_measured': compatibility_measured,
               'completed': bool(matrix) and not unexpected and not invalid_timings,
-              'compatible': (not differences and not unexpected) if compatibility_measured else None,
+              'compatible': (not differences and not historical and not unexpected) if compatibility_measured else None,
               'expected_differences': differences, 'unexpected_failures': unexpected,
+              'historical_expected_differences': historical,
+              'superseded_historical_differences': superseded,
+              'freshly_measured_components': scope.get('measured_components', scope.get('components')),
               'invalid_timings': invalid_timings,
               'interpretation': 'Reviewed name-length and rejected-certificate alert differences remain failed compatibility assertions. Their timings are not qualified performance comparisons.'}
     if not compatibility_measured:

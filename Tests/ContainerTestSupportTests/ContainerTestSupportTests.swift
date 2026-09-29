@@ -23,6 +23,27 @@ import Testing
 struct ContainerTestSupportTests {
 
     @Test
+    func timedFixtureCommandRetainsBothOutputStreams() async throws {
+        try await ContainerFixture.with { fixture in
+            do {
+                _ = try fixture.run(
+                    ["-c", "printf host-stdout; printf host-stderr >&2; exec sleep 5"],
+                    timeout: 0.2,
+                    executable: URL(fileURLWithPath: "/bin/sh"))
+                Issue.record("host child should have exceeded its deadline")
+            } catch CommandError.executionFailed(let message) {
+                let prefix = "output: "
+                let path = try #require(message.components(separatedBy: prefix).last)
+                #expect(message.contains("command exceeded"))
+                let retained = URL(fileURLWithPath: path)
+                defer { try? FileManager.default.removeItem(at: retained) }
+                #expect(try Data(contentsOf: retained.appendingPathComponent("stdout")) == Data("host-stdout".utf8))
+                #expect(try Data(contentsOf: retained.appendingPathComponent("stderr")) == Data("host-stderr".utf8))
+            }
+        }
+    }
+
+    @Test
     func inspectFixtureDropsOnlyRecognizedLoggingDiagnosticProjection() throws {
         let input = Data(
             """

@@ -248,6 +248,7 @@ class Runner:
         self.evidence = evidence
         self.scratch = scratch
         self.rows: list[dict] = []
+        self.reference_rows: list[dict] = []
         self.env = dict(os.environ, TMPDIR=str(STORAGE / 'tmp') + '/', CI='1')
 
     def run(self, component: str, lane: str, fixture: str, trial: int,
@@ -336,13 +337,13 @@ class Runner:
         return row
 
     @contextmanager
-    def bazel_session(self, component: str):
+    def bazel_session(self, component: str, lanes=('stock', 'fork')):
         """Shut down both owned servers after success, failure, or interruption."""
         try:
             yield
         finally:
             failures = []
-            for lane in ('stock', 'fork'):
+            for lane in lanes:
                 try:
                     row = self.run(component, lane, 'cleanup-bazel', 0,
                                    [str(BAZEL), '--output_user_root=' + str(STORAGE / 'paired-output'),
@@ -398,18 +399,23 @@ class Runner:
 
     def report(self) -> None:
         (self.evidence / 'results.json').write_text(json.dumps(self.rows, indent=2) + '\n')
+        rows = self.rows + self.reference_rows
+        if self.reference_rows:
+            (self.evidence / 'historical-results.json').write_text(json.dumps(self.reference_rows, indent=2) + '\n')
         matrix = []
-        fixtures = sorted({(r['component'], r['fixture']) for r in self.rows
+        fixtures = sorted({(r['component'], r['fixture']) for r in rows
                            if r['fixture'] not in {'prepare-build', 'prepare-linux-build', 'prepare-tls', 'toolchain', 'cleanup-bazel'}})
         suite = ET.Element('testsuite', name='fork-vs-apple')
         for row in self.rows:
+            if row.get('historical'):
+                continue
             case = ET.SubElement(suite, 'testcase', classname=row['component'],
                                  name=f"{row['lane']}/{row['fixture']}/{row['trial']}",
                                  time=str(row['seconds']))
             if row['status']:
                 ET.SubElement(case, 'failure', message=f"exit {row['status']}").text = row['log']
         for component, fixture in fixtures:
-            lanes = {lane: [r for r in self.rows if r['component'] == component and
+            lanes = {lane: [r for r in rows if r['component'] == component and
                             r['fixture'] == fixture and r['lane'] == lane]
                      for lane in ['stock', 'fork']}
             if not all(lanes.values()):
@@ -421,12 +427,19 @@ class Runner:
             trial_ratios = [r['seconds'] / stock_trials[r['trial']]['seconds']
                             for r in lanes['fork'] if r['trial'] in stock_trials]
             worst_ratio = max(trial_ratios, default=ratio)
+            historical_lanes = [lane for lane, values in lanes.items() if all(r.get('historical') for r in values)]
+            comparison = 'retained-paired-history' if len(historical_lanes) == 2 else 'historical' if historical_lanes else 'paired'
+            if comparison == 'historical':
+                # These are not contemporaneous pairs. Keep the 10x gate
+                # conservative without inventing a pairing by trial number.
+                worst_ratio = max(r['seconds'] for r in lanes['fork']) / min(r['seconds'] for r in lanes['stock'])
             completed = all(r['status'] == 0 for rows in lanes.values() for r in rows)
             passed = completed and worst_ratio < 10
             if not completed:
                 ratio, worst_ratio = None, None
             matrix.append(dict(component=component, fixture=fixture, **medians,
-                               ratio=ratio, worst_trial_ratio=worst_ratio, passed=passed))
+                               ratio=ratio, worst_trial_ratio=worst_ratio, passed=passed,
+                               comparison=comparison, historical_lanes=historical_lanes))
             if worst_ratio is not None and worst_ratio >= 10:
                 case = ET.SubElement(suite, 'testcase', classname=component, name=fixture + '/ratio')
                 ET.SubElement(case, 'failure', message=f'{worst_ratio:.3f}x slowdown')
@@ -440,6 +453,8 @@ class Runner:
             lines.append(f"| {row['component']} | {row['fixture']} | {row['stock']:.3f} | {row['fork']:.3f} | {comparison} | {row['passed']} |")
         if any(row['fixture'].startswith('tls-') for row in matrix):
             lines += ['', 'TLS workloads use the same upstream performance source with optimized libraries, run directly without Bazel. Each process includes startup, one warmup and ten samples of 1,000 handshakes or 200,000 encrypted 512-byte writes. Ratios use monotonic process durations; the upstream wall-clock samples are retained only as diagnostics. Compatibility-test failures remain separate.']
+        if any(row.get('historical') for row in rows):
+            lines += ['', 'Historical lanes are checksum-bound retained measurements, not fresh passing assertions. Only candidate rows execute in this run. New-versus-historical timing gates compare the slowest candidate sample with the fastest reference sample, not a claimed contemporaneous pair.']
         (self.evidence / 'matrix.md').write_text('\n'.join(lines) + '\n')
         go_path = self.evidence / 'go-benchmarks.json'
         if go_path.exists():
@@ -462,8 +477,13 @@ class Runner:
                                   for r in lanes['fork'] if r['trial'] in stock_trials)
                 go_matrix.append(dict(fixture=fixture, **medians, ratio=ratio,
                                       worst_trial_ratio=worst_ratio, passed=worst_ratio < 10))
-                case = ET.SubElement(suite, 'testcase', classname='prefetch-throughput', name=fixture)
+                historical = all(row.get('historical') for rows in lanes.values() for row in rows)
+                go_matrix[-1].update(historical=historical)
+                if not historical:
+                    case = ET.SubElement(suite, 'testcase', classname='prefetch-throughput', name=fixture)
                 if worst_ratio is not None and worst_ratio >= 10:
+                    if historical:
+                        case = ET.SubElement(suite, 'testcase', classname='historical-reference', name=fixture)
                     ET.SubElement(case, 'failure', message=f'{worst_ratio:.3f}x slowdown')
             (self.evidence / 'go-matrix.json').write_text(json.dumps(go_matrix, indent=2) + '\n')
             with (self.evidence / 'matrix.md').open('a') as stream:
@@ -581,11 +601,15 @@ def main() -> None:
     parser.add_argument('--component', choices=list(PAIRS), action='append')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--use-prepared', action='store_true', help='Use previously prepared source fixtures')
+    parser.add_argument('--reuse-reference', action='store_true',
+                        help='Reuse published stock and unchanged dependency measurements; execute only changed Container')
     parser.add_argument('--phase', choices=['all', 'tests', 'recompile', 'tls'], default='all',
                         help='Run everything, tests/compilation, only compilation, or only optimized SSL workloads')
     args = parser.parse_args()
     if args.phase == 'tls' and args.component != ['swift-nio-ssl']:
         parser.error('--phase tls requires only --component swift-nio-ssl')
+    if args.reuse_reference and (args.component or args.phase != 'all' or args.prepare_only):
+        parser.error('--reuse-reference requires the complete component comparison')
     args.evidence = args.evidence.resolve()
     args.scratch = args.scratch.resolve()
     # The active container checkpoint includes workflow and runtime fixes which
@@ -594,6 +618,12 @@ def main() -> None:
     PAIRS['containerization']['fork'] = next(pin['state']['revision'] for pin in json.loads((ROOT / 'Package.resolved').read_text())['pins'] if pin['identity'] == 'containerization')
     if digest(BAZEL) != BAZEL_SHA:
         raise SystemExit('Bazel checksum mismatch')
+    reference = None
+    if args.reuse_reference:
+        from benchmark_reference import fetch
+        from component_reference import validate_inputs
+        reference = fetch()
+        changed = validate_inputs(reference, PAIRS, ROOT, BAZEL_SHA)
     # Reuse the established enrollment preflight before creating source snapshots.
     subprocess.run([str(ROOT / 'Tools/bazel/run.sh'), 'info', 'release'], check=True,
                    stdout=subprocess.DEVNULL)
@@ -602,7 +632,10 @@ def main() -> None:
     args.evidence.mkdir(parents=True, exist_ok=False)
     args.scratch.mkdir(parents=True, exist_ok=args.use_prepared)
     components = args.component or list(PAIRS)
+    measured_components = changed if reference is not None else components
+    lanes = ['fork'] if reference is not None else ['stock', 'fork']
     metadata = dict(phase=args.phase, components=components, pairs=PAIRS, third_party_lock=digest(ROOT / 'Package.resolved'),
+                    measured_components=measured_components, historical_reference=reference is not None,
                     harness_revision=output(['git', 'rev-parse', 'HEAD'], ROOT),
                     macos=output(['sw_vers']), swift=output(['xcrun', 'swift', '--version']),
                     hardware=output(['sysctl', '-n', 'machdep.cpu.brand_string', 'hw.memsize', 'hw.ncpu']),
@@ -610,8 +643,15 @@ def main() -> None:
     (args.evidence / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
     shutil.copy2(__file__, args.evidence / 'fork_benchmark.py')
     runner = Runner(args.evidence, args.scratch)
-    for component in components:
-        for lane in ['stock', 'fork']:
+    if reference is not None:
+        from benchmark_reference import retain
+        from component_reference import retained_go, retained_rows
+        retain(args.evidence, reference)
+        runner.reference_rows, differences = retained_rows(reference, measured_components)
+        (args.evidence / 'historical-differences.json').write_text(json.dumps(differences, indent=2) + '\n')
+        (args.evidence / 'go-benchmarks.json').write_text(json.dumps(retained_go(reference), indent=2) + '\n')
+    for component in measured_components:
+        for lane in lanes:
             if args.use_prepared:
                 base = args.scratch / component / lane
                 for name, expected in json.loads((base / 'inputs.json').read_text()).items():
@@ -623,11 +663,11 @@ def main() -> None:
     if args.prepare_only:
         return
     try:
-        for component in components:
+        for component in measured_components:
             if component == 'container-builder-shim':
                 runner.builder()
                 continue
-            with runner.bazel_session(component):
+            with runner.bazel_session(component, lanes):
                 if args.phase == 'tls':
                     runner.tls()
                     continue
@@ -635,17 +675,17 @@ def main() -> None:
                 repo = '@swiftpkg_' + component.replace('-', '_') + '//:'
                 tests = [repo + t + '.rspm' for t in pair['tests']]
                 good = True
-                for lane in ['stock', 'fork']:
+                for lane in lanes:
                     row = runner.bazel(component, lane, 'prepare-build', 0, 'build', ['//:component', *tests])
                     good = good and row['status'] == 0
                 if not good:
                     continue
                 if component == 'container' and args.phase == 'all':
-                    for lane in ['stock', 'fork']:
+                    for lane in lanes:
                         runner.cli(lane)
                 failed_fixtures = set()
                 for trial in range(0 if args.phase == 'recompile' else 3):
-                    for lane in (['stock', 'fork'] if trial % 2 == 0 else ['fork', 'stock']):
+                    for lane in (lanes if trial % 2 == 0 else list(reversed(lanes))):
                         runner.bazel(component, lane, 'cached-build', trial, 'build', ['//:component'])
                         for name, target in zip(pair['tests'], tests):
                             if (lane, name) in failed_fixtures:
@@ -658,7 +698,7 @@ def main() -> None:
                     runner.tls()
                 # No-op comments force the component's Swift source compilation.
                 # Dependency sources are untouched; report first builds separately.
-                for lane in ['stock', 'fork']:
+                for lane in lanes:
                     base = args.scratch / component / lane
                     source = base / ('workspace' if component == 'container' else 'component')
                     originals = {}
@@ -674,6 +714,10 @@ def main() -> None:
                             path.write_bytes(content)
     finally:
         runner.report()
+    if reference is not None:
+        from component_reference import require_candidate_rows
+        require_candidate_rows(runner.rows, measured_components, PAIRS)
+        validate_inputs(reference, PAIRS, ROOT, digest(BAZEL))
     matrix = json.loads((args.evidence / 'matrix.json').read_text())
     if (args.evidence / 'go-matrix.json').exists():
         matrix += json.loads((args.evidence / 'go-matrix.json').read_text())

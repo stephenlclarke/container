@@ -3,6 +3,8 @@
 
 import argparse
 import json
+import math
+import statistics
 from pathlib import Path
 import sys
 
@@ -21,7 +23,8 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
     component_scratch = STORAGE / 'qualification-components' / checkpoint()
     component_args = ['--use-prepared'] if component_scratch.exists() else []
     return [
-        ('tools', [], make + ['bazel-tools-test'], 300),
+        ('benchmark-reference', [], script('benchmark_reference', '--evidence', evidence / 'benchmark-reference'), 180),
+        ('tools', ['benchmark-reference'], make + ['bazel-tools-test'], 300),
         ('dependencies', ['tools'], make + ['bazel-dependency-test'], 1800),
         ('container', ['dependencies'], make + ['bazel-build', 'bazel-test', 'bazel-repository-test'], 1800),
         ('maintenance', ['container'], script('maintenance', '--evidence', evidence / 'maintenance'), 900),
@@ -38,7 +41,7 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
         ('builder', ['tools'], script('builder_artifact', '--evidence', evidence / 'builder'), 1800),
         ('services', ['tools'], script('service_artifacts', '--evidence', evidence / 'services'), 1800),
         ('service-integration', ['container', 'services'], script('service_integration', '--evidence', evidence / 'service-integration'), 900),
-        ('runtime-smoke', ['container', 'guest', 'linux', 'builder'], script('runtime_benchmark', '--prepare', '--trials', 1,
+        ('runtime-smoke', ['container', 'guest', 'linux', 'builder'], script('runtime_benchmark', '--candidate-only', '--prepare', '--trials', 1,
                     '--guest-artifact', evidence / 'guest/guest-artifact.json',
                     '--builder-artifact', evidence / 'builder/builder-artifact.json', '--evidence', prepared), 3600),
         ('vm-integration', ['runtime-smoke', 'guest-runc'], script('vm_integration', '--guest-artifact', evidence / 'guest-runc/guest-artifact.json',
@@ -48,24 +51,41 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
         ('combined-coverage', ['coverage', 'integration'], script('combined_coverage', '--unit', evidence / 'coverage',
                     '--integration', evidence / 'integration/coverage', '--evidence', evidence / 'combined-coverage'), 600),
         ('component-benchmarks', ['dependencies', 'container', 'builder'], script('fork_benchmark',
-                    '--evidence', evidence / 'components', '--scratch', component_scratch, *component_args), 10800),
-        ('runtime-benchmark', ['integration'], script('runtime_benchmark', '--prepared', prepared,
+                    '--reuse-reference', '--evidence', evidence / 'components', '--scratch', component_scratch, *component_args), 10800),
+        ('runtime-benchmark', ['integration'], script('runtime_benchmark', '--reuse-reference', '--prepared', prepared,
                     '--trials', trials, '--evidence', evidence / 'runtime-benchmark'), 1800),
-        ('docker-benchmark', ['runtime-smoke'], script('docker_benchmark', '--context', 'colima',
+        ('docker-benchmark', ['runtime-smoke'], script('docker_benchmark', '--reuse-reference', '--context', 'colima',
                     '--trials', trials, '--evidence', evidence / 'docker-benchmark'), 1800),
+        ('runtime-comparison', ['runtime-benchmark', 'docker-benchmark'], script('qualification',
+                    '--compare-only', '--trials', trials, '--evidence', evidence), 60),
         ('github-quality', [], script('github_quality', '--evidence', evidence / 'github-quality'), 1860),
-        ('release', ['maintenance', 'documentation', 'host', 'services', 'service-integration', 'integration', 'combined-coverage', 'github-quality'], script('release_artifact',
+        ('release', ['maintenance', 'documentation', 'host', 'services', 'service-integration', 'integration', 'combined-coverage', 'github-quality', 'runtime-comparison'], script('release_artifact',
                     '--prepared', prepared, '--service-artifacts', evidence / 'services/service-artifacts.json',
                     '--notarize', '--evidence', evidence / 'release'), 3600),
         ('install', ['release'], script('release_install', '--release', evidence / 'release', '--evidence', evidence / 'install'), 900),
     ]
 
 
-def benchmark_summary(evidence: Path) -> None:
+def benchmark_summary(evidence: Path, trials: int = 7, *, verify_reference: bool = False) -> bool:
     runtime_path = evidence / 'runtime-benchmark/matrix.json'
     docker_path = evidence / 'docker-benchmark/acceptance.json'
     runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else []
     docker = json.loads(docker_path.read_text()) if docker_path.exists() else {}
+    def samples(name: str) -> list[dict]:
+        path = evidence / name / 'results.json'
+        return json.loads(path.read_text()) if path.exists() else []
+
+    candidate_raw, docker_raw = samples('runtime-benchmark'), samples('docker-benchmark')
+    if verify_reference:
+        from benchmark_reference import fetch, runtime_samples
+        from docker_benchmark import historical_samples
+        reference = fetch()
+        expected_docker, expected_medians = historical_samples(reference, 'colima', trials)
+        expected_apple = runtime_samples(reference, FIXTURES, trials)
+        if docker_raw != expected_docker or docker.get('medians') != expected_medians:
+            raise RuntimeError('Historical Docker comparison rows differ from the pinned archive')
+        if [row for row in candidate_raw if row['lane'] == 'stock'] != expected_apple:
+            raise RuntimeError('Historical Apple comparison rows differ from the pinned archive')
     rows = []
     for fixture in FIXTURES:
         paired = next((row for row in runtime if row['fixture'] == fixture), {})
@@ -73,10 +93,37 @@ def benchmark_summary(evidence: Path) -> None:
         docker_seconds = docker.get('medians', {}).get(fixture) if docker.get('passed') else None
         row = {'fixture': fixture, 'apple_seconds': paired.get('stock') if valid_pair else None,
                'fork_seconds': paired.get('fork') if valid_pair else None, 'docker_seconds': docker_seconds,
-               'fork_apple_ratio': paired.get('ratio') if valid_pair else None}
+               'fork_apple_ratio': paired.get('ratio') if valid_pair else None,
+               'apple_historical': 'stock' in paired.get('historical_lanes', []),
+               'docker_historical': docker.get('historical') is True}
         row['fork_docker_ratio'] = row['fork_seconds'] / docker_seconds if row['fork_seconds'] and docker_seconds else None
+        fresh = [r for r in candidate_raw if r['fixture'] == fixture and r['lane'] == 'fork']
+        reference = [r for r in docker_raw if r['fixture'] == fixture and r['lane'] == 'docker']
+        apple = [r for r in candidate_raw if r['fixture'] == fixture and r['lane'] == 'stock']
+        complete = all(len(group) == trials and {r['trial'] for r in group} == set(range(1, trials + 1))
+                       and all(r['status'] == 0 and math.isfinite(r['seconds']) and r['seconds'] > 0 for r in group)
+                       for group in (fresh, reference)) and not any(r.get('historical') for r in fresh)
+        worst = max(r['seconds'] for r in fresh) / min(r['seconds'] for r in reference) if complete else None
+        if verify_reference and complete:
+            # Recompute from authenticated raw references, not an editable matrix.
+            candidate_median = statistics.median(r['seconds'] for r in fresh)
+            apple_median = statistics.median(r['seconds'] for r in apple)
+            valid_pair = (valid_pair and paired.get('stock') == apple_median
+                          and paired.get('fork') == candidate_median
+                          and paired.get('ratio') == candidate_median / apple_median
+                          and max(r['seconds'] for r in fresh) / min(r['seconds'] for r in apple) < 10)
+        row.update(worst_fork_docker_ratio=worst,
+                   passed=valid_pair and docker.get('passed') is True and complete and worst < 10)
         rows.append(row)
     (evidence / 'runtime-comparison.json').write_text(json.dumps(rows, indent=2) + '\n')
+    passed = all(row['passed'] for row in rows)
+    acceptance = evidence / 'runtime-comparison-acceptance.json'
+    if verify_reference or not acceptance.exists():
+        acceptance.write_text(json.dumps({
+            'passed': passed, 'reference_verified': verify_reference,
+            'failures': [row['fixture'] for row in rows if not row['passed']],
+            'rule': 'Every fixture must complete; slowest candidate / fastest historical Docker sample must be below 10x.',
+        }, indent=2) + '\n')
     lines = ['# Runtime performance', '', '| Workload | Apple ms | Fork ms | Docker ms | Fork/Apple | Fork/Docker |',
              '| --- | ---: | ---: | ---: | ---: | ---: |']
     for row in rows:
@@ -86,9 +133,12 @@ def benchmark_summary(evidence: Path) -> None:
                   for key in ('fork_apple_ratio', 'fork_docker_ratio')]
         lines.append('| ' + ' | '.join([row['fixture'], *timings, *ratios]) + ' |')
     lines += ['', 'Medians of serial trials. Docker uses an existing shared Colima VM; Apple and fork startup create a VM per container.',
+              'Apple and Docker values marked historical in runtime-comparison.json are published Q153 measurements. Only the fork candidate is newly timed; these are not contemporaneous paired runs or newly replayed reference assertions.',
+              'The same-fixture 10x acceptance rule uses every raw sample: slowest current fork divided by fastest historical Docker. Missing, failed or incomplete workloads cannot qualify.',
               'A missing or failed workload has no qualified speed ratio. Raw durations and failures remain in each stage directory.',
               'Component comparisons, including intentional upstream contract differences, are retained separately in components/matrix.md.']
     (evidence / 'BENCHMARK.md').write_text('\n'.join(lines) + '\n')
+    return passed
 
 
 def run(evidence: Path, trials: int) -> None:
@@ -124,7 +174,7 @@ def run(evidence: Path, trials: int) -> None:
         raise
     finally:
         receipt.write_text(json.dumps(result, indent=2) + '\n')
-        benchmark_summary(evidence)
+        benchmark_summary(evidence, trials)
         lines = ['# Container qualification', '', 'Source: `' + result.get('source', 'not admitted') + '`', '',
                  '| Layer | Result | Seconds |', '| --- | --- | ---: |']
         lines += ['| ' + row['name'] + ' | ' + row['state'] + ' | ' + str(round(row.get('seconds', 0), 2)) + ' |'
@@ -144,10 +194,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence', required=True, type=Path)
     parser.add_argument('--trials', type=int, default=7)
+    parser.add_argument('--compare-only', action='store_true', help='Validate retained candidate/reference raw timing evidence only')
     args = parser.parse_args()
     if args.trials < 1:
         parser.error('--trials must be positive')
-    run(args.evidence, args.trials)
+    if args.compare_only:
+        if not benchmark_summary(args.evidence, args.trials, verify_reference=True):
+            raise SystemExit(1)
+    else:
+        run(args.evidence, args.trials)
 
 
 if __name__ == '__main__':

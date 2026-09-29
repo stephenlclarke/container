@@ -67,6 +67,13 @@ bazel-runtime-integration:
 	@python3 Tools/bazel/runtime_integration.py --prepared "$(PREPARED_RUNTIME)" \
 		--evidence "$(QUALIFICATION_EVIDENCE)/integration" $(INTEGRATION_ARGS)
 
+.PHONY: bazel-eof-integration
+bazel-eof-integration:
+	@test -n "$(PREPARED_RUNTIME)" || { printf '%s\n' 'Set PREPARED_RUNTIME to matching runtime preparation evidence.'; exit 2; }
+	@python3 Tools/bazel/runtime_integration.py --prepared "$(PREPARED_RUNTIME)" \
+		--evidence "$(QUALIFICATION_EVIDENCE)/eof-integration" \
+		--layer Run --test-filter '^TestCLIPrimaryInputEOF/'
+
 .PHONY: bazel-release-artifact
 bazel-release-artifact:
 	@test -n "$(PREPARED_RUNTIME)" && test -n "$(SERVICE_ARTIFACTS)" || { printf '%s\n' 'Set PREPARED_RUNTIME and SERVICE_ARTIFACTS to source-matched evidence.'; exit 2; }
@@ -145,7 +152,7 @@ bazel-artifact-check: bazel-tools-test
 	@python3 Tools/bazel/guest_artifact.py --evidence "$(QUALIFICATION_EVIDENCE)/guest"
 	@$(MAKE) bazel-linux-test
 	@$(MAKE) bazel-builder-build
-	@python3 Tools/bazel/runtime_benchmark.py --prepare --trials 1 --context "$(DOCKER_CONTEXT)" \
+	@python3 Tools/bazel/runtime_benchmark.py --prepare --candidate-only --trials 1 --context "$(DOCKER_CONTEXT)" \
 		--guest-artifact "$(QUALIFICATION_EVIDENCE)/guest/guest-artifact.json" \
 		--builder-artifact "$(QUALIFICATION_EVIDENCE)/builder/builder-artifact.json" \
 		--evidence "$(QUALIFICATION_EVIDENCE)/runtime-smoke"
