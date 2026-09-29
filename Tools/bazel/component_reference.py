@@ -2,6 +2,7 @@
 
 import ast
 import hashlib
+import json
 import math
 from pathlib import Path
 import subprocess
@@ -40,7 +41,7 @@ def units(source: str) -> dict[str, str]:
 
 
 def validate_inputs(reference: dict, pairs: dict, root: Path, bazel_sha256: str) -> list[str]:
-    """Only Container may change in this bounded candidate-only measurement path."""
+    """Remeasure only changed Container and Containerization fork sources."""
     inputs = reference['componentInputs']
     if set(inputs) != set(pairs):
         raise RuntimeError('Historical component inventory differs')
@@ -49,11 +50,28 @@ def validate_inputs(reference: dict, pairs: dict, root: Path, bazel_sha256: str)
         if pair['stock'] != inputs[name]['stock']['revision']:
             raise RuntimeError('Historical upstream component pin differs: ' + name)
         if pair['fork'] != inputs[name]['fork']['revision']:
-            if name != 'container':
+            if name not in {'container', 'containerization'}:
                 raise RuntimeError('Changed dependency needs a reviewed candidate-only benchmark path: ' + name)
             changed.append(name)
     toolchain = reference['componentToolchain']
-    if hashlib.sha256((root / 'Package.resolved').read_bytes()).hexdigest() != toolchain['thirdPartyLockSHA256']:
+    prior_lock = original(root, 'Package.resolved')
+    if hashlib.sha256(prior_lock).hexdigest() != toolchain['thirdPartyLockSHA256']:
+        raise RuntimeError('Authenticated historical component dependency lock differs')
+    current_lock = (root / 'Package.resolved').read_bytes()
+    if 'containerization' in changed:
+        old_revision = inputs['containerization']['fork']['revision']
+        new_revision = pairs['containerization']['fork']
+        old_pins = json.loads(prior_lock)['pins']
+        new_pins = json.loads(current_lock)['pins']
+        if (len(old_pins) != len(new_pins)
+                or sum(row.get('identity') == 'containerization' for row in old_pins) != 1
+                or sum(row.get('identity') == 'containerization' for row in new_pins) != 1
+                or next(row['state']['revision'] for row in old_pins if row['identity'] == 'containerization') != old_revision
+                or next(row['state']['revision'] for row in new_pins if row['identity'] == 'containerization') != new_revision
+                or current_lock.count(new_revision.encode()) != 1
+                or current_lock.replace(new_revision.encode(), old_revision.encode(), 1) != prior_lock):
+            raise RuntimeError('Component dependency lock changed beyond the selected Containerization pin')
+    elif current_lock != prior_lock:
         raise RuntimeError('Historical component dependency lock differs')
     current_patches = {str(path.relative_to(root)) for path in (root / 'Tools/bazel').glob('*.patch')}
     prior_patches = set(command(['git', 'ls-tree', '-r', '--name-only', SOURCE, 'Tools/bazel'], root).splitlines())
@@ -138,8 +156,10 @@ def require_candidate_rows(rows: list[dict], changed: list[str], pairs: dict) ->
     for component in changed:
         selected = [row for row in rows if row['component'] == component]
         expected = {'prepare-build': 1, 'cached-build': 3, 'component-recompile': 1,
-                    'cleanup-bazel': 1, 'cli-run-help': 11, 'cli-version': 11,
+                    'cleanup-bazel': 1,
                     **{name: 3 for name in pairs[component]['tests']}}
+        if component == 'container':
+            expected.update({'cli-run-help': 11, 'cli-version': 11})
         if {row['fixture'] for row in selected} != set(expected) or any(row['lane'] != 'fork' for row in selected):
             raise RuntimeError('Candidate component fixture inventory is incomplete: ' + component)
         for fixture, count in expected.items():

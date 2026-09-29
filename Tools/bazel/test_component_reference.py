@@ -61,6 +61,11 @@ class ComponentReferenceTests(unittest.TestCase):
         self.assertTrue(all(r['lane'] == 'stock' for r in rows if r['component'] == 'container'))
         self.assertTrue(all(r['historical'] for r in rows))
         self.assertEqual([r['component'] for r in differences], ['swift-nio-ssl'])
+        two_changed, two_differences = reference.retained_rows(data, ['containerization', 'container'])
+        self.assertEqual(len(two_changed), 168)
+        self.assertTrue(all(r['lane'] == 'stock' for r in two_changed
+                            if r['component'] in {'containerization', 'container'}))
+        self.assertEqual(two_differences, differences)
         self.assertEqual(len(reference.retained_go(data)), 24)
         for mutation in ('missing', 'duplicate', 'timeout', 'nan'):
             broken = copy.deepcopy(data)
@@ -78,7 +83,6 @@ class ComponentReferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / 'Tools/bazel').mkdir(parents=True)
-            (root / 'Package.resolved').write_bytes(b'lock')
             source = Path(benchmark.__file__).read_text()
             (root / 'Tools/bazel/fork_benchmark.py').write_text(source)
             for name in reference.RECIPE_FILES:
@@ -86,8 +90,18 @@ class ComponentReferenceTests(unittest.TestCase):
             data = sample_reference()
             pairs = copy.deepcopy(benchmark.PAIRS)
             pairs['container']['fork'] = 'new-candidate'
+            old_lock = {'version': 3, 'originHash': 'authenticated-origin', 'pins': [
+                {'identity': 'containerization', 'kind': 'remoteSourceControl',
+                 'location': 'https://github.com/stephenlclarke/containerization',
+                 'state': {'revision': pairs['containerization']['fork']}},
+                {'identity': 'other', 'kind': 'remoteSourceControl', 'location': 'https://example.org/other',
+                 'state': {'revision': 'unchanged'}}]}
+            old_bytes = (json.dumps(old_lock, indent=2) + '\n').encode()
+            data['componentToolchain']['thirdPartyLockSHA256'] = hashlib.sha256(old_bytes).hexdigest()
+            (root / 'Package.resolved').write_bytes(old_bytes)
             originals = {name: (root / name).read_bytes() for name in reference.RECIPE_FILES}
             originals['Tools/bazel/fork_benchmark.py'] = source.encode()
+            originals['Package.resolved'] = old_bytes
             def command(args, unused):
                 if args[0] == 'git': return ''
                 if args[0] == 'xcrun': return 'Swift version Target'
@@ -97,6 +111,29 @@ class ComponentReferenceTests(unittest.TestCase):
             with patch.object(reference, 'command', side_effect=command), \
                     patch.object(reference, 'original', side_effect=lambda unused, name: originals[name]):
                 self.assertEqual(reference.validate_inputs(data, pairs, root, benchmark.BAZEL_SHA), ['container'])
+                next_pairs = copy.deepcopy(pairs)
+                next_pairs['containerization']['fork'] = 'a' * 40
+                new_lock = copy.deepcopy(old_lock)
+                new_lock['pins'][0]['state']['revision'] = 'a' * 40
+                new_bytes = (json.dumps(new_lock, indent=2) + '\n').encode()
+                (root / 'Package.resolved').write_bytes(new_bytes)
+                self.assertEqual(reference.validate_inputs(data, next_pairs, root, benchmark.BAZEL_SHA),
+                                 ['containerization', 'container'])
+                for mutation in ('unrelated_pin', 'location', 'version', 'duplicate', 'missing', 'wrong_selected', 'old_digest'):
+                    record = copy.deepcopy(data)
+                    changed_lock = copy.deepcopy(new_lock)
+                    selected_pairs = copy.deepcopy(next_pairs)
+                    if mutation == 'unrelated_pin': changed_lock['pins'][1]['state']['revision'] = 'changed'
+                    if mutation == 'location': changed_lock['pins'][0]['location'] += '/changed'
+                    if mutation == 'version': changed_lock['version'] = 4
+                    if mutation == 'duplicate': changed_lock['pins'].append(copy.deepcopy(changed_lock['pins'][0]))
+                    if mutation == 'missing': changed_lock['pins'].pop(0)
+                    if mutation == 'wrong_selected': selected_pairs['containerization']['fork'] = 'b' * 40
+                    if mutation == 'old_digest': record['componentToolchain']['thirdPartyLockSHA256'] = '0' * 64
+                    (root / 'Package.resolved').write_text(json.dumps(changed_lock, indent=2) + '\n')
+                    with self.subTest(mutation=mutation), self.assertRaises(RuntimeError):
+                        reference.validate_inputs(record, selected_pairs, root, benchmark.BAZEL_SHA)
+                (root / 'Package.resolved').write_bytes(old_bytes)
                 for kind in ('dependency', 'stock', 'compiler', 'host', 'recipe',
                              'workload', 'workload_order', 'patch'):
                     current = copy.deepcopy(pairs)
@@ -144,8 +181,16 @@ class ComponentReferenceTests(unittest.TestCase):
         reference.require_candidate_rows(rows, ['container'], benchmark.PAIRS)
         for selected in ([], rows[:-1], [dict(r, trial=0) for r in rows]):
             with self.assertRaises(RuntimeError): reference.require_candidate_rows(selected, ['container'], benchmark.PAIRS)
+        containerization = [dict(r, status=0, lane='fork') for r in data['components']['raw']
+                            if r['component'] == 'containerization' and r['lane'] == 'stock']
+        self.assertEqual(len(containerization), 18)
+        reference.require_candidate_rows(containerization, ['containerization'], benchmark.PAIRS)
+        for selected in ([], containerization[:-1], containerization + [containerization[0]],
+                         containerization + [dict(containerization[0], fixture='cli-run-help')]):
+            with self.assertRaises(RuntimeError):
+                reference.require_candidate_rows(selected, ['containerization'], benchmark.PAIRS)
 
-    def test_main_dispatches_only_current_container_and_retains_historical_differences(self):
+    def test_main_dispatches_only_two_changed_forks_and_retains_historical_differences(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             evidence, scratch = root / 'evidence', root / 'scratch'
@@ -172,13 +217,14 @@ class ComponentReferenceTests(unittest.TestCase):
                     patch.object(benchmark, 'output', return_value='candidate'), patch.object(benchmark.subprocess, 'run'), \
                     patch.object(benchmark, 'install_signal_handlers'), patch.object(benchmark, 'PAIRS', copy.deepcopy(benchmark.PAIRS)), \
                     patch('benchmark_reference.fetch', return_value=data), patch('benchmark_reference.retain'), \
-                    patch.object(reference, 'validate_inputs', return_value=['container']), \
+                    patch.object(reference, 'validate_inputs', return_value=['containerization', 'container']), \
                     patch('sys.argv', ['benchmark', '--reuse-reference', '--evidence', str(evidence), '--scratch', str(scratch)]):
                 with self.assertRaises(SystemExit) as result:
                     benchmark.main()
                 self.assertEqual(result.exception.code, 2)  # Historical SSL difference remains visible.
             self.assertTrue(calls)
-            self.assertEqual({(c, lane) for c, lane, _ in calls}, {('container', 'fork')})
+            self.assertEqual({(c, lane) for c, lane, _ in calls},
+                             {('containerization', 'fork'), ('container', 'fork')})
             report = json.loads((evidence / 'comparison-review.json').read_text())
             self.assertTrue(report['completed'])
             self.assertEqual(report['expected_differences'], [])

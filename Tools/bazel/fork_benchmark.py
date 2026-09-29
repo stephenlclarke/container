@@ -661,7 +661,7 @@ def main() -> None:
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--use-prepared', action='store_true', help='Use previously prepared source fixtures')
     parser.add_argument('--reuse-reference', action='store_true',
-                        help='Reuse published stock and unchanged dependency measurements; execute only changed Container')
+                        help='Reuse published stock and unchanged dependency measurements; execute changed Container and Containerization forks')
     parser.add_argument('--phase', choices=['all', 'tests', 'recompile', 'tls'], default='all',
                         help='Run everything, tests/compilation, only compilation, or only optimized SSL workloads')
     args = parser.parse_args()
