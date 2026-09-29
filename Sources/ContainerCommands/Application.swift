@@ -447,9 +447,6 @@ extension Application {
 
     static func addBuildProvenance(_ text: String) -> String {
         let provenance = (["BUILD:"] + ReleaseVersion.provenanceLines()).joined(separator: "\n")
-        if text.contains("\nPLUGINS:") {
-            return text.replacingOccurrences(of: "\nPLUGINS:", with: "\n\n\(provenance)\n\nPLUGINS:")
-        }
         return "\(text)\n\n\(provenance)"
     }
 
