@@ -27,6 +27,43 @@ import Testing
 
 struct EngineLinuxSandboxAuthorityTests {
     @Test
+    func sharedPrimaryInputOwnershipIsBoundToStartIntent() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let input = Pipe()
+        defer {
+            try? input.fileHandleForReading.close()
+            try? input.fileHandleForWriting.close()
+        }
+
+        _ = try await authority.startWorkload(
+            planDigest: "sha256:input-ownership-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            stdio: [input.fileHandleForReading],
+            closeStdinOnEOF: true
+        )
+        #expect(await runtime.lastWorkloadStart?.closeStdinOnEOF == true)
+
+        await #expect(throws: EngineWorkloadLedgerError.idempotencyConflict) {
+            _ = try await authority.startWorkload(
+                planDigest: "sha256:input-ownership-plan",
+                configuration: fixture.sandboxConfiguration,
+                workloadRoot: fixture.workloadRoot,
+                stdio: [input.fileHandleForReading]
+            )
+        }
+    }
+
+    @Test
     func concurrentEnsureReadyCoalescesRuntimeLaunch() async throws {
         let fixture = try EngineSandboxAuthorityFixture()
         defer { fixture.remove() }

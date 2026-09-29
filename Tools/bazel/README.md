@@ -58,6 +58,8 @@ Run these in the container checkout:
 
 The separate runtime integration suite requires a matching prepared installation, running services, kernel/images, permissions and network access. Its tests can create and remove runtime resources. Ordinary build/test commands do not start these prerequisites. The explicit runtime benchmark stages and starts its own signed installations, restores inactive default registrations afterward, and fails if an active default installation would be displaced. Compilation alone is not a runtime pass.
 
+The foreground non-TTY stdin EOF correction is intentionally opt-in at primary `run` and `start` bootstrap when interactive input is enabled and the command is not detached. The input adapter drains buffered bytes before closing guest stdin; attach, TTY, and detached sessions keep their previous policy. Focused Bazel tests establish the API and runtime paths, including dedicated and shared workload forwarding. Live installation and finite-input CLI behavior must still pass the original integration checks before qualification.
+
 ## Available layers
 
 [`layers.bzl`](layers.bzl) declares each layer's package, build targets, executable tests and compile-only checks. It is the authoritative list of available layer names; a layer under qualification can be present before its tests pass. Each build requests its dependency libraries and C archives, including archives hidden behind provider-only package groups.

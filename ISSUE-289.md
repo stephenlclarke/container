@@ -26,6 +26,8 @@ The reduced quality lane must preserve the original separate zero-unresolved-iss
 
 The reduced workflow also needs the original integration and combined coverage tiers. Unit-only evidence cannot replace these. Build tests share a private builder that must be removed at their layer boundary before System tests assert an empty image store.
 
+Finite stdin input exposed a separate live contract: a foreground interactive `run` or `start` without a TTY could deliver every script byte yet leave the guest waiting for EOF. Close primary guest stdin only after the buffered input has drained. Preserve stdin behavior for TTY, detached, and later attach sessions, and verify dedicated, prewarmed, and shared runtime routes without treating focused unit tests as a live pass.
+
 The container-only lock alone does not exclude existing family workers from the shared macOS service namespace. Full unattended qualification must hold the common host lock and recoverably quiesce authorized idle workers, without interrupting an active job. Restore original runtime state before workers and retain recovery authority when restoration fails.
 
 Release-install cleanup previously let a log-copy error skip restoration and checked only launchd registrations before replacing executable files. The outer wrapper also resumed workers without checking the private installation. Persist recovery evidence before moving the original, reject surviving processes, restore despite log-retention failure, and require verified original binaries before workers can resume.

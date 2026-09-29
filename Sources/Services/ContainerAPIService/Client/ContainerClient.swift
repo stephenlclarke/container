@@ -145,12 +145,16 @@ public struct ContainerClient: Sendable {
     }
 
     /// Bootstrap the container's init process.
+    /// When `closeStdinOnEOF` is true, the supplied input descriptor owns init
+    /// stdin EOF after all its bytes drain. The default preserves reattachment.
     public func bootstrap(
         id: String,
         stdio: [FileHandle?],
-        dynamicEnv: [String: String] = [:]
+        dynamicEnv: [String: String] = [:],
+        closeStdinOnEOF: Bool = false
     ) async throws -> ClientProcess {
         let request = XPCMessage(route: .containerBootstrap)
+        request.set(key: .closeStdinOnEOF, value: closeStdinOnEOF)
 
         for (i, h) in stdio.enumerated() {
             let key: XPCKeys = try {

@@ -838,6 +838,16 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 from: JSONEncoder().encode(workloadRequest)
             ) == workloadRequest
         )
+        var legacyStart = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(workloadRequest))
+                as? [String: Any]
+        )
+        legacyStart.removeValue(forKey: "closeStdinOnEOF")
+        let decodedLegacyStart = try JSONDecoder().decode(
+            EngineLinuxSandboxWorkloadStartRequestV1.self,
+            from: JSONSerialization.data(withJSONObject: legacyStart)
+        )
+        #expect(!decodedLegacyStart.closeStdinOnEOF)
         #expect(
             try JSONDecoder().decode(
                 WorkloadProcessObservationV1.self,
@@ -892,6 +902,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         root: URL,
         id: String = "workload-1",
         configurationDigest: String? = nil,
+        closeStdinOnEOF: Bool = false,
         monitorTerminal: Bool = false
     ) throws -> EngineLinuxSandboxWorkloadStartRequestV1 {
         let digest =
@@ -908,6 +919,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             workloadRoot: root,
             workloadConfigurationDigest: digest,
             dynamicEnvironment: ["BUILD_ID": "42"],
+            closeStdinOnEOF: closeStdinOnEOF,
             monitorTerminal: monitorTerminal
         )
     }

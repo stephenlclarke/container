@@ -23,6 +23,47 @@ import Testing
 
 struct ContainerRunCreateCommandTests {
     @Test
+    func foregroundNonTTYInteractiveRunOwnsOnlyItsInitialStdinEOF() throws {
+        let foreground = try Application.ContainerRun.parse(["--interactive", "alpine", "sh"])
+        #expect(
+            Application.ContainerRun.closesStdinOnEOF(
+                interactive: foreground.processFlags.interactive,
+                tty: foreground.processFlags.tty,
+                detach: foreground.managementFlags.detach
+            ))
+        for arguments in [
+            ["--interactive", "--tty", "alpine", "sh"],
+            ["--interactive", "--detach", "alpine", "sh"],
+            ["alpine", "sh"],
+        ] {
+            let command = try Application.ContainerRun.parse(arguments)
+            #expect(
+                !Application.ContainerRun.closesStdinOnEOF(
+                    interactive: command.processFlags.interactive,
+                    tty: command.processFlags.tty,
+                    detach: command.managementFlags.detach
+                ))
+        }
+    }
+
+    @Test
+    func startInteractiveNonTTYUsesOwnedEOFBootstrapPolicy() throws {
+        let command = try Application.ContainerStart.parse(["--interactive", "example"])
+        #expect(
+            Application.ContainerRun.closesStdinOnEOF(
+                interactive: command.interactive,
+                tty: false,
+                detach: !command.attach && !command.interactive
+            ))
+        #expect(
+            !Application.ContainerRun.closesStdinOnEOF(
+                interactive: command.interactive,
+                tty: true,
+                detach: false
+            ))
+    }
+
+    @Test
     func runParsesExplicitSharedVMIsolation() throws {
         let command = try Application.ContainerRun.parse([
             "--isolation", "shared-vm",
