@@ -50,13 +50,13 @@ def engine_identity(version: dict, info: dict, compose_version: str) -> dict:
 
 def reuse(evidence: Path, context: str, trials: int) -> None:
     """Validate the selected engine read-only and retain the published Docker lane."""
-    from benchmark_reference import fetch, retain, validate_contract, RUNNER_CONTRACT
+    from benchmark_reference import canonical_ast, fetch, retain, validate_contract, RUNNER_CONTRACT
     from component_reference import original, command
     reference = fetch()
     rows, medians = historical_samples(reference, context, trials)
     old = ast.parse(original(ROOT, 'Tools/bazel/docker_benchmark.py').decode())
     current = ast.parse(Path(__file__).read_text())
-    definition = lambda tree: next(ast.dump(node, include_attributes=False) for node in tree.body
+    definition = lambda tree: next(canonical_ast(node) for node in tree.body
                                    if isinstance(node, ast.FunctionDef) and node.name == 'benchmark')
     if definition(old) != definition(current):
         raise RuntimeError('Docker workload or timing boundary differs from the historical reference')

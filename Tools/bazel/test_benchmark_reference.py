@@ -1,5 +1,6 @@
 """Offline admission tests for the pinned historical runtime measurements."""
 
+import ast
 import copy
 import hashlib
 import json
@@ -39,6 +40,27 @@ def historical_fixture(trials=7):
 
 
 class HistoricalReferenceTests(unittest.TestCase):
+    def test_canonical_contract_preserves_semantics_across_ast_field_versions(self):
+        source = 'def run(*, required, optional=None):\n    return (1, True, b"x", 1j, None)\n'
+        node = ast.parse(source).body[0]
+        before_generics = copy.deepcopy(node)
+        before_generics._fields = tuple(name for name in node._fields if name != 'type_params')
+        with_generics = copy.deepcopy(before_generics)
+        with_generics._fields += ('type_params',)
+        with_generics.type_params = []
+        expected = reference.canonical_ast(before_generics)
+        self.assertEqual(reference.canonical_ast(with_generics), expected)
+        with_generics.type_params = [ast.Name(id='T', ctx=ast.Load())]
+        self.assertNotEqual(reference.canonical_ast(with_generics), expected)
+        self.assertEqual(reference.canonical_ast(ast.parse('# note\n' + source).body[0]), expected)
+        # Required/default None, scalar types, argument order and literal bytes remain distinct.
+        for old, new in [('required,', 'required=None,'), ('1, True', 'True, 1'),
+                         ('1, True', '1.0, True'), ('b"x"', '"x"'), ('1j', '2j'),
+                         ('None)', 'False)')]:
+            with self.subTest(change=new):
+                changed = ast.parse(source.replace(old, new)).body[0]
+                self.assertNotEqual(reference.canonical_ast(changed), expected)
+
     def test_pinned_archive_is_required_even_for_offline_cache_reuse(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / 'reference.zip'

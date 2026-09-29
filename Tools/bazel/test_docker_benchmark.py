@@ -28,6 +28,18 @@ INFO = {'Architecture': 'aarch64', 'CgroupVersion': '2', 'NCPU': 4, 'MemTotal': 
 
 
 class DockerReferenceTests(unittest.TestCase):
+    def test_workload_change_rejects_reuse_before_engine_commands(self):
+        source = Path(docker.__file__).read_text()
+        self.assertIn('bytes(128 * 1024 * 1024)', source)
+        changed = source.replace('bytes(128 * 1024 * 1024)', 'bytes(64 * 1024 * 1024)')
+        with tempfile.TemporaryDirectory() as temporary, \
+                patch('benchmark_reference.fetch', return_value=sample_reference()), \
+                patch('component_reference.original', return_value=changed.encode()), \
+                patch.object(docker.Runner, 'run') as command:
+            with self.assertRaisesRegex(RuntimeError, 'workload or timing boundary'):
+                docker.reuse(Path(temporary), 'colima', 7)
+            command.assert_not_called()
+
     def test_missing_failed_nonfinite_or_mismatched_reference_rejected(self):
         for mutation in ('trial-count', 'context', 'image', 'missing', 'duplicate', 'failure', 'nan', 'median'):
             data = sample_reference()

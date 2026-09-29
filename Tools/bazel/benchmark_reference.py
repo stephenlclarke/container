@@ -18,13 +18,14 @@ ASSET_ID = 595991213
 TAG = 'layer-runtime-15361ce5f55a-aca1f5691d77'
 NAME = 'historical-container-benchmark-15361ce5.zip'
 CACHE = Path.home() / 'Library/Application Support/ContainerFamily/retained/container-only/benchmark-references' / ARCHIVE_SHA256 / NAME
-RUNTIME_WORKLOAD_SHA256 = '07052a59330658d338bde634c9e0cb38311094e8447b9e7b201cdfccf7959137'
+# Canonical AST hashes generated from the authentic SOURCE commit, not the candidate.
+RUNTIME_WORKLOAD_SHA256 = '6698993abe3cd493fe8d4c5e7494341b1c3ff1945c95ac1f29f31056f1956c7d'
 RUNTIME_CONTRACTS = {
     'run_lane': RUNTIME_WORKLOAD_SHA256,
-    'start_lane': '958b35a62c977b8413d9b3395bfebd15af00927776cc5d63a90ecc991ba7bdeb',
-    'RuntimeRunner.command': '49ad958f92957b198b2c24ad6508e9455ec3b62325a69fbdcbaa69de6d6d368d',
+    'start_lane': '4634336a4b81c780a5baeb194b20eaa7c404d1ef425485b6d286b3eb25d55c1e',
+    'RuntimeRunner.command': '8ee415eec636bea718d55b7388eeb71ddb16cdad129c33e52b194f1a987b7ba8',
 }
-RUNNER_CONTRACT = {'Runner.run': '377ab3f3c16336b6768f27da1c797b533582d8812d4a9863b4fb5272bb282e78'}
+RUNNER_CONTRACT = {'Runner.run': '74916e9d1f025ae7bd22aac3f2dae2df446f6e063fa7ac6bdb5cbe32b35d03cf'}
 
 
 def read(path: Path) -> dict:
@@ -77,6 +78,21 @@ def runtime_samples(reference: dict, fixtures: tuple[str, ...], trials: int) -> 
     return rows
 
 
+def canonical_ast(node: ast.AST) -> str:
+    """Serialize explicit fields, independent of ast.dump's Python-version formatting."""
+    def encode(value):
+        if isinstance(value, ast.AST):
+            # Python 3.12 added type_params; an absent or empty list means no generics.
+            fields = {name: encode(item) for name, item in ast.iter_fields(value)
+                      if not (name == 'type_params' and item == [])}
+            return {'node': type(value).__name__, 'fields': fields}
+        if isinstance(value, list):
+            return [encode(item) for item in value]
+        # Typed repr also preserves bytes, complex constants and None in ordered lists.
+        return {'scalar': type(value).__name__, 'value': repr(value)}
+    return json.dumps(encode(node), sort_keys=True, separators=(',', ':'))
+
+
 def validate_contract(source: Path, contracts: dict[str, str]) -> None:
     """Bind original setup, output validation and timing code independently of reporting."""
     tree = ast.parse(source.read_text())
@@ -88,7 +104,7 @@ def validate_contract(source: Path, contracts: dict[str, str]) -> None:
                 raise RuntimeError('Runtime workload definition changed: ' + name)
             node = selected[0]
             nodes = node.body
-        if hashlib.sha256(ast.dump(node, include_attributes=False).encode()).hexdigest() != expected:
+        if hashlib.sha256(canonical_ast(node).encode()).hexdigest() != expected:
             raise RuntimeError('Runtime workload differs from the retained reference: ' + name)
 
 

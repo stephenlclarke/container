@@ -6,7 +6,7 @@ import math
 from pathlib import Path
 import subprocess
 
-from benchmark_reference import ARCHIVE_SHA256, SOURCE
+from benchmark_reference import ARCHIVE_SHA256, SOURCE, canonical_ast
 
 RECIPE_FILES = ('.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock',
                 'Tools/bazel/dependencies.bzl', 'Tools/bazel/layers.bzl',
@@ -28,12 +28,12 @@ def units(source: str) -> dict[str, str]:
     result = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in WORKLOAD_UNITS:
-            result[node.name] = ast.dump(node, include_attributes=False)
+            result[node.name] = canonical_ast(node)
         elif isinstance(node, ast.ClassDef) and node.name == 'Runner':
             for method in node.body:
                 name = 'Runner.' + getattr(method, 'name', '')
                 if name in WORKLOAD_UNITS:
-                    result[name] = ast.dump(method, include_attributes=False)
+                    result[name] = canonical_ast(method)
     if set(result) != set(WORKLOAD_UNITS):
         raise RuntimeError('Component workload implementation is incomplete')
     return result
