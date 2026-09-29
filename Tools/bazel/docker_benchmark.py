@@ -6,12 +6,14 @@ import ast
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import statistics
 import subprocess
 import uuid
 
-from fork_benchmark import ROOT, Runner, install_signal_handlers
+from fork_benchmark import COMMAND_LOCK_ENV, ROOT, Runner, install_signal_handlers
+from host_lease import processes as host_processes
 from runtime_benchmark import ALPINE, FIXTURES, INSTALLS
 
 
@@ -48,10 +50,77 @@ def engine_identity(version: dict, info: dict, compose_version: str) -> dict:
             'operatingSystem': info['OperatingSystem'], 'storageDriver': info['Driver']}
 
 
+def admit_engine(actual: dict, expected: dict, supplement: dict, current_lease: dict,
+                 current_info_log_sha256: str, selected_context: str,
+                 live_profile: dict, saved_config_sha256: str) -> dict:
+    """Bind configured VM resources exactly; retain both observed usable-memory values."""
+    from docker_resource_reference import DOCKER_INFO_SHA256, configuration
+    if expected.get('sourceLogSHA256') != DOCKER_INFO_SHA256:
+        raise RuntimeError('Historical Docker engine log is not the published reference')
+    if supplement['observedDockerEngine'] != expected:
+        raise RuntimeError('Supplemental Docker engine identity differs from published reference')
+    old = {key: value for key, value in expected.items() if key != 'sourceLogSHA256'}
+    if set(actual) != set(old) or any(actual[key] != value for key, value in old.items()
+                                      if key != 'memoryBytes'):
+        raise RuntimeError('Selected Docker engine differs from the historical reference')
+    original_memory, current_memory = old['memoryBytes'], actual['memoryBytes']
+    old_configuration = supplement['configuredEnvironment']
+    if current_lease.get('restored') is not False:
+        raise RuntimeError('Current Colima lease is already restored or has unknown ownership state')
+    current_configuration = configuration(current_lease)
+    if current_configuration != old_configuration:
+        raise RuntimeError('Configured Colima resources differ from the historical reference')
+    if selected_context != supplement['benchmarkDockerContext']:
+        raise RuntimeError('Selected Docker benchmark context differs from historical reference')
+    expected_profile = current_configuration['profile']
+    if (set(live_profile) != set(expected_profile) or live_profile['status'] != 'Running'
+            or any(live_profile[key] != value for key, value in expected_profile.items() if key != 'status')
+            or saved_config_sha256 != current_configuration['configSHA256']):
+        raise RuntimeError('Live Colima allocation or saved configuration differs from owned lease')
+    allocation = old_configuration['profile']['memory']
+    if any(not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= allocation
+           for value in (original_memory, current_memory)):
+        raise RuntimeError('Docker usable-memory observation is invalid')
+    return {'current': actual, 'historical': old, 'configuredEnvironment': current_configuration,
+            'liveProfile': live_profile, 'selectedDockerContext': selected_context,
+            'usableMemoryBytes': {'historical': original_memory, 'current': current_memory,
+                                  'difference': current_memory - original_memory},
+            'dockerInfoLogSHA256': {'historical': DOCKER_INFO_SHA256,
+                                    'current': current_info_log_sha256}}
+
+
+def require_active_qualification(evidence: Path, qualification: dict, host_lease: dict,
+                                 source: str, inventory: dict, pid: int, uid: int,
+                                 environment: dict) -> None:
+    """A stale acquired journal cannot authorize historical Docker admission."""
+    command_lock = str(evidence.parent / 'commands.lock')
+    if (qualification.get('source') != source or host_lease.get('evidence') != str(evidence.parent)
+            or host_lease.get('acquired') is not True or host_lease.get('restored') is not False
+            or host_lease.get('command_lock') != command_lock
+            or environment.get(COMMAND_LOCK_ENV) != command_lock):
+        raise RuntimeError('Current Colima lease is not bound to an active exact-source qualification')
+    owner = host_lease.get('owner')
+    if not isinstance(owner, int) or isinstance(owner, bool) or owner <= 0:
+        raise RuntimeError('Current host lease has no valid owner')
+    seen = set()
+    while pid not in seen and pid in inventory:
+        seen.add(pid)
+        row = inventory[pid]
+        if row['uid'] != uid:
+            break
+        if pid == owner:
+            return
+        pid = row['parent']
+    raise RuntimeError('Current host lease owner is not a live ancestor of this benchmark')
+
+
 def reuse(evidence: Path, context: str, trials: int) -> None:
     """Validate the selected engine read-only and retain the published Docker lane."""
     from benchmark_reference import canonical_ast, fetch, retain, validate_contract, RUNNER_CONTRACT
     from component_reference import original, command
+    from docker_resource_reference import (ASSET_ID as ENVIRONMENT_ASSET_ID, ASSET_SHA256 as ENVIRONMENT_ASSET_SHA256,
+                                           RELEASE_ID as ENVIRONMENT_RELEASE_ID, SUPPLEMENT_TAG)
+    from docker_resource_reference import fetch as fetch_environment
     reference = fetch()
     rows, medians = historical_samples(reference, context, trials)
     old = ast.parse(original(ROOT, 'Tools/bazel/docker_benchmark.py').decode())
@@ -67,6 +136,19 @@ def reuse(evidence: Path, context: str, trials: int) -> None:
                            'architecture': ['uname', '-m']}.items():
         if command(arguments, ROOT) != str(host[key]):
             raise RuntimeError('Historical Docker host differs: ' + key)
+    supplement = fetch_environment()
+    qualification_path = evidence.parent / 'qualification.json'
+    host_lease_path = evidence.parent / 'host-lease.json'
+    lease_path = evidence.parent / 'colima-lease.json'
+    if any(path.is_symlink() or not path.is_file() for path in
+           (qualification_path, host_lease_path, lease_path)):
+        raise RuntimeError('Current qualification or Colima configured-resource lease is unavailable')
+    qualification = json.loads(qualification_path.read_text())
+    host_lease = json.loads(host_lease_path.read_text())
+    require_active_qualification(evidence, qualification, host_lease,
+                                 command(['git', 'rev-parse', 'HEAD'], ROOT),
+                                 host_processes(), os.getpid(), os.getuid(), os.environ)
+    current_lease = json.loads(lease_path.read_text())
     evidence.mkdir(parents=True, exist_ok=False)
     runner = Runner(evidence, evidence)
     observed = []
@@ -79,12 +161,25 @@ def reuse(evidence: Path, context: str, trials: int) -> None:
             raise RuntimeError('Cannot verify selected historical Docker engine: ' + fixture)
         observed.append(Path(row['log']).read_text().strip())
     actual = engine_identity(json.loads(observed[0]), json.loads(observed[1]), observed[2])
-    expected = {key: value for key, value in reference['protocol']['dockerEngine'].items() if key != 'sourceLogSHA256'}
-    if actual != expected:
-        raise RuntimeError('Selected Docker engine differs from the historical reference')
+    profiles = [json.loads(row) for row in subprocess.check_output(
+        ['colima', 'list', '--json'], stdin=subprocess.DEVNULL, text=True, timeout=30
+    ).splitlines()]
+    live_profiles = [profile for profile in profiles if profile.get('name') == 'default']
+    if len(live_profiles) != 1:
+        raise RuntimeError('Selected Colima default profile is missing or ambiguous')
+    saved_config = Path.home() / '.colima/default/colima.yaml'
+    if saved_config.is_symlink() or not saved_config.is_file():
+        raise RuntimeError('Saved Colima configuration is unavailable')
+    admission = admit_engine(actual, reference['protocol']['dockerEngine'], supplement,
+                             current_lease, hashlib.sha256(Path(runner.rows[1]['log']).read_bytes()).hexdigest(),
+                             context, live_profiles[0], hashlib.sha256(saved_config.read_bytes()).hexdigest())
     retain(evidence, reference)
-    (evidence / 'engine-admission.json').write_text(json.dumps({'current': actual, 'historical': expected,
-                                                             'checks': runner.rows}, indent=2) + '\n')
+    admission['supplementalEnvironmentAsset'] = {'releaseId': ENVIRONMENT_RELEASE_ID,
+                                                  'tag': SUPPLEMENT_TAG, 'assetId': ENVIRONMENT_ASSET_ID,
+                                                  'sha256': ENVIRONMENT_ASSET_SHA256,
+                                                  'historicalLeaseSHA256': supplement['colimaLease']['sha256']}
+    admission['checks'] = runner.rows
+    (evidence / 'engine-admission.json').write_text(json.dumps(admission, indent=2) + '\n')
     (evidence / 'results.json').write_text(json.dumps(rows, indent=2) + '\n')
     (evidence / 'acceptance.json').write_text(json.dumps({
         'passed': True, 'historical': True, 'workloads_executed': False,

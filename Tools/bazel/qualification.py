@@ -23,7 +23,8 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
     component_scratch = STORAGE / 'qualification-components' / checkpoint()
     component_args = ['--use-prepared'] if component_scratch.exists() else []
     return [
-        ('benchmark-reference', [], script('benchmark_reference', '--evidence', evidence / 'benchmark-reference'), 180),
+        ('benchmark-reference', [], script('qualification', '--reference-admission', '--trials', trials,
+                                           '--evidence', evidence), 600),
         ('tools', ['benchmark-reference'], make + ['bazel-tools-test'], 300),
         ('dependencies', ['tools'], make + ['bazel-dependency-test'], 1800),
         ('container', ['dependencies'], make + ['bazel-build', 'bazel-test', 'bazel-repository-test'], 1800),
@@ -58,7 +59,7 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
                     '--trials', trials, '--evidence', evidence / 'docker-benchmark'), 1800),
         ('runtime-comparison', ['runtime-benchmark', 'docker-benchmark'], script('qualification',
                     '--compare-only', '--trials', trials, '--evidence', evidence), 60),
-        ('github-quality', [], script('github_quality', '--evidence', evidence / 'github-quality'), 1860),
+        ('github-quality', ['benchmark-reference'], script('github_quality', '--evidence', evidence / 'github-quality'), 1860),
         ('release', ['maintenance', 'documentation', 'host', 'services', 'service-integration', 'integration', 'combined-coverage', 'github-quality', 'runtime-comparison'], script('release_artifact',
                     '--prepared', prepared, '--service-artifacts', evidence / 'services/service-artifacts.json',
                     '--notarize', '--evidence', evidence / 'release'), 3600),
@@ -141,6 +142,43 @@ def benchmark_summary(evidence: Path, trials: int = 7, *, verify_reference: bool
     return passed
 
 
+def reference_admission(evidence: Path, trials: int) -> None:
+    """Check the published reference and selected Docker engine before any build."""
+    from benchmark_reference import fetch, retain
+    from docker_benchmark import reuse
+
+    evidence.mkdir(parents=True, exist_ok=True)
+    receipt = evidence / 'qualification.json'
+    source = checkpoint()
+    diagnostic = not receipt.exists()
+    if diagnostic:
+        result = {'kind': 'reference-only-diagnostic', 'source': source, 'passed': False,
+                  'stages': [], 'failures': []}
+        receipt.write_text(json.dumps(result, indent=2) + '\n')
+    else:
+        result = json.loads(receipt.read_text())
+        first = result.get('stages', [])
+        if (result.get('kind') is not None or result.get('source') != source
+                or result.get('passed') is not False or len(first) != 1
+                or first[0].get('name') != 'benchmark-reference'
+                or first[0].get('state') != 'running'):
+            raise RuntimeError('Reference admission requires the first active qualification stage')
+    try:
+        retain(evidence / 'benchmark-reference', fetch())
+        reuse(evidence / 'docker-reference-admission', 'colima', trials)
+        if checkpoint() != source:
+            raise RuntimeError('Source changed during reference admission')
+        if diagnostic:
+            result['referenceAdmissionPassed'] = True
+    except BaseException as error:
+        if diagnostic:
+            result['failures'].append(str(error))
+        raise
+    finally:
+        if diagnostic:
+            receipt.write_text(json.dumps(result, indent=2) + '\n')
+
+
 def run(evidence: Path, trials: int) -> None:
     evidence.mkdir(parents=True, exist_ok=True)
     receipt = evidence / 'qualification.json'
@@ -195,10 +233,15 @@ def main() -> None:
     parser.add_argument('--evidence', required=True, type=Path)
     parser.add_argument('--trials', type=int, default=7)
     parser.add_argument('--compare-only', action='store_true', help='Validate retained candidate/reference raw timing evidence only')
+    parser.add_argument('--reference-admission', action='store_true', help='Diagnostic-only early historical Docker admission')
     args = parser.parse_args()
     if args.trials < 1:
         parser.error('--trials must be positive')
-    if args.compare_only:
+    if args.compare_only and args.reference_admission:
+        parser.error('Select only one qualification mode')
+    if args.reference_admission:
+        reference_admission(args.evidence, args.trials)
+    elif args.compare_only:
         if not benchmark_summary(args.evidence, args.trials, verify_reference=True):
             raise SystemExit(1)
     else:

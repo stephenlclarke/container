@@ -2,6 +2,7 @@
 
 import json
 import fcntl
+import math
 import os
 from pathlib import Path
 import signal
@@ -13,7 +14,8 @@ import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
-from fork_benchmark import COMMAND_LOCK_ENV, Runner, command_lease, tls_executable, tls_samples
+from fork_benchmark import (COMMAND_LOCK_ENV, Runner, command_lease,
+                            historical_cli_help_phase_ratios, tls_executable, tls_samples)
 
 
 class CommandLeaseTests(unittest.TestCase):
@@ -117,6 +119,93 @@ class CommandLeaseTests(unittest.TestCase):
 
 
 class ReportTests(unittest.TestCase):
+    @staticmethod
+    def historical_help_rows(stock_first=0.75, fork_first=0.85,
+                             stock_repeated=0.08, fork_repeated=0.12):
+        lanes = {'stock': [], 'fork': []}
+        for trial in range(11):
+            for lane, first, repeated in [('stock', stock_first, stock_repeated),
+                                          ('fork', fork_first, fork_repeated)]:
+                lanes[lane].append(dict(component='container', fixture='cli-run-help',
+                                        lane=lane, trial=trial, seconds=first if trial == 0 else repeated,
+                                        status=0, historical=lane == 'stock', log='retained.log'))
+        return lanes
+
+    def test_historical_help_separates_initial_and_repeated_invocations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            runner = Runner(evidence, evidence)
+            lanes = self.historical_help_rows()
+            runner.rows = lanes['fork']
+            runner.reference_rows = lanes['stock']
+            runner.report()
+            row = json.loads((evidence / 'matrix.json').read_text())[0]
+            self.assertEqual(row['comparison'], 'historical')
+            self.assertEqual(row['phase_ratios'], {'first-invocation': 0.85 / 0.75,
+                                                    'repeated-invocation': 0.12 / 0.08})
+            self.assertEqual(row['worst_trial_ratio'], 1.5)
+            self.assertTrue(row['passed'])
+            self.assertEqual(len(json.loads((evidence / 'results.json').read_text())), 11)
+            self.assertEqual(len(json.loads((evidence / 'historical-results.json').read_text())), 11)
+            self.assertIn('First invocation: 1.133x. Repeated invocations: 1.500x.',
+                          (evidence / 'matrix.md').read_text())
+            cases = [case for case in ET.parse(evidence / 'timings.xml').iter('testcase')
+                     if case.get('name') == 'cli-run-help/historical-phases']
+            self.assertEqual(len(cases), 1)
+            self.assertEqual({p.get('name') for p in cases[0].iter('property')},
+                             {'first-invocation-ratio', 'repeated-invocation-ratio'})
+            self.assertFalse(any(True for _ in cases[0].iter('failure')))
+
+    def test_historical_help_rejects_true_tenfold_in_either_phase(self):
+        for named, kwargs in [('first', {'fork_first': 7.5}),
+                              ('repeated', {'fork_repeated': 0.8})]:
+            with self.subTest(phase=named), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                runner = Runner(evidence, evidence)
+                lanes = self.historical_help_rows(**kwargs)
+                runner.rows = lanes['fork']
+                runner.reference_rows = lanes['stock']
+                runner.report()
+                row = json.loads((evidence / 'matrix.json').read_text())[0]
+                self.assertEqual(row['worst_trial_ratio'], 10)
+                self.assertFalse(row['passed'])
+                failures = list(ET.parse(evidence / 'timings.xml').iter('failure'))
+                self.assertEqual(len(failures), 1)
+                self.assertIn(named if named == 'repeated' else 'first', failures[0].get('message'))
+
+    def test_historical_help_requires_all_unique_successful_finite_trials(self):
+        for name in ('missing', 'duplicate', 'nan', 'infinite', 'zero', 'failed',
+                     'boolean_trial', 'historical_flag', 'historical_string',
+                     'historical_int', 'fork_historical_int', 'wrong_lane'):
+            lanes = self.historical_help_rows()
+            rows = (lanes['stock'] if name in ('missing', 'nan', 'infinite', 'historical_flag',
+                                               'historical_string', 'historical_int') else lanes['fork'])
+            if name == 'missing': rows.pop()
+            if name == 'duplicate': rows[-1]['trial'] = 0
+            if name == 'nan': rows[1]['seconds'] = math.nan
+            if name == 'infinite': rows[1]['seconds'] = math.inf
+            if name == 'zero': rows[1]['seconds'] = 0
+            if name == 'failed': rows[1]['status'] = 124
+            if name == 'boolean_trial': rows[1]['trial'] = True
+            if name == 'historical_flag': rows[1]['historical'] = False
+            if name == 'historical_string': rows[1]['historical'] = 'true'
+            if name == 'historical_int': rows[1]['historical'] = 1
+            if name == 'fork_historical_int': rows[1]['historical'] = 0
+            if name == 'wrong_lane': rows[1]['lane'] = 'stock'
+            with self.subTest(name=name), self.assertRaisesRegex(RuntimeError, 'Historical CLI help'):
+                historical_cli_help_phase_ratios(lanes)
+
+    def test_historical_help_cannot_skip_a_missing_reference_lane(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            runner = Runner(evidence, evidence)
+            runner.rows = self.historical_help_rows()['fork']
+            runner.reference_rows = [dict(component='container', fixture='cli-version', lane='stock',
+                                          trial=0, seconds=0.02, status=0, historical=True)]
+            with self.assertRaisesRegex(RuntimeError, 'missing an entire measurement lane'):
+                runner.report()
+            self.assertEqual(len(json.loads((evidence / 'results.json').read_text())), 11)
+
     def test_cleanup_runs_both_lanes_when_measurement_or_first_cleanup_fails(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = Runner(Path(directory), Path(directory))

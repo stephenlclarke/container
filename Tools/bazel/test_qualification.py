@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import qualification
 import benchmark_reference
+import docker_benchmark
 from test_docker_benchmark import sample_reference
 from docker_benchmark import historical_samples
 
@@ -53,11 +54,63 @@ class QualificationTests(unittest.TestCase):
             stages = {name: (dependencies, command) for name, dependencies, command, _ in qualification.stages(Path('/evidence'), 7)}
         self.assertEqual(next(iter(stages)), 'benchmark-reference')
         self.assertEqual(stages['tools'][0], ['benchmark-reference'])
+        self.assertIn('--reference-admission', stages['benchmark-reference'][1])
+        self.assertIn('--reuse-reference', stages['docker-benchmark'][1])
         self.assertIn('--candidate-only', stages['runtime-smoke'][1])
         for name in ('runtime-benchmark', 'component-benchmarks', 'docker-benchmark'):
             self.assertIn('--reuse-reference', stages[name][1])
         self.assertEqual(stages['runtime-comparison'][0], ['runtime-benchmark', 'docker-benchmark'])
         self.assertIn('runtime-comparison', stages['release'][0])
+
+    def test_reference_only_diagnostic_cannot_be_admitted_as_full_qualification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            with patch.object(qualification, 'checkpoint', return_value='a' * 40), \
+                    patch.object(benchmark_reference, 'fetch', return_value={'identityLimit': 'historical'}), \
+                    patch.object(benchmark_reference, 'retain') as retained, \
+                    patch.object(docker_benchmark, 'reuse') as admitted:
+                qualification.reference_admission(evidence, 7)
+            retained.assert_called_once()
+            admitted.assert_called_once_with(evidence / 'docker-reference-admission', 'colima', 7)
+            record = json.loads((evidence / 'qualification.json').read_text())
+            self.assertEqual(record['kind'], 'reference-only-diagnostic')
+            self.assertFalse(record['passed'])
+            self.assertTrue(record['referenceAdmissionPassed'])
+            with self.assertRaisesRegex(RuntimeError, 'previous failures'):
+                qualification.run(evidence, 7)
+
+    def test_reference_failure_blocks_builds_without_overwriting_active_full_receipt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            source = 'a' * 40
+            active = {'source': source, 'passed': False, 'stages': [
+                {'name': 'benchmark-reference', 'state': 'running'}], 'failures': []}
+            (evidence / 'qualification.json').write_text(json.dumps(active))
+            with patch.object(qualification, 'checkpoint', return_value=source), \
+                    patch.object(benchmark_reference, 'fetch', side_effect=RuntimeError('reference unavailable')), \
+                    patch.object(docker_benchmark, 'reuse') as admitted:
+                with self.assertRaisesRegex(RuntimeError, 'reference unavailable'):
+                    qualification.reference_admission(evidence, 7)
+            admitted.assert_not_called()
+            self.assertEqual(json.loads((evidence / 'qualification.json').read_text()), active)
+
+            # The real stage dependency graph prevents a failed first admission
+            # from dispatching any compile, guest, builder, or runtime stage.
+            calls = []
+            def execute(_component, _lane, fixture, *_arguments):
+                calls.append(fixture)
+                return {'status': int(fixture == 'benchmark-reference'),
+                        'log': fixture + '.log', 'seconds': 1}
+            (evidence / 'qualification.json').unlink()
+            with patch.object(qualification, 'checkpoint', return_value=source), \
+                    patch.object(qualification.Runner, 'run', side_effect=execute):
+                with self.assertRaises(SystemExit):
+                    qualification.run(evidence, 7)
+            self.assertEqual(calls, ['benchmark-reference'])
+            report = json.loads((evidence / 'qualification.json').read_text())
+            self.assertEqual(next(row['state'] for row in report['stages'] if row['name'] == 'tools'), 'blocked')
+            self.assertEqual(next(row['state'] for row in report['stages'] if row['name'] == 'docker-benchmark'), 'blocked')
+            self.assertEqual(next(row['state'] for row in report['stages'] if row['name'] == 'github-quality'), 'blocked')
 
     def test_docker_timing_gate_rejects_missing_timeout_and_tenfold_samples(self):
         for fault in (None, 'tenfold', 'missing', 'timeout', 'failed-reference', 'nan', 'historical-candidate'):

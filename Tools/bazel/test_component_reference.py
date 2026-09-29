@@ -97,7 +97,8 @@ class ComponentReferenceTests(unittest.TestCase):
             with patch.object(reference, 'command', side_effect=command), \
                     patch.object(reference, 'original', side_effect=lambda unused, name: originals[name]):
                 self.assertEqual(reference.validate_inputs(data, pairs, root, benchmark.BAZEL_SHA), ['container'])
-                for kind in ('dependency', 'stock', 'compiler', 'host', 'recipe', 'workload', 'patch'):
+                for kind in ('dependency', 'stock', 'compiler', 'host', 'recipe',
+                             'workload', 'workload_order', 'patch'):
                     current = copy.deepcopy(pairs)
                     record = copy.deepcopy(data)
                     if kind == 'dependency': current['swift-nio-ssl']['fork'] = 'changed'
@@ -106,6 +107,11 @@ class ComponentReferenceTests(unittest.TestCase):
                     if kind == 'host': record['phaseHosts']['runtimeBenchmark']['model'] = 'Other'
                     if kind == 'recipe': (root / '.bazelrc').write_text('changed')
                     if kind == 'workload': (root / 'Tools/bazel/fork_benchmark.py').write_text(source.replace('range(11)', 'range(10)'))
+                    if kind == 'workload_order':
+                        before = "[('cli-run-help', ['run', '--help']), ('cli-version', ['--version'])]"
+                        after = "[('cli-version', ['--version']), ('cli-run-help', ['run', '--help'])]"
+                        self.assertIn(before, source)
+                        (root / 'Tools/bazel/fork_benchmark.py').write_text(source.replace(before, after))
                     if kind == 'patch': (root / 'Tools/bazel/new.patch').write_text('changed')
                     with self.subTest(kind=kind), self.assertRaises(RuntimeError):
                         reference.validate_inputs(record, current, root, benchmark.BAZEL_SHA)

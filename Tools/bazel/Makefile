@@ -159,7 +159,11 @@ bazel-artifact-check: bazel-tools-test
 bazel-unattended-artifacts:
 	@python3 Tools/bazel/unattended.py --evidence "$(QUALIFICATION_EVIDENCE)"
 
-.PHONY: bazel-qualify bazel-unattended bazel-recover bazel-release-install
+.PHONY: bazel-qualify bazel-unattended bazel-reference-admission bazel-unattended-reference-admission bazel-recover bazel-release-install
+bazel-reference-admission:
+	@python3 Tools/bazel/qualification.py --reference-admission --evidence "$(QUALIFICATION_EVIDENCE)" --trials "$(BENCHMARK_TRIALS)"
+bazel-unattended-reference-admission:
+	@python3 Tools/bazel/unattended.py --profile release --target bazel-reference-admission --evidence "$(QUALIFICATION_EVIDENCE)"
 bazel-qualify:
 	@python3 Tools/bazel/qualification.py --evidence "$(QUALIFICATION_EVIDENCE)" --trials "$(BENCHMARK_TRIALS)"
 bazel-unattended:
