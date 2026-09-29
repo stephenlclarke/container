@@ -1,6 +1,7 @@
 """Retain real layer results and reject green runs which selected no test cases."""
 
 from pathlib import Path
+import json
 import os
 import signal
 import subprocess
@@ -11,6 +12,7 @@ import unittest
 from unittest import mock
 
 from runtime_benchmark import RuntimeRunner
+import runtime_integration
 from runtime_integration import EOFIntegrationRunner, owned_cli_processes, require_eof_cases, retain_layer_reports, stop_test_children, test_filter
 
 
@@ -52,6 +54,39 @@ class IntegrationReportsTests(unittest.TestCase):
             self.assertEqual(command.call_args.args[3], ['image', 'load', '--input', '/archive'])
             with self.assertRaisesRegex(RuntimeError, 'unexpected service startup'):
                 runner.command('fork', 'setup-start', 0, ['system', 'stop'])
+
+    def test_default_run_layer_starts_with_eof_debug_marker_available(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = root / 'prepared'
+            prepared.mkdir()
+            for name in ('source-inputs.json', 'guest-artifact.json', 'builder-artifact.json'):
+                (prepared / name).write_text('{}\n')
+            (prepared / 'fork-fingerprint.json').write_text(json.dumps({
+                'init_image': 'init', 'builder_image': 'builder', 'kernel_sha256': 'kernel',
+            }))
+            installs = root / 'installs'
+            installs.mkdir()
+            (installs / 'benchmark.lock').touch()
+
+            def check_startup(runner, lane):
+                runner.command(lane, 'setup-start', 0, ['system', 'start', '--app-root', '/private/app'])
+                raise RuntimeError('stop after default startup proof')
+
+            with (mock.patch.object(runtime_integration, 'STATE', root / 'state'),
+                  mock.patch.object(runtime_integration, 'INSTALLS', installs),
+                  mock.patch.object(runtime_integration, 'verify_prepared'),
+                  mock.patch.object(runtime_integration, 'stop_owned'),
+                  mock.patch.object(runtime_integration, 'stop_test_children', return_value=[]),
+                  mock.patch.object(runtime_integration, 'reset_state', return_value='kernel'),
+                  mock.patch.object(runtime_integration, 'start_lane', side_effect=check_startup),
+                  mock.patch.object(RuntimeRunner, 'command', return_value={'status': 0}) as command):
+                with self.assertRaisesRegex(RuntimeError, 'stop after default startup proof'):
+                    runtime_integration.run(root / 'evidence', prepared, ['Run'])
+            self.assertEqual(command.call_args.args[3],
+                             ['system', 'start', '--app-root', '/private/app', '--debug'])
+            result = json.loads((root / 'evidence/integration.json').read_text())
+            self.assertEqual(result['selection'], None)
 
     def test_cleanup_stops_only_recorded_children(self):
         with tempfile.TemporaryDirectory() as directory:

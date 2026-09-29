@@ -27,13 +27,13 @@ EOF_CASES = {
 
 
 class EOFIntegrationRunner(RuntimeRunner):
-    """Expose the focused prewarm completion marker without changing benchmark startup."""
+    """Expose the EOF completion marker to focused and full integration runs."""
 
     def command(self, lane: str, fixture: str, trial: int, args: list[str],
                 timeout: int = 120, expected: str | None = None) -> dict:
         if fixture == 'setup-start':
             if lane != 'fork' or args[:2] != ['system', 'start']:
-                raise RuntimeError('Focused EOF probe encountered an unexpected service startup')
+                raise RuntimeError('Integration runner encountered an unexpected service startup')
             args = [*args, '--debug']
         return super().command(lane, fixture, trial, args, timeout, expected)
 
@@ -135,7 +135,7 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
     verify_prepared(prepared)
     for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json']:
         shutil.copy2(prepared / name, evidence / name)
-    runner = (EOFIntegrationRunner if selection == EOF_SELECTION else RuntimeRunner)(evidence, STATE)
+    runner = EOFIntegrationRunner(evidence, STATE)
     executable = INSTALLS / 'fork/install/bin/container'
     records = evidence / 'processes'
     records.mkdir()

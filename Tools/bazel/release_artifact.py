@@ -2,18 +2,97 @@
 """Package verified Bazel outputs with the original release recipe and optional notarization."""
 
 import argparse
+import gzip
+import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import tarfile
 import tempfile
 
 from fork_benchmark import ROOT, STORAGE, Runner, digest, install_signal_handlers
 from preflight import CONFIG
-from runtime_benchmark import IDENTITY
+from runtime_benchmark import IDENTITY, PLUGINS
 from runtime_integration import verify_prepared
 
 SERVICES = {'journald': 'ContainerJournaldService', 'gelf': 'ContainerGELFService'}
+
+
+def retain_measured_products(prepared: Path, evidence: Path, *, lane: str = 'fork',
+                             benchmark: Path | None = None) -> dict:
+    """Preserve the measured executable bytes and modes without signing them again."""
+    if lane not in {'fork', 'stock'}:
+        raise RuntimeError('Unknown measured runtime lane')
+    fingerprint_path = prepared / (lane + '-fingerprint.json')
+    fingerprint = json.loads(fingerprint_path.read_text())
+    source_path = prepared / 'source-inputs.json'
+    source = json.loads(source_path.read_text())[lane]
+    expected = {'bin/container', 'bin/container-apiserver'} | {
+        f'libexec/container/plugins/{name}/bin/{name}' for name in PLUGINS}
+    if lane == 'fork':
+        expected |= {'bin/container-engine', 'libexec/container/helpers/container-semantic-helper',
+                     'libexec/container/helpers/container-semantic-helper.manifest.json'}
+    if (fingerprint.get('lane') != lane or set(fingerprint['binaries']) != expected
+            or len(source) != 40 or any(char not in '0123456789abcdef' for char in source)):
+        raise RuntimeError('Measured executable inventory or source differs')
+    install = Path(fingerprint['install'])
+    if install.is_symlink() or not install.is_dir():
+        raise RuntimeError('Measured installation is not a real directory')
+    archive = evidence / ('container-measured-' + lane + '-arm64.tar.gz')
+    manifest = evidence / ('container-measured-' + lane + '-arm64.json')
+    if archive.exists() or manifest.exists() or archive.is_symlink() or manifest.is_symlink():
+        raise RuntimeError('Measured product evidence already exists')
+    provenance = {}
+    if benchmark is not None:
+        measured = json.loads((benchmark / (lane + '-fingerprint.json')).read_text())
+        if (measured != fingerprint or json.loads((benchmark / 'source-inputs.json').read_text())[lane] != source
+                or json.loads((benchmark / 'acceptance.json').read_text()).get('passed') is not True):
+            raise RuntimeError('Benchmark provenance does not match the measured products')
+        for name in (lane + '-fingerprint.json', 'source-inputs.json', 'acceptance.json', 'results.json', 'matrix.json', 'host.json'):
+            provenance[name] = digest(benchmark / name)
+    payload = {}
+    with archive.open('xb') as raw, gzip.GzipFile(filename='', fileobj=raw, mode='wb', mtime=0, compresslevel=1) as zipped:
+        with tarfile.open(fileobj=zipped, mode='w', format=tarfile.PAX_FORMAT) as output:
+            for relative in sorted(expected):
+                path = install / relative
+                if path.is_symlink() or any((install / parent).is_symlink() for parent in Path(relative).parents):
+                    raise RuntimeError('Symlink in measured product path: ' + relative)
+                with path.open('rb') as stream:
+                    metadata = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(metadata.st_mode) or digest(path) != fingerprint['binaries'][relative]:
+                        raise RuntimeError('Measured product changed: ' + relative)
+                    mode = stat.S_IMODE(metadata.st_mode)
+                    if mode & 0o7000:
+                        raise RuntimeError('Unexpected special executable mode: ' + relative)
+                    item = tarfile.TarInfo(relative)
+                    item.size, item.mode, item.mtime = metadata.st_size, mode, 0
+                    output.addfile(item, stream)
+                    payload[relative] = {'sha256': fingerprint['binaries'][relative], 'mode': mode, 'size': metadata.st_size}
+    with tarfile.open(archive) as retained:
+        members = retained.getmembers()
+        if len(members) != len(expected) or {item.name for item in members} != expected:
+            raise RuntimeError('Measured archive omitted a product')
+        for item in members:
+            if not item.isfile() or item.mode != payload[item.name]['mode']:
+                raise RuntimeError('Measured archive changed a product mode')
+            value = hashlib.sha256()
+            with retained.extractfile(item) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+                    value.update(chunk)
+            if value.hexdigest() != payload[item.name]['sha256'] or digest(install / item.name) != value.hexdigest():
+                raise RuntimeError('Measured archive or source bytes changed: ' + item.name)
+    result = {'schema': 1, 'kind': 'container-measured-executables', 'source': source, 'lane': lane,
+              'archive': archive.name, 'archive_sha256': digest(archive), 'payload': payload,
+              'fingerprint_sha256': digest(fingerprint_path), 'source_inputs_sha256': digest(source_path),
+              'runtime_identity': {key: fingerprint[key] for key in (
+                  'kernel_sha256', 'package_lock_sha256', 'init_image', 'init_archive_sha256',
+                  'builder_image', 'builder_archive_sha256', 'workload_image', 'cli_version') if key in fingerprint},
+              'benchmark_provenance_sha256': provenance, 'resigned': False,
+              'scope': 'Exact measured executable files; separate from the re-signed notarized distribution. Runtime configuration and OCI assets are bound by the source fingerprint.'}
+    manifest.write_text(json.dumps(result, indent=2, sort_keys=True) + '\n')
+    return dict(result, manifest=manifest.name, manifest_sha256=digest(manifest))
 
 
 def run_command(runner: Runner, name: str, args: list[str], timeout: int = 300) -> Path:
@@ -90,6 +169,9 @@ def build(evidence: Path, prepared: Path, services: Path, profile: str | None) -
         verify_prepared(prepared)
         for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json']:
             shutil.copy2(prepared / name, evidence / name)
+        benchmark = evidence.parent / 'runtime-benchmark'
+        result['measured_products'] = retain_measured_products(
+            prepared, evidence, benchmark=benchmark if benchmark.exists() else None)
         (STORAGE / 'release').mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='package-', dir=STORAGE / 'release') as temporary:
             work = Path(temporary)
@@ -150,7 +232,9 @@ def build(evidence: Path, prepared: Path, services: Path, profile: str | None) -
                 raise RuntimeError('Release debug-symbol archive changed')
             shutil.copy2(symbols['archive'], evidence / 'container-dSYM.zip')
             result['debug_symbols'] = symbols
-            result['archives'] = {p.name: digest(p) for p in (retained, zip_archive, installer, evidence / 'container-dSYM.zip')}
+            result['archives'] = {p.name: digest(p) for p in (
+                retained, zip_archive, installer, evidence / 'container-dSYM.zip',
+                evidence / result['measured_products']['archive'], evidence / result['measured_products']['manifest'])}
             result['payload'] = {str(p.relative_to(payload)): digest(p) for p in sorted(payload.rglob('*')) if p.is_file()}
             result['source'] = json.loads((prepared / 'source-inputs.json').read_text())['fork']
             if profile:
