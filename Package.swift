@@ -259,6 +259,7 @@ let package = Package(
         .testTarget(
             name: "K8sPluginTests",
             dependencies: [
+                "ContainerAPIClient",
                 "ContainerK8s",
                 "ContainerResource",
                 "Yams",
