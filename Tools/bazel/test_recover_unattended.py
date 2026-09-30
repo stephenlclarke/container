@@ -147,7 +147,9 @@ class RecoveryTests(unittest.TestCase):
         descriptor = os.open(self.command_lock, os.O_RDWR)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
-            self.assert_rejected('temporarily unavailable')
+            with patch.object(recovery, 'shutdown_idle_bazel') as shutdown:
+                self.assert_rejected('temporarily unavailable')
+                shutdown.assert_called_once_with(self.evidence.resolve(), self.record['bazel_workspace'])
         finally:
             os.close(descriptor)
         self.assertEqual(path.read_bytes(), original)
