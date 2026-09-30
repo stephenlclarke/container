@@ -198,7 +198,9 @@ def run(evidence: Path, trials: int) -> None:
             result['stages'].append(stage)
             receipt.write_text(json.dumps(result, indent=2) + '\n')
             if not blocked:
-                row = runner.run('qualification', 'fork', name, 0, command, ROOT, timeout)
+                # A nested command can need 10s to stop plus two 60s Bazel shutdowns
+                # (each with 10s stop grace); leave time for its report to flush.
+                row = runner.run('qualification', 'fork', name, 0, command, ROOT, timeout, stop_grace=180)
                 stage.update(state='passed' if row['status'] == 0 else 'failed', log=row['log'], seconds=row['seconds'])
                 if name == 'component-benchmarks' and row['status'] == 2:
                     review_path = evidence / 'components/comparison-review.json'

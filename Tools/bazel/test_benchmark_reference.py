@@ -139,6 +139,48 @@ class HistoricalReferenceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'Runner.run'):
                 reference.validate_contract(shared, reference.RUNNER_CONTRACT)
 
+    def test_cancellation_revision_preserves_the_entire_successful_runner_contract(self):
+        source = Path(runtime.__file__).with_name('fork_benchmark.py').read_text()
+        tree = ast.parse(source)
+        runner = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Runner')
+        method = next(node for node in runner.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+        self.assertEqual(hashlib.sha256(reference.canonical_ast(method).encode()).hexdigest(),
+                         reference.RUNNER_CANCELLATION_SHA256)
+        predecessor = source
+        # Reverse only the reviewed interruption branch and stop helper parameters.
+        for current, previous in (
+            (', stop_grace: int = 10', ''),
+            ('def stop_group(grace: int):', 'def stop_group():'),
+            ('time.monotonic() + grace', 'time.monotonic() + 10'),
+            ('stop_group(10)', 'stop_group()'),
+            ('except BaseException as error:\n                        watchdog.cancel()\n'
+             '                        watchdog.join()\n'
+             '                        stop_group(stop_grace if isinstance(error, (KeyboardInterrupt, SystemExit)) and not expired.is_set() else 10)',
+             'except BaseException:\n                        stop_group()'),
+        ):
+            self.assertEqual(predecessor.count(current), 1)
+            predecessor = predecessor.replace(current, previous, 1)
+        old_runner = next(node for node in ast.parse(predecessor).body
+                          if isinstance(node, ast.ClassDef) and node.name == 'Runner')
+        original = next(node for node in old_runner.body if isinstance(node, ast.FunctionDef) and node.name == 'run')
+        self.assertEqual(hashlib.sha256(reference.canonical_ast(original).encode()).hexdigest(),
+                         reference.RUNNER_CONTRACT['Runner.run'])
+        self.assertEqual(reference.workload_digest('Runner.run', method),
+                         reference.workload_digest('Runner.run', original))
+        # The alias is exact, including termination behavior and successful timing.
+        for old, new in (
+            ('time.monotonic() + grace', 'time.monotonic() + grace + 1'),
+            ('threading.Timer(timeout, expire)', 'threading.Timer(timeout + 1, expire)'),
+            ('time.monotonic_ns() - start', 'time.monotonic_ns() - start + 1'),
+            ('status = 124', 'status = 0'),
+        ):
+            with self.subTest(change=old), tempfile.TemporaryDirectory() as temporary:
+                self.assertIn(old, source)
+                path = Path(temporary) / 'fork_benchmark.py'
+                path.write_text(source.replace(old, new, 1))
+                with self.assertRaisesRegex(RuntimeError, 'Runner.run'):
+                    reference.validate_contract(path, reference.RUNNER_CONTRACT)
+
     def test_runtime_image_kernel_and_host_drift_fail_closed(self):
         document = historical_fixture()
         source = Path(runtime.__file__)

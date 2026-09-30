@@ -64,6 +64,7 @@ class OwnershipTests(unittest.TestCase):
                             host.return_value.restore.assert_called_once_with(restore_workers=False)
                         else:
                             unattended.main()
+                            self.assertEqual(runner.return_value.run.call_args.kwargs['stop_grace'], 240)
                             host.return_value.restore.assert_called_once_with(restore_workers=True)
                     finally:
                         if helper is not None:

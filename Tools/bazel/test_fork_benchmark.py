@@ -19,6 +19,106 @@ from fork_benchmark import (COMMAND_LOCK_ENV, Runner, command_lease,
 
 
 class CommandLeaseTests(unittest.TestCase):
+    def test_nested_interrupt_waits_for_inner_group_and_releases_lease(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / 'commands.lock'
+            lock.touch(mode=0o600)
+            (root / 'parent-evidence').mkdir()
+            (root / 'child-evidence').mkdir()
+            (root / 'grandchild-evidence').mkdir()
+            script = root / 'nested.py'
+            tools = str(Path(__file__).resolve().parent)
+            script.write_text('\n'.join([
+                'import inspect, os, pathlib, signal, sys, time',
+                f'sys.path.insert(0, {tools!r})',
+                'from fork_benchmark import COMMAND_LOCK_ENV, Runner',
+                'root = pathlib.Path(sys.argv[2])',
+                'mode = sys.argv[1]',
+                'if mode == "leaf":',
+                '    signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+                '    (root / "leaf.pid").write_text(str(os.getpid()))',
+                '    while True: time.sleep(1)',
+                'if mode in ("child", "grandchild"):',
+                '    def delayed_stop(signum, frame):',
+                '        (root / (mode + "-term")).write_text(str(signum))',
+                '        time.sleep(2)',
+                '        raise SystemExit(128 + signum)',
+                '    signal.signal(signal.SIGTERM, delayed_stop)',
+                '    (root / (mode + ".pid")).write_text(str(os.getpid()))',
+                'if mode == "parent":',
+                '    signal.signal(signal.SIGINT, lambda signum, frame: (_ for _ in ()).throw(SystemExit(128 + signum)))',
+                'runner = Runner(root / (mode + "-evidence"), root)',
+                'runner.env[COMMAND_LOCK_ENV] = str(root / "commands.lock")',
+                'grace = 240 if mode == "parent" else 180',
+                '# The predecessor has no stop_grace parameter: exercise its real ten-second path.',
+                'options = {"stop_grace": grace} if mode != "grandchild" and "stop_grace" in inspect.signature(runner.run).parameters else {}',
+                'next_mode = {"parent": "child", "child": "grandchild", "grandchild": "leaf"}[mode]',
+                'try:',
+                '    runner.run("nested", mode, "cancel", 0, [sys.executable, __file__, next_mode, str(root)], root, timeout=35, **options)',
+                'finally:',
+                '    if mode in ("child", "grandchild"):',
+                '        time.sleep(2)',
+                '        (root / (mode + "-cleanup")).write_text("complete")',
+            ]) + '\n')
+
+            def owned_alive(pid, mode):
+                row = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'stat=,command='],
+                                     capture_output=True, text=True, timeout=3).stdout.strip()
+                fields = row.split(None, 1)
+                return (len(fields) == 2 and not fields[0].startswith('Z')
+                        and str(script) in fields[1] and f' {mode} {root}' in fields[1])
+
+            def lease_available():
+                with lock.open() as descriptor:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        return True
+                    except BlockingIOError:
+                        return False
+
+            parent = subprocess.Popen([sys.executable, str(script), 'parent', str(root)],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                      start_new_session=True)
+            owned = {}
+            try:
+                deadline = time.monotonic() + 8
+                while not (root / 'leaf.pid').exists() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertTrue((root / 'leaf.pid').exists(), 'nested child did not become ready')
+                owned = {mode: int((root / (mode + '.pid')).read_text()) for mode in ('child', 'grandchild', 'leaf')}
+                self.assertTrue(owned_alive(owned['leaf'], 'leaf'))
+                self.assertFalse(lease_available())
+                os.kill(parent.pid, signal.SIGINT)
+                self.assertEqual(parent.wait(timeout=25), 130)
+                self.assertTrue((root / 'child-term').exists())
+                self.assertTrue((root / 'grandchild-term').exists())
+                self.assertFalse(owned_alive(owned['leaf'], 'leaf'))
+                self.assertTrue(lease_available())
+                self.assertTrue((root / 'child-cleanup').exists())
+                self.assertTrue((root / 'grandchild-cleanup').exists())
+            finally:
+                if parent.poll() is None:
+                    parent.kill()
+                parent.wait(timeout=5)
+                # A failed readiness assertion can precede the leaf PID file.
+                # Match only this temporary script and root before killing fakes.
+                listing = subprocess.check_output(['/bin/ps', '-axo', 'pid=,stat=,command='],
+                                                  text=True, timeout=3)
+                for row in listing.splitlines():
+                    fields = row.split(None, 2)
+                    if len(fields) != 3 or fields[1].startswith('Z') or str(script) not in fields[2]:
+                        continue
+                    if any(f' {mode} {root}' in fields[2] for mode in ('child', 'grandchild', 'leaf')):
+                        try:
+                            os.kill(int(fields[0]), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                deadline = time.monotonic() + 5
+                while not lease_available() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertTrue(lease_available(), 'fake command lease survived cleanup')
+
     def test_exclusive_recovery_prevents_command_dispatch(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -216,9 +216,12 @@ def main() -> None:
             lease.command_descriptors = ()
             runner = Runner(args.evidence, STORAGE)
             runner.env[COMMAND_LOCK_ENV] = str(command_lock)
+            # Let the stage controller finish its 180s nested cleanup and retain
+            # bounded time for its result before forcing this owned make group.
             row = runner.run('qualification', 'fork', args.target, 0,
                              ['make', args.target, 'QUALIFICATION_EVIDENCE=' + str(args.evidence)],
-                             ROOT, timeout=21600 if args.target == 'bazel-qualify' else 7200)
+                             ROOT, timeout=21600 if args.target == 'bazel-qualify' else 7200,
+                             stop_grace=240)
             if row['status']:
                 raise RuntimeError('Qualification failed: ' + row['log'])
             result['passed'] = True

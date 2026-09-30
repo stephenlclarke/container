@@ -53,6 +53,31 @@ GO_NAMES = ('BenchmarkDirectReaderAt', 'BenchmarkDirectReaderAtRandom',
 
 
 class ComponentReferenceTests(unittest.TestCase):
+    def test_only_exact_cancellation_revision_preserves_component_workload_identity(self):
+        source = Path(benchmark.__file__).read_text()
+        previous = source
+        for current, old in (
+            (', stop_grace: int = 10', ''),
+            ('def stop_group(grace: int):', 'def stop_group():'),
+            ('time.monotonic() + grace', 'time.monotonic() + 10'),
+            ('stop_group(10)', 'stop_group()'),
+            ('except BaseException as error:\n                        watchdog.cancel()\n'
+             '                        watchdog.join()\n'
+             '                        stop_group(stop_grace if isinstance(error, (KeyboardInterrupt, SystemExit)) and not expired.is_set() else 10)',
+             'except BaseException:\n                        stop_group()'),
+        ):
+            self.assertEqual(previous.count(current), 1)
+            previous = previous.replace(current, old, 1)
+        self.assertEqual(reference.units(previous), reference.units(source))
+        for before, after in (
+            ('time.monotonic_ns() - start', 'time.monotonic_ns() - start + 1'),
+            ('time.monotonic() + grace', 'time.monotonic() + grace + 1'),
+            ('for trial in range(11):', 'for trial in range(10):'),
+        ):
+            with self.subTest(change=before):
+                self.assertIn(before, source)
+                self.assertNotEqual(reference.units(previous), reference.units(source.replace(before, after, 1)))
+
     def test_reference_rows_keep_raw_values_and_known_failures_separate(self):
         data = sample_reference()
         self.assertEqual(len(data['components']['raw']), 236)

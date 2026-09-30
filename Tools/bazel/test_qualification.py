@@ -114,7 +114,7 @@ class QualificationTests(unittest.TestCase):
             # The real stage dependency graph prevents a failed first admission
             # from dispatching any compile, guest, builder, or runtime stage.
             calls = []
-            def execute(_component, _lane, fixture, *_arguments):
+            def execute(_component, _lane, fixture, *_arguments, **_options):
                 calls.append(fixture)
                 return {'status': int(fixture == 'benchmark-reference'),
                         'log': fixture + '.log', 'seconds': 1}
@@ -165,7 +165,8 @@ class QualificationTests(unittest.TestCase):
                 evidence = Path(directory)
                 commands = {}
 
-                def execute(component, lane, fixture, trial, command, cwd, timeout):
+                def execute(component, lane, fixture, trial, command, cwd, timeout, *, stop_grace):
+                    self.assertEqual(stop_grace, 180)
                     commands[fixture] = command
                     return {'status': int(fixture == failed), 'log': fixture + '.log', 'seconds': 1}
 
@@ -193,7 +194,7 @@ class QualificationTests(unittest.TestCase):
                 evidence = Path(directory)
                 dispatched = []
 
-                def execute(_component, _lane, fixture, *_arguments):
+                def execute(_component, _lane, fixture, *_arguments, **_options):
                     dispatched.append(fixture)
                     return {'status': integration_status if fixture == 'integration' else 0,
                             'log': fixture + '.log', 'seconds': 1}

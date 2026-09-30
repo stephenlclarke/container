@@ -290,7 +290,7 @@ class Runner:
         self.env = dict(os.environ, TMPDIR=str(STORAGE / 'tmp') + '/', CI='1')
 
     def run(self, component: str, lane: str, fixture: str, trial: int,
-            args: list[str], cwd: Path, timeout: int = 600) -> dict:
+            args: list[str], cwd: Path, timeout: int = 600, stop_grace: int = 10) -> dict:
         number = len(self.rows)
         stem = f'{number:03}-{component}-{lane}-{fixture}-{trial}'
         log = self.evidence / (stem + '.log')
@@ -307,10 +307,10 @@ class Runner:
                                       pass_fds=command_descriptors) as process:
                     expired = threading.Event()
 
-                    def stop_group():
+                    def stop_group(grace: int):
                         try:
                             os.killpg(process.pid, signal.SIGTERM)
-                            deadline = time.monotonic() + 10
+                            deadline = time.monotonic() + grace
                             while time.monotonic() < deadline:
                                 # Darwin may return EPERM for a group containing
                                 # only reparented zombies. Check for live members
@@ -329,15 +329,17 @@ class Runner:
                     def expire():
                         if process.poll() is None:
                             expired.set()
-                            stop_group()
+                            stop_group(10)
 
                     watchdog = threading.Timer(timeout, expire)
                     watchdog.daemon = True
                     watchdog.start()
                     try:
                         status = process.wait()
-                    except BaseException:
-                        stop_group()
+                    except BaseException as error:
+                        watchdog.cancel()
+                        watchdog.join()
+                        stop_group(stop_grace if isinstance(error, (KeyboardInterrupt, SystemExit)) and not expired.is_set() else 10)
                         process.wait()
                         raise
                     finally:
