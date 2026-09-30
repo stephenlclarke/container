@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -64,12 +65,15 @@ def _graph(path: Path) -> dict:
     return graph
 
 
-def verify_action_graph(path: Path, admission: dict, loaded: dict[str, str]) -> dict:
+def verify_action_graph(path: Path, admission: dict, loaded: dict[str, str],
+                        configuration: str = 'release') -> dict:
     """Reject source compilation of any reached non-Container Swift package.
 
     The graph includes exec-transition tools. Cache hits are still actions and
     cannot satisfy this check by hiding a source compile behind the disk cache.
     """
+    if configuration not in ('release', 'runtime-coverage'):
+        raise ValueError('native consumer has an unsupported configuration')
     graph = _graph(path)
     targets = {row['id']: row['label'] for row in graph['targets']}
     fragments = {row['id']: row for row in graph['pathFragments']}
@@ -109,6 +113,37 @@ def verify_action_graph(path: Path, admission: dict, loaded: dict[str, str]) -> 
             visit(identity)
         return paths
 
+    def baseline_coverage_only(action: dict, label: str) -> bool:
+        # Bazel's BaselineCoverageAction writes test metadata for every reached
+        # rule in coverage mode. It has no inputs or command arguments and does
+        # not compile imported source. Bind its one output to its exact owner.
+        if configuration != 'runtime-coverage' or action['mnemonic'] != 'BaselineCoverage':
+            return False
+        if action.get('arguments') or action.get('inputDepSetIds'):
+            return False
+        output_ids = action.get('outputIds', [])
+        if len(output_ids) != 1 or action.get('primaryOutputId') != output_ids[0]:
+            return False
+        if output_ids[0] not in artifacts or artifacts[output_ids[0]].get('isTreeArtifact') is True:
+            return False
+        owner = label.removeprefix('@@')
+        if owner.count('//') != 1 or owner.count(':') != 1:
+            return False
+        repository, target = owner.split('//', 1)
+        package, name = target.split(':', 1)
+        package_parts = package.split('/') if package else []
+        if (not name or '/' in name or name in ('.', '..')
+                or any(part in ('', '.', '..') for part in package_parts)):
+            return False
+        output = path_of(artifacts[output_ids[0]]['pathFragmentId'])
+        parts = output.split('/')
+        if len(parts) < 7 or any(part in ('', '.', '..') for part in parts):
+            return False
+        if not re.fullmatch(r'darwin_arm64-opt-ST-[0-9a-f]+', parts[1]):
+            return False
+        return parts == ['bazel-out', parts[1], 'testlogs', 'external',
+                         repository, *package_parts, name, 'baseline_coverage.dat']
+
     links = {}
     archive_inputs = {}
     imported_actions = {}
@@ -119,7 +154,8 @@ def verify_action_graph(path: Path, admission: dict, loaded: dict[str, str]) -> 
         if label.startswith('@@+dependencies+swiftpkg_') and not label.startswith(
                 '@@+dependencies+swiftpkg_container//'):
             canonical = label.split('//', 1)[0].removeprefix('@@')
-            if canonical not in imported or action['mnemonic'] not in ALLOWED_IMPORTED_ACTIONS:
+            if canonical not in imported or (action['mnemonic'] not in ALLOWED_IMPORTED_ACTIONS
+                    and not baseline_coverage_only(action, label)):
                 raise ValueError('native dependency source action remains reachable: ' + label)
             imported_actions[action['mnemonic']] = imported_actions.get(action['mnemonic'], 0) + 1
         if action['mnemonic'] == 'CppLink' and label in LINKS:
@@ -167,6 +203,10 @@ def verify_action_graph(path: Path, admission: dict, loaded: dict[str, str]) -> 
                        for name, row in admission['layers'].items()}}
 
 
+def recipe_bindings(admission: dict) -> dict:
+    return {name: row['recipeCompatibility'] for name, row in admission['layers'].items()}
+
+
 def verify_build_and_graph(build_events: Path, action_graph: Path, admission: dict,
                            loaded: dict[str, str], revision: str,
                            configuration: str = 'release') -> dict:
@@ -176,11 +216,12 @@ def verify_build_and_graph(build_events: Path, action_graph: Path, admission: di
              *native_layers.bazel_flags(admission)]
     build = native_evidence.verify_build_record(
         build_events, ['//:container'], expected_options=flags)
-    graph = verify_action_graph(action_graph, admission, loaded)
+    graph = verify_action_graph(action_graph, admission, loaded, configuration)
     return {'schema': 1, 'passed': True, 'source': revision,
             'configuration': configuration, 'overrides': admission['overrides'],
             'build': build, 'graph': graph,
             'recipeSHA256': admission['recipeSHA256'],
+            'recipeCompatibility': recipe_bindings(admission),
             'toolchain': admission['toolchain']}
 
 
@@ -222,6 +263,7 @@ def verify_receipt(path: Path, admission: dict, revision: str,
             or record.get('configuration') != configuration
             or record.get('overrides') != admission['overrides']
             or record.get('recipeSHA256') != admission['recipeSHA256']
+            or record.get('recipeCompatibility') != recipe_bindings(admission)
             or record.get('toolchain') != admission['toolchain']
             or record.get('graph', {}).get('layers') != {
                 name: native_layers.lower_identity(row)
@@ -247,7 +289,8 @@ def verify_receipt(path: Path, admission: dict, revision: str,
                   name: hashlib.sha256((Path(directory) / 'BUILD.bazel').read_bytes()).hexdigest()
                   for name, directory in admission['overrides'].items()})
     expected = verify_build_and_graph(events, raw, admission, loaded, revision, configuration)
-    if any(record.get(key) != expected[key] for key in ('build', 'graph', 'overrides')):
+    if any(record.get(key) != expected[key] for key in
+           ('build', 'graph', 'overrides', 'recipeCompatibility')):
         raise ValueError('native compiled consumer receipt differs from its raw build')
     for entry, expected in record['graph']['archiveInputs'].items():
         parts = Path(entry).parts

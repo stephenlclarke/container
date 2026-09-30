@@ -34,7 +34,7 @@ import subprocess
 import tarfile
 import tempfile
 
-from . import native_format
+from . import native_format, recipe_compatibility
 from .release_asset import cached_fetch, read_lock
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -227,6 +227,7 @@ def import_layers(root: Path = ROOT, locks: Path = LOCKS, cache: Path = CACHE,
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise ValueError('native compiled layers require Apple silicon macOS')
     current_toolchain = toolchain(root)
+    current_recipe = recipe(root)
     if current_toolchain['bazelVersion'] != '8.8.0':
         raise ValueError('native compiled layers require pinned Bazel 8.8.0')
     _private_cache(cache)
@@ -241,6 +242,7 @@ def import_layers(root: Path = ROOT, locks: Path = LOCKS, cache: Path = CACHE,
             raise ValueError('published native layer owner or asset name changed')
         observed = native_format.inspect(Path(product['asset']), pair['archive']['sha256'])
         manifest = observed['manifest']
+        recipe_binding = recipe_compatibility.admit(manifest.get('recipeSHA256'), current_recipe, root)
         selected = group_pins(group, records)
         if (manifest.get('group') != group or manifest.get('graph') != 'container-native'
                 or manifest.get('profile') != 'native'
@@ -248,7 +250,6 @@ def import_layers(root: Path = ROOT, locks: Path = LOCKS, cache: Path = CACHE,
                 or manifest.get('platform') != 'darwin-arm64'
                 or manifest.get('developmentProof') is not False
                 or manifest.get('sourcePins') != selected
-                or manifest.get('recipeSHA256') != recipe(root)
                 or manifest.get('toolchain') != current_toolchain
                 or pair['archive']['targetCommit'] !=
                 (records[GROUP_PIN[group]]['state']['revision']
@@ -341,7 +342,8 @@ def import_layers(root: Path = ROOT, locks: Path = LOCKS, cache: Path = CACHE,
                            'proofAssetId': proof['assetId'],
                            'lockSHA256': pair['lockSHA256'], 'sourcePins': selected,
                            'releaseId': product['releaseId'], 'lower': lower,
-                           'producerCommit': manifest['producerCommit']}
+                           'producerCommit': manifest['producerCommit'],
+                           'recipeCompatibility': recipe_binding}
     expected = set(records) - {'container', 'swift-docc-plugin', 'swift-docc-symbolkit'}
     # Container itself remains source-built. Every reached dependency must be
     # either imported or explicitly absent from the production closure proof.
@@ -357,7 +359,7 @@ def import_layers(root: Path = ROOT, locks: Path = LOCKS, cache: Path = CACHE,
     return {'schema': 1, 'source': subprocess.check_output(['git', '-C', str(root), 'rev-parse', 'HEAD'],
                                                           text=True, timeout=20).strip(),
             'overrides': overrides, 'layers': receipts,
-            'recipeSHA256': recipe(root), 'toolchain': current_toolchain,
+            'recipeSHA256': current_recipe, 'toolchain': current_toolchain,
             'expectedUnimportedPins': sorted(expected - set(packages))}
 
 

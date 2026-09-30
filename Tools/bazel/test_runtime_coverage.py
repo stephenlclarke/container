@@ -46,6 +46,90 @@ class RuntimeCoverageTests(unittest.TestCase):
         coverage.result['recovery_directory'] = str(temporary)
         return coverage, product, backup
 
+    def unswapped(self, root: Path):
+        evidence = root / 'evidence'
+        evidence.mkdir()
+        install = root / 'fork/install'
+        (install / 'bin').mkdir(parents=True)
+        (install / '.runtime-benchmark-owner.json').write_text(json.dumps({
+            'owner': 'container-runtime-benchmark', 'lane': 'fork', 'schema': 1}))
+        product = install / 'bin/container'
+        product.write_text('original')
+        (evidence / 'fork-fingerprint.json').write_text(json.dumps({
+            'binaries': {'bin/container': digest(product)}}))
+        with patch.object(runtime_coverage, 'INSTALLS', root), \
+                patch.object(runtime_coverage, 'source_files', return_value={}):
+            coverage = runtime_coverage.RuntimeCoverage(RuntimeRunner(evidence, root), False)
+        return coverage, product, install
+
+    def test_failed_preparation_certifies_unchanged_original_without_qualifying(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coverage, product, _install = self.unswapped(Path(directory))
+            with patch.object(runtime_coverage, 'require_idle') as idle:
+                coverage.finish(False)
+            self.assertEqual(product.read_text(), 'original')
+            self.assertTrue(idle.called)
+            receipt = json.loads((coverage.evidence / 'coverage.json').read_text())
+            self.assertTrue(receipt['restored'])
+            self.assertFalse(receipt['passed'])
+            self.assertNotIn('recovery_directory', receipt)
+
+    def test_failed_preparation_rejects_changed_original_or_missing_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coverage, product, install = self.unswapped(Path(directory))
+            product.write_text('changed')
+            with patch.object(runtime_coverage, 'require_idle'):
+                with self.assertRaisesRegex(RuntimeError, 'Prepared runtime binary changed'):
+                    coverage.finish(False)
+            self.assertFalse(json.loads((coverage.evidence / 'coverage.json').read_text())['restored'])
+            product.write_text('original')
+            (install / '.runtime-benchmark-owner.json').unlink()
+            with patch.object(runtime_coverage, 'require_idle'):
+                with self.assertRaises(FileNotFoundError):
+                    coverage.finish(False)
+            self.assertFalse(json.loads((coverage.evidence / 'coverage.json').read_text())['restored'])
+
+    def test_failed_preparation_keeps_active_or_ambiguous_installation_unrestored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coverage, _product, install = self.unswapped(Path(directory))
+            with patch.object(runtime_coverage, 'require_idle', side_effect=RuntimeError('still active')):
+                with self.assertRaisesRegex(RuntimeError, 'still active'):
+                    coverage.finish(False)
+            self.assertFalse(json.loads((coverage.evidence / 'coverage.json').read_text())['restored'])
+            coverage.result['recovery_directory'] = str(install.parent / 'coverage-install-12345678')
+            with self.assertRaisesRegex(RuntimeError, 'ambiguous'):
+                coverage.finish(False)
+            coverage.result.pop('recovery_directory')
+            (coverage.evidence / 'fork-fingerprint.json').write_text('{}')
+            with self.assertRaisesRegex(RuntimeError, 'ambiguous'):
+                coverage.finish(False)
+            (coverage.evidence / 'fork-fingerprint.json').unlink()
+            (coverage.evidence / 'fork-fingerprint.json').symlink_to('missing-instrumented-fingerprint')
+            with self.assertRaisesRegex(RuntimeError, 'ambiguous'):
+                coverage.finish(False)
+            self.assertFalse(json.loads((coverage.evidence / 'coverage.json').read_text())['restored'])
+
+    def test_failed_preparation_rejects_symlinked_installation_ancestor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage, _product, _install = self.unswapped(root)
+            (root / 'fork').rename(root / 'fork-original')
+            (root / 'fork').symlink_to('fork-original', target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, 'ancestor ownership changed'):
+                coverage.finish(False)
+            receipt = json.loads((coverage.evidence / 'coverage.json').read_text())
+            self.assertFalse(receipt['restored'])
+            self.assertFalse(receipt['passed'])
+
+    def test_no_swap_cannot_turn_success_request_into_qualified_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            coverage, _product, _install = self.unswapped(Path(directory))
+            with self.assertRaisesRegex(RuntimeError, 'cannot pass without an instrumented installation'):
+                coverage.finish(True)
+            receipt = json.loads((coverage.evidence / 'coverage.json').read_text())
+            self.assertFalse(receipt['passed'])
+            self.assertFalse(receipt['restored'])
+
     def test_export_failure_still_restores_and_verifies_original_binaries(self):
         with tempfile.TemporaryDirectory() as directory:
             coverage, product, backup = self.transaction(Path(directory))

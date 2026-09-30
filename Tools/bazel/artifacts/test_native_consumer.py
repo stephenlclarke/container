@@ -106,6 +106,66 @@ class NativeConsumerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'selected compiled lower layer'):
             self.verify()
 
+    def add_baseline(self):
+        repository = self.name
+        name = 'Lower'
+        self.graph['targets'].append({'id': 9, 'label': '@@' + repository + '//:' + name})
+        parts = ['bazel-out', 'darwin_arm64-opt-ST-02f1c27084ad', 'testlogs',
+                 'external', repository, name, 'baseline_coverage.dat']
+        parent = None
+        for number, part in enumerate(parts, 100):
+            row = {'id': number, 'label': part}
+            if parent is not None:
+                row['parentId'] = parent
+            self.graph['pathFragments'].append(row)
+            parent = number
+        self.graph['artifacts'].append({'id': 50, 'pathFragmentId': parent})
+        action = {'targetId': 9, 'mnemonic': 'BaselineCoverage',
+                  'configurationId': 3, 'outputIds': [50], 'primaryOutputId': 50}
+        self.graph['actions'].append(action)
+        return action
+
+    def test_coverage_baseline_metadata_is_admitted_only_in_coverage(self):
+        self.add_baseline()
+        path = self.root / 'coverage-aquery.json'
+        path.write_text('Evidence: retained\n' + json.dumps(self.graph) +
+                        '\nINFO: Build completed successfully\n')
+        with self.assertRaisesRegex(ValueError, 'source action'):
+            native_consumer.verify_action_graph(path, self.admission, self.loaded)
+        proof = native_consumer.verify_action_graph(
+            path, self.admission, self.loaded, 'runtime-coverage')
+        self.assertEqual(proof['importedActions']['BaselineCoverage'], 1)
+        self.assertEqual(set(proof['links']), native_consumer.LINKS)
+
+    def test_coverage_baseline_mutations_remain_rejected(self):
+        changes = (
+            lambda action: action.update(mnemonic='SwiftCompile'),
+            lambda action: action.update(arguments=['swiftc']),
+            lambda action: action.update(inputDepSetIds=[1]),
+            lambda action: action.update(outputIds=[50, 50]),
+            lambda action: action.update(primaryOutputId=1),
+            lambda action: self.graph['artifacts'][-1].update(isTreeArtifact=True),
+            lambda action: self.graph['pathFragments'][-2].update(label='Other'),
+            lambda action: self.graph['pathFragments'][-3].update(label='+dependencies+swiftpkg_other'),
+            lambda action: self.graph['pathFragments'][-1].update(label='coverage.dat'),
+            lambda action: self.graph['pathFragments'][-1].update(label='..'),
+            lambda action: self.graph['pathFragments'][11].update(label='darwin_arm64-opt'),
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                action = self.add_baseline()
+                change(action)
+                path = self.root / 'mutated-aquery.json'
+                path.write_text('Evidence: retained\n' + json.dumps(self.graph) +
+                                '\nINFO: Build completed successfully\n')
+                with self.assertRaisesRegex(ValueError, 'source action'):
+                    native_consumer.verify_action_graph(
+                        path, self.admission, self.loaded, 'runtime-coverage')
+                self.graph['targets'] = self.graph['targets'][:-1]
+                self.graph['pathFragments'] = self.graph['pathFragments'][:-7]
+                self.graph['artifacts'] = self.graph['artifacts'][:-1]
+                self.graph['actions'] = self.graph['actions'][:-1]
+
     def test_staged_eight_products_must_match_successful_bep(self):
         output = self.root / 'execution'
         paths = []
@@ -160,7 +220,8 @@ class NativeConsumerTests(unittest.TestCase):
                         'archiveInputs': {}}
         receipt = {'schema': 1, 'passed': True, 'source': self.admission['source'],
                    'configuration': 'release', 'overrides': self.admission['overrides'],
-                   'recipeSHA256': 'c' * 64, 'toolchain': {}, 'graph': graph_record,
+                   'recipeSHA256': 'c' * 64, 'recipeCompatibility': {},
+                   'toolchain': {}, 'graph': graph_record,
                    'build': build, 'actionCommand': command,
                    'buildEventsSHA256': hashlib.sha256(events.read_bytes()).hexdigest(),
                    'actionGraphSHA256': hashlib.sha256(graph.read_bytes()).hexdigest()}
@@ -174,10 +235,17 @@ class NativeConsumerTests(unittest.TestCase):
                                                    _revision, _configuration: {
                                     'build': build,
                                     'graph': dict(graph_record, loadedBUILD=loaded),
-                                    'overrides': self.admission['overrides']})):
+                                    'overrides': self.admission['overrides'],
+                                    'recipeCompatibility': {}})):
             self.assertEqual(native_consumer.verify_receipt(
                 path, self.admission, self.admission['source'],
                 bazel=bazel, output_root=output_root), receipt)
+            receipt['recipeCompatibility'] = {'foundation': {'mode': 'forged'}}
+            path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError, 'differs from current released layers'):
+                native_consumer.verify_receipt(path, self.admission, self.admission['source'],
+                                               bazel=bazel, output_root=output_root)
+            receipt['recipeCompatibility'] = {}
             receipt['configuration'] = 'runtime-coverage'
             path.write_text(json.dumps(receipt))
             with self.assertRaisesRegex(ValueError, 'differs from current released layers'):

@@ -2,9 +2,11 @@
 """Collect runtime line coverage without leaving profiling binaries in the release slot."""
 
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import tempfile
 
 from artifacts import native_consumer, native_layers
@@ -47,7 +49,9 @@ class RuntimeCoverage:
         self.profiles.mkdir()
         self.environment = {'LLVM_PROFILE_FILE': str(self.profiles / '%p-%m%c.profraw')}
         self.installation = INSTALLS / 'fork/install'
-        self.original = json.loads((runner.evidence / 'fork-fingerprint.json').read_text())
+        fingerprint = runner.evidence / 'fork-fingerprint.json'
+        self.original = json.loads(fingerprint.read_text())
+        self.original_fingerprint_sha256 = digest(fingerprint)
         self.backup: Path | None = None
         self.layer_reports: list[Path] = []
         self.result = dict(passed=False, full_suite=full_suite, failures=[], source_files=source_files(),
@@ -145,10 +149,59 @@ class RuntimeCoverage:
         if source_files() != self.result['source_files']:
             raise RuntimeError('Sources changed while exporting integration coverage')
 
+    def verify_unswapped_original(self) -> None:
+        """A failed preparation may leave the original installed, without a swap."""
+        instrumented = self.evidence / 'fork-fingerprint.json'
+        binaries = self.evidence / 'binaries'
+        if ('recovery_directory' in self.result
+                or instrumented.exists() or instrumented.is_symlink()
+                or binaries.exists() or binaries.is_symlink()
+                or digest(self.runner.evidence / 'fork-fingerprint.json') != self.original_fingerprint_sha256
+                or self.result['original_binaries'] != self.original['binaries']):
+            raise RuntimeError('Runtime coverage installation swap state is ambiguous')
+        expected_marker = {'owner': 'container-runtime-benchmark', 'lane': 'fork', 'schema': 1}
+        marker = self.installation / '.runtime-benchmark-owner.json'
+        for directory in (self.installation.parent.parent, self.installation.parent):
+            info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o022):
+                raise RuntimeError('Original runtime installation ancestor ownership changed')
+        directory_info = self.installation.lstat()
+        marker_info = marker.lstat()
+        if (not stat.S_ISDIR(directory_info.st_mode) or directory_info.st_uid != os.getuid()
+                or directory_info.st_mode & 0o022
+                or not stat.S_ISREG(marker_info.st_mode) or marker_info.st_uid != os.getuid()
+                or marker_info.st_nlink != 1 or marker_info.st_mode & 0o022
+                or json.loads(marker.read_text()) != expected_marker):
+            raise RuntimeError('Original runtime installation ownership changed')
+        require_idle(self.installation)
+        for relative in self.original['binaries']:
+            name = Path(relative)
+            if (name.is_absolute() or not name.parts or '..' in name.parts
+                    or name.as_posix() != relative):
+                raise RuntimeError('Original runtime binary path is malformed')
+            member = self.installation
+            for part in name.parts[:-1]:
+                member /= part
+                info = member.lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                    raise RuntimeError('Original runtime binary directory changed')
+            member /= name.name
+            info = member.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_nlink != 1 or info.st_mode & 0o022):
+                raise RuntimeError('Original runtime binary ownership changed')
+        verify_binaries(self.installation, self.original['binaries'])
+
     def finish(self, tests_passed: bool) -> None:
         """Restore the original even if profile conversion fails; retain unsafe recovery."""
         try:
-            if self.backup is not None:
+            if self.backup is None:
+                if tests_passed:
+                    raise RuntimeError('Runtime coverage cannot pass without an instrumented installation')
+                self.verify_unswapped_original()
+                self.result['restored'] = True
+            else:
                 stop_owned('fork')
                 require_idle(self.installation)
                 try:

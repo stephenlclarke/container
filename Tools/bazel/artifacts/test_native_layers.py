@@ -20,12 +20,13 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import tarfile
 import tempfile
 import unittest
 from unittest import mock
 
-from Tools.bazel.artifacts import native_format, native_layers, native_producer
+from Tools.bazel.artifacts import native_format, native_layers, native_producer, recipe_compatibility
 
 
 class NativeLayerTests(unittest.TestCase):
@@ -35,13 +36,16 @@ class NativeLayerTests(unittest.TestCase):
         self.root = Path(scratch.name)
         self.q = self.root / 'q'
         self.q.mkdir()
+        policy = self.q / 'Tools/bazel/artifacts/recipe_compatibility.py'
+        policy.parent.mkdir(parents=True)
+        shutil.copyfile(Path(recipe_compatibility.__file__), policy)
         self.locks = self.root / 'locks'
         self.locks.mkdir()
         self.cache = self.root / 'cache'
         self.cache.mkdir()
         self.source = 'a' * 40
         self.toolchain = {'bazelVersion': '8.8.0', 'swiftcSHA256': 'b' * 64}
-        self.recipe = {'Package.swift': 'c' * 64}
+        self.recipe = {'Package.swift': 'c' * 64, **recipe_compatibility.NEW}
         self.pins = {
             name: {'identity': name, 'kind': 'remoteSourceControl',
                    'location': 'https://github.com/example/' + name,
@@ -180,6 +184,8 @@ class NativeLayerTests(unittest.TestCase):
     def test_exact_chain_extracts_only_selected_packages_and_builds_canonical_flags(self):
         admitted = self.imported()
         self.assertEqual(list(admitted['layers']), list(native_layers.ALL_GROUPS))
+        self.assertTrue(all(layer['recipeCompatibility']['mode'] == 'exact'
+                            for layer in admitted['layers'].values()))
         self.assertEqual(admitted['layers']['engine-api']['lower']['foundation'],
                          native_layers.lower_identity(admitted['layers']['foundation']))
         self.assertIn('+dependencies+swiftpkg_swift_argument_parser', admitted['overrides'])
