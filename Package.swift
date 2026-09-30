@@ -200,6 +200,7 @@ let package = Package(
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "TOML", package: "swift-toml"),
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationArchive", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ContainerEngineService", package: "container-engine-api"),
@@ -254,6 +255,8 @@ let package = Package(
                 "ContainerCommands",
                 "ContainerXPC",
                 "ContainerResource",
+                .product(name: "ContainerizationArchive", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
             ]
         ),
         .testTarget(

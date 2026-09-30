@@ -3,6 +3,7 @@
 from pathlib import Path
 import json
 import os
+import re
 import signal
 import subprocess
 import tempfile
@@ -13,10 +14,37 @@ from unittest import mock
 
 from runtime_benchmark import RuntimeRunner
 import runtime_integration
-from runtime_integration import EOFIntegrationRunner, owned_cli_processes, require_eof_cases, retain_layer_reports, stop_test_children, test_filter
+from runtime_integration import EOFIntegrationRunner, owned_cli_processes, require_commit_cases, require_eof_cases, retain_layer_reports, stop_test_children, test_filter
 
 
 class IntegrationReportsTests(unittest.TestCase):
+    def test_upstream_commit_cases_are_selected_and_reported(self):
+        for name in ('testCommitStoppedContainer()', 'testCommitRunningContainer()'):
+            self.assertIsNotNone(re.search(test_filter('Containers'), 'TestCLICommitCommand/' + name))
+        source = runtime_integration.ROOT / 'Tests/IntegrationTests/Containers/TestCLICommitCommand.swift'
+        self.assertIn('struct TestCLICommitCommand', source.read_text())
+        with tempfile.TemporaryDirectory() as directory:
+            reports = Path(directory)
+            xml = reports / 'test.xml'
+            expected = ['testCommitStoppedContainer()', 'testCommitRunningContainer()']
+
+            def report(names):
+                xml.write_text('<testsuites><testsuite name="IntegrationTests.TestCLICommitCommand">'
+                               + ''.join(f'<testcase name="{name}" result="completed"/>' for name in names)
+                               + '</testsuite><testsuite name="IntegrationTests.Other">'
+                               + '<testcase name="other()" result="completed"/></testsuite></testsuites>')
+
+            report(expected)
+            require_commit_cases(reports)
+            for invalid in (expected[:-1], [expected[0], 'other()'], [*expected, expected[0]]):
+                report(invalid)
+                with self.assertRaisesRegex(RuntimeError, 'both upstream cases'):
+                    require_commit_cases(reports)
+            report(expected)
+            xml.write_text(xml.read_text().replace('result="completed"', 'result="skipped"', 1))
+            with self.assertRaisesRegex(RuntimeError, 'both upstream cases'):
+                require_commit_cases(reports)
+
     def test_focused_eof_requires_exact_three_completed_cases(self):
         with tempfile.TemporaryDirectory() as directory:
             reports = Path(directory)

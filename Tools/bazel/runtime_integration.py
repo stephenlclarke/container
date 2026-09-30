@@ -24,6 +24,7 @@ EOF_CASES = {
     'prewarmedDedicatedStartClosesFiniteInput()',
     'foregroundSharedRunClosesFiniteInput()',
 }
+COMMIT_CASES = {'testCommitStoppedContainer()', 'testCommitRunningContainer()'}
 
 
 class EOFIntegrationRunner(RuntimeRunner):
@@ -50,6 +51,19 @@ def require_eof_cases(reports: Path) -> None:
             or case.find('error') is not None or case.get('result') != 'completed'
             for _, _, case in cases):
         raise RuntimeError('Focused EOF integration did not complete all three original cases')
+
+
+def require_commit_cases(reports: Path) -> None:
+    """The upstream commit suite must not disappear from the full CLI inventory."""
+    cases = [case for xml in reports.rglob('test.xml')
+             for suite in ET.parse(xml).iter('testsuite')
+             if suite.get('name') == 'IntegrationTests.TestCLICommitCommand'
+             for case in suite.findall('testcase')]
+    if (len(cases) != len(COMMIT_CASES) or {case.get('name') for case in cases} != COMMIT_CASES
+            or any(case.find('skipped') is not None or case.find('failure') is not None
+                   or case.find('error') is not None or case.get('result') != 'completed'
+                   for case in cases)):
+        raise RuntimeError('Container commit integration did not complete both upstream cases')
 
 
 def owned_cli_processes(executable: Path, records: Path) -> dict[int, str]:
@@ -189,6 +203,8 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
                     row['executed_tests'] = retain_layer_reports(Path(row['log']), evidence / (layer.lower() + '-reports'))
                     if layer == 'Run' and selection == EOF_SELECTION:
                         require_eof_cases(evidence / 'run-reports')
+                    if layer == 'Containers' and (selection is None or selection == '^TestCLICommitCommand/'):
+                        require_commit_cases(evidence / 'containers-reports')
                 except (OSError, RuntimeError) as error:
                     row['report_error'] = str(error)
                     if row['status'] == 0:
