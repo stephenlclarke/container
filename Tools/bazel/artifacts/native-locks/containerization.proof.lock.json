@@ -1,0 +1,8 @@
+{
+  "asset": "containerization-native-proof.tar.gz",
+  "repository": "stephenlclarke/containerization",
+  "schema": 1,
+  "sha256": "76e09aa6d5d065ed7a60f9ec52794243c5e1beb14f45e6d13f69e2cf779a9a08",
+  "tag": "layer-containerization-native-62e64f0a51b6-fc7eead7ba6478f2a7a2",
+  "targetCommit": "6db16197bbad8196a78132f86529daa89125aafb"
+}
