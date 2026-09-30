@@ -52,7 +52,7 @@ def stages(evidence: Path, trials: int) -> list[tuple]:
         ('coverage', ['container'], script('coverage', '--evidence', evidence / 'coverage'), 1800),
         ('combined-coverage', ['coverage', 'integration'], script('combined_coverage', '--unit', evidence / 'coverage',
                     '--integration', evidence / 'integration/coverage', '--evidence', evidence / 'combined-coverage'), 600),
-        ('component-benchmarks', ['dependencies', 'container', 'builder'], script('fork_benchmark',
+        ('component-benchmarks', ['dependencies', 'container', 'builder', 'integration'], script('fork_benchmark',
                     '--reuse-reference', '--evidence', evidence / 'components', '--scratch', component_scratch, *component_args), 10800),
         ('runtime-benchmark', ['integration'], script('runtime_benchmark', '--reuse-reference', '--prepared', prepared,
                     '--trials', trials, '--evidence', evidence / 'runtime-benchmark'), 1800),

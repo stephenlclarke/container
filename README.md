@@ -198,6 +198,8 @@ Normal qualification now [imports published guest and builder artifacts](./docs/
 
 The optimized runtime now imports four published [native dependency layers](./docs/ISSUE-native-compiled-layers.md) and verifies all eight executable links against their sealed archives. At `db4088b1`, runtime smoke and VM integration passed, but instrumented integration failed because the native action verifier classified Bazel's input-free `BaselineCoverage` metadata as dependency source compilation. The failed run and its guarded host recovery remain recorded. The corrected verifier admits only that exact coverage metadata shape; a finite two-file recipe check preserves the original four published archives and their producer proofs. A new complete qualification is required.
 
+Component benchmarks now start only after integration passes. The `bf0e10bd` attempt passed the corrected native coverage check but failed two commit-command integration cases; their failed evidence remains intact. Blocking component timing after that failure preserves the complete benchmark workloads and release gates for a successful run.
+
 ## Contributing
 
 Contributions to `container` are welcome and encouraged. Please see our

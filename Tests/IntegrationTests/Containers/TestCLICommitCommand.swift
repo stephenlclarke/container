@@ -44,6 +44,7 @@ struct TestCLICommitCommand {
                 runArgs: ["--env", environment, "--workdir", workingDirectory],
                 autoRemove: false
             ) { name in
+                let platform = try f.inspectContainer(name).configuration.platform
                 let expected = "must-be-in-committed-image"
                 try f.doExec(name, cmd: ["sh", "-c", "echo \(expected) > /committed-file"])
 
@@ -55,7 +56,7 @@ struct TestCLICommitCommand {
                 try result.check("commit failed")
                 #expect(result.output.trimmingCharacters(in: .whitespacesAndNewlines) == reference)
                 #expect(try f.isImagePresent(reference))
-                try assertCommittedImageMetadata(f, reference: reference)
+                try assertCommittedImageMetadata(f, reference: reference, platform: platform)
 
                 try await f.withContainer(image: reference) { committedName in
                     let output = try f.doExec(committedName, cmd: ["cat", "/committed-file"])
@@ -71,7 +72,7 @@ struct TestCLICommitCommand {
         }
     }
 
-    private func assertCommittedImageMetadata(_ fixture: ContainerFixture, reference: String) throws {
+    private func assertCommittedImageMetadata(_ fixture: ContainerFixture, reference: String, platform: Platform) throws {
         let archivePath = fixture.testDir.appending("committed-image.tar")
         try fixture.run(["image", "save", "--output", archivePath.string, reference]).check()
 
@@ -82,8 +83,16 @@ struct TestCLICommitCommand {
 
         let decoder = JSONDecoder()
         let index = try decoder.decode(Index.self, from: Data(contentsOf: URL(filePath: extractedDirectory.appending("index.json").string)))
-        let manifestDescriptor = try #require(index.manifests.first)
-        #expect(manifestDescriptor.annotations?["org.opencontainers.image.ref.name"] == reference)
+        try #require(index.manifests.count == 1)
+        let imageIndexDescriptor = try #require(index.manifests.first)
+        #expect(imageIndexDescriptor.annotations?["org.opencontainers.image.ref.name"] == reference)
+        try #require(imageIndexDescriptor.mediaType == MediaTypes.index)
+
+        let imageIndex = try decoder.decode(Index.self, from: blobData(imageIndexDescriptor, in: extractedDirectory))
+        try #require(imageIndex.manifests.count == 1)
+        let manifestDescriptor = try #require(imageIndex.manifests.first)
+        try #require(manifestDescriptor.mediaType == MediaTypes.imageManifest)
+        #expect(manifestDescriptor.platform == platform)
 
         let manifest = try decoder.decode(Manifest.self, from: blobData(manifestDescriptor, in: extractedDirectory))
         #expect(manifest.layers.count == 1)

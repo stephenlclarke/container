@@ -187,6 +187,36 @@ class QualificationTests(unittest.TestCase):
                 else:
                     self.assertEqual(release['state'], 'passed')
 
+    def test_failed_integration_blocks_component_benchmarks_without_changing_successful_workload(self):
+        for integration_status in (0, 1):
+            with self.subTest(integration_status=integration_status), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                dispatched = []
+
+                def execute(_component, _lane, fixture, *_arguments):
+                    dispatched.append(fixture)
+                    return {'status': integration_status if fixture == 'integration' else 0,
+                            'log': fixture + '.log', 'seconds': 1}
+
+                with patch.object(qualification, 'checkpoint', return_value='a' * 40), \
+                        patch.object(qualification.Runner, 'run', side_effect=execute):
+                    if integration_status:
+                        with self.assertRaises(SystemExit):
+                            qualification.run(evidence, 1)
+                    else:
+                        qualification.run(evidence, 1)
+                report = json.loads((evidence / 'qualification.json').read_text())
+                self.assertEqual(len(report['stages']), 25)
+                component = next(row for row in report['stages'] if row['name'] == 'component-benchmarks')
+                if integration_status:
+                    self.assertEqual(component['state'], 'blocked')
+                    self.assertEqual(component['blocked_by'], ['integration'])
+                    self.assertNotIn('component-benchmarks', dispatched)
+                    self.assertFalse(report['passed'])
+                else:
+                    self.assertEqual(component['state'], 'passed')
+                    self.assertIn('component-benchmarks', dispatched)
+
     def test_failed_gate_is_retained_and_blocks_only_its_dependents(self):
         with tempfile.TemporaryDirectory() as directory:
             evidence = Path(directory)
