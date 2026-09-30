@@ -31,7 +31,7 @@ import Testing
 @testable import ContainerAPIService
 @testable import ContainerPlugin
 
-struct ContainerLoggingAuthorityIntegrationTests {
+struct ContainerLoggingAuthorityBoundaryTests {
     @Test func providerUpgradeMigratesAndResealsDurableConfigurationBeforeCutover() async throws {
         try await withTemporaryRoot { root in
             let identity = LogDriverProviderIdentity(
@@ -1228,7 +1228,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 includeRuntime: includeRuntime
             ),
             containerSystemConfig: ContainerSystemConfig(logging: logging),
-            log: Logger(label: "ContainerLoggingAuthorityIntegrationTests"),
+            log: Logger(label: "ContainerLoggingAuthorityBoundaryTests"),
             logDriverCatalogProvider: logDriverCatalogProvider,
             remoteLogDriverPlane: remoteLogDriverPlane
         )

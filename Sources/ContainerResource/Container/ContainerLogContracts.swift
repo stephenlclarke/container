@@ -1197,7 +1197,7 @@ public protocol LogDriverCatalogProviding: Sendable {
 }
 
 extension LogDriverCatalogProviding {
-    public func logDriverCatalog(forSelectedDriver driver: String) async throws -> LogDriverCatalog {
+    public func logDriverCatalog(forSelectedDriver _: String) async throws -> LogDriverCatalog {
         try await logDriverCatalog()
     }
 
