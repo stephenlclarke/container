@@ -122,6 +122,143 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func stoppedPrewarmFallbackRequiresOriginalAndFreshOwnedState() {
+        let generation = UUID()
+        func eligible(
+            status: RuntimeStatus = .stopped,
+            dedicated: Bool = true,
+            prewarmed: Bool = true,
+            cleanupRequired: Bool = false,
+            startedDate: Date? = nil,
+            currentGeneration: UUID = generation
+        ) -> Bool {
+            ContainersService.stoppedPreparedRuntimeMayStopService(
+                status: status,
+                isDedicated: dedicated,
+                wasPrewarmed: prewarmed,
+                cleanupRequired: cleanupRequired,
+                startedDate: startedDate,
+                capturedGeneration: generation,
+                currentGeneration: currentGeneration
+            )
+        }
+        #expect(eligible())
+        #expect(!eligible(status: .stopping))
+        #expect(!eligible(status: .running))
+        #expect(!eligible(status: .paused))
+        #expect(!eligible(status: .unknown))
+        #expect(!eligible(dedicated: false))
+        #expect(!eligible(prewarmed: false))
+        #expect(!eligible(cleanupRequired: true))
+        #expect(!eligible(startedDate: Date()))
+        #expect(!eligible(currentGeneration: UUID()))
+    }
+
+    @Test
+    func repeatedStoppedShutdownFailureStopsExactServiceBeforeLogging() async throws {
+        var events = ["first-shutdown-failed"]
+        var tombstoneRetained = true
+        let stoppedService = try await ContainersService.retryPreparedShutdownOrStopService(
+            initialStatus: .stopped,
+            retryShutdown: {
+                events.append("second-shutdown-failed")
+                throw PreparedShutdownTestError.sticky
+            },
+            stopIfStillEligible: {
+                events.append("exact-service-inactive")
+            }
+        )
+        #expect(stoppedService)
+        try await ContainersService.finishPreparedRuntimeCleanup(
+            stopServiceBeforeLogging: false,
+            serviceAlreadyStopped: stoppedService,
+            stopService: { events.append("unexpected-second-service-stop") },
+            cleanupLogging: { events.append("logging-cleanup") },
+            clearState: {
+                events.append("clear-tombstone")
+                tombstoneRetained = false
+            }
+        )
+        #expect(
+            events == [
+                "first-shutdown-failed", "second-shutdown-failed",
+                "exact-service-inactive", "logging-cleanup", "clear-tombstone",
+            ])
+        #expect(!tombstoneRetained)
+
+        var rejectedEvents = [String]()
+        await #expect(throws: PreparedShutdownTestError.sticky) {
+            try await ContainersService.retryPreparedShutdownOrStopService(
+                initialStatus: .stopping,
+                retryShutdown: {
+                    rejectedEvents.append("second-shutdown-failed")
+                    throw PreparedShutdownTestError.sticky
+                },
+                stopIfStillEligible: {
+                    rejectedEvents.append("unexpected-service-stop")
+                }
+            )
+        }
+        #expect(rejectedEvents == ["second-shutdown-failed"])
+    }
+
+    @Test
+    func exactServiceStopFailureRetainsPreparedCleanup() async {
+        var events = [String]()
+        var tombstoneRetained = true
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) {
+            try await ContainersService.retryPreparedShutdownOrStopService(
+                initialStatus: .stopped,
+                retryShutdown: {
+                    events.append("second-shutdown-failed")
+                    throw PreparedShutdownTestError.sticky
+                },
+                stopIfStillEligible: {
+                    events.append("inactive-proof-failed")
+                    throw PreparedShutdownTestError.inactiveProof
+                }
+            )
+        }
+        #expect(events == ["second-shutdown-failed", "inactive-proof-failed"])
+        #expect(tombstoneRetained)
+
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) {
+            try await ContainersService.finishPreparedRuntimeCleanup(
+                stopServiceBeforeLogging: true,
+                serviceAlreadyStopped: false,
+                stopService: {
+                    events.append("inactive-proof-failed-again")
+                    throw PreparedShutdownTestError.inactiveProof
+                },
+                cleanupLogging: { events.append("unexpected-logging-cleanup") },
+                clearState: { tombstoneRetained = false }
+            )
+        }
+        #expect(tombstoneRetained)
+        #expect(!events.contains("unexpected-logging-cleanup"))
+    }
+
+    @Test
+    func preparedLoggingFailureRetainsTombstoneAfterServiceStop() async {
+        var events = [String]()
+        var tombstoneRetained = true
+        await #expect(throws: PreparedShutdownTestError.logging) {
+            try await ContainersService.finishPreparedRuntimeCleanup(
+                stopServiceBeforeLogging: false,
+                serviceAlreadyStopped: false,
+                stopService: { events.append("exact-service-inactive") },
+                cleanupLogging: {
+                    events.append("logging-failed")
+                    throw PreparedShutdownTestError.logging
+                },
+                clearState: { tombstoneRetained = false }
+            )
+        }
+        #expect(events == ["logging-failed", "exact-service-inactive"])
+        #expect(tombstoneRetained)
+    }
+
+    @Test
     func recoveredRunningPrewarmIsStoppedBeforeDiscard() {
         #expect(
             ContainersService.recoveredPrewarmRuntimeAction(for: .stopped)
@@ -736,4 +873,10 @@ struct ContainerLifecycleValidationTests {
             startedDate: nil
         )
     }
+}
+
+private enum PreparedShutdownTestError: Error {
+    case sticky
+    case inactiveProof
+    case logging
 }
