@@ -58,7 +58,7 @@ struct TestCLICommitCommand {
                 #expect(try f.isImagePresent(reference))
                 try assertCommittedImageMetadata(f, reference: reference, platform: platform)
 
-                try await f.withContainer(image: reference) { committedName in
+                try await f.withContainer(image: reference, tag: "committed", containerArgs: []) { committedName in
                     let output = try f.doExec(committedName, cmd: ["cat", "/committed-file"])
                     #expect(output.trimmingCharacters(in: .whitespacesAndNewlines) == expected)
 

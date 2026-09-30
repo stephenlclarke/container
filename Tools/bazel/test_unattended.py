@@ -18,8 +18,9 @@ import linux_tests
 
 class OwnershipTests(unittest.TestCase):
     def test_successful_startup_releases_only_its_inherited_daemon_lease(self):
-        for failed_start in (False, True):
-            with self.subTest(failed_start=failed_start), tempfile.TemporaryDirectory() as directory:
+        for failed_start, target in ((failed, selected) for failed in (False, True)
+                                     for selected in ('bazel-artifact-check', 'bazel-runtime-integration')):
+            with self.subTest(failed_start=failed_start, target=target), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 helper = None
                 with patch.object(unattended, 'STORAGE', root), \
@@ -31,7 +32,7 @@ class OwnershipTests(unittest.TestCase):
                         patch.object(unattended, 'Runner') as runner, \
                         patch.object(unattended, 'verify_installations'), \
                         patch.object(unattended.signal, 'signal'), \
-                        patch('sys.argv', ['unattended', '--evidence', str(root / 'evidence')]):
+                        patch('sys.argv', ['unattended', '--target', target, '--evidence', str(root / 'evidence')]):
                     def acquire():
                         nonlocal helper
                         helper = subprocess.Popen(
@@ -65,6 +66,8 @@ class OwnershipTests(unittest.TestCase):
                         else:
                             unattended.main()
                             self.assertEqual(runner.return_value.run.call_args.kwargs['stop_grace'], 240)
+                            self.assertEqual(runner.return_value.run.call_args.args[4][1], target)
+                            self.assertEqual(json.loads((root / 'evidence/acceptance.json').read_text())['target'], target)
                             host.return_value.restore.assert_called_once_with(restore_workers=True)
                     finally:
                         if helper is not None:

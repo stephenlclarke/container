@@ -242,3 +242,16 @@ TLS-only and compilation-only reports identify their phase and selected componen
 The first full qualification stage performs live Docker reference admission before dependency builds or hosted-quality waiting. The later Docker comparison repeats admission against the then-current engine. `make bazel-unattended-reference-admission QUALIFICATION_EVIDENCE=/new/absolute/evidence` runs the same early check using the existing host, service and Colima restoration wrapper. Its `reference-only-diagnostic` record always has full qualification `passed: false`; successful diagnostic acceptance does not qualify a release. It starts no benchmark workloads and never recaptures historical timings.
 
 Historical benchmark reuse shortened the measured local work before hosted admission to 39.7 minutes, while successful hosted jobs took 79 and 88 minutes. A 30-minute local wait could therefore reject a legitimate in-progress hosted scan. The local wait now allows 90 minutes, with three additional minutes for bounded API calls and controller/reporting overhead; the hosted job limits, exact-source/attempt checks, required successful analyses and all functional/performance deadlines remain unchanged. No pending result is accepted as success.
+
+### Guarded focused integration
+
+Use the existing runtime integration target through the unattended wrapper when checking a fixture correction before full qualification. `PREPARED_RUNTIME` must name matching retained runtime preparation; the command verifies product sources, compiler inputs, published native dependencies and binary fingerprints before reuse. The compiled native receipt must match the selected source revision. For a new clean revision, create matching candidate preparation with `make bazel-unattended-artifacts`; published dependencies and the compiler cache are reused. Use a fresh absolute evidence directory:
+
+```sh
+PREPARED_RUNTIME="/absolute/path/to/runtime-smoke" \
+INTEGRATION_ARGS="--layer Containers --test-filter ^TestCLICommitCommand/" \
+python3 Tools/bazel/unattended.py --target bazel-runtime-integration \
+  --evidence "/absolute/path/to/focused-commit-evidence"
+```
+
+The wrapper preserves and restores host services and records `bazel-runtime-integration` as the target. The selected suite must execute both commit cases successfully. This focused result is diagnostic; release publication still requires all full qualification stages, coverage, benchmarks, hosted quality, signing and restoration checks.
