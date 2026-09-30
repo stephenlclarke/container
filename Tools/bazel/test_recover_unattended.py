@@ -9,8 +9,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from fork_benchmark import digest
 import host_lease
 import recover_unattended as recovery
+import runtime_coverage
 import unattended
 
 
@@ -54,6 +56,191 @@ class RecoveryTests(unittest.TestCase):
         self.assertIn(reason, ' '.join(result['failures']))
         self.assertEqual(self.journal.read_bytes(), original)
         self.stop.assert_not_called()
+
+    def recorded_coverage(self):
+        source = self.storage / 'source'
+        source.mkdir()
+        revision = 'a' * 40
+        self.record['bazel_workspace'] = str(source)
+        self.save()
+        self.stack.enter_context(patch.object(recovery, 'ROOT', source))
+        self.stack.enter_context(patch.object(
+            recovery, 'checked', side_effect=lambda arguments, **_: revision
+            if arguments[-1] == 'HEAD' else ''))
+        self.stack.enter_context(patch.object(runtime_coverage, 'stop_owned'))
+        idle = self.stack.enter_context(patch.object(recovery, 'require_idle'))
+        self.stack.enter_context(patch.object(runtime_coverage, 'require_idle'))
+        install = self.installs / 'fork/install'
+        install.mkdir(parents=True)
+        temporary = install.parent / 'coverage-install-12345678'
+        backup = temporary / 'previous'
+        backup.mkdir(parents=True)
+        marker = {'owner': 'container-runtime-benchmark', 'lane': 'fork', 'schema': 1}
+        for directory in (install, backup):
+            (directory / '.runtime-benchmark-owner.json').write_text(json.dumps(marker))
+            (directory / 'bin').mkdir()
+        old = backup / 'bin/container'
+        old.write_text('original')
+        current = install / 'bin/container'
+        current.write_text('instrumented')
+        original = {'bin/container': digest(old)}
+        instrumented = {'bin/container': digest(current)}
+        smoke = self.evidence / 'runtime-smoke'
+        smoke.mkdir()
+        (smoke / 'fork-fingerprint.json').write_text(json.dumps({'binaries': original}))
+        coverage = self.evidence / 'integration/coverage'
+        coverage.mkdir(parents=True)
+        (coverage / 'fork-fingerprint.json').write_text(json.dumps({'binaries': instrumented}))
+        record = {'revision': revision, 'passed': False, 'restored': False,
+                  'failures': ['original interrupted qualification'],
+                  'original_binaries': original, 'recovery_directory': str(temporary)}
+        path = coverage / 'coverage.json'
+        path.write_text(json.dumps(record))
+        (self.evidence / 'acceptance.json').write_text('{"passed": false}\n')
+        return path, install, backup, idle
+
+    def test_recorded_profile_backup_restores_only_failed_run_and_is_idempotent(self):
+        path, install, backup, idle = self.recorded_coverage()
+        before = path.read_bytes()
+        result = recovery.recover(self.evidence)
+        self.assertTrue(result['restored'])
+        self.assertTrue(result['profiled_installation_recovered'])
+        self.assertEqual((install / 'bin/container').read_text(), 'original')
+        self.assertFalse(backup.exists())
+        self.assertEqual((path.parent / 'coverage-before-recovery.json').read_bytes(), before)
+        after = json.loads(path.read_text())
+        self.assertTrue(after['restored'])
+        self.assertFalse(after['passed'])
+        self.assertEqual(after['failures'], ['original interrupted qualification'])
+        self.assertNotIn('recovery_directory', after)
+        self.assertFalse(json.loads((self.evidence / 'acceptance.json').read_text())['passed'])
+        self.assertGreaterEqual(idle.call_count, 2)
+        again = recovery.recover(self.evidence)
+        self.assertTrue(again['restored'])
+        self.assertFalse(again['needed'])
+        self.assertEqual((path.parent / 'coverage-before-recovery.json').read_bytes(), before)
+
+    def test_recorded_profile_refuses_active_or_changed_backup_without_deletion(self):
+        path, install, backup, idle = self.recorded_coverage()
+        original = path.read_bytes()
+        idle.side_effect = RuntimeError('private CLI still active')
+        result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('private CLI still active', result['failures'])
+        self.assertTrue(backup.exists())
+        self.assertEqual((install / 'bin/container').read_text(), 'instrumented')
+        self.assertEqual(path.read_bytes(), original)
+        idle.side_effect = None
+        (backup / 'bin/container').write_text('changed original')
+        result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('Prepared runtime binary changed', ' '.join(result['failures']))
+        self.assertTrue(backup.exists())
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_recorded_profile_keeps_live_owner_or_busy_lease_untouched(self):
+        path, install, backup, _idle = self.recorded_coverage()
+        original = path.read_bytes()
+        self.processes.return_value = {self.record['owner']: {}}
+        self.assert_rejected('still active')
+        self.processes.return_value = {}
+        descriptor = os.open(self.command_lock, os.O_RDWR)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            self.assert_rejected('temporarily unavailable')
+        finally:
+            os.close(descriptor)
+        self.assertEqual(path.read_bytes(), original)
+        self.assertTrue(backup.exists())
+        self.assertEqual((install / 'bin/container').read_text(), 'instrumented')
+
+    def test_recorded_profile_retries_after_transient_finish_failure_without_rewriting_original(self):
+        path, install, backup, _idle = self.recorded_coverage()
+        before = path.read_bytes()
+        with patch.object(runtime_coverage, 'stop_owned', side_effect=RuntimeError('owned CLI still active')):
+            result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertTrue(backup.exists())
+        self.assertEqual((install / 'bin/container').read_text(), 'instrumented')
+        self.assertEqual((path.parent / 'coverage-before-recovery.json').read_bytes(), before)
+        failed = json.loads(path.read_text())
+        self.assertEqual(failed['failures'], ['original interrupted qualification', 'owned CLI still active'])
+        path.write_text(json.dumps(dict(failed, full_suite=True)))
+        tampered = recovery.recover(self.evidence)
+        self.assertFalse(tampered['restored'])
+        self.assertIn('Previously preserved failed coverage evidence changed', tampered['failures'])
+        self.assertTrue(backup.exists())
+        path.write_text(json.dumps(failed))
+        result = recovery.recover(self.evidence)
+        self.assertTrue(result['restored'])
+        self.assertEqual((install / 'bin/container').read_text(), 'original')
+        self.assertEqual((path.parent / 'coverage-before-recovery.json').read_bytes(), before)
+        self.assertEqual(json.loads(path.read_text())['failures'], failed['failures'])
+        self.assertFalse(json.loads(path.read_text())['passed'])
+
+    def test_recorded_profile_refuses_redirected_evidence_parents(self):
+        path, install, backup, _idle = self.recorded_coverage()
+        before = path.read_bytes()
+        for parent in (self.evidence / 'integration', self.evidence / 'runtime-smoke'):
+            with self.subTest(parent=parent):
+                saved = self.storage / parent.name
+                parent.rename(saved)
+                parent.symlink_to(saved, target_is_directory=True)
+                result = recovery.recover(self.evidence)
+                self.assertFalse(result['restored'])
+                self.assertIn('privately owned', ' '.join(result['failures']))
+                self.assertTrue(backup.exists())
+                self.assertEqual((install / 'bin/container').read_text(), 'instrumented')
+                self.assertEqual(path.read_bytes(), before)
+                parent.unlink()
+                saved.rename(parent)
+
+    def test_recorded_profile_never_claims_success_if_receipt_write_fails_after_replacement(self):
+        path, install, backup, _idle = self.recorded_coverage()
+        before = path.read_bytes()
+        with patch.object(runtime_coverage.RuntimeCoverage, 'persist',
+                          side_effect=OSError('coverage receipt unavailable')):
+            result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('coverage receipt unavailable', result['failures'])
+        self.assertFalse(backup.exists())
+        self.assertEqual((install / 'bin/container').read_text(), 'original')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual((path.parent / 'coverage-before-recovery.json').read_bytes(), before)
+        self.assertTrue(self.journal.exists())
+        repeated = recovery.recover(self.evidence)
+        self.assertFalse(repeated['restored'])
+        self.assertTrue(self.journal.exists())
+
+    def test_recorded_profile_refuses_foreign_path_symlink_and_source_drift(self):
+        path, install, backup, _idle = self.recorded_coverage()
+        original = path.read_bytes()
+        record = json.loads(original)
+        record['recovery_directory'] = str(self.storage / 'foreign')
+        path.write_text(json.dumps(record))
+        result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('outside the private installation', ' '.join(result['failures']))
+        path.write_bytes(original)
+        marker = backup / '.runtime-benchmark-owner.json'
+        marker.rename(backup / 'real-marker.json')
+        marker.symlink_to(backup / 'real-marker.json')
+        result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('symbolic link', ' '.join(result['failures']))
+        marker.unlink()
+        (backup / 'real-marker.json').rename(marker)
+        (install / 'bin/container').write_text('changed instrumented')
+        result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('Prepared runtime binary changed', ' '.join(result['failures']))
+        (install / 'bin/container').write_text('instrumented')
+        path.write_text(json.dumps(dict(json.loads(original), revision='b' * 40)))
+        result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('source or failed state', ' '.join(result['failures']))
+        self.assertTrue(backup.exists())
+        self.assertEqual((install / 'bin/container').read_text(), 'instrumented')
 
     def test_restores_own_dead_run_then_repeated_recovery_is_noop(self):
         (self.evidence / 'colima-lease.json').write_text(json.dumps({'started_by_this_run': False}))
@@ -130,6 +317,11 @@ class RecoveryTests(unittest.TestCase):
             receipt.write_text(text)
             self.assertFalse(recovery.recover(self.evidence)['restored'])
         self.stop.assert_not_called()
+        receipt.write_text('{"restored": true}')
+        self.verify.side_effect = RuntimeError('Instrumented installation restoration is unconfirmed')
+        result = recovery.recover(self.evidence)
+        self.assertFalse(result['restored'])
+        self.assertIn('restoration is unconfirmed', ' '.join(result['failures']))
 
     def test_changed_command_path_and_writable_lock_fail_closed(self):
         self.record['command_lock'] = '/another/commands.lock'
