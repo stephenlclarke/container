@@ -110,7 +110,9 @@ class MeasuredProductsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             prepared, _, hashes = self.fixture(root)
-            for name in ('guest-artifact.json', 'builder-artifact.json'):
+            for name in ('guest-artifact.json', 'builder-artifact.json',
+                         'compiled-consumer.json', 'fork-release.events.json',
+                         'fork-release-native-aquery.json'):
                 (prepared / name).write_text('{}')
             evidence = root / 'release-output'
             def command(_runner, name, arguments, _timeout):

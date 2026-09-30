@@ -44,6 +44,20 @@ bazel-tools-test:
 	@Tools/bazel/run.sh --help
 	@Tools/bazel/test_runner.sh --help
 	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s Tools/bazel -p 'test_*.py'
+	@PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s Tools/bazel/artifacts -p 'test_native_*.py'
+
+NATIVE_GROUP ?=
+NATIVE_OUTPUT ?=
+NATIVE_RECEIPT ?=
+NATIVE_QUALIFICATION ?=
+.PHONY: bazel-native-layer-produce bazel-native-layer-qualify bazel-native-layer-publish
+bazel-native-layer-produce:
+	@python3 -m Tools.bazel.artifacts.native_producer produce --group "$(NATIVE_GROUP)" --output "$(NATIVE_OUTPUT)"
+bazel-native-layer-qualify:
+	@python3 -m Tools.bazel.artifacts.native_producer qualify --group "$(NATIVE_GROUP)" --output "$(NATIVE_OUTPUT)"
+bazel-native-layer-publish:
+	@python3 -m Tools.bazel.artifacts.native_producer publish --receipt "$(NATIVE_RECEIPT)" \
+		--qualification "$(NATIVE_QUALIFICATION)" --output "$(NATIVE_OUTPUT)"
 
 .PHONY: bazel-dependency-test bazel-test-all bazel-check
 bazel-dependency-test:

@@ -218,10 +218,14 @@ class HistoricalReferenceTests(unittest.TestCase):
                     patch.object(runtime, 'prepare_assets'), \
                     patch.object(runtime, 'build_inputs', return_value={}), \
                     patch.object(runtime, 'build_environment', return_value={}), \
+                    patch.object(runtime.native_layers, 'import_layers', return_value={
+                        'overrides': {'+dependencies+swiftpkg_fake': str(root / 'verified-fake')}}), \
+                    patch.object(runtime.native_consumer, 'retain_compiled_consumer') as native_proof, \
                     patch.object(runtime, 'stage') as stage, \
                     patch.object(runtime.subprocess, 'run') as build:
                 runtime.prepare_all(evidence, candidate_only=True)
             stage.assert_called_once()
+            native_proof.assert_called_once()
             self.assertEqual(stage.call_args.args[0], 'fork')
             build.assert_called_once()
             self.assertIn('//:container', build.call_args.args[0])

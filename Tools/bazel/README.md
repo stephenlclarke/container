@@ -21,6 +21,9 @@ Run these in the container checkout:
 | `make bazel-build LAYER=system` | One dependency layer and its prerequisites |
 | `make bazel-test LAYER=system` | One layer's tests |
 | `make bazel-dependency-test` | Selected tests for all admitted dependencies |
+| `make bazel-native-layer-produce NATIVE_GROUP=... NATIVE_OUTPUT=/new/absolute/path` | Seal one compiled lower layer from a clean source and its successful Bazel outputs |
+| `make bazel-native-layer-qualify NATIVE_GROUP=... NATIVE_OUTPUT=/new/absolute/path` | Retain that group's original source-test reports and successful build evidence |
+| `make bazel-native-layer-publish NATIVE_RECEIPT=... NATIVE_QUALIFICATION=... NATIVE_OUTPUT=/new/absolute/path` | Revalidate and publish the matching archive, sidecar and portable proof, then verify downloads |
 | `make bazel-test-all` | Container and dependency tests together |
 | `make bazel-fork-benchmark` | Isolated fork/Apple component comparisons; retains mismatches and timings |
 | `make bazel-runtime-benchmark` | Build optimized Apple/fork stacks and run repeated runtime speed benchmarks |
@@ -59,6 +62,8 @@ Run these in the container checkout:
 `LAYER` defaults to `container`. Pick individual layer names from [layers.bzl](layers.bzl). Build and test commands reuse the same outputs. Host and runtime integration runs deliberately disable result caching because their external state can change.
 
 The normal unattended guest, runc-guest and builder stages consume checksum-pinned GitHub release assets with reviewed qualification sidecars. Each import verifies the owning source commit, release and asset identity, complete OCI archive, exact reference and original executable or builder-test hashes before writing the existing local receipt. Missing or incompatible locks stop qualification; the guest and builder source-build commands above remain explicit producer tools for a newly reviewed dependency source. Published imports do not stand in for the current Container integration, coverage, benchmarks or hosted gates.
+
+The optimized native runtime now requires a separate published compiled dependency chain: a macOS 12 ArgumentParser tool layer, then foundation, Containerization and EngineAPI layers. Each layer binds its selected source pins, compiler, successful configured build outputs, original source-test reports and the exact published lower archives. The runtime-smoke build imports those verified archives, proves that all eight Container executables link the selected lower binaries with no dependency source compilation (including tool actions), and records the unsigned compiler outputs before signing. Later integration and packaging recheck that receipt and the signed fingerprints. Ordinary source-mode builds and hosted quality tests remain available without the native release assets; no new native layer is published or qualified by this source change alone.
 
 The separate runtime integration suite requires a matching prepared installation, running services, kernel/images, permissions and network access. Its tests can create and remove runtime resources. Ordinary build/test commands do not start these prerequisites. The explicit runtime benchmark stages and starts its own signed installations, restores inactive default registrations afterward, and fails if an active default installation would be displaced. Compilation alone is not a runtime pass.
 

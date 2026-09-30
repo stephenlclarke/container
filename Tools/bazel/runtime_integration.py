@@ -14,6 +14,8 @@ import time
 import xml.etree.ElementTree as ET
 
 from fork_benchmark import ROOT, digest, install_signal_handlers
+from fork_benchmark import BAZEL, STORAGE
+from artifacts import native_consumer, native_layers
 from runtime_coverage import RuntimeCoverage
 from runtime_benchmark import INSTALLS, PLUGINS, STATE, RuntimeRunner, build_inputs, environment, own, reset_state, start_lane, stop_owned
 
@@ -128,6 +130,15 @@ def verify_prepared(prepared: Path) -> None:
         raise RuntimeError('Dependencies changed after runtime preparation')
     if inputs.get('build_inputs') != build_inputs():
         raise RuntimeError('Build inputs changed or are missing; prepare fresh runtime evidence')
+    admission = native_layers.import_layers(ROOT)
+    compiled_path = prepared / 'compiled-consumer.json'
+    compiled = native_consumer.verify_receipt(compiled_path, admission,
+                                              inputs['fork'],
+                                              bazel=BAZEL, output_root=STORAGE / 'output')
+    expected_unsigned = native_consumer.unsigned_product_hashes(compiled)
+    if (fingerprint.get('compiled_consumer_sha256') != digest(compiled_path)
+            or fingerprint.get('unsigned_native_inputs') != expected_unsigned):
+        raise RuntimeError('Prepared signed products lack their verified native compiler inputs')
 
 
 def retain_layer_reports(log: Path, destination: Path) -> int:
@@ -147,7 +158,8 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
         coverage: bool = False) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
     verify_prepared(prepared)
-    for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json']:
+    for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json',
+                 'compiled-consumer.json', 'fork-release.events.json', 'fork-release-native-aquery.json']:
         shutil.copy2(prepared / name, evidence / name)
     runner = EOFIntegrationRunner(evidence, STATE)
     executable = INSTALLS / 'fork/install/bin/container'

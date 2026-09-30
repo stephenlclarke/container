@@ -7,9 +7,10 @@ import re
 import shutil
 import tempfile
 
+from artifacts import native_consumer, native_layers
 from coverage import export_reports, line_counts, merge_lcov, run_command, source_files
-from fork_benchmark import ROOT, STORAGE, digest
-from runtime_benchmark import INSTALLS, PLUGINS, RuntimeRunner, checked, own, stage, stop_owned
+from fork_benchmark import BAZEL, ROOT, STORAGE, digest
+from runtime_benchmark import INSTALLS, PLUGINS, RuntimeRunner, build_environment, checked, own, stage, stop_owned
 
 
 def require_idle(installation: Path) -> None:
@@ -57,12 +58,23 @@ class RuntimeCoverage:
 
     def prepare(self) -> None:
         revision = checked(['git', 'rev-parse', 'HEAD'], cwd=ROOT)
+        native_admission = native_layers.import_layers(ROOT)
         self.result['revision'] = revision
         self.runner.env['GIT_COMMIT'] = revision
         self.persist()
-        run_command(self.runner, 'build-instrumented-runtime',
+        build_log = run_command(self.runner, 'build-instrumented-runtime',
                     [str(ROOT / 'Tools/bazel/run.sh'), 'build', '//:container', '--config=runtime-coverage',
-                     '--repo_env=GIT_COMMIT=' + revision], 1800)
+                     '--repo_env=GIT_COMMIT=' + revision,
+                     *native_layers.bazel_flags(native_admission)], 1800)
+        matches = re.findall(r'^Evidence: (/.+\.log)$', build_log.read_text(), re.M)
+        if len(matches) != 1:
+            raise RuntimeError('Instrumented native build lacks one retained Bazel evidence log')
+        raw_events = Path(matches[0]).with_suffix('.events.json')
+        events = self.evidence / 'fork-runtime-coverage.events.json'
+        shutil.copy2(raw_events, events)
+        native_consumer.retain_compiled_consumer(
+            self.evidence, native_admission, STORAGE / 'output', revision, 'runtime-coverage',
+            bazel=BAZEL, env=dict(build_environment(), GIT_COMMIT=revision), build_events=events)
         stop_owned('fork')
         own(self.installation, 'fork')
         require_idle(self.installation)
@@ -74,7 +86,9 @@ class RuntimeCoverage:
         self.installation.rename(backup)
         self.backup = backup
         stage('fork', ROOT, STORAGE / 'output', self.runner.evidence,
-              configuration='runtime-coverage', profile_file=str(self.evidence / 'probe-%p-%m%c.profraw'))
+              configuration='runtime-coverage', profile_file=str(self.evidence / 'probe-%p-%m%c.profraw'),
+              native_admission=native_admission,
+              compiled_receipt=self.evidence / 'coverage-compiled-consumer.json')
         fingerprint = self.runner.evidence / 'fork-fingerprint.json'
         shutil.copy2(fingerprint, self.evidence / fingerprint.name)
         metadata = json.loads(fingerprint.read_text())

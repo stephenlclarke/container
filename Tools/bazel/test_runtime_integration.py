@@ -18,6 +18,45 @@ from runtime_integration import EOFIntegrationRunner, owned_cli_processes, requi
 
 
 class IntegrationReportsTests(unittest.TestCase):
+    def test_prepared_native_receipt_binds_unsigned_products_without_live_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'Sources').mkdir()
+            (root / 'Sources/a.swift').write_text('struct A {}\n')
+            (root / 'Package.resolved').write_text('{}\n')
+            prepared = root / 'prepared'
+            prepared.mkdir()
+            (prepared / 'compiled-consumer.json').write_text('{"passed":true}\n')
+            names = ('container', 'container-apiserver', 'container-engine',
+                     'container-runtime-linux', 'container-network-vmnet',
+                     'container-core-images', 'machine-apiserver', 'k8s')
+            records = {'bazel-out/opt/bin/external/+dependencies+swiftpkg_container/' +
+                       name + '.rspm.__impl': {'sha256': str(index) * 64}
+                       for index, name in enumerate(names, 1)}
+            compiled = {'build': {'files': records}}
+            unsigned = runtime_integration.native_consumer.unsigned_product_hashes(compiled)
+            fingerprint = {'package_lock_sha256': runtime_integration.digest(root / 'Package.resolved'),
+                           'compiled_consumer_sha256': runtime_integration.digest(
+                               prepared / 'compiled-consumer.json'),
+                           'unsigned_native_inputs': unsigned}
+            (prepared / 'fork-fingerprint.json').write_text(json.dumps(fingerprint))
+            (prepared / 'source-inputs.json').write_text(json.dumps({
+                'fork': 'a' * 40, 'source_sha256': {'fork': {
+                    'Sources/a.swift': runtime_integration.digest(root / 'Sources/a.swift')}},
+                'build_inputs': {}}))
+            with (mock.patch.object(runtime_integration, 'ROOT', root),
+                  mock.patch.object(runtime_integration, 'build_inputs', return_value={}),
+                  mock.patch.object(runtime_integration.native_layers, 'import_layers',
+                                    return_value={'layers': {}}),
+                  mock.patch.object(runtime_integration.native_consumer, 'verify_receipt',
+                                    return_value=compiled) as verify):
+                runtime_integration.verify_prepared(prepared)
+                self.assertNotIn('output_base', verify.call_args.kwargs)
+                fingerprint['unsigned_native_inputs']['container'] = 'f' * 64
+                (prepared / 'fork-fingerprint.json').write_text(json.dumps(fingerprint))
+                with self.assertRaisesRegex(RuntimeError, 'native compiler inputs'):
+                    runtime_integration.verify_prepared(prepared)
+
     def test_upstream_commit_cases_are_selected_and_reported(self):
         for name in ('testCommitStoppedContainer()', 'testCommitRunningContainer()'):
             self.assertIsNotNone(re.search(test_filter('Containers'), 'TestCLICommitCommand/' + name))
@@ -88,7 +127,9 @@ class IntegrationReportsTests(unittest.TestCase):
             root = Path(directory)
             prepared = root / 'prepared'
             prepared.mkdir()
-            for name in ('source-inputs.json', 'guest-artifact.json', 'builder-artifact.json'):
+            for name in ('source-inputs.json', 'guest-artifact.json', 'builder-artifact.json',
+                         'compiled-consumer.json', 'fork-release.events.json',
+                         'fork-release-native-aquery.json'):
                 (prepared / name).write_text('{}\n')
             (prepared / 'fork-fingerprint.json').write_text(json.dumps({
                 'init_image': 'init', 'builder_image': 'builder', 'kernel_sha256': 'kernel',

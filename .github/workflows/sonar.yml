@@ -44,7 +44,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$ANALYSIS_SHA"
 
       - name: Test workflow helpers
-        run: python3 -m unittest discover -s Tools/bazel -p 'test_*.py'
+        run: |
+          python3 -m unittest discover -s Tools/bazel -p 'test_*.py'
+          python3 -m unittest discover -s Tools/bazel/artifacts -p 'test_native_*.py'
 
       - name: Verify native Swift architecture
         run: |

@@ -167,7 +167,9 @@ def build(evidence: Path, prepared: Path, services: Path, profile: str | None) -
     result = {'passed': False, 'notarized': False, 'failures': []}
     try:
         verify_prepared(prepared)
-        for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json']:
+        for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json',
+                     'builder-artifact.json', 'compiled-consumer.json',
+                     'fork-release.events.json', 'fork-release-native-aquery.json']:
             shutil.copy2(prepared / name, evidence / name)
         benchmark = evidence.parent / 'runtime-benchmark'
         result['measured_products'] = retain_measured_products(
@@ -237,6 +239,7 @@ def build(evidence: Path, prepared: Path, services: Path, profile: str | None) -
                 evidence / result['measured_products']['archive'], evidence / result['measured_products']['manifest'])}
             result['payload'] = {str(p.relative_to(payload)): digest(p) for p in sorted(payload.rglob('*')) if p.is_file()}
             result['source'] = json.loads((prepared / 'source-inputs.json').read_text())['fork']
+            result['compiled_consumer_sha256'] = digest(evidence / 'compiled-consumer.json')
             if profile:
                 result['notary'] = notarize(runner, zip_archive, profile)
                 result['notarized'] = True

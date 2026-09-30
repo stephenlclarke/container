@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ET
 
 from fork_benchmark import BAZEL, BAZEL_SHA, PAIRS, ROOT, STORAGE, Runner, digest, prepare, install_signal_handlers
 from bazel_environment import bazel_environment
+from artifacts import native_consumer, native_layers
 
 INSTALLS = Path.home() / 'Library/Application Support/ContainerFamily/benchmarks/runtime'
 STATE = Path('/private/tmp') / f'cfb-{os.getuid()}'
@@ -416,8 +417,11 @@ def reset_state(lane: str, init: str, builder_image: str) -> str:
 
 
 def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
-          configuration: str = 'release', profile_file: str | None = None) -> None:
+          configuration: str = 'release', profile_file: str | None = None,
+          native_admission: dict | None = None,
+          compiled_receipt: Path | None = None) -> None:
     if lane == 'fork':
+        native_admission = native_admission or native_layers.import_layers(workspace)
         guest = verified_guest(evidence / 'guest-artifact.json', workspace)
         builder = verified_builder(evidence / 'builder-artifact.json')
     install = INSTALLS / lane / 'install'
@@ -430,9 +434,21 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
     env['GIT_COMMIT'] = revision
     bazel = [str(BAZEL), '--output_user_root=' + str(output_root)]
     execution = Path(checked(bazel + ['info', 'execution_root'], cwd=workspace, env=env))
+    compiled = None
+    receipt_path = None
+    if lane == 'fork':
+        output_base = Path(checked(bazel + ['info', 'output_base'], cwd=workspace, env=env))
+        receipt_path = compiled_receipt or evidence / 'compiled-consumer.json'
+        compiled = native_consumer.verify_receipt(receipt_path, native_admission, revision,
+                                                  configuration, output_base,
+                                                  bazel=BAZEL, output_root=output_root)
     target = '//:container' if lane == 'fork' else '//:component'
-    files = checked(bazel + ['cquery', target, '--config=' + configuration, '--repo_env=GIT_COMMIT=' + revision, '--output=files'],
+    flags = native_layers.bazel_flags(native_admission) if lane == 'fork' else []
+    files = checked(bazel + ['cquery', target, '--config=' + configuration, '--repo_env=GIT_COMMIT=' + revision,
+                             *flags, '--output=files'],
                     cwd=workspace, env=env).splitlines()
+    unsigned_inputs = (native_consumer.verify_staged_products(files, execution, compiled)
+                       if lane == 'fork' else None)
     executables = {Path(p).name.removesuffix('.rspm.__impl'): execution / p
                    for p in files if p.endswith('.rspm.__impl') and '/Contents/Resources/DWARF/' not in p}
     names = ['container', 'container-apiserver', *PLUGINS]
@@ -513,6 +529,8 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
         metadata['guest_artifact_identity'] = guest['identity']
         metadata['builder_archive_sha256'] = builder['archive_sha256']
         metadata['builder_artifact_identity'] = builder['identity']
+        metadata['compiled_consumer_sha256'] = digest(receipt_path)
+        metadata['unsigned_native_inputs'] = unsigned_inputs
     if revision[:7] not in metadata['cli_version']:
         raise RuntimeError('Built CLI source revision does not match the selected source')
     (evidence / f'{lane}-fingerprint.json').write_text(json.dumps(metadata, indent=2) + '\n')
@@ -567,6 +585,10 @@ def build_inputs(root: Path = ROOT) -> dict[str, str]:
               if p.suffix in {'.bzl', '.patch'} or p.name == 'semantic_metadata.py']
     paths += [p for p in (root / 'Tools/ContainerSemanticHelper').rglob('*')
               if p.is_file() and p.suffix in {'.go', '.mod', '.sum', '.py', '.bazel'}]
+    artifact_root = root / 'Tools/bazel/artifacts'
+    paths += [p for p in artifact_root.rglob('*') if p.is_file()
+              and not p.is_symlink() and '__pycache__' not in p.parts
+              and (p.suffix in {'.py', '.bzl', '.json'} or p.name == 'BUILD.bazel')]
     return {str(p.relative_to(root)): digest(p) for p in sorted(paths)}
 
 
@@ -591,6 +613,7 @@ def prepare_all(evidence: Path, context: str = 'colima', *, candidate_only: bool
         import_layer('builder', builder_evidence)
         shutil.copy2(builder_evidence / 'builder-artifact.json', evidence / 'builder-artifact.json')
     prepare_assets(evidence)
+    native_admission = native_layers.import_layers(ROOT)
     workspaces = [('fork', ROOT)]
     native = {}
     if not candidate_only:
@@ -620,13 +643,20 @@ def prepare_all(evidence: Path, context: str = 'colima', *, candidate_only: bool
         target = '//:container' if lane == 'fork' else '//:component'
         arguments = [str(BAZEL), '--output_user_root=' + str(output_root), 'build', target,
                      '--config=release', '--repo_env=GIT_COMMIT=' + revision,
+                     *(native_layers.bazel_flags(native_admission) if lane == 'fork' else []),
                      '--repository_cache=' + str(STORAGE / 'repositories'),
                      '--build_event_json_file=' + str(evidence / f'{lane}-release.events.json')]
         print(f'Building optimized {lane}; see {evidence / (lane + "-release-build.log")}', flush=True)
         with (evidence / f'{lane}-release-build.log').open('w') as log:
             subprocess.run(arguments, cwd=workspace, env=dict(build_environment(), GIT_COMMIT=revision),
                            stdout=log, stderr=subprocess.STDOUT, timeout=1800, check=True)
-        stage(lane, workspace, output_root, evidence)
+        if lane == 'fork':
+            native_consumer.retain_compiled_consumer(evidence, native_admission, output_root,
+                                                     revision, 'release', bazel=BAZEL,
+                                                     env=dict(build_environment(), GIT_COMMIT=revision),
+                                                     build_events=evidence / 'fork-release.events.json')
+        stage(lane, workspace, output_root, evidence,
+              native_admission=native_admission if lane == 'fork' else None)
 
 
 def main() -> None:
@@ -676,7 +706,9 @@ def main() -> None:
                 from runtime_integration import verify_prepared
                 verify_prepared(args.prepared)
                 names = ['source-inputs.json', 'fork-fingerprint.json',
-                         'guest-artifact.json', 'builder-artifact.json', 'assets.json']
+                         'guest-artifact.json', 'builder-artifact.json', 'assets.json',
+                         'compiled-consumer.json', 'fork-release.events.json',
+                         'fork-release-native-aquery.json']
                 if not args.candidate_only and not args.reuse_reference:
                     names.append('stock-fingerprint.json')
                 for name in names:
