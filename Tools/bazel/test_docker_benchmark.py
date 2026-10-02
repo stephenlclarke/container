@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import docker_benchmark as docker
 import docker_resource_reference as resource
+import qualification
 
 
 def sample_reference():
@@ -27,6 +28,7 @@ def sample_reference():
 
 
 VERSION = {'Client': {'Version': '29.8.1'}, 'Server': {'Version': '29.2.1'}}
+CURRENT_VERSION = {'Client': {'Version': '29.8.1'}, 'Server': {'Version': '29.5.2'}}
 INFO = {'Architecture': 'aarch64', 'CgroupVersion': '2', 'NCPU': 4, 'MemTotal': 8309010432,
         'KernelVersion': '6.8.0-100-generic', 'OperatingSystem': 'Ubuntu 24.04.4 LTS', 'Driver': 'overlayfs'}
 LEASE = {'started_by_this_run': True, 'restored': False,
@@ -70,7 +72,7 @@ class DockerReferenceTests(unittest.TestCase):
     def test_reuse_only_checks_selected_engine_and_never_runs_workload(self):
         for changed_engine in (False, True):
             with self.subTest(changed_engine=changed_engine), tempfile.TemporaryDirectory() as temporary:
-                evidence = Path(temporary) / 'evidence'
+                evidence = Path(temporary) / 'docker-benchmark'
                 (Path(temporary) / 'colima-lease.json').write_text(json.dumps(LEASE))
                 (Path(temporary) / 'qualification.json').write_text(json.dumps({'source': 'Q-current'}))
                 (Path(temporary) / 'host-lease.json').write_text(json.dumps({
@@ -80,10 +82,10 @@ class DockerReferenceTests(unittest.TestCase):
                 config.parent.mkdir(parents=True)
                 config.write_text('memory: 8GiB\n')
                 calls = []
-                current_info = dict(INFO, NCPU=8) if changed_engine else dict(INFO, MemTotal=INFO['MemTotal'] + 12288)
+                current_info = dict(INFO, NCPU=8) if changed_engine else dict(INFO, MemTotal=INFO['MemTotal'] + 8192)
                 def run(runner, component, lane, fixture, trial, args, cwd, timeout):
                     calls.append(args)
-                    output = {'engine': json.dumps(VERSION), 'engine-info': json.dumps(current_info),
+                    output = {'engine': json.dumps(CURRENT_VERSION), 'engine-info': json.dumps(current_info),
                               'compose-version': 'v5.5.1'}[fixture]
                     log = evidence / (fixture + '.log')
                     log.write_text(output)
@@ -127,12 +129,34 @@ class DockerReferenceTests(unittest.TestCase):
                             self.assertFalse(result['assertions_replayed'])
                             admission = json.loads((evidence / 'engine-admission.json').read_text())
                             self.assertEqual(admission['usableMemoryBytes']['historical'], INFO['MemTotal'])
-                            self.assertEqual(admission['usableMemoryBytes']['current'], INFO['MemTotal'] + 12288)
-                            self.assertEqual(admission['usableMemoryBytes']['difference'], 12288)
+                            self.assertEqual(admission['usableMemoryBytes']['current'], INFO['MemTotal'] + 8192)
+                            self.assertEqual(admission['usableMemoryBytes']['difference'], 8192)
                             self.assertEqual(admission['configuredEnvironment'], old)
+                            self.assertEqual(admission['serverVersionTransition'], {
+                                'historical': '29.2.1', 'current': '29.5.2',
+                                'interpretation': 'Archived Docker timings remain measurements from Engine 29.2.1; no workloads were replayed.',
+                            })
+                            self.assertEqual(result['serverVersionTransition'], admission['serverVersionTransition'])
+                            self.assertIn('remain Docker Engine 29.2.1 measurements', result['interpretation'])
                             raw = json.loads((evidence / 'results.json').read_text())
                             self.assertEqual(len(raw), 72)
                             self.assertTrue(all(row['historical'] for row in raw))
+                            runtime = evidence.parent / 'runtime-benchmark'
+                            runtime.mkdir()
+                            (runtime / 'results.json').write_text(json.dumps([
+                                dict(fixture=fixture, lane='fork', trial=trial, seconds=2.0, status=0)
+                                for fixture in docker.FIXTURES for trial in range(1, 8)
+                            ]))
+                            (runtime / 'matrix.json').write_text(json.dumps([
+                                dict(fixture=fixture, stock=1.0, fork=2.0, ratio=2.0, passed=True,
+                                     historical_lanes=['stock'])
+                                for fixture in docker.FIXTURES
+                            ]))
+                            self.assertTrue(qualification.benchmark_summary(evidence.parent))
+                            comparison = json.loads((evidence.parent / 'runtime-comparison.json').read_text())
+                            self.assertEqual(comparison[0]['docker_historical_engine_version'], '29.2.1')
+                            self.assertEqual(comparison[0]['docker_current_engine_version'], '29.5.2')
+                            self.assertIn('not contemporaneous', (evidence.parent / 'BENCHMARK.md').read_text())
                 self.assertEqual(calls, [['docker', '--context', 'colima', 'version', '--format', '{{json .}}'],
                                          ['docker', '--context', 'colima', 'info', '--format', '{{json .}}'],
                                          ['docker', '--context', 'colima', 'compose', 'version', '--short']])
@@ -184,7 +208,8 @@ class DockerReferenceTests(unittest.TestCase):
                                    'colima', live, config_sha)
         for mutation in ('kernelVersion', 'storageDriver', 'serverVersion'):
             current = dict(actual, **{mutation: 'different'})
-            with self.subTest(mutation=mutation), self.assertRaisesRegex(RuntimeError, 'engine differs'):
+            expected_error = 'finite historical admission transition' if mutation == 'serverVersion' else 'engine differs'
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(RuntimeError, expected_error):
                 docker.admit_engine(current, old, SUPPLEMENT, LEASE, 'current-log-sha',
                                    'colima', live, config_sha)
         for invalid in (None, 0, -1, 8589934593, True, float('nan')):
@@ -200,6 +225,41 @@ class DockerReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'already restored'):
             docker.admit_engine(actual, old, SUPPLEMENT, dict(LEASE, restored=True),
                                'current-log-sha', 'colima', live, config_sha)
+
+    def test_only_archived_29_2_1_to_current_29_5_2_server_transition_is_admitted(self):
+        expected = sample_reference()['protocol']['dockerEngine']
+        actual = dict(docker.engine_identity(CURRENT_VERSION, INFO, '5.5.1'),
+                      memoryBytes=INFO['MemTotal'] + 8192)
+        live = dict(LEASE['profile'], status='Running')
+        accepted = docker.admit_engine(actual, expected, SUPPLEMENT, LEASE, 'current-log-sha',
+                                      'colima', live, LEASE['config_sha256'])
+        self.assertEqual(accepted['serverVersionTransition']['historical'], '29.2.1')
+        self.assertEqual(accepted['serverVersionTransition']['current'], '29.5.2')
+
+        for invalid_version in ('29.5.1', '29.5.3', '29.6.0', 'Docker Engine 29.5.2'):
+            mismatched = dict(actual, serverVersion=invalid_version)
+            with self.subTest(version=invalid_version), self.assertRaisesRegex(RuntimeError, 'finite historical admission transition'):
+                docker.admit_engine(mismatched, expected, SUPPLEMENT, LEASE, 'current-log-sha',
+                                   'colima', live, LEASE['config_sha256'])
+
+        changed_expected = dict(expected, serverVersion='29.5.2')
+        changed_supplement = dict(SUPPLEMENT, observedDockerEngine=changed_expected)
+        reversed_pair = dict(actual, serverVersion='29.2.1')
+        with self.assertRaisesRegex(RuntimeError, 'finite historical admission transition'):
+            docker.admit_engine(reversed_pair, changed_expected, changed_supplement, LEASE, 'current-log-sha',
+                               'colima', live, LEASE['config_sha256'])
+
+        with self.assertRaisesRegex(RuntimeError, 'published reference'):
+            docker.admit_engine(actual, dict(expected, sourceLogSHA256='wrong-source-log-sha'), SUPPLEMENT, LEASE,
+                               'current-log-sha',
+                               'colima', live, LEASE['config_sha256'])
+
+        for key in ('clientVersion', 'composePluginVersion', 'kernelVersion', 'operatingSystem',
+                    'storageDriver', 'architecture', 'cpus', 'cgroupVersion'):
+            mismatched = dict(actual, **{key: 'changed'})
+            with self.subTest(field=key), self.assertRaisesRegex(RuntimeError, 'engine differs'):
+                docker.admit_engine(mismatched, expected, SUPPLEMENT, LEASE, 'current-log-sha',
+                                   'colima', live, LEASE['config_sha256'])
 
     def test_supplemental_asset_and_retained_original_lease_are_hash_checked(self):
         lease_bytes = json.dumps(LEASE, indent=2).encode()

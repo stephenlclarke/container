@@ -16,6 +16,9 @@ from fork_benchmark import COMMAND_LOCK_ENV, ROOT, Runner, install_signal_handle
 from host_lease import processes as host_processes
 from runtime_benchmark import ALPINE, FIXTURES, INSTALLS
 
+HISTORICAL_DOCKER_SERVER_VERSION = '29.2.1'
+ADMITTED_DOCKER_SERVER_VERSION = '29.5.2'
+
 
 def historical_samples(reference: dict, context: str, trials: int) -> tuple[list[dict], dict]:
     """A historical lane has the original complete protocol, never a new capture."""
@@ -60,8 +63,11 @@ def admit_engine(actual: dict, expected: dict, supplement: dict, current_lease: 
     if supplement['observedDockerEngine'] != expected:
         raise RuntimeError('Supplemental Docker engine identity differs from published reference')
     old = {key: value for key, value in expected.items() if key != 'sourceLogSHA256'}
+    if (old.get('serverVersion') != HISTORICAL_DOCKER_SERVER_VERSION
+            or actual.get('serverVersion') not in {HISTORICAL_DOCKER_SERVER_VERSION, ADMITTED_DOCKER_SERVER_VERSION}):
+        raise RuntimeError('Docker server version is outside the finite historical admission transition')
     if set(actual) != set(old) or any(actual[key] != value for key, value in old.items()
-                                      if key != 'memoryBytes'):
+                                      if key not in {'memoryBytes', 'serverVersion'}):
         raise RuntimeError('Selected Docker engine differs from the historical reference')
     original_memory, current_memory = old['memoryBytes'], actual['memoryBytes']
     old_configuration = supplement['configuredEnvironment']
@@ -81,7 +87,13 @@ def admit_engine(actual: dict, expected: dict, supplement: dict, current_lease: 
     if any(not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= allocation
            for value in (original_memory, current_memory)):
         raise RuntimeError('Docker usable-memory observation is invalid')
-    return {'current': actual, 'historical': old, 'configuredEnvironment': current_configuration,
+    return {'current': actual, 'historical': old,
+            'serverVersionTransition': {
+                'historical': HISTORICAL_DOCKER_SERVER_VERSION,
+                'current': actual['serverVersion'],
+                'interpretation': 'Archived Docker timings remain measurements from Engine 29.2.1; no workloads were replayed.',
+            },
+            'configuredEnvironment': current_configuration,
             'liveProfile': live_profile, 'selectedDockerContext': selected_context,
             'usableMemoryBytes': {'historical': original_memory, 'current': current_memory,
                                   'difference': current_memory - original_memory},
@@ -184,7 +196,8 @@ def reuse(evidence: Path, context: str, trials: int) -> None:
     (evidence / 'acceptance.json').write_text(json.dumps({
         'passed': True, 'historical': True, 'workloads_executed': False,
         'assertions_replayed': False, 'failures': [], 'medians': medians,
-        'interpretation': 'Published measurements reused after read-only host/engine admission; no Docker workload rerun.',
+        'serverVersionTransition': admission['serverVersionTransition'],
+        'interpretation': 'Published measurements reused after read-only host/engine admission; archived timings remain Docker Engine 29.2.1 measurements and no Docker workload was rerun.',
     }, indent=2) + '\n')
 
 

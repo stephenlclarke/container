@@ -46,7 +46,17 @@ class QualificationTests(unittest.TestCase):
                     dict(fixture=name, stock=1, fork=2, ratio=0.1 if mutation == 'matrix' else 2,
                          passed=True, historical_lanes=['stock']) for name in qualification.FIXTURES]))
                 (docker / 'results.json').write_text(json.dumps(docker_rows))
-                (docker / 'acceptance.json').write_text(json.dumps(dict(passed=True, historical=True, medians=medians)))
+                (docker / 'acceptance.json').write_text(json.dumps(dict(
+                    passed=True, historical=True, medians=medians,
+                    serverVersionTransition={
+                        'historical': '29.2.1',
+                        'current': '29.5.2',
+                        'interpretation': (
+                            'Archived Docker timings remain measurements from Engine 29.2.1; '
+                            'no workloads were replayed.'
+                        ),
+                    },
+                )))
                 with patch.object(benchmark_reference, 'fetch', return_value=reference):
                     if mutation in ('docker', 'apple'):
                         with self.assertRaises(RuntimeError):
@@ -153,11 +163,35 @@ class QualificationTests(unittest.TestCase):
                     for name in qualification.FIXTURES for trial in range(1, 8)]))
                 (docker / 'acceptance.json').write_text(json.dumps(dict(
                     passed=fault != 'failed-reference', historical=True,
-                    medians={name: 1 for name in qualification.FIXTURES})))
+                    medians={name: 1 for name in qualification.FIXTURES},
+                    serverVersionTransition={
+                        'historical': '29.2.1', 'current': '29.5.2',
+                        'interpretation': 'Archived Docker timings remain measurements from Engine 29.2.1; no workloads were replayed.',
+                    })))
                 self.assertEqual(qualification.benchmark_summary(evidence), fault is None)
                 result = json.loads((evidence / 'runtime-comparison-acceptance.json').read_text())
                 self.assertEqual(result['passed'], fault is None)
-                self.assertIn('not contemporaneous', (evidence / 'BENCHMARK.md').read_text())
+                benchmark = (evidence / 'BENCHMARK.md').read_text()
+                self.assertIn('not contemporaneous', benchmark)
+                self.assertIn('Historical Docker measurements use Engine 29.2.1', benchmark)
+                self.assertIn('current Docker oracle is Engine 29.5.2', benchmark)
+                rows = json.loads((evidence / 'runtime-comparison.json').read_text())
+                self.assertEqual(rows[0]['docker_historical_engine_version'], '29.2.1')
+                self.assertEqual(rows[0]['docker_current_engine_version'], '29.5.2')
+
+    def test_benchmark_summary_rejects_missing_or_unsupported_docker_version_provenance(self):
+        for transition in (None, {'historical': '29.2.1', 'current': '29.5.3'}):
+            with self.subTest(transition=transition), tempfile.TemporaryDirectory() as directory:
+                evidence = Path(directory)
+                (evidence / 'runtime-benchmark').mkdir()
+                (evidence / 'docker-benchmark').mkdir()
+                (evidence / 'runtime-benchmark/matrix.json').write_text('[]')
+                docker_receipt = {'passed': True, 'historical': True, 'medians': {}}
+                if transition is not None:
+                    docker_receipt['serverVersionTransition'] = transition
+                (evidence / 'docker-benchmark/acceptance.json').write_text(json.dumps(docker_receipt))
+                with self.assertRaisesRegex(RuntimeError, 'server-version provenance'):
+                    qualification.benchmark_summary(evidence)
 
     def test_local_release_requires_hosted_quality_without_rerunning_scanners(self):
         for failed in ('integration', 'github-quality', None):

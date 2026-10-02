@@ -74,6 +74,13 @@ def benchmark_summary(evidence: Path, trials: int = 7, *, verify_reference: bool
     docker_path = evidence / 'docker-benchmark/acceptance.json'
     runtime = json.loads(runtime_path.read_text()) if runtime_path.exists() else []
     docker = json.loads(docker_path.read_text()) if docker_path.exists() else {}
+    server_transition = docker.get('serverVersionTransition', {})
+    if docker.get('passed') and docker.get('historical'):
+        from docker_benchmark import HISTORICAL_DOCKER_SERVER_VERSION, ADMITTED_DOCKER_SERVER_VERSION
+        if (server_transition.get('historical') != HISTORICAL_DOCKER_SERVER_VERSION
+                or server_transition.get('current') not in {
+                    HISTORICAL_DOCKER_SERVER_VERSION, ADMITTED_DOCKER_SERVER_VERSION}):
+            raise RuntimeError('Historical Docker server-version provenance is missing or unsupported')
     def samples(name: str) -> list[dict]:
         path = evidence / name / 'results.json'
         return json.loads(path.read_text()) if path.exists() else []
@@ -98,7 +105,9 @@ def benchmark_summary(evidence: Path, trials: int = 7, *, verify_reference: bool
                'fork_seconds': paired.get('fork') if valid_pair else None, 'docker_seconds': docker_seconds,
                'fork_apple_ratio': paired.get('ratio') if valid_pair else None,
                'apple_historical': 'stock' in paired.get('historical_lanes', []),
-               'docker_historical': docker.get('historical') is True}
+               'docker_historical': docker.get('historical') is True,
+               'docker_historical_engine_version': server_transition.get('historical'),
+               'docker_current_engine_version': server_transition.get('current')}
         row['fork_docker_ratio'] = row['fork_seconds'] / docker_seconds if row['fork_seconds'] and docker_seconds else None
         fresh = [r for r in candidate_raw if r['fixture'] == fixture and r['lane'] == 'fork']
         reference = [r for r in docker_raw if r['fixture'] == fixture and r['lane'] == 'docker']
@@ -125,6 +134,7 @@ def benchmark_summary(evidence: Path, trials: int = 7, *, verify_reference: bool
         acceptance.write_text(json.dumps({
             'passed': passed, 'reference_verified': verify_reference,
             'failures': [row['fixture'] for row in rows if not row['passed']],
+            'dockerServerVersionTransition': server_transition,
             'rule': 'Every fixture must complete; slowest candidate / fastest historical Docker sample must be below 10x.',
         }, indent=2) + '\n')
     lines = ['# Runtime performance', '', '| Workload | Apple ms | Fork ms | Docker ms | Fork/Apple | Fork/Docker |',
@@ -136,6 +146,7 @@ def benchmark_summary(evidence: Path, trials: int = 7, *, verify_reference: bool
                   for key in ('fork_apple_ratio', 'fork_docker_ratio')]
         lines.append('| ' + ' | '.join([row['fixture'], *timings, *ratios]) + ' |')
     lines += ['', 'Medians of serial trials. Docker uses an existing shared Colima VM; Apple and fork startup create a VM per container.',
+              f"Historical Docker measurements use Engine {server_transition.get('historical', 'unavailable')}; the read-only current Docker oracle is Engine {server_transition.get('current', 'unavailable')}. Fork/Docker ratios compare these different dates and versions, not contemporaneous paired measurements.",
               'Apple and Docker values marked historical in runtime-comparison.json are published Q153 measurements. Only the fork candidate is newly timed; these are not contemporaneous paired runs or newly replayed reference assertions.',
               'The same-fixture 10x acceptance rule uses every raw sample: slowest current fork divided by fastest historical Docker. Missing, failed or incomplete workloads cannot qualify.',
               'A missing or failed workload has no qualified speed ratio. Raw durations and failures remain in each stage directory.',
