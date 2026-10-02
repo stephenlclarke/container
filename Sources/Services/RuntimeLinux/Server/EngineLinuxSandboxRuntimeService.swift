@@ -829,6 +829,12 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
         stdio: [FileHandle?]
     ) async throws -> WorkloadProcessReceiptV1 {
         try validate(request)
+        guard !request.closeStdinOnEOF || stdio.first.flatMap({ $0 }) != nil else {
+            throw ContainerizationError(
+                .invalidArgument,
+                message: "descriptor-owned stdin EOF requires an initial stdin handle"
+            )
+        }
         let id = request.context.containerID
         guard bootInFlight == nil, shutdownInFlight == nil else {
             throw conflictingOperation("workload start for \(id)")
@@ -931,6 +937,7 @@ public actor EngineLinuxSandboxRuntimeServiceV1: EngineLinuxSandboxRuntimeV1,
             capture = activatedCapture
             io = EngineLinuxSandboxWorkloadIO(
                 stdio: stdio,
+                closeStdinOnEOF: request.closeStdinOnEOF,
                 loggingCapture: activatedCapture,
                 terminal: loadedContainerConfiguration.initProcess.terminal
             )

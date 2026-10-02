@@ -59,12 +59,15 @@ struct RuntimeDNSResolver: Sendable {
         networkLookups: [NetworkLookup],
         upstreamNameservers: [String],
         log: Logger? = nil,
-        upstream: @escaping Upstream = RuntimeDNSUpstream.resolve
+        upstream: Upstream? = nil
     ) {
         self.scopedAliases = scopedAliases
         self.networkLookups = networkLookups
         self.upstreamNameservers = upstreamNameservers
-        self.upstream = upstream
+        self.upstream =
+            upstream ?? { query, request, nameservers in
+                try await RuntimeDNSUpstream.resolve(query: query, request: request, nameservers: nameservers, log: log)
+            }
         self.log = log
     }
 
@@ -96,6 +99,14 @@ struct RuntimeDNSResolver: Sendable {
                 return try response.serialize()
             }
 
+            let started = ContinuousClock.now
+            log?.debug("forwarding DNS query", metadata: ["dnsID": "\(query.id)", "type": "\(query.questions.first?.type.rawValue ?? 0)"])
+            defer {
+                log?.debug(
+                    "upstream DNS query finished",
+                    metadata: ["dnsID": "\(query.id)", "elapsed": "\(started.duration(to: .now))", "cancelled": "\(Task.isCancelled)"]
+                )
+            }
             let response = try await upstream(query, request, upstreamNameservers)
             return try Self.validate(response: response, query: query)
         } catch {
@@ -287,7 +298,8 @@ enum RuntimeDNSUpstream {
     static func resolve(
         query: Message,
         request: Data,
-        nameservers: [String]
+        nameservers: [String],
+        log: Logger? = nil
     ) async throws -> Data {
         guard nameservers.isEmpty,
             let question = query.questions.first,
@@ -296,18 +308,20 @@ enum RuntimeDNSUpstream {
             return try await sendRaw(request: request, nameservers: nameservers)
         }
 
+        var queryLog = log
+        queryLog?[metadataKey: "dnsID"] = "\(query.id)"
         switch question.type {
         case .host:
-            return try await resolveIPv4(query: query, question: question)
+            return try await resolveIPv4(query: query, question: question, log: queryLog)
         case .host6:
-            return try await resolveIPv6(query: query, question: question)
+            return try await resolveIPv6(query: query, question: question, log: queryLog)
         default:
             return try await sendRaw(request: request, nameservers: nameservers)
         }
     }
 
-    private static func resolveIPv4(query: Message, question: Question) async throws -> Data {
-        let addresses = try await resolveAddresses(hostname: question.name, family: AF_INET)
+    private static func resolveIPv4(query: Message, question: Question, log: Logger?) async throws -> Data {
+        let addresses = try await resolveAddresses(hostname: question.name, family: AF_INET, log: log)
         if !addresses.isEmpty {
             let answers: [any ResourceRecord] = try addresses.map {
                 HostRecord(name: question.name, ttl: externalTTL, ip: try IPv4Address(Array($0.prefix(4))))
@@ -315,7 +329,7 @@ enum RuntimeDNSUpstream {
             return try nativeResponse(query: query, answers: answers, returnCode: .noError)
         }
 
-        let ipv6 = try await resolveAddresses(hostname: question.name, family: AF_INET6)
+        let ipv6 = try await resolveAddresses(hostname: question.name, family: AF_INET6, log: log)
         return try nativeResponse(
             query: query,
             answers: [],
@@ -323,8 +337,8 @@ enum RuntimeDNSUpstream {
         )
     }
 
-    private static func resolveIPv6(query: Message, question: Question) async throws -> Data {
-        let addresses = try await resolveAddresses(hostname: question.name, family: AF_INET6)
+    private static func resolveIPv6(query: Message, question: Question, log: Logger?) async throws -> Data {
+        let addresses = try await resolveAddresses(hostname: question.name, family: AF_INET6, log: log)
         if !addresses.isEmpty {
             let answers: [any ResourceRecord] = try addresses.map {
                 HostRecord(name: question.name, ttl: externalTTL, ip: try IPv6Address($0))
@@ -332,7 +346,7 @@ enum RuntimeDNSUpstream {
             return try nativeResponse(query: query, answers: answers, returnCode: .noError)
         }
 
-        let ipv4 = try await resolveAddresses(hostname: question.name, family: AF_INET)
+        let ipv4 = try await resolveAddresses(hostname: question.name, family: AF_INET, log: log)
         return try nativeResponse(
             query: query,
             answers: [],
@@ -356,8 +370,14 @@ enum RuntimeDNSUpstream {
         ).serialize()
     }
 
-    private static func resolveAddresses(hostname: String, family: Int32) async throws -> [[UInt8]] {
-        try await offload {
+    private static func resolveAddresses(hostname: String, family: Int32, log: Logger?) async throws -> [[UInt8]] {
+        let queued = ContinuousClock.now
+        return try await offload {
+            let started = ContinuousClock.now
+            log?.debug(
+                "native DNS lookup started",
+                metadata: ["family": "\(family)", "queue_delay": "\(queued.duration(to: started))"]
+            )
             var storage = [UInt8](
                 repeating: 0,
                 count: maximumAddresses * Int(CDNS_ADDRESS_STRIDE)
@@ -377,6 +397,13 @@ enum RuntimeDNSUpstream {
                 }
             }
 
+            log?.debug(
+                "native DNS lookup finished",
+                metadata: [
+                    "family": "\(family)", "elapsed": "\(started.duration(to: .now))",
+                    "status": "\(status)", "resolver_error": "\(resolverError)", "address_count": "\(count)",
+                ]
+            )
             if status == CDNS_STATUS_NOT_FOUND {
                 return []
             }
@@ -470,13 +497,16 @@ final class RuntimeDNSProxy: Sendable {
                 }
 
                 connections.addTask {
+                    let started = ContinuousClock.now
                     do {
                         try await Self.handleConnection(
                             connection,
                             resolver: self.resolver,
-                            eventLoopGroup: self.eventLoopGroup
+                            eventLoopGroup: self.eventLoopGroup,
+                            log: self.log
                         )
                     } catch is CancellationError {
+                        self.log.debug("host DNS proxy connection cancelled", metadata: ["elapsed": "\(started.duration(to: .now))"])
                         return
                     } catch {
                         self.log.debug(
@@ -499,7 +529,8 @@ final class RuntimeDNSProxy: Sendable {
     static func handleConnection(
         _ connection: FileHandle,
         resolver: RuntimeDNSResolver,
-        eventLoopGroup: any EventLoopGroup
+        eventLoopGroup: any EventLoopGroup,
+        log: Logger? = nil
     ) async throws {
         try await Timeout.run(for: connectionTimeout) {
             let descriptor = dup(connection.fileDescriptor)
@@ -535,6 +566,7 @@ final class RuntimeDNSProxy: Sendable {
                     let response = await resolver.resolve(frame.message)
                     let framedResponse = try DNSProxyProtocol.encode(response)
                     try await outbound.write(ByteBuffer(bytes: framedResponse))
+                    log?.debug("host DNS response written", metadata: ["bytes": "\(response.count)"])
                     return
                 }
                 throw RuntimeDNSError.unexpectedEndOfStream

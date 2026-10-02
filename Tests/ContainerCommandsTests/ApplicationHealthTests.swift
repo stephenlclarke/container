@@ -141,7 +141,7 @@ struct ApplicationHealthTests {
 
     @Test
     func rootHelpProvenanceShowsCustomBuild() throws {
-        let help = Application.addBuildProvenance("USAGE: container\n\nPLUGINS:\n  compose")
+        let help = Application.addBuildProvenance("USAGE: container\n\nOTHER SUBCOMMANDS:\n  compose")
         let containerization = try Self.expectedContainerizationProvenance()
 
         #expect(help.contains("BUILD:"))
@@ -149,7 +149,7 @@ struct ApplicationHealthTests {
         #expect(help.contains("source: stephenlclarke/container"))
         #expect(help.contains("containerization: \(containerization)"))
         #expect(help.contains("container-builder-shim: \(ReleaseVersion.builderShimImage())"))
-        #expect(help.contains("PLUGINS:\n  compose"))
+        #expect(help.contains("OTHER SUBCOMMANDS:\n  compose"))
     }
 
     @Test

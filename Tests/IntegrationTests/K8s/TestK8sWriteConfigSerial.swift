@@ -24,9 +24,7 @@ import Yams
 struct TestK8sWriteConfigSerial {
 
     private func kubeconfigPath() -> FilePath {
-        FilePath(FileManager.default.homeDirectoryForCurrentUser.path)
-            .appending(".kube")
-            .appending("config")
+        integrationKubeconfigPath()
     }
 
     private func loadKubeconfig() throws -> [String: Any] {

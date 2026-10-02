@@ -1,0 +1,4 @@
+load("@rules_shell//shell:sh_binary.bzl", "sh_binary")
+
+exports_files(glob(["*.patch"]) + ["semantic_metadata.py", "repository_test.sh"])
+sh_binary(name = "test_runner", srcs = ["test_runner.sh"], data = ["collect_coverage.sh"], visibility = ["//visibility:public"])

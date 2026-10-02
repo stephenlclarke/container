@@ -327,6 +327,62 @@ struct RuntimeDNSProxyTests {
         #expect(await capture.nameservers == ["1.1.1.1", "2606:4700:4700::1111"])
     }
 
+    @Test func defaultUpstreamResolvesLocalhostWithoutExternalDNS() async throws {
+        let resolver = RuntimeDNSResolver(
+            networkLookups: [],
+            upstreamNameservers: []
+        )
+        let request = try query(name: "localhost.", type: .host)
+        let response = try await withThrowingTaskGroup(of: Data.self) { group in
+            defer { group.cancelAll() }
+            group.addTask { await resolver.resolve(request) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw CancellationError()
+            }
+            return try #require(await group.next())
+        }
+        let expected = try Message(
+            id: 0x1234,
+            type: .response,
+            recursionDesired: true,
+            recursionAvailable: true,
+            returnCode: .noError,
+            questions: [Question(name: "localhost.", type: .host)],
+            answers: [HostRecord(name: "localhost.", ttl: 30, ip: try IPv4Address("127.0.0.1"))]
+        ).serialize()
+
+        #expect(response == expected)
+    }
+
+    @Test func defaultUpstreamResolvesIPv6LocalhostWithoutExternalDNS() async throws {
+        let resolver = RuntimeDNSResolver(
+            networkLookups: [],
+            upstreamNameservers: []
+        )
+        let request = try query(name: "localhost.", type: .host6)
+        let response = try await withThrowingTaskGroup(of: Data.self) { group in
+            defer { group.cancelAll() }
+            group.addTask { await resolver.resolve(request) }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw CancellationError()
+            }
+            return try #require(await group.next())
+        }
+        let expected = try Message(
+            id: 0x1234,
+            type: .response,
+            recursionDesired: true,
+            recursionAvailable: true,
+            returnCode: .noError,
+            questions: [Question(name: "localhost.", type: .host6)],
+            answers: [HostRecord(name: "localhost.", ttl: 30, ip: try IPv6Address("::1"))]
+        ).serialize()
+
+        #expect(response == expected)
+    }
+
     @Test func forwardsRootAddressQueryWithoutNetworkLookup() async throws {
         let request = try query(name: ".", type: .host)
         let expected = try Message(

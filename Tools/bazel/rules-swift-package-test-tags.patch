@@ -1,0 +1,43 @@
+diff --git a/swiftpkg/internal/swift_package.bzl b/swiftpkg/internal/swift_package.bzl
+--- a/swiftpkg/internal/swift_package.bzl
++++ b/swiftpkg/internal/swift_package.bzl
+@@ -226,6 +226,7 @@
+ }
+ 
+ TOOL_ATTRS = {
++    "test_tags": attr.string_list_dict(doc = "Execution requirements for specific upstream suites."),
+     "test_data": attr.string_list_dict(doc = "Additional declared runfiles for upstream tests."),
+     "test_data_globs": attr.string_list_dict(doc = "Declared fixture patterns for upstream tests."),
+     "test_targets": attr.string_list(doc = "Upstream test targets whose dependencies are pinned."),
+diff --git a/swiftpkg/internal/swiftpkg_build_files.bzl b/swiftpkg/internal/swiftpkg_build_files.bzl
+--- a/swiftpkg/internal/swiftpkg_build_files.bzl
++++ b/swiftpkg/internal/swiftpkg_build_files.bzl
+@@ -278,6 +278,7 @@
+             ),
+         ]
+     elif target.type == target_types.test:
++        attrs["tags"] = attrs.get("tags", []) + getattr(repository_ctx.attr, "test_tags", {}).get(target.name, [])
+         extra_data = getattr(repository_ctx.attr, "test_data", {}).get(target.name, [])
+         extra_data = extra_data + _test_bundle_files(repository_ctx, pkg_ctx.pkg_info, target)
+         patterns = getattr(repository_ctx.attr, "test_data_globs", {}).get(target.name, [])
+@@ -290,6 +291,7 @@
+             _minimum_os_wrapper_decl(
+                 pkg_info = pkg_ctx.pkg_info,
+                 kind = swiftpkg_minimum_os_kinds.test,
++                tags = attrs.get("tags", []),
+                 name = public_label_name,
+                 actual = ":{}".format(implementation_label_name),
+                 visibility = _target_visibility(pkg_ctx.pkg_info.expose_build_targets),
+@@ -1459,10 +1461,11 @@
+ def _implementation_target_visibility():
+     return ["//:__subpackages__"]
+ 
+-def _minimum_os_wrapper_decl(pkg_info, kind, name, actual, visibility):
++def _minimum_os_wrapper_decl(pkg_info, kind, name, actual, visibility, tags = None):
+     attrs = {
+         "deps": [actual],
+         "visibility": visibility,
++        "tags": tags or [],
+     }
+     attrs.update(minimum_os_versions.transition_attrs(pkg_info))
+     return build_decls.new(

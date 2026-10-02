@@ -1,0 +1,102 @@
+diff --git a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayTransactionSecretStoreTests.swift b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayTransactionSecretStoreTests.swift
+--- a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayTransactionSecretStoreTests.swift
++++ b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayTransactionSecretStoreTests.swift
+@@ -8,7 +8,7 @@
+ import Security
+ import Testing
+ 
+-@Suite("Provider handoff gateway transaction secret store", .serialized)
++@Suite("Provider handoff gateway transaction secret store", .serialized, .enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+ struct ProviderHandoffGatewayTransactionSecretStoreTests {
+     @Test
+     func `Transaction derivations survive restart and remain domain separated`() throws {
+diff --git a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayKeyStoreTests.swift b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayKeyStoreTests.swift
+--- a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayKeyStoreTests.swift
++++ b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffGatewayKeyStoreTests.swift
+@@ -7,7 +7,7 @@
+ import Foundation
+ import Testing
+ 
+-@Suite("Provider handoff gateway key store", .serialized)
++@Suite("Provider handoff gateway key store", .serialized, .enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+ struct ProviderHandoffGatewayKeyStoreTests {
+     @Test
+     func `Gateway identity signs a complete provider trust registry`() throws {
+diff --git a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffLineageKeyStoreTests.swift b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffLineageKeyStoreTests.swift
+--- a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffLineageKeyStoreTests.swift
++++ b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffLineageKeyStoreTests.swift
+@@ -7,7 +7,7 @@
+ import Foundation
+ import Testing
+ 
+-@Suite("Provider handoff lineage key store", .serialized)
++@Suite("Provider handoff lineage key store", .serialized, .enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+ struct ProviderHandoffLineageKeyStoreTests {
+     @Test
+     func `Lineage keys survive restart and remain version separated`() throws {
+diff --git a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffProviderKeyStoreTests.swift b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffProviderKeyStoreTests.swift
+--- a/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffProviderKeyStoreTests.swift
++++ b/Tests/ContainerEngineRuntimeSPITests/ProviderHandoffProviderKeyStoreTests.swift
+@@ -88,7 +88,7 @@
+         )
+     }
+ 
+-    @Test
++    @Test(.enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+     func `Keychain identity is stable, purpose separated, and usable`() throws {
+         let fixture = Fixture()
+         defer { fixture.remove() }
+@@ -208,7 +208,7 @@
+         )
+     }
+ 
+-    @Test
++    @Test(.enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+     func `A changed provider binding cannot adopt or replace existing keys`() throws {
+         let fixture = Fixture()
+         defer { fixture.remove() }
+diff --git a/Tests/ContainerEngineProviderSessionTests/ContainerEngineProviderSessionTests.swift b/Tests/ContainerEngineProviderSessionTests/ContainerEngineProviderSessionTests.swift
+--- a/Tests/ContainerEngineProviderSessionTests/ContainerEngineProviderSessionTests.swift
++++ b/Tests/ContainerEngineProviderSessionTests/ContainerEngineProviderSessionTests.swift
+@@ -640,7 +640,7 @@
+         }
+     }
+ 
+-    @Test
++    @Test(.enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+     func `provider enrolls public handoff keys and proves private possession`() async throws {
+         let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+             .appendingPathComponent(
+diff --git a/Tests/ContainerEngineServiceTests/ProviderHandoffGatewayManifestAssemblyTests.swift b/Tests/ContainerEngineServiceTests/ProviderHandoffGatewayManifestAssemblyTests.swift
+--- a/Tests/ContainerEngineServiceTests/ProviderHandoffGatewayManifestAssemblyTests.swift
++++ b/Tests/ContainerEngineServiceTests/ProviderHandoffGatewayManifestAssemblyTests.swift
+@@ -27,7 +27,7 @@
+     private static let manifestID = "manifest-assembly-manifest"
+     private static let useTime: UInt64 = 500
+ 
+-    @Test
++    @Test(.enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+     func `Gateway assembles, signs, binds, and locally replays a manifest`() async throws {
+         let fixture = try Fixture()
+         defer { fixture.remove() }
+@@ -130,7 +130,7 @@
+         #expect(await transport.sourceSignCount() == export.parts.count)
+     }
+ 
+-    @Test
++    @Test(.enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1"))
+     func `generic source responder exports and replays a sealed logging contribution`() async throws {
+         let fixture = try Fixture()
+         defer { fixture.remove() }
+diff --git a/Tests/ContainerEngineServiceTests/ContainerEngineServiceTests.swift b/Tests/ContainerEngineServiceTests/ContainerEngineServiceTests.swift
+--- a/Tests/ContainerEngineServiceTests/ContainerEngineServiceTests.swift
++++ b/Tests/ContainerEngineServiceTests/ContainerEngineServiceTests.swift
+@@ -198,7 +198,7 @@
+         )
+     }
+ 
+-    @Test func `attested provider enrollment installs trust before serving`() async throws {
++    @Test(.enabled(if: ProcessInfo.processInfo.environment["CONTAINER_HOST_TESTS"] == "1")) func `attested provider enrollment installs trust before serving`() async throws {
+         let root = URL(fileURLWithPath: "/tmp", isDirectory: true)
+             .appendingPathComponent(
+                 "ces-trust-\(UUID().uuidString.prefix(8))",

@@ -1,0 +1,4 @@
+exports_files([
+    "foundation_import.bzl",
+    "compiled_outputs.bzl",
+])

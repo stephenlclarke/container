@@ -1,0 +1,8 @@
+{
+  "asset": "qualified-container-assets.json",
+  "repository": "stephenlclarke/container",
+  "schema": 1,
+  "sha256": "6363ed7c07f7c903903a0f2249382c293d03506305b9a8c7ab4b27f99b83dbe8",
+  "tag": "layer-runtime-6fe80db1bad6-e26c8e7aaa11",
+  "targetCommit": "6fe80db1bad6abff5dfa22f02bdf8bc403ad48bc"
+}

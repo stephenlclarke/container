@@ -1,0 +1,8 @@
+{
+  "asset": "foundation-native-darwin-arm64-opt.tar.gz",
+  "repository": "stephenlclarke/container",
+  "schema": 1,
+  "sha256": "07a7ea5f2f04842f18d9f46b1ef697f91f89080fc6591c6eb18d4b08fa2bc15f",
+  "tag": "layer-foundation-native-2c1efa788a87-07a7ea5f2f04842f18d9",
+  "targetCommit": "2c1efa788a87ffcadafd618819d84fb2bd4443b4"
+}

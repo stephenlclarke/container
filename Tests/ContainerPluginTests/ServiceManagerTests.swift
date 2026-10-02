@@ -209,4 +209,61 @@ struct ServiceManagerTests {
         #expect(result.status == 3)
         #expect(calls == [["bootout", "gui/501/com.apple.container.runtime.missing"]])
     }
+
+    @Test func exactDomainRegistrationUsesPrintAndMatchesOnlyItsOwnAbsence() throws {
+        let cases = [
+            ("system/example.service", "Could not find service \"example.service\" in domain for system"),
+            ("gui/501/example.service", "Could not find service \"example.service\" in domain for user gui: 501"),
+            ("user/501/example.service", "Could not find service \"example.service\" in domain for uid: 501"),
+        ]
+        for (target, missing) in cases {
+            var arguments: [String] = []
+            var observedTimeout: TimeInterval?
+            #expect(
+                try ServiceManager.isRegistered(fullServiceLabel: target) { args, timeout in
+                    arguments = args
+                    observedTimeout = timeout
+                    return .init(status: 0, standardError: "")
+                })
+            #expect(arguments == ["print", target])
+            #expect(observedTimeout == 5)
+            #expect(
+                try !ServiceManager.isRegistered(fullServiceLabel: target) { _, _ in
+                    .init(status: 113, standardError: "Bad request.\n\(missing)\n")
+                })
+            #expect(throws: ContainerizationError.self) {
+                try ServiceManager.isRegistered(fullServiceLabel: target) { _, _ in
+                    .init(status: 113, standardError: "Could not find service \"another.service\" in domain for system")
+                }
+            }
+            #expect(throws: ContainerizationError.self) {
+                try ServiceManager.isRegistered(fullServiceLabel: target) { _, _ in
+                    .init(status: 1, standardError: missing)
+                }
+            }
+            #expect(throws: ContainerizationError.self) {
+                try ServiceManager.isRegistered(fullServiceLabel: target) { _, _ in
+                    .init(status: 113, standardError: "permission denied")
+                }
+            }
+        }
+    }
+
+    @Test func bareRegistrationKeepsCurrentDomainListAndMalformedTargetsFailClosed() throws {
+        var arguments: [String] = []
+        #expect(
+            try ServiceManager.isRegistered(fullServiceLabel: "example.service") { args, _ in
+                arguments = args
+                return .init(status: 0, standardError: "")
+            })
+        #expect(arguments == ["list", "example.service"])
+        for target in ["", "gui/example.service", "gui/501/example.service/extra", "other/501/example.service"] {
+            #expect(throws: ContainerizationError.self) {
+                try ServiceManager.isRegistered(fullServiceLabel: target) { _, _ in
+                    Issue.record("malformed target reached launchctl")
+                    return .init(status: 0, standardError: "")
+                }
+            }
+        }
+    }
 }

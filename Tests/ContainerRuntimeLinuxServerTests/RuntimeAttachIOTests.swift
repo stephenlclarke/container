@@ -23,6 +23,100 @@ import Testing
 @testable import ContainerRuntimeLinuxServer
 
 struct RuntimeAttachIOTests {
+    @Test("Finite primary input must finish guest stdin after EOF", .timeLimit(.minutes(1)))
+    func finitePrimaryInputFinishesAfterEOF() async throws {
+        let pipe = Pipe()
+        let input = AttachableInput(initial: pipe.fileHandleForReading, closeOnEOF: true)
+        defer { input.close() }
+        let payload = Data("echo complete\n".utf8)
+        let timedOut = Mutex(false)
+        let reader = Task {
+            var received = Data()
+            for await chunk in input.stream() {
+                received.append(chunk)
+            }
+            return received
+        }
+        try pipe.fileHandleForWriting.write(contentsOf: payload)
+        try pipe.fileHandleForWriting.close()
+        let watchdog = Task {
+            try? await Task.sleep(for: .seconds(5))
+            if !Task.isCancelled {
+                timedOut.withLock { $0 = true }
+                input.close()
+            }
+        }
+        let received = await reader.value
+        watchdog.cancel()
+        #expect(received == payload)
+        #expect(!timedOut.withLock { $0 })
+    }
+
+    @Test("Regular-file input delivers every byte and EOF", arguments: [0, 262_145])
+    func regularFileInputFinishes(byteCount: Int) async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let payload = Data((0..<byteCount).map { UInt8($0 % 251) })
+        try payload.write(to: url)
+        let handle = try FileHandle(forReadingFrom: url)
+        defer {
+            handle.readabilityHandler = nil
+            try? handle.close()
+            try? FileManager.default.removeItem(at: url)
+        }
+
+        let received = try await withThrowingTaskGroup(of: Data.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                var result = Data()
+                for await chunk in handle.stream() {
+                    result.append(chunk)
+                }
+                return result
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw CancellationError()
+            }
+            return try #require(await group.next())
+        }
+        #expect(received == payload)
+    }
+
+    @Test("Pipe input delivers bytes, EOF, and clears its readability handler")
+    func pipeInputFinishes() async throws {
+        let pipe = Pipe()
+        let input = pipe.fileHandleForReading
+        let output = pipe.fileHandleForWriting
+        defer {
+            input.readabilityHandler = nil
+            try? input.close()
+            try? output.close()
+        }
+
+        let stream = input.stream()
+        let payload = Data("attached input\n".utf8)
+        try output.write(contentsOf: payload)
+        try output.close()
+
+        let received = try await withThrowingTaskGroup(of: Data.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                var result = Data()
+                for await chunk in stream {
+                    result.append(chunk)
+                }
+                return result
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw CancellationError()
+            }
+            return try #require(await group.next())
+        }
+        #expect(received == payload)
+        #expect(input.readabilityHandler == nil)
+    }
+
     @Test("Process output close cannot close a subsequently reused descriptor")
     func processOutputCloseTracksFileHandleOwnership() throws {
         let source = Pipe()
@@ -189,6 +283,82 @@ struct RuntimeAttachIOTests {
         input.close()
 
         #expect(await iterator.next() == nil)
+    }
+
+    @Test("Owned stdin drains four MiB before EOF", .timeLimit(.minutes(1)))
+    func ownedInputDrainsBeforeEOF() async throws {
+        let pipe = Pipe()
+        let input = AttachableInput(initial: pipe.fileHandleForReading, closeOnEOF: true)
+        defer { input.close() }
+        let expected = Data((0..<4 * 1024 * 1024).map { UInt8(truncatingIfNeeded: $0) })
+        let writer = Task.detached {
+            try pipe.fileHandleForWriting.write(contentsOf: expected)
+            try pipe.fileHandleForWriting.close()
+        }
+        // EOF may arrive before the guest starts consuming buffered input.
+        try await writer.value
+        var actual = Data()
+        for await chunk in input.stream() {
+            actual.append(chunk)
+        }
+        #expect(actual == expected)
+        input.close()
+    }
+
+    @Test("Prewarmed owned stdin finishes only its original generation", .timeLimit(.minutes(1)))
+    func ownedDeferredInputDoesNotFinishReplacement() async throws {
+        let oldPipe = Pipe()
+        let replacementPipe = Pipe()
+        let old = AttachableInput()
+        let replacement = AttachableInput(initial: replacementPipe.fileHandleForReading)
+        defer {
+            old.close()
+            replacement.close()
+        }
+        old.add(oldPipe.fileHandleForReading, closeOnEOF: true)
+        var previous = old.stream().makeAsyncIterator()
+        var current = replacement.stream().makeAsyncIterator()
+
+        try oldPipe.fileHandleForWriting.close()
+        #expect(await previous.next() == nil)
+        old.close()
+        try replacementPipe.fileHandleForWriting.write(contentsOf: Data("still open".utf8))
+        #expect(await current.next() == Data("still open".utf8))
+        try replacementPipe.fileHandleForWriting.close()
+    }
+
+    @Test("Cold bootstrap forwards descriptor-owned EOF", .timeLimit(.minutes(1)))
+    func coldBootstrapOwnsEOFOnlyWhenRequested() async throws {
+        let pipe = Pipe()
+        let input = try #require(
+            RuntimeService.attachableInput(
+                initial: pipe.fileHandleForReading, prewarming: false, closeOnEOF: true
+            ))
+        defer { input.close() }
+        var iterator = input.stream().makeAsyncIterator()
+        try pipe.fileHandleForWriting.close()
+        #expect(await iterator.next() == nil)
+    }
+
+    @Test("Queued input callbacks cannot read after owner EOF", .timeLimit(.minutes(1)))
+    func queuedReadAfterOwnerEOFIgnoresClosedRegistration() async throws {
+        let owner = Pipe()
+        let peer = Pipe()
+        let input = AttachableInput(initial: owner.fileHandleForReading, closeOnEOF: true)
+        input.add(peer.fileHandleForReading)
+        let queued = try #require(peer.fileHandleForReading.readabilityHandler)
+        var iterator = input.stream().makeAsyncIterator()
+        try owner.fileHandleForWriting.close()
+        #expect(await iterator.next() == nil)
+        // Even if the EOF callback is still returning from handle teardown,
+        // the stale registration has already lost read authority.
+        input.close()
+        queued(peer.fileHandleForReading)
+        let late = Pipe()
+        input.add(late.fileHandleForReading, closeOnEOF: true)
+        #expect(late.fileHandleForReading.readabilityHandler == nil)
+        try peer.fileHandleForWriting.close()
+        try late.fileHandleForWriting.close()
     }
 }
 

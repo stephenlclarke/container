@@ -58,6 +58,7 @@ public struct Application: AsyncLoggableCommand {
                 subcommands: [
                     ContainerAttach.self,
                     ContainerClean.self,
+                    ContainerCommit.self,
                     ContainerCopy.self,
                     ContainerCreate.self,
                     ContainerDelete.self,
@@ -433,7 +434,7 @@ extension Application {
         let original = Application.helpMessage(for: Application.self)
         guard let pluginLoader else {
             print(addBuildProvenance(addGroupSpacing(original)))
-            print("\nPLUGINS: not available, run `container system start`")
+            print("\n[Warning] CLI plugins not available, run `container system start`")
             return
         }
         let altered = pluginLoader.alterCLIHelpText(original: original)
@@ -443,14 +444,10 @@ extension Application {
     private static func addGroupSpacing(_ text: String) -> String {
         text
             .replacingOccurrences(of: "\n([A-Z].+SUBCOMMANDS:)", with: "\n\n$1", options: .regularExpression)
-            .replacingOccurrences(of: "\nPLUGINS:", with: "\n\nPLUGINS:")
     }
 
     static func addBuildProvenance(_ text: String) -> String {
         let provenance = (["BUILD:"] + ReleaseVersion.provenanceLines()).joined(separator: "\n")
-        if text.contains("\nPLUGINS:") {
-            return text.replacingOccurrences(of: "\nPLUGINS:", with: "\n\n\(provenance)\n\nPLUGINS:")
-        }
         return "\(text)\n\n\(provenance)"
     }
 

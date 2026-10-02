@@ -27,6 +27,44 @@ import Testing
 
 struct EngineLinuxSandboxAuthorityTests {
     @Test
+    func sharedPrimaryInputOwnershipIsBoundToStartIntent() async throws {
+        let fixture = try EngineSandboxAuthorityFixture()
+        defer { fixture.remove() }
+        let runtime = FakeAuthorityRuntime()
+        let authority = try await EngineLinuxSandboxAuthorityV1.open(
+            root: fixture.sandboxRoot,
+            owningControllerID: "api-service",
+            sandboxID: "engine-sandbox",
+            launcher: FakeAuthorityLauncher(runtime: runtime),
+            persistence: InMemoryEngineWorkloadLedgerPersistenceV1()
+        )
+        let input = Pipe()
+        defer {
+            try? input.fileHandleForReading.close()
+            try? input.fileHandleForWriting.close()
+        }
+
+        _ = try await authority.startWorkload(
+            planDigest: "sha256:input-ownership-plan",
+            configuration: fixture.sandboxConfiguration,
+            workloadRoot: fixture.workloadRoot,
+            stdio: [input.fileHandleForReading],
+            closeStdinOnEOF: true
+        )
+        #expect(await runtime.lastWorkloadStart?.closeStdinOnEOF == true)
+        #expect(await runtime.lastWorkloadDescriptors == [input.fileHandleForReading.fileDescriptor])
+
+        await #expect(throws: EngineWorkloadLedgerError.idempotencyConflict) {
+            _ = try await authority.startWorkload(
+                planDigest: "sha256:input-ownership-plan",
+                configuration: fixture.sandboxConfiguration,
+                workloadRoot: fixture.workloadRoot,
+                stdio: [input.fileHandleForReading]
+            )
+        }
+    }
+
+    @Test
     func concurrentEnsureReadyCoalescesRuntimeLaunch() async throws {
         let fixture = try EngineSandboxAuthorityFixture()
         defer { fixture.remove() }
@@ -1020,6 +1058,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
     private(set) var bootObservationCount = 0
     private(set) var workloadStartCount = 0
     private(set) var lastWorkloadStart: EngineLinuxSandboxWorkloadStartRequestV1?
+    private(set) var lastWorkloadDescriptors: [Int32?] = []
     private(set) var workloadObservationCount = 0
     private(set) var workloadStopCount = 0
     private(set) var pauseCount = 0
@@ -1099,6 +1138,7 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         stdio: [FileHandle?]
     ) async throws -> WorkloadProcessReceiptV1 {
         lastWorkloadStart = request
+        lastWorkloadDescriptors = stdio.map { $0?.fileDescriptor }
         if let workloadReceipt,
             workloadReceipt.containerID == request.context.containerID,
             workloadReceipt.operationGeneration == request.context.operationGeneration,
@@ -1120,7 +1160,6 @@ private actor FakeAuthorityRuntime: EngineLinuxSandboxRuntimeClientV1 {
         workloadReceipt = receipt
         workloadTerminal = false
         workloadStatus = .running
-        _ = stdio
         return receipt
     }
 

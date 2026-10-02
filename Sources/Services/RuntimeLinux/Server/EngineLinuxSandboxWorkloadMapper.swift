@@ -251,6 +251,7 @@ struct EngineLinuxSandboxWorkloadIO: @unchecked Sendable {
 
     init(
         stdio: [FileHandle?],
+        closeStdinOnEOF: Bool = false,
         loggingCapture: ContainerLogRuntimeCapture,
         terminal: Bool
     ) {
@@ -258,7 +259,7 @@ struct EngineLinuxSandboxWorkloadIO: @unchecked Sendable {
         while handles.count < 3 {
             handles.append(nil)
         }
-        stdin = handles[0].map(AttachableInput.init)
+        stdin = handles[0].map { AttachableInput(initial: $0, closeOnEOF: closeStdinOnEOF) }
         stdout = AttachableOutput(
             initial: handles[1],
             persistent: loggingCapture.stdout

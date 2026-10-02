@@ -1088,8 +1088,8 @@ struct NativeLocalLogStoreTests {
         #expect(result.issues.isEmpty)
     }
 
-    @Test
-    func concurrentReadWriteAndCloseLeaveOnlyCompleteFrames() async throws {
+    @Test(arguments: [false, true])
+    func concurrentReadWriteAndCloseLeaveOnlyCompleteFrames(closeBeforeTasks: Bool) async throws {
         let fixture = try NativeLocalLogFixture()
         defer { fixture.remove() }
         let records = try (1...500).map { sequence in
@@ -1103,6 +1103,9 @@ struct NativeLocalLogStoreTests {
             activeFileName: fixture.activeFileName
         )
         let reader = try store.makeReader()
+        if closeBeforeTasks {
+            try store.close()
+        }
 
         let writerTask = Task { () -> NativeLocalLogError? in
             for record in records {
@@ -1138,18 +1141,23 @@ struct NativeLocalLogStoreTests {
             return nil
         }
 
-        try await Task.sleep(for: .milliseconds(1))
-        try store.close()
+        if !closeBeforeTasks {
+            try await Task.sleep(for: .milliseconds(1))
+            try store.close()
+        }
         let writerError = await writerTask.value
         let readerError = await readerTask.value
-        #expect(writerError == nil || writerError == .closed)
+        #expect(closeBeforeTasks ? writerError == .closed : writerError == nil || writerError == .closed)
         #expect(readerError == nil)
 
         let final = try reader.read(NativeLocalLogReadRequest())
         #expect(final.issues.isEmpty)
+        if closeBeforeTasks {
+            #expect(final.records.isEmpty)
+        }
         #expect(
             final.records.map(\.sequence)
-                == (1...final.records.count).map(UInt64.init)
+                == (0..<final.records.count).map { UInt64($0 + 1) }
         )
     }
 

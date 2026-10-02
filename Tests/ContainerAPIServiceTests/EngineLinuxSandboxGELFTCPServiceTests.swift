@@ -916,6 +916,7 @@ private actor FakeGELFTCPAuthority: EngineLinuxSandboxGELFTCPAuthorityV1 {
         dynamicEnvironment: [String: String],
         networkEndpoints: [WorkloadNetworkEndpoint],
         stdio: [FileHandle?],
+        closeStdinOnEOF: Bool,
         controllers: [any WorkloadEffectControllerV1],
         monitorTerminal: Bool
     ) throws -> EngineWorkloadRecordV1 {
@@ -927,6 +928,7 @@ private actor FakeGELFTCPAuthority: EngineLinuxSandboxGELFTCPAuthorityV1 {
             )
         }
         #expect(monitorTerminal)
+        #expect(!closeStdinOnEOF)
         _ = configuration
         _ = workloadRoot
         _ = dynamicEnvironment

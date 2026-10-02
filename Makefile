@@ -12,6 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Narrow Bazel commands do not evaluate SwiftPM or release configuration.
+ifneq ($(filter bazel-%,$(MAKECMDGOALS)),)
+include Tools/bazel/Makefile
+else
 # Version and build configuration variables
 BUILD_CONFIGURATION ?= debug
 WARNINGS_AS_ERRORS ?= true
@@ -326,7 +330,7 @@ installer-pkg: $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 
 	@echo Creating application installer
-	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version ${RELEASE_VERSION} $(PKG_PATH)
+	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version "$(RELEASE_VERSION)" "$(PKG_PATH)"
 	@rm -rf "$(STAGING_DIR)"
 
 .PHONY: package
@@ -443,7 +447,6 @@ COV_OBJECT_FLAGS := $(patsubst %,-object %,$(COV_BINARIES))
 LLVM_COV_IGNORE := \
 	--ignore-filename-regex=".build/" \
 	--ignore-filename-regex="/Tests/" \
-	--ignore-filename-regex="/ContainerTestSupport/" \
 	--ignore-filename-regex=".pb.swift" \
 	--ignore-filename-regex=".proto" \
 	--ignore-filename-regex=".grpc.swift"
@@ -710,3 +713,5 @@ clean:
 	@rm -f $(COV_REPORT_FILE)
 	@rm -rf $(COVERAGE_OUTPUT_DIR)
 	@$(SWIFT) package clean
+
+endif

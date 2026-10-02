@@ -75,6 +75,8 @@ public enum RuntimeKeys: String {
     /// Whether the first foreground client has no stdin and the deferred
     /// prewarming relay must therefore receive end-of-file.
     case closeStdin
+    /// Finish the init input stream only after this client's descriptor drains.
+    case closeStdinOnEOF
 
     /// Per-network connection info passed to the runtime so it can allocate directly.
     case networkBootstrapInfos
