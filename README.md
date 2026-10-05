@@ -223,3 +223,5 @@ Service registration queries wait directly for process completion while preservi
 installation ownership checks. See the [runtime performance changes](docs/PR-runtime-performance.md).
 
 Container create and start revalidate the selected logging driver against the current registry. Unrelated journald readiness is deferred until journald is selected; see the [selected-driver readiness change](docs/PR-selected-logging-readiness.md) for validation status.
+
+The enhanced Container graph now selects the tested Engine API raw-stream backpressure correction, including early upgrade input reconciliation. [Dependency alignment](docs/ISSUE-native-engine-stream-pin.md) keeps its manifest and resolved nested revision matched; downstream SDK publication and final Devcontainer qualification remain required.
