@@ -100,3 +100,7 @@ Contributions to `container` are welcome and encouraged. Please see our [main co
 ## Project Status
 
 The container project is currently under active development. Its stability, both for consuming the project as a Swift package and the `container` tool, is only guaranteed within patch versions, such as between 0.1.1 and 0.1.2. Minor version releases may include breaking changes until we reach a 1.0.0 release.
+
+## Stock SDK release correction
+
+This branch starts from Apple's `1.4.1` source (`9a8917ca2da5cd6ba059b9ba5ca5a74892e9bb7d`) and replaces only the XPC timeout's generic sleep with a direct continuous-clock deadline. It preserves the request, cancellation, timeout duration and error behavior. The SDK is a separately identified derivative; Apple's installed runtime and the nested dependency manifests and locks remain unchanged. See [the issue](docs/ISSUE-stock-xpc-clock-sleep.md) and [the change](docs/PR-stock-xpc-clock-sleep.md). Optimized combined-program validation is required before publishing its SDK artifact.

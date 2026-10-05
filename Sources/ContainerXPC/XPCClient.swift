@@ -101,7 +101,8 @@ extension XPCClient {
         try await withThrowingTaskGroup(of: XPCMessage.self, returning: XPCMessage.self) { group in
             if let responseTimeout {
                 group.addTask {
-                    try await Task.sleep(for: responseTimeout)
+                    let clock = ContinuousClock()
+                    try await clock.sleep(until: clock.now.advanced(by: responseTimeout))
                     let route = message.string(key: XPCMessage.routeKey) ?? "nil"
                     throw ContainerizationError(
                         .internalError,
