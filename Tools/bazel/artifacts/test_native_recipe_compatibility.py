@@ -77,6 +77,29 @@ class RecipeCompatibilityTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
                 compatibility.admit(self.old, changed, self.root)
 
+    def test_exact_host_fixture_transition_preserves_archive_recipe(self):
+        for verifier_update in (False, True):
+            before = dict(self.old, **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_OLD})
+            after = dict(self.current if verifier_update else self.old,
+                         **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_NEW})
+            with self.subTest(verifier_update=verifier_update):
+                result = compatibility.admit(before, after, self.root)
+                self.assertIn('known-host-timeout-fixture-update', result['mode'])
+                self.assertIn(compatibility.HOST_FIXTURE, result['changedFiles'])
+                self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+
+    def test_host_fixture_transition_rejects_unknown_reverse_and_build_drift(self):
+        before = dict(self.old, **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_OLD})
+        after = dict(self.current, **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_NEW})
+        for producer, current in (
+                (before, dict(after, **{compatibility.HOST_FIXTURE: '0' * 64})),
+                (after, before),
+                (before, dict(after, **{'Package.swift': '0' * 64})),
+                (before, dict(after, **{compatibility.IMPORTER: '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
+
     def test_inventory_and_hash_shape_drift_is_rejected(self):
         for current in (dict(self.current, extra='0' * 64),
                         {key: value for key, value in self.current.items() if key != 'MODULE.bazel'},

@@ -15,7 +15,7 @@
 ## limitations under the License.
 ##===----------------------------------------------------------------------===##
 
-"""Admit one authenticated consumer-verifier update to published native layers."""
+"""Admit finite, byte-bound verifier and test-only recipe transitions."""
 
 import hashlib
 import json
@@ -32,6 +32,9 @@ NEW = {
     IMPORTER: 'e18b15255c4032a1d2b8592394ad2b6bf556100d3cf31f19f77d6709f961015c',
     CONSUMER: '84f0358f54801b7448f4fe81435cbf0b8ed0efe18aac6954a121e32ac2381ebe',
 }
+HOST_FIXTURE = 'Tools/bazel/async-http-client-host-tests.patch'
+HOST_FIXTURE_OLD = '9d437e372b38bca686d7839b48566442bdd41239e1b300010567b0861a328282'
+HOST_FIXTURE_NEW = '38bc850cf28df21d01a656eada236f434081233d1b8a4ab0407d9ae17d50e70f'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -53,14 +56,22 @@ def admit(producer: object, current: object, root: Path) -> dict:
                    or not SHA.fullmatch(current[key]) for key in producer)):
         raise ValueError('published native recipe inventory is incomplete or malformed')
     changed = {key for key in producer if producer[key] != current[key]}
-    if changed:
-        if (changed != {IMPORTER, CONSUMER}
-                or any(producer[key] != OLD[key] or current[key] != NEW[key]
-                       for key in (IMPORTER, CONSUMER))):
-            raise ValueError('published native recipe differs from authenticated consumer update')
-        mode = 'known-consumer-verifier-update'
-    else:
-        mode = 'exact'
+    remaining = set(changed)
+    modes = []
+    verifier_pair = {IMPORTER, CONSUMER}
+    if verifier_pair.issubset(remaining) and all(
+            producer[key] == OLD[key] and current[key] == NEW[key] for key in verifier_pair):
+        remaining -= verifier_pair
+        modes.append('known-consumer-verifier-update')
+    # This reviewed patch changes two macOS test setups only. All production
+    # inputs, published archive/proof hashes and lower-chain identities stay exact.
+    if (HOST_FIXTURE in remaining and producer[HOST_FIXTURE] == HOST_FIXTURE_OLD
+            and current[HOST_FIXTURE] == HOST_FIXTURE_NEW):
+        remaining.remove(HOST_FIXTURE)
+        modes.append('known-host-timeout-fixture-update')
+    if remaining:
+        raise ValueError('published native recipe differs from authenticated consumer update')
+    mode = '+'.join(modes) if modes else 'exact'
     canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
     return {'schema': 1, 'mode': mode,
             'producerRecipeSHA256': digest(canonical(producer)),
