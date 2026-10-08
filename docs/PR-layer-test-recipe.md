@@ -16,4 +16,4 @@ The policy retains the original verifier pair admission and accepts the exact fi
 
 ## Testing
 
-Eight focused policy tests pass, including rejection of unknown and reversed patch edits, production drift, partial verifier drift, inventory changes and policy substitution. The complete native importer and build-tool suite are checked next. The original failed import remains in retained evidence. Current source tests passed independently; historical qualification is not relabeled as a new release.
+Eight focused policy tests pass, including rejection of unknown and reversed patch edits, production drift, partial verifier drift, inventory changes and policy substitution. The complete native importer, all build-tool tests, and a fresh optimized runtime smoke check pass; the compiler-consumption receipt proves no imported dependency source compilation. The original failed import remains in retained evidence. Current source tests passed independently; historical qualification is not relabeled as a new release.

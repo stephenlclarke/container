@@ -11,6 +11,7 @@ import signal
 import shutil
 import subprocess
 import time
+import uuid
 import xml.etree.ElementTree as ET
 
 from fork_benchmark import ROOT, digest, install_signal_handlers
@@ -27,6 +28,16 @@ EOF_CASES = {
     'foregroundSharedRunClosesFiniteInput()',
 }
 COMMIT_CASES = {'testCommitStoppedContainer()', 'testCommitRunningContainer()'}
+
+
+def fresh_integration_state() -> Path:
+    """Keep each run isolated without claiming abandoned or unmarked scratch."""
+    # Keep the component as short as the former fixed name for socket fixtures.
+    state = STATE / 'fork' / ('it-' + uuid.uuid4().hex[:8])
+    if state.exists() or state.is_symlink():
+        raise RuntimeError('Fresh integration state already exists: ' + str(state))
+    own(state, 'integration')
+    return state
 
 
 class EOFIntegrationRunner(RuntimeRunner):
@@ -170,6 +181,8 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
     with (INSTALLS / 'benchmark.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
+            state = fresh_integration_state()
+            result['state_directory'] = str(state)
             if coverage:
                 profiling = RuntimeCoverage(runner, layers == LAYERS and selection is None)
                 profiling.prepare()
@@ -178,8 +191,6 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
             if reset_state('fork', metadata['init_image'], metadata['builder_image']) != metadata['kernel_sha256']:
                 raise RuntimeError('Kernel changed after runtime preparation')
             start_lane(runner, 'fork')
-            state = STATE / 'fork/integration'
-            own(state, 'integration')
             config = state / 'home'
             config.mkdir(exist_ok=True)
             env = dict(environment('fork'), CONTAINER_CLI_PATH=str(ROOT / 'Tools/bazel/integration_cli.py'),

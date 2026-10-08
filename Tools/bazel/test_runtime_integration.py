@@ -18,6 +18,37 @@ from runtime_integration import EOFIntegrationRunner, owned_cli_processes, requi
 
 
 class IntegrationReportsTests(unittest.TestCase):
+    def test_fresh_state_preserves_unmarked_previous_scratch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            old = root / 'fork/integration'
+            old.mkdir(parents=True)
+            (old / 'preserve').write_text('previous run data')
+            with mock.patch.object(runtime_integration, 'STATE', root):
+                first = runtime_integration.fresh_integration_state()
+                second = runtime_integration.fresh_integration_state()
+            self.assertNotEqual(first, second)
+            self.assertEqual(first.parent, old.parent)
+            self.assertLessEqual(len(first.name), len(old.name))
+            for state in (first, second):
+                marker = json.loads((state / '.runtime-benchmark-owner.json').read_text())
+                self.assertEqual(marker['lane'], 'integration')
+            self.assertEqual((old / 'preserve').read_text(), 'previous run data')
+            self.assertFalse((old / '.runtime-benchmark-owner.json').exists())
+
+    def test_fresh_state_rejects_collision_instead_of_claiming_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            occupied = root / 'fork/it-12345678'
+            occupied.mkdir(parents=True)
+            (occupied / 'preserve').write_text('unrelated data')
+            with (mock.patch.object(runtime_integration, 'STATE', root),
+                  mock.patch.object(runtime_integration.uuid, 'uuid4',
+                                    return_value=mock.Mock(hex='12345678' + '0' * 24))):
+                with self.assertRaisesRegex(RuntimeError, 'already exists'):
+                    runtime_integration.fresh_integration_state()
+            self.assertEqual((occupied / 'preserve').read_text(), 'unrelated data')
+
     def test_prepared_native_receipt_binds_unsigned_products_without_live_mapping(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
