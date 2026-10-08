@@ -20,6 +20,7 @@ Run these in the container checkout:
 | `make bazel-test` | Container unit suites and the helper's Go tests |
 | `make bazel-build LAYER=system` | One dependency layer and its prerequisites |
 | `make bazel-test LAYER=system` | One layer's tests |
+| `make bazel-layer-check LAYER=system` | Build one layer and run its complete declared suite in one Bazel invocation |
 | `make bazel-dependency-test` | Selected tests for all admitted dependencies |
 | `make bazel-native-layer-produce NATIVE_GROUP=... NATIVE_OUTPUT=/new/absolute/path` | Seal one compiled lower layer from a clean source and its successful Bazel outputs |
 | `make bazel-native-layer-qualify NATIVE_GROUP=... NATIVE_OUTPUT=/new/absolute/path` | Retain that group's original source-test reports and successful build evidence |
@@ -255,3 +256,5 @@ python3 Tools/bazel/unattended.py --target bazel-runtime-integration \
 ```
 
 The wrapper preserves and restores host services and records `bazel-runtime-integration` as the target. The selected suite must execute both commit cases successfully. This focused result is diagnostic; release publication still requires all full qualification stages, coverage, benchmarks, hosted quality, signing and restoration checks.
+
+The macOS AsyncHTTPClient connect-timeout fixture now uses an owned TCP listener that does not finish TLS negotiation. This retains the real connection deadline and original error/timing assertions while avoiding OS-dependent listener-backlog overflow. Both synchronous and asynchronous tests remain in the separately enabled host suite. Historical backlog-reset failures remain retained in the ordered pipeline evidence. `bazel-layer-check` applies to layers with a declared test suite; use `bazel-build` for build-only layers.

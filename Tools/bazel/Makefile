@@ -64,9 +64,11 @@ bazel-dependency-test:
 	@Tools/bazel/run.sh test //:dependency-tests
 bazel-test-all:
 	@Tools/bazel/run.sh test //:qualified-tests
-bazel-check: bazel-tools-test
-	@$(MAKE) bazel-build
-	@$(MAKE) bazel-test
+# Bazel test builds both the selected product and its complete suite in one invocation.
+.PHONY: bazel-layer-check
+bazel-layer-check:
+	@Tools/bazel/run.sh test //:$(LAYER) //:$(LAYER)-tests --keep_going
+bazel-check: bazel-tools-test bazel-layer-check
 
 .PHONY: bazel-integration-build bazel-integration-test
 bazel-integration-build:
