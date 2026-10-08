@@ -145,6 +145,19 @@ bazel-runtime-benchmark:
 	@python3 Tools/bazel/runtime_benchmark.py --prepare --trials "$(BENCHMARK_TRIALS)" \
 		--evidence "$(HOME)/Library/Application Support/ContainerFamily/retained/container-only/runtime-benchmark/$(BENCHMARK_RUN)"
 
+# Measure an admitted candidate again without rebuilding a reference or replaying
+# the unrelated qualification, coverage, signing and publication stages.
+.PHONY: bazel-runtime-comparison bazel-unattended-runtime-comparison
+bazel-unattended-runtime-comparison:
+	@python3 Tools/bazel/unattended.py --target bazel-runtime-comparison --evidence "$(QUALIFICATION_EVIDENCE)"
+
+bazel-runtime-comparison:
+	@test -n "$(PREPARED_RUNTIME)" || { printf '%s\n' 'Set PREPARED_RUNTIME to verified runtime preparation evidence.'; exit 2; }
+	@python3 Tools/bazel/qualification.py --reference-admission --trials "$(BENCHMARK_TRIALS)" --evidence "$(QUALIFICATION_EVIDENCE)"
+	@python3 Tools/bazel/runtime_benchmark.py --reuse-reference --prepared "$(PREPARED_RUNTIME)" --trials "$(BENCHMARK_TRIALS)" --evidence "$(QUALIFICATION_EVIDENCE)/runtime-benchmark"
+	@python3 Tools/bazel/docker_benchmark.py --reuse-reference --context "$(DOCKER_CONTEXT)" --trials "$(BENCHMARK_TRIALS)" --evidence "$(QUALIFICATION_EVIDENCE)/docker-benchmark"
+	@python3 Tools/bazel/qualification.py --compare-only --trials "$(BENCHMARK_TRIALS)" --evidence "$(QUALIFICATION_EVIDENCE)"
+
 # Final qualification is explicit; normal layer tests remain VM-free and cached.
 bazel-final: bazel-tools-test
 	@$(MAKE) bazel-test-all

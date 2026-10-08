@@ -164,7 +164,7 @@ def restore_host(evidence: Path, host: HostLease, lease: ColimaLease, slot: Stoc
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence', type=Path, required=True)
-    parser.add_argument('--target', choices=['bazel-qualify', 'bazel-reference-admission', 'bazel-artifact-check', 'bazel-service-artifacts', 'bazel-service-integration', 'bazel-eof-integration', 'bazel-runtime-integration'], default='bazel-artifact-check')
+    parser.add_argument('--target', choices=['bazel-qualify', 'bazel-reference-admission', 'bazel-artifact-check', 'bazel-service-artifacts', 'bazel-service-integration', 'bazel-eof-integration', 'bazel-runtime-integration', 'bazel-runtime-comparison'], default='bazel-artifact-check')
     parser.add_argument('--profile', choices=['runtime', 'release'], default='runtime')
     args = parser.parse_args()
     args.evidence.mkdir(parents=True, exist_ok=False)

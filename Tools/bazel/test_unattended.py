@@ -19,7 +19,7 @@ import linux_tests
 class OwnershipTests(unittest.TestCase):
     def test_successful_startup_releases_only_its_inherited_daemon_lease(self):
         for failed_start, target in ((failed, selected) for failed in (False, True)
-                                     for selected in ('bazel-artifact-check', 'bazel-runtime-integration')):
+                                     for selected in ('bazel-artifact-check', 'bazel-runtime-integration', 'bazel-runtime-comparison')):
             with self.subTest(failed_start=failed_start, target=target), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 helper = None
