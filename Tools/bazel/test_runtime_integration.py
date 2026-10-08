@@ -78,11 +78,12 @@ class IntegrationReportsTests(unittest.TestCase):
             with (mock.patch.object(runtime_integration, 'ROOT', root),
                   mock.patch.object(runtime_integration, 'build_inputs', return_value={}),
                   mock.patch.object(runtime_integration.native_layers, 'import_layers',
-                                    return_value={'layers': {}}),
+                                    return_value={'layers': {}, 'source': 'b' * 40}),
                   mock.patch.object(runtime_integration.native_consumer, 'verify_receipt',
                                     return_value=compiled) as verify):
                 runtime_integration.verify_prepared(prepared)
                 self.assertNotIn('output_base', verify.call_args.kwargs)
+                self.assertEqual(verify.call_args.args[1]['source'], 'a' * 40)
                 fingerprint['unsigned_native_inputs']['container'] = 'f' * 64
                 (prepared / 'fork-fingerprint.json').write_text(json.dumps(fingerprint))
                 with self.assertRaisesRegex(RuntimeError, 'native compiler inputs'):

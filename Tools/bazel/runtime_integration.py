@@ -141,7 +141,9 @@ def verify_prepared(prepared: Path) -> None:
         raise RuntimeError('Dependencies changed after runtime preparation')
     if inputs.get('build_inputs') != build_inputs():
         raise RuntimeError('Build inputs changed or are missing; prepare fresh runtime evidence')
-    admission = native_layers.import_layers(ROOT)
+    # Source contents, dependency lock and compiler inputs were checked above.
+    # Recheck this prepared build's raw commit vector, not a later harness HEAD.
+    admission = dict(native_layers.import_layers(ROOT), source=inputs['fork'])
     compiled_path = prepared / 'compiled-consumer.json'
     compiled = native_consumer.verify_receipt(compiled_path, admission,
                                               inputs['fork'],
