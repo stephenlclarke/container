@@ -218,6 +218,58 @@ class CommandLeaseTests(unittest.TestCase):
                         pass  # The explicitly owned test process is already gone.
 
 
+class TLSLaneTests(unittest.TestCase):
+    def test_candidate_lane_is_used_for_every_tls_build_and_sample(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence, scratch = root / 'evidence', root / 'scratch'
+            evidence.mkdir()
+            workspace = scratch / 'swift-nio-ssl/fork/workspace'
+            workload = scratch / 'swift-nio-ssl/fork/component/Sources/NIOSSLPerformanceTester'
+            workload.mkdir(parents=True)
+            workspace.mkdir(parents=True)
+            execution = root / 'execution'
+            relative_binary = 'bazel-out/bin/NIOSSLPerformanceTester.rspm.__impl'
+            binary = execution / relative_binary
+            binary.parent.mkdir(parents=True)
+            binary.write_bytes(b'fake optimized executable')
+            runner = Runner(evidence, scratch)
+            build_calls = []
+            run_calls = []
+
+            def fake_bazel(component, lane, fixture, trial, command, targets, extra=()):
+                build_calls.append((component, lane, fixture, trial))
+                return {'status': 0}
+
+            def fake_output(arguments, cwd=None, env=None):
+                if arguments[-1] == 'execution_root':
+                    return str(execution)
+                if arguments[-1] == '--output=files':
+                    return relative_binary
+                raise AssertionError('Unexpected TLS command: ' + str(arguments))
+
+            def fake_run(component, lane, fixture, trial, arguments, cwd, timeout=600):
+                run_calls.append((component, lane, fixture, trial))
+                workload_name = fixture.removeprefix('tls-')
+                log = evidence / f'{len(run_calls)}.log'
+                log.write_text(f'measuring: {workload_name}: ' + ', '.join(['0.1'] * 10) + '\n')
+                return {'status': 0, 'log': str(log)}
+
+            with patch.object(runner, 'bazel', side_effect=fake_bazel), \
+                    patch.object(runner, 'run', side_effect=fake_run), \
+                    patch('fork_benchmark.output', side_effect=fake_output), \
+                    patch('fork_benchmark.digest', return_value='candidate-sha'):
+                runner.tls(['fork'])
+
+            self.assertEqual(build_calls, [('swift-nio-ssl', 'fork', 'prepare-tls', 0)])
+            self.assertEqual(len(run_calls), 6)
+            self.assertEqual({lane for _, lane, _, _ in run_calls}, {'fork'})
+            self.assertEqual({trial for _, _, _, trial in run_calls}, {0, 1, 2})
+            identity = json.loads((evidence / 'tls-benchmarks.json').read_text())
+            self.assertEqual(set(identity['binaries']), {'fork'})
+            self.assertFalse((scratch / 'swift-nio-ssl/stock').exists())
+
+
 class ReportTests(unittest.TestCase):
     @staticmethod
     def historical_help_rows(stock_first=0.75, fork_first=0.85,

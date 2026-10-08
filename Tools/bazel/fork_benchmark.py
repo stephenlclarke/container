@@ -421,7 +421,8 @@ class Runner:
         (self.evidence / 'tls-benchmarks.json').write_text(json.dumps(identity, indent=2) + '\n')
         failed = set()
         for trial in range(3):
-            for lane in (('stock', 'fork') if trial % 2 == 0 else ('fork', 'stock')):
+            trial_lanes = lanes if trial % 2 == 0 else list(reversed(lanes))
+            for lane in trial_lanes:
                 for fixture in TLS_CASES:
                     if (lane, fixture) in failed:
                         continue
@@ -664,6 +665,8 @@ def main() -> None:
     parser.add_argument('--evidence', required=True, type=Path, help='New internal-storage evidence directory')
     parser.add_argument('--scratch', required=True, type=Path, help='New disposable directory on enrolled SSD')
     parser.add_argument('--component', choices=list(PAIRS), action='append')
+    parser.add_argument('--candidate-component', choices=list(PAIRS), action='append',
+                        help='With --reuse-reference, freshly measure only the selected fork candidates')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--use-prepared', action='store_true', help='Use previously prepared source fixtures')
     parser.add_argument('--reuse-reference', action='store_true',
@@ -677,6 +680,14 @@ def main() -> None:
         parser.error('--phase tls requires only --component swift-nio-ssl')
     if args.measure_all_candidates and not args.reuse_reference:
         parser.error('--measure-all-candidates requires --reuse-reference')
+    if args.candidate_component and not args.reuse_reference:
+        parser.error('--candidate-component requires --reuse-reference')
+    if args.candidate_component and args.component:
+        parser.error('--candidate-component cannot be combined with --component')
+    if args.candidate_component and args.measure_all_candidates:
+        parser.error('--candidate-component cannot be combined with --measure-all-candidates')
+    if args.candidate_component and len(set(args.candidate_component)) != len(args.candidate_component):
+        parser.error('--candidate-component cannot be repeated for the same component')
     if args.reuse_reference and (args.component or args.phase != 'all' or args.prepare_only):
         parser.error('--reuse-reference requires the complete component comparison')
     if args.measure_all_candidates and (args.component or args.phase != 'all' or args.prepare_only):
@@ -704,12 +715,16 @@ def main() -> None:
         raise SystemExit('Scratch must be inside the enrolled container-only storage')
     args.evidence.mkdir(parents=True, exist_ok=False)
     args.scratch.mkdir(parents=True, exist_ok=args.use_prepared)
-    components = args.component or list(PAIRS)
-    measured_components = (list(PAIRS) if args.measure_all_candidates else changed) if reference is not None else components
+    components = args.candidate_component or args.component or list(PAIRS)
+    measured_components = ((args.candidate_component if args.candidate_component else
+                            list(PAIRS) if args.measure_all_candidates else changed)
+                           if reference is not None else components)
     lanes = ['fork'] if reference is not None else ['stock', 'fork']
     metadata = dict(phase=args.phase, components=components, pairs=PAIRS, third_party_lock=digest(ROOT / 'Package.resolved'),
                     measured_components=measured_components, historical_reference=reference is not None,
-                    candidate_measurement_scope=('all' if args.measure_all_candidates else 'changed'),
+                    candidate_measurement_scope=('all' if args.measure_all_candidates else
+                                                 'selected' if args.candidate_component else
+                                                 'changed' if reference is not None else 'paired'),
                     component_reference_admission=reference_admission,
                     harness_revision=output(['git', 'rev-parse', 'HEAD'], ROOT),
                     macos=output(['sw_vers']), swift=output(['xcrun', 'swift', '--version']),

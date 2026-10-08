@@ -57,11 +57,16 @@ GO_NAMES = ('BenchmarkDirectReaderAt', 'BenchmarkDirectReaderAtRandom',
 
 class ComponentReferenceTests(unittest.TestCase):
     def test_all_candidate_flag_requires_reference_reuse(self):
-        with patch('sys.argv', ['benchmark', '--measure-all-candidates',
-                                '--evidence', '/tmp/evidence', '--scratch', '/tmp/scratch']):
-            with self.assertRaises(SystemExit) as result:
-                benchmark.main()
-        self.assertEqual(result.exception.code, 2)
+        for selection in (['--measure-all-candidates'],
+                          ['--candidate-component', 'container'],
+                          ['--reuse-reference', '--candidate-component', 'container',
+                           '--component', 'container']):
+            with self.subTest(selection=selection), patch(
+                    'sys.argv', ['benchmark', *selection, '--evidence', '/tmp/evidence',
+                                 '--scratch', '/tmp/scratch']):
+                with self.assertRaises(SystemExit) as result:
+                    benchmark.main()
+                self.assertEqual(result.exception.code, 2)
 
     def test_only_exact_cancellation_revision_preserves_component_workload_identity(self):
         source = Path(benchmark.__file__).read_text()
@@ -322,6 +327,7 @@ class ComponentReferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             evidence, scratch = root / 'evidence', root / 'scratch'
+            all_evidence = evidence
             calls = []
             data = sample_reference()
 
@@ -387,22 +393,47 @@ class ComponentReferenceTests(unittest.TestCase):
                     patch('sys.argv', ['benchmark', '--reuse-reference', '--measure-all-candidates',
                                        '--evidence', str(evidence), '--scratch', str(scratch)]):
                 benchmark.main()
+                all_calls = list(calls)
+                selected = ['swift-nio-ssl', 'grpc-swift-nio-transport', 'container-builder-shim']
+                subset_evidence, subset_scratch = root / 'subset-evidence', root / 'subset-scratch'
+                evidence, scratch = subset_evidence, subset_scratch
+                calls.clear()
+                selected_args = ['benchmark', '--reuse-reference']
+                for component in selected:
+                    selected_args.extend(['--candidate-component', component])
+                selected_args.extend(['--evidence', str(subset_evidence), '--scratch', str(subset_scratch)])
+                with patch('sys.argv', selected_args):
+                    with self.assertRaises(SystemExit) as result:
+                        benchmark.main()
+                    self.assertEqual(result.exception.code, 2)
 
-            metadata = json.loads((evidence / 'metadata.json').read_text())
+            metadata = json.loads((all_evidence / 'metadata.json').read_text())
             all_components = list(benchmark.PAIRS)
             self.assertEqual(metadata['measured_components'], all_components)
             self.assertEqual(metadata['candidate_measurement_scope'], 'all')
             self.assertEqual(metadata['component_reference_admission']['recipe_admission']['policySHA256'], 'policy')
             self.assertEqual(metadata['component_reference_admission']['workload_admission']['policySHA256'],
                              'workload-policy')
-            self.assertEqual({(component, lane) for component, lane, _ in calls},
+            self.assertEqual({(component, lane) for component, lane, _ in all_calls},
                              {(component, 'fork') for component in all_components})
-            historical = json.loads((evidence / 'historical-results.json').read_text())
+            historical = json.loads((all_evidence / 'historical-results.json').read_text())
             self.assertEqual({(row['component'], row['lane']) for row in historical},
                              {(component, 'stock') for component in all_components})
             self.assertTrue(all(row['historical'] for row in historical))
-            self.assertFalse(any(row['lane'] == 'stock' for row in json.loads((evidence / 'results.json').read_text())))
-            self.assertTrue(json.loads((evidence / 'comparison-review.json').read_text())['completed'])
+            self.assertFalse(any(row['lane'] == 'stock' for row in json.loads((all_evidence / 'results.json').read_text())))
+            self.assertTrue(json.loads((all_evidence / 'comparison-review.json').read_text())['completed'])
+            subset_metadata = json.loads((subset_evidence / 'metadata.json').read_text())
+            self.assertEqual(subset_metadata['components'], selected)
+            self.assertEqual(subset_metadata['measured_components'], selected)
+            self.assertEqual(subset_metadata['candidate_measurement_scope'], 'selected')
+            self.assertEqual({(component, lane) for component, lane, _ in calls},
+                             {(component, 'fork') for component in selected})
+            subset_results = json.loads((subset_evidence / 'results.json').read_text())
+            self.assertEqual({row['component'] for row in subset_results}, set(selected))
+            self.assertFalse(any(row['lane'] == 'stock' for row in subset_results))
+            subset_historical = json.loads((subset_evidence / 'historical-results.json').read_text())
+            self.assertTrue(all(row['historical'] for row in subset_historical))
+            self.assertEqual({row['component'] for row in subset_historical}, set(benchmark.PAIRS))
 
 
 if __name__ == '__main__':

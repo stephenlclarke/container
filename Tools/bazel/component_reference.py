@@ -23,7 +23,7 @@ WORKLOAD_TRANSITIONS = {
     },
     'Runner.tls': {
         'historical': '3386d86bab36115e3f4ef121f2d14412d991d9e7784c6a030da1906eee6d6ea7',
-        'candidate': '8e70175d76ad1c91bd85e9399f23415771241f4ab5b3f30fdaca0f76887af4c3',
+        'candidate': 'd0e8545a6c02d2d21e009153703eb56ec360e82a50f9a70f4d55e6362f82a24c',
     },
 }
 
