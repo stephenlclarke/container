@@ -4,12 +4,15 @@ import copy
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 import component_reference as reference
+import benchmark_reference
 import comparison_review
 import fork_benchmark as benchmark
 
@@ -115,8 +118,21 @@ class ComponentReferenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             (root / 'Tools/bazel').mkdir(parents=True)
+            (root / 'Tools/bazel/artifacts').mkdir(parents=True)
+            repo_root = Path(benchmark.__file__).resolve().parents[2]
             source = Path(benchmark.__file__).read_text()
             (root / 'Tools/bazel/fork_benchmark.py').write_text(source)
+            for name in (reference.recipe_compatibility.IMPORTER,
+                         reference.recipe_compatibility.CONSUMER,
+                         'Tools/bazel/artifacts/recipe_compatibility.py'):
+                destination = root / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(repo_root / name, destination)
+            patch_name = reference.recipe_compatibility.HOST_FIXTURE
+            patch_path = root / patch_name
+            shutil.copyfile(repo_root / patch_name, patch_path)
+            historical_patch = subprocess.check_output(
+                ['git', 'show', benchmark_reference.SOURCE + ':' + patch_name], cwd=repo_root)
             for name in reference.RECIPE_FILES:
                 (root / name).write_text(name)
             data = sample_reference()
@@ -132,17 +148,30 @@ class ComponentReferenceTests(unittest.TestCase):
             data['componentToolchain']['thirdPartyLockSHA256'] = hashlib.sha256(old_bytes).hexdigest()
             (root / 'Package.resolved').write_bytes(old_bytes)
             originals = {name: (root / name).read_bytes() for name in reference.RECIPE_FILES}
-            originals['Tools/bazel/fork_benchmark.py'] = source.encode()
+            originals['Tools/bazel/fork_benchmark.py'] = subprocess.check_output(
+                ['git', 'show', benchmark_reference.SOURCE + ':Tools/bazel/fork_benchmark.py'], cwd=repo_root)
+            originals[patch_name] = historical_patch
             originals['Package.resolved'] = old_bytes
             def command(args, unused):
-                if args[0] == 'git': return ''
+                if args[0] == 'git': return patch_name + '\n'
                 if args[0] == 'xcrun': return 'Swift version Target'
                 if args[0] == 'pmset': return "Now drawing from 'AC Power'"
                 return {'hw.model': 'M', 'hw.memsize': '1', '-productVersion': '27',
                         '-buildVersion': 'A', '-m': 'arm64'}[args[-1]]
+            admission = {}
             with patch.object(reference, 'command', side_effect=command), \
                     patch.object(reference, 'original', side_effect=lambda unused, name: originals[name]):
-                self.assertEqual(reference.validate_inputs(data, pairs, root, benchmark.BAZEL_SHA), ['container'])
+                self.assertEqual(reference.validate_inputs(data, pairs, root, benchmark.BAZEL_SHA, admission), ['container'])
+                recipe_admission = admission['recipe_admission']
+                self.assertEqual(recipe_admission['mode'], 'known-consumer-verifier-update+known-host-timeout-fixture-update')
+                self.assertIn(patch_name, recipe_admission['changedFiles'])
+                self.assertNotEqual(recipe_admission['producerRecipeSHA256'],
+                                    recipe_admission['currentRecipeSHA256'])
+                policy_path = repo_root / 'Tools/bazel/artifacts/recipe_compatibility.py'
+                self.assertEqual(recipe_admission['policySHA256'],
+                                 reference.recipe_compatibility.digest(policy_path.read_bytes()))
+                self.assertNotEqual(admission['workload_admission']['producerSHA256'],
+                                    admission['workload_admission']['currentSHA256'])
                 next_pairs = copy.deepcopy(pairs)
                 next_pairs['containerization']['fork'] = 'a' * 40
                 new_lock = copy.deepcopy(old_lock)
@@ -167,7 +196,9 @@ class ComponentReferenceTests(unittest.TestCase):
                         reference.validate_inputs(record, selected_pairs, root, benchmark.BAZEL_SHA)
                 (root / 'Package.resolved').write_bytes(old_bytes)
                 for kind in ('dependency', 'stock', 'compiler', 'host', 'recipe',
-                             'workload', 'workload_order', 'patch'):
+                             'workload', 'workload_order', 'unknown_workload_transition',
+                             'unknown_tls_transition', 'unknown_patch_transition',
+                             'unknown_native_recipe_transition', 'patch'):
                     current = copy.deepcopy(pairs)
                     record = copy.deepcopy(data)
                     if kind == 'dependency': current['swift-nio-ssl']['fork'] = 'changed'
@@ -181,11 +212,31 @@ class ComponentReferenceTests(unittest.TestCase):
                         after = "[('cli-version', ['--version']), ('cli-run-help', ['run', '--help'])]"
                         self.assertIn(before, source)
                         (root / 'Tools/bazel/fork_benchmark.py').write_text(source.replace(before, after))
+                    if kind == 'unknown_workload_transition':
+                        before = 'trial_lanes = lanes if trial % 2 == 0 else list(reversed(lanes))'
+                        after = 'trial_lanes = list(lanes) if trial % 2 == 0 else list(reversed(lanes))'
+                        self.assertIn(before, source)
+                        (root / 'Tools/bazel/fork_benchmark.py').write_text(source.replace(before, after))
+                    if kind == 'unknown_tls_transition':
+                        before = "for lane in lanes:\n            workspace = self.scratch / component / lane / 'workspace'"
+                        after = "for lane in reversed(lanes):\n            workspace = self.scratch / component / lane / 'workspace'"
+                        self.assertIn(before, source)
+                        (root / 'Tools/bazel/fork_benchmark.py').write_text(source.replace(before, after, 1))
+                    if kind == 'unknown_patch_transition':
+                        patch_path.write_bytes(patch_path.read_bytes() + b'\n# unreviewed change\n')
+                    if kind == 'unknown_native_recipe_transition':
+                        native_path = root / reference.recipe_compatibility.IMPORTER
+                        native_path.write_bytes(native_path.read_bytes() + b'\n# unreviewed change\n')
                     if kind == 'patch': (root / 'Tools/bazel/new.patch').write_text('changed')
                     with self.subTest(kind=kind), self.assertRaises(RuntimeError):
                         reference.validate_inputs(record, current, root, benchmark.BAZEL_SHA)
                     (root / '.bazelrc').write_text('.bazelrc')
                     (root / 'Tools/bazel/fork_benchmark.py').write_text(source)
+                    shutil.copyfile(repo_root / patch_name, patch_path)
+                    shutil.copyfile(repo_root / reference.recipe_compatibility.IMPORTER,
+                                    root / reference.recipe_compatibility.IMPORTER)
+                    shutil.copyfile(repo_root / reference.recipe_compatibility.CONSUMER,
+                                    root / reference.recipe_compatibility.CONSUMER)
                     (root / 'Tools/bazel/new.patch').unlink(missing_ok=True)
 
     def test_historical_rows_in_runtime_runner_are_not_fresh_junit(self):
@@ -319,13 +370,20 @@ class ComponentReferenceTests(unittest.TestCase):
                 (target / 'inputs.json').write_text('{}')
                 return target / 'workspace'
 
-            changed = ['containerization', 'container']
+            def validate_reference(_reference, _pairs, _root, _bazel_sha, admission=None):
+                if admission is not None:
+                    admission.update(recipe_admission={'producerRecipeSHA256': 'old',
+                                                       'currentRecipeSHA256': 'new', 'policySHA256': 'policy'},
+                                     workload_admission={'producerSHA256': 'old',
+                                                         'currentSHA256': 'new', 'policySHA256': 'workload-policy'})
+                return ['containerization', 'container']
+
             with patch.object(benchmark, 'Runner', FakeRunner), patch.object(benchmark, 'prepare', side_effect=prepare), \
                     patch.object(benchmark, 'STORAGE', root), patch.object(benchmark, 'digest', return_value=benchmark.BAZEL_SHA), \
                     patch.object(benchmark, 'output', return_value='candidate'), patch.object(benchmark.subprocess, 'run'), \
                     patch.object(benchmark, 'install_signal_handlers'), patch.object(benchmark, 'PAIRS', copy.deepcopy(benchmark.PAIRS)), \
                     patch('benchmark_reference.fetch', return_value=data), patch('benchmark_reference.retain'), \
-                    patch.object(reference, 'validate_inputs', return_value=changed), \
+                    patch.object(reference, 'validate_inputs', side_effect=validate_reference), \
                     patch('sys.argv', ['benchmark', '--reuse-reference', '--measure-all-candidates',
                                        '--evidence', str(evidence), '--scratch', str(scratch)]):
                 benchmark.main()
@@ -334,6 +392,9 @@ class ComponentReferenceTests(unittest.TestCase):
             all_components = list(benchmark.PAIRS)
             self.assertEqual(metadata['measured_components'], all_components)
             self.assertEqual(metadata['candidate_measurement_scope'], 'all')
+            self.assertEqual(metadata['component_reference_admission']['recipe_admission']['policySHA256'], 'policy')
+            self.assertEqual(metadata['component_reference_admission']['workload_admission']['policySHA256'],
+                             'workload-policy')
             self.assertEqual({(component, lane) for component, lane, _ in calls},
                              {(component, 'fork') for component in all_components})
             historical = json.loads((evidence / 'historical-results.json').read_text())

@@ -7,13 +7,25 @@ import math
 from pathlib import Path
 import subprocess
 
-from benchmark_reference import ARCHIVE_SHA256, SOURCE, workload_digest
+from benchmark_reference import (ARCHIVE_SHA256, RUNNER_CANCELLATION_SHA256,
+                                 RUNNER_CONTRACT, SOURCE, canonical_ast, workload_digest)
+from artifacts import recipe_compatibility
 
 RECIPE_FILES = ('.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock',
                 'Tools/bazel/dependencies.bzl', 'Tools/bazel/layers.bzl',
                 'Tools/bazel/layer_build.bzl', 'Tools/bazel/test_inputs.bzl')
 WORKLOAD_UNITS = ('prepare', 'Runner.run', 'Runner.bazel', 'Runner.cli',
                   'Runner.builder', 'Runner.tls')
+WORKLOAD_TRANSITIONS = {
+    'Runner.builder': {
+        'historical': '7bd95006cade8794a0e44bf43d554d55d3fdea75f99edaf2750749ec08777158',
+        'candidate': '2ce95d00e3ec6e9e381359f8d1cf98ed58bd42f52eda99286fa704055a6963d1',
+    },
+    'Runner.tls': {
+        'historical': '3386d86bab36115e3f4ef121f2d14412d991d9e7784c6a030da1906eee6d6ea7',
+        'candidate': '8e70175d76ad1c91bd85e9399f23415771241f4ab5b3f30fdaca0f76887af4c3',
+    },
+}
 
 
 def command(arguments: list[str], root: Path) -> str:
@@ -24,24 +36,47 @@ def original(root: Path, name: str) -> bytes:
     return subprocess.check_output(['git', 'show', SOURCE + ':' + name], cwd=root, timeout=60)
 
 
-def units(source: str) -> dict[str, str]:
+def raw_units(source: str) -> dict[str, str]:
+    """Return exact canonical AST hashes before finite compatibility admission."""
     tree = ast.parse(source)
     result = {}
     for node in tree.body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in WORKLOAD_UNITS:
-            result[node.name] = workload_digest(node.name, node)
+            result[node.name] = hashlib.sha256(canonical_ast(node).encode()).hexdigest()
         elif isinstance(node, ast.ClassDef) and node.name == 'Runner':
             for method in node.body:
                 name = 'Runner.' + getattr(method, 'name', '')
                 if name in WORKLOAD_UNITS:
-                    result[name] = workload_digest(name, method)
+                    result[name] = hashlib.sha256(canonical_ast(method).encode()).hexdigest()
     if set(result) != set(WORKLOAD_UNITS):
         raise RuntimeError('Component workload implementation is incomplete')
     return result
 
 
-def validate_inputs(reference: dict, pairs: dict, root: Path, bazel_sha256: str) -> list[str]:
-    """Remeasure only changed Container and Containerization fork sources."""
+def units(source: str) -> dict[str, str]:
+    tree = ast.parse(source)
+    result = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in WORKLOAD_UNITS:
+            name = node.name
+            observed = workload_digest(name, node)
+            result[name] = observed
+        elif isinstance(node, ast.ClassDef) and node.name == 'Runner':
+            for method in node.body:
+                name = 'Runner.' + getattr(method, 'name', '')
+                if name in WORKLOAD_UNITS:
+                    observed = workload_digest(name, method)
+                    transition = WORKLOAD_TRANSITIONS.get(name)
+                    result[name] = (transition['historical'] if transition
+                                    and observed == transition['candidate'] else observed)
+    if set(result) != set(WORKLOAD_UNITS):
+        raise RuntimeError('Component workload implementation is incomplete')
+    return result
+
+
+def validate_inputs(reference: dict, pairs: dict, root: Path, bazel_sha256: str,
+                    admission: dict | None = None) -> list[str]:
+    """Validate every retained input and optionally return its admission provenance."""
     inputs = reference['componentInputs']
     if set(inputs) != set(pairs):
         raise RuntimeError('Historical component inventory differs')
@@ -79,12 +114,51 @@ def validate_inputs(reference: dict, pairs: dict, root: Path, bazel_sha256: str)
     if current_patches != prior_patches:
         raise RuntimeError('Historical component patch inventory differs')
     recipes = [*RECIPE_FILES, *sorted(current_patches)]
+    host_fixture = recipe_compatibility.HOST_FIXTURE
+    producer_recipe = {
+        recipe_compatibility.IMPORTER: recipe_compatibility.OLD[recipe_compatibility.IMPORTER],
+        recipe_compatibility.CONSUMER: recipe_compatibility.OLD[recipe_compatibility.CONSUMER],
+        host_fixture: hashlib.sha256(original(root, host_fixture)).hexdigest(),
+    }
+    current_recipe = {
+        recipe_compatibility.IMPORTER: hashlib.sha256((root / recipe_compatibility.IMPORTER).read_bytes()).hexdigest(),
+        recipe_compatibility.CONSUMER: hashlib.sha256((root / recipe_compatibility.CONSUMER).read_bytes()).hexdigest(),
+        host_fixture: hashlib.sha256((root / host_fixture).read_bytes()).hexdigest(),
+    }
+    try:
+        recipe_admission = recipe_compatibility.admit(producer_recipe, current_recipe, root)
+    except (OSError, ValueError) as error:
+        raise RuntimeError('Historical component recipe differs: ' + str(error)) from error
     for name in recipes:
+        if name == host_fixture:
+            continue
         if (root / name).read_bytes() != original(root, name):
             raise RuntimeError('Historical component build recipe differs: ' + name)
     old = original(root, 'Tools/bazel/fork_benchmark.py').decode()
-    if units(old) != units((root / 'Tools/bazel/fork_benchmark.py').read_text()):
+    current = (root / 'Tools/bazel/fork_benchmark.py').read_text()
+    if units(old) != units(current):
         raise RuntimeError('Historical component workload or timing boundary differs')
+    workload_policy = {
+        'schema': 1,
+        'transitions': {
+            'candidateLaneSelection': WORKLOAD_TRANSITIONS,
+            'runnerCancellation': {
+                'unit': 'Runner.run',
+                'historical': RUNNER_CONTRACT['Runner.run'],
+                'candidate': RUNNER_CANCELLATION_SHA256,
+            },
+        },
+        'baseline': SOURCE,
+    }
+    workload_admission = {
+        'producerSHA256': raw_units(old),
+        'currentSHA256': raw_units(current),
+        'policySHA256': hashlib.sha256(json.dumps(
+            workload_policy, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+        'transitionPolicy': workload_policy,
+    }
+    if admission is not None:
+        admission.update(recipe_admission=recipe_admission, workload_admission=workload_admission)
     old_pairs = next(ast.literal_eval(node.value) for node in ast.parse(old).body
                      if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PAIRS' for t in node.targets))
     for name, pair in pairs.items():

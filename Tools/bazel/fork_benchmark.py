@@ -690,11 +690,13 @@ def main() -> None:
     if digest(BAZEL) != BAZEL_SHA:
         raise SystemExit('Bazel checksum mismatch')
     reference = None
+    reference_admission = None
     if args.reuse_reference:
         from benchmark_reference import fetch
         from component_reference import validate_inputs
         reference = fetch()
-        changed = validate_inputs(reference, PAIRS, ROOT, BAZEL_SHA)
+        reference_admission = {}
+        changed = validate_inputs(reference, PAIRS, ROOT, BAZEL_SHA, reference_admission)
     # Reuse the established enrollment preflight before creating source snapshots.
     subprocess.run([str(ROOT / 'Tools/bazel/run.sh'), 'info', 'release'], check=True,
                    stdout=subprocess.DEVNULL)
@@ -708,6 +710,7 @@ def main() -> None:
     metadata = dict(phase=args.phase, components=components, pairs=PAIRS, third_party_lock=digest(ROOT / 'Package.resolved'),
                     measured_components=measured_components, historical_reference=reference is not None,
                     candidate_measurement_scope=('all' if args.measure_all_candidates else 'changed'),
+                    component_reference_admission=reference_admission,
                     harness_revision=output(['git', 'rev-parse', 'HEAD'], ROOT),
                     macos=output(['sw_vers']), swift=output(['xcrun', 'swift', '--version']),
                     hardware=output(['sysctl', '-n', 'machdep.cpu.brand_string', 'hw.memsize', 'hw.ncpu']),
@@ -789,7 +792,10 @@ def main() -> None:
     if reference is not None:
         from component_reference import require_candidate_rows
         require_candidate_rows(runner.rows, measured_components, PAIRS)
-        validate_inputs(reference, PAIRS, ROOT, digest(BAZEL))
+        final_admission = {}
+        validate_inputs(reference, PAIRS, ROOT, digest(BAZEL), final_admission)
+        if final_admission != reference_admission:
+            raise RuntimeError('Component reference admission changed during the run')
     matrix = json.loads((args.evidence / 'matrix.json').read_text())
     if (args.evidence / 'go-matrix.json').exists():
         matrix += json.loads((args.evidence / 'go-matrix.json').read_text())
