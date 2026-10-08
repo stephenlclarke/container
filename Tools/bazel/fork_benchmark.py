@@ -395,7 +395,7 @@ class Runner:
             if failures:
                 raise RuntimeError('Bazel cleanup failed: ' + ', '.join(failures))
 
-    def tls(self) -> None:
+    def tls(self, lanes=('stock', 'fork')) -> None:
         """Measure identical optimized upstream workloads directly, without Bazel startup."""
         component = 'swift-nio-ssl'
         target = '@swiftpkg_swift_nio_ssl//:NIOSSLPerformanceTester.rspm'
@@ -403,7 +403,7 @@ class Runner:
         binaries = {}
         identity = {'source': PAIRS[component], 'configuration': 'release', 'binaries': {},
                     'workloads': {}, 'method': 'Three alternating process trials; monotonic wall time includes startup, one warmup and ten upstream samples. Upstream Date-based samples are retained as diagnostics, not used for the speed ratio.'}
-        for lane in ('stock', 'fork'):
+        for lane in lanes:
             workspace = self.scratch / component / lane / 'workspace'
             row = self.bazel(component, lane, 'prepare-tls', 0, 'build', [target], ['--config=release'])
             if row['status']:
@@ -416,7 +416,7 @@ class Runner:
             source = self.scratch / component / lane / 'component/Sources/NIOSSLPerformanceTester'
             identity['workloads'][lane] = {str(p.relative_to(source)): digest(p)
                                            for p in sorted(source.rglob('*')) if p.is_file()}
-        if identity['workloads']['stock'] != identity['workloads']['fork']:
+        if len(lanes) == 2 and identity['workloads']['stock'] != identity['workloads']['fork']:
             raise RuntimeError('TLS performance workloads differ between lanes')
         (self.evidence / 'tls-benchmarks.json').write_text(json.dumps(identity, indent=2) + '\n')
         failed = set()
@@ -579,7 +579,7 @@ class Runner:
                 if row['status']:
                     failed.add(name)
 
-    def builder(self) -> None:
+    def builder(self, lanes=('stock', 'fork')) -> None:
         component = 'container-builder-shim'
         go = ['env', 'GOTOOLCHAIN=go1.25.9',
               'GOCACHE=' + str(STORAGE / 'paired-go-cache'),
@@ -590,14 +590,17 @@ class Runner:
                  '-o', '../container-builder-shim-linux', '.']
         benchmarks = ['BenchmarkDirectReaderAt', 'BenchmarkDirectReaderAtRandom',
                       'BenchmarkPrefetcherSequential', 'BenchmarkPrefetcherRandom']
-        measurements = []
+        go_results = self.evidence / 'go-benchmarks.json'
+        measurements = json.loads(go_results.read_text()) if go_results.exists() else []
+        measurements = [row for row in measurements
+                         if row.get('historical') and row.get('lane') not in lanes]
         goroot = Path(output(go + ['env', 'GOROOT']))
         (self.evidence / 'go-toolchain.json').write_text(json.dumps({
             'version': output(go + ['version']), 'root': str(goroot),
             'sha256': digest(goroot / 'bin/go'), 'linux_build_jobs': 6,
             'benchmarks': benchmarks, 'iterations_per_trial': 1024,
             'bytes_per_read': 4096}, indent=2) + '\n')
-        for lane in ['stock', 'fork']:
+        for lane in lanes:
             workspace = self.scratch / component / lane / 'workspace'
             self.run(component, lane, 'toolchain', 0, go + ['version'], workspace)
             self.run(component, lane, 'prepare-build', 0,
@@ -611,7 +614,8 @@ class Runner:
                     'go_sum_sha256': digest(workspace / 'go.sum')}, indent=2) + '\n')
         failed_fixtures = set()
         for trial in range(3):
-            for lane in (['stock', 'fork'] if trial % 2 == 0 else ['fork', 'stock']):
+            trial_lanes = lanes if trial % 2 == 0 else list(reversed(lanes))
+            for lane in trial_lanes:
                 workspace = self.scratch / component / lane / 'workspace'
                 self.run(component, lane, 'cached-linux-build', trial, linux + build, workspace)
                 if (lane, 'prefetch-tests') not in failed_fixtures:
@@ -635,8 +639,8 @@ class Runner:
                         row['status'] = 65
                     if row['status']:
                         failed_fixtures.add((lane, name))
-        (self.evidence / 'go-benchmarks.json').write_text(json.dumps(measurements, indent=2) + '\n')
-        for lane in ['stock', 'fork']:
+        go_results.write_text(json.dumps(measurements, indent=2) + '\n')
+        for lane in lanes:
             workspace = self.scratch / component / lane / 'workspace'
             originals = {}
             marker = uuid.uuid4().hex
@@ -663,14 +667,20 @@ def main() -> None:
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--use-prepared', action='store_true', help='Use previously prepared source fixtures')
     parser.add_argument('--reuse-reference', action='store_true',
-                        help='Reuse published stock and unchanged dependency measurements; execute changed Container and Containerization forks')
+                        help='Reuse published stock measurements and execute the changed fork components')
+    parser.add_argument('--measure-all-candidates', action='store_true',
+                        help='With --reuse-reference, freshly measure all five fork candidates against retained stock baselines')
     parser.add_argument('--phase', choices=['all', 'tests', 'recompile', 'tls'], default='all',
                         help='Run everything, tests/compilation, only compilation, or only optimized SSL workloads')
     args = parser.parse_args()
     if args.phase == 'tls' and args.component != ['swift-nio-ssl']:
         parser.error('--phase tls requires only --component swift-nio-ssl')
+    if args.measure_all_candidates and not args.reuse_reference:
+        parser.error('--measure-all-candidates requires --reuse-reference')
     if args.reuse_reference and (args.component or args.phase != 'all' or args.prepare_only):
         parser.error('--reuse-reference requires the complete component comparison')
+    if args.measure_all_candidates and (args.component or args.phase != 'all' or args.prepare_only):
+        parser.error('--measure-all-candidates requires the complete component comparison')
     args.evidence = args.evidence.resolve()
     args.scratch = args.scratch.resolve()
     # The active container checkpoint includes workflow and runtime fixes which
@@ -693,10 +703,11 @@ def main() -> None:
     args.evidence.mkdir(parents=True, exist_ok=False)
     args.scratch.mkdir(parents=True, exist_ok=args.use_prepared)
     components = args.component or list(PAIRS)
-    measured_components = changed if reference is not None else components
+    measured_components = (list(PAIRS) if args.measure_all_candidates else changed) if reference is not None else components
     lanes = ['fork'] if reference is not None else ['stock', 'fork']
     metadata = dict(phase=args.phase, components=components, pairs=PAIRS, third_party_lock=digest(ROOT / 'Package.resolved'),
                     measured_components=measured_components, historical_reference=reference is not None,
+                    candidate_measurement_scope=('all' if args.measure_all_candidates else 'changed'),
                     harness_revision=output(['git', 'rev-parse', 'HEAD'], ROOT),
                     macos=output(['sw_vers']), swift=output(['xcrun', 'swift', '--version']),
                     hardware=output(['sysctl', '-n', 'machdep.cpu.brand_string', 'hw.memsize', 'hw.ncpu']),
@@ -726,11 +737,11 @@ def main() -> None:
     try:
         for component in measured_components:
             if component == 'container-builder-shim':
-                runner.builder()
+                runner.builder(lanes)
                 continue
             with runner.bazel_session(component, lanes):
                 if args.phase == 'tls':
-                    runner.tls()
+                    runner.tls(lanes)
                     continue
                 pair = PAIRS[component]
                 repo = '@swiftpkg_' + component.replace('-', '_') + '//:'
@@ -756,7 +767,7 @@ def main() -> None:
                             if row['status']:
                                 failed_fixtures.add((lane, name))
                 if component == 'swift-nio-ssl' and args.phase != 'recompile':
-                    runner.tls()
+                    runner.tls(lanes)
                 # No-op comments force the component's Swift source compilation.
                 # Dependency sources are untouched; report first builds separately.
                 for lane in lanes:

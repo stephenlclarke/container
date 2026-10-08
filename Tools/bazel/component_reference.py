@@ -155,16 +155,27 @@ def require_candidate_rows(rows: list[dict], changed: list[str], pairs: dict) ->
     """An incomplete candidate must not pass on the strength of retained dependencies."""
     for component in changed:
         selected = [row for row in rows if row['component'] == component]
-        expected = {'prepare-build': 1, 'cached-build': 3, 'component-recompile': 1,
-                    'cleanup-bazel': 1,
-                    **{name: 3 for name in pairs[component]['tests']}}
+        if component == 'container-builder-shim':
+            benchmarks = ('BenchmarkDirectReaderAt', 'BenchmarkDirectReaderAtRandom',
+                          'BenchmarkPrefetcherSequential', 'BenchmarkPrefetcherRandom')
+            expected = {'toolchain': 1, 'prepare-build': 1, 'prepare-linux-build': 1,
+                        'cached-linux-build': 3, 'prefetch-tests': 3,
+                        'component-recompile': 1, **{name: 3 for name in benchmarks}}
+        else:
+            expected = {'prepare-build': 1, 'cached-build': 3, 'component-recompile': 1,
+                        'cleanup-bazel': 1,
+                        **{name: 3 for name in pairs[component]['tests']}}
         if component == 'container':
             expected.update({'cli-run-help': 11, 'cli-version': 11})
+        if component == 'swift-nio-ssl':
+            expected.update({'prepare-tls': 1, 'tls-repeated_handshakes': 3,
+                             'tls-many_writes_512b': 3})
         if {row['fixture'] for row in selected} != set(expected) or any(row['lane'] != 'fork' for row in selected):
             raise RuntimeError('Candidate component fixture inventory is incomplete: ' + component)
+        test_fixtures = pairs[component].get('tests', [])
         for fixture, count in expected.items():
             measurements = [row for row in selected if row['fixture'] == fixture]
-            if fixture in pairs[component]['tests'] and any(row['status'] for row in measurements):
+            if fixture in test_fixtures and any(row['status'] for row in measurements):
                 count = len(measurements)  # The existing suite stops after its first failure.
                 if not 1 <= count <= 3:
                     raise RuntimeError('Candidate test trial count is invalid')

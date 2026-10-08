@@ -53,6 +53,13 @@ GO_NAMES = ('BenchmarkDirectReaderAt', 'BenchmarkDirectReaderAtRandom',
 
 
 class ComponentReferenceTests(unittest.TestCase):
+    def test_all_candidate_flag_requires_reference_reuse(self):
+        with patch('sys.argv', ['benchmark', '--measure-all-candidates',
+                                '--evidence', '/tmp/evidence', '--scratch', '/tmp/scratch']):
+            with self.assertRaises(SystemExit) as result:
+                benchmark.main()
+        self.assertEqual(result.exception.code, 2)
+
     def test_only_exact_cancellation_revision_preserves_component_workload_identity(self):
         source = Path(benchmark.__file__).read_text()
         previous = source
@@ -259,6 +266,82 @@ class ComponentReferenceTests(unittest.TestCase):
             (evidence / 'historical-differences.json').write_text('[]')
             with patch('benchmark_reference.fetch', return_value=data), self.assertRaises(RuntimeError):
                 comparison_review.review(evidence)
+
+    def test_all_candidate_mode_prepares_only_forks_and_keeps_all_stock_history(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            evidence, scratch = root / 'evidence', root / 'scratch'
+            calls = []
+            data = sample_reference()
+
+            class FakeRunner(benchmark.Runner):
+                def run(self, component, lane, fixture, trial, args, cwd, timeout=600):
+                    calls.append((component, lane, fixture))
+                    row = dict(component=component, lane=lane, fixture=fixture, trial=trial,
+                               seconds=1, status=0, log='fresh')
+                    self.rows.append(row)
+                    return row
+
+                def bazel(self, component, lane, fixture, trial, command, targets, extra=()):
+                    return self.run(component, lane, fixture, trial, [], root)
+
+                def cli(self, lane):
+                    for fixture in ('cli-run-help', 'cli-version'):
+                        for trial in range(11):
+                            self.run('container', lane, fixture, trial, [], root)
+
+                def builder(self, lanes=('stock', 'fork')):
+                    self.run('container-builder-shim', 'fork', 'toolchain', 0, [], root)
+                    for fixture in ('prepare-build', 'prepare-linux-build', 'component-recompile'):
+                        self.run('container-builder-shim', 'fork', fixture, 0, [], root)
+                    for trial in range(3):
+                        for fixture in ('cached-linux-build', 'prefetch-tests',
+                                        'BenchmarkDirectReaderAt', 'BenchmarkDirectReaderAtRandom',
+                                        'BenchmarkPrefetcherSequential', 'BenchmarkPrefetcherRandom'):
+                            self.run('container-builder-shim', 'fork', fixture, trial, [], root)
+                    go_path = evidence / 'go-benchmarks.json'
+                    retained = json.loads(go_path.read_text())
+                    retained += [dict(lane='fork', fixture=name, trial=trial, iterations=1024,
+                                      ns_per_op=1.0)
+                                 for name in GO_NAMES for trial in range(3)]
+                    go_path.write_text(json.dumps(retained))
+
+                def tls(self, lanes=('stock', 'fork')):
+                    self.run('swift-nio-ssl', 'fork', 'prepare-tls', 0, [], root)
+                    for trial in range(3):
+                        for fixture in ('tls-repeated_handshakes', 'tls-many_writes_512b'):
+                            self.run('swift-nio-ssl', 'fork', fixture, trial, [], root)
+
+            def prepare(component, lane, base):
+                calls.append((component, lane, 'prepare'))
+                target = base / component / lane
+                (target / 'workspace/Sources').mkdir(parents=True)
+                (target / 'inputs.json').write_text('{}')
+                return target / 'workspace'
+
+            changed = ['containerization', 'container']
+            with patch.object(benchmark, 'Runner', FakeRunner), patch.object(benchmark, 'prepare', side_effect=prepare), \
+                    patch.object(benchmark, 'STORAGE', root), patch.object(benchmark, 'digest', return_value=benchmark.BAZEL_SHA), \
+                    patch.object(benchmark, 'output', return_value='candidate'), patch.object(benchmark.subprocess, 'run'), \
+                    patch.object(benchmark, 'install_signal_handlers'), patch.object(benchmark, 'PAIRS', copy.deepcopy(benchmark.PAIRS)), \
+                    patch('benchmark_reference.fetch', return_value=data), patch('benchmark_reference.retain'), \
+                    patch.object(reference, 'validate_inputs', return_value=changed), \
+                    patch('sys.argv', ['benchmark', '--reuse-reference', '--measure-all-candidates',
+                                       '--evidence', str(evidence), '--scratch', str(scratch)]):
+                benchmark.main()
+
+            metadata = json.loads((evidence / 'metadata.json').read_text())
+            all_components = list(benchmark.PAIRS)
+            self.assertEqual(metadata['measured_components'], all_components)
+            self.assertEqual(metadata['candidate_measurement_scope'], 'all')
+            self.assertEqual({(component, lane) for component, lane, _ in calls},
+                             {(component, 'fork') for component in all_components})
+            historical = json.loads((evidence / 'historical-results.json').read_text())
+            self.assertEqual({(row['component'], row['lane']) for row in historical},
+                             {(component, 'stock') for component in all_components})
+            self.assertTrue(all(row['historical'] for row in historical))
+            self.assertFalse(any(row['lane'] == 'stock' for row in json.loads((evidence / 'results.json').read_text())))
+            self.assertTrue(json.loads((evidence / 'comparison-review.json').read_text())['completed'])
 
 
 if __name__ == '__main__':
