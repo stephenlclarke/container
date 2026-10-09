@@ -189,6 +189,7 @@ To retain your user data so that it is available should you reinstall later, run
 - [Apple versus fork runtime benchmarks](./Tools/bazel/RUNTIME_BENCHMARK.md): `make bazel-final` finishes the build with repeated speed comparisons. Component qualification also measures matching optimized TLS handshake and encrypted-write workloads independently of compatibility-test results.
 
 The package graph pins the merged SwiftNIO SSL Darwin trust-alert fix at `aee34db2144717ddce7bd145e45cf4fb9dab73fb`. Rebuild and qualify the enhanced dependency layers before claiming that a compiled or installed Container binary includes it; the earlier TLS parity candidate remains historical evidence.
+The enhanced Container graph also selects `container-engine-api` revision `6e8c932fc8755a4b922fd239426e9029be0554e0` to match the nested Engine stream source. See the [issue](./docs/ISSUE-native-engine-stream-pin.md) and [PR handoff](./docs/PR-native-engine-stream-pin.md); source alignment alone does not qualify refreshed SDK binaries.
 
 - Local cleanup releases Colima's startup lock only after readiness succeeds; failed startup or surviving test controllers preserve recovery authority. Original archive verification remains a separate local test after retirement of automatic GitHub packaging.
 - View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
