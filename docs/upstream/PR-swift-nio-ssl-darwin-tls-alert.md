@@ -9,6 +9,8 @@
 - Preserve native trust validation, public custom-verifier semantics, retry/resume behavior, and non-Darwin behavior.
 - Add a focused regression at the manager/bridge boundary, then verify the public Container Fluentd TLS failure contract through fresh exact-fingerprint candidates.
 
+The SwiftNIO SSL change is now merged as PR 7 at `aee34db2144717ddce7bd145e45cf4fb9dab73fb`; its CI passed all 347 NIOSSL cases. The active Container `Package.swift` and `Package.resolved` select that revision. The current Container compiled layer and the two fresh Docker CLI candidates remain pending, so this dependency update alone is not a runtime parity result.
+
 ## Motivation
 
 The current Darwin bridge returns `ssl_verify_invalid` without assigning BoringSSL's available `outAlert` value. BoringSSL chooses `certificate_unknown` by default. Docker Engine 29.2.1 sends `bad_certificate` for the same untrusted self-signed Fluentd peer. Container already produces Docker's exact public error and rejected state, so the alert is independently observable and must not be hidden by source-level error mapping.

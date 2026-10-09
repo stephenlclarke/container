@@ -23,10 +23,14 @@ The same bounded self-signed Fluentd receiver records `SSLV3_ALERT_BAD_CERTIFICA
 - The Docker oracle at `/private/tmp/container-rest-fluentd-tls.docker.m7QDss/result.json` records `SSLV3_ALERT_BAD_CERTIFICATE`.
 - The exact Container candidate at `/private/tmp/container-rest-fluentd-tls.candidate-66e-1.tBR6n1/receiver-result.json` records `SSLV3_ALERT_CERTIFICATE_UNKNOWN` while `start.stderr` and inspection already match Docker.
 
+## Dependency update
+
+SwiftNIO SSL PR 7 merged as `aee34db2144717ddce7bd145e45cf4fb9dab73fb`; its retained CI run passed all 347 NIOSSL cases. The active Container package manifest and resolved graph now select that exact fork revision. The prior candidate still records the pre-fix alert, and a newly built Container candidate is required before the runtime parity item can be marked complete.
+
 ## Acceptance evidence
 
-- [ ] A narrow NIOSSL test proves the configured internal Darwin verifier writes `SSL_AD_BAD_CERTIFICATE` only when it returns `ssl_verify_invalid`.
-- [ ] Existing custom-verifier, success, retry, and non-Darwin focused tests remain green without a changed public API or trust decision.
+- [x] SwiftNIO SSL PR 7 passes the merged NIOSSL regression suite (347 cases) and selects `SSL_AD_BAD_CERTIFICATE` only on Darwin default-trust rejection.
+- [x] The existing custom-verifier, success, retry, and non-Darwin cases pass in the merged 347-case suite without a changed public API or trust decision.
 - [ ] Container is built with the exact local NIOSSL patch and the same self-signed Docker CLI fixture passes its receiver-alert assertion in two fresh source/dependency/binary/guest/root candidates.
 - [ ] The Container issue handoff records the resolved evidence and Stephen-owned [container #87](https://github.com/stephenlclarke/container/issues/87) is commented and closed only after the full public contract passes.
 
