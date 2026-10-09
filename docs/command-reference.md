@@ -72,7 +72,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--masked-path <path>`: **Experimental.** Hide a path inside the container, in addition to the runtime defaults (or `NONE` to clear prior values and the defaults)
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
-*   `--name <name>`: Use the specified name as the container ID
+*   `--name <name>`: Container ID; maximum 63 ASCII characters
 *   `--network <network>`: Attach the container to a network. Supports `alias`,
     `mac`, `mtu`, `interface`, repeated `address`, and requested primary `ip` /
     `ip6` options; also `none` / `host`.
@@ -349,7 +349,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--masked-path <path>`: **Experimental.** Hide a path inside the container, in addition to the runtime defaults (or `NONE` to clear prior values and the defaults)
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
-*   `--name <name>`: Use the specified name as the container ID
+*   `--name <name>`: Container ID; maximum 63 ASCII characters
 *   `--network <network>`: Attach the container to a network. Supports `alias`,
     `mac`, `mtu`, `interface`, repeated `address`, and requested primary `ip` /
     `ip6` options; also `none` / `host`.

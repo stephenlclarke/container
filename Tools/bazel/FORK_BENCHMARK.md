@@ -58,7 +58,11 @@ The builder revisions and fixtures did not change, so its earlier same-day measu
 
 Passing suites ran three times per lane. A failed lane/fixture was not retried; its single failure remains visible. The source audit confirms byte-identical test fixtures in both lanes: 41 containerization files, 38 container files, 20 SSL files, and 67 gRPC files. All temporary production-source changes were restored.
 
-SSL's own suite explicitly accepts the fork's `BAD_CERTIFICATE` alert; the unmodified upstream suite expects `UNKNOWN_CA` or `CERTIFICATE_UNKNOWN`. Both reject the peer certificate. The container fork's existing 255-byte name limit differs from Apple's 63-character assertion. Neither difference was changed to obtain a green comparison.
+SSL's own suite explicitly accepts the fork's `BAD_CERTIFICATE` alert; the unmodified upstream suite expects `UNKNOWN_CA` or `CERTIFICATE_UNKNOWN`. Both reject the peer certificate. In this captured run, the container fork's 255-byte name limit differed from Apple's 63-character assertion. Neither difference was changed to obtain a green comparison.
+
+- Resolution after this captured run: restore the 63-byte native ID limit because IDs are used as DNS hostname labels.
+- The focused `ContainerResourceTests` suite passes with the 63/64 boundary regression.
+- The historical failure record remains unchanged; rerun the comparison before claiming compatibility.
 
 The archive difference remains concentrated in the deep-nesting extraction test. The fork's second traversal to restore directory attributes is a plausible contributor, not a profiler-proven attribution. These timings measure the stated test workloads, not general TLS, RPC, or archive throughput.
 

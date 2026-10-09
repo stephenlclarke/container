@@ -521,7 +521,7 @@ public struct Flags {
         @Option(name: .customLong("mount"), help: "Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)")
         public var mounts: [String] = []
 
-        @Option(name: .long, help: "Use the specified name as the container ID")
+        @Option(name: .long, help: "Set the container ID (maximum 63 ASCII characters)")
         public var name: String?
 
         @Option(
