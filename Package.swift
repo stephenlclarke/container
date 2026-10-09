@@ -66,8 +66,8 @@ let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSI
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:a20bf1788286e46fb2c2025acdce6b6e9cdd11394e0875e0f3297415d1c4d108"
 let scVersion = "0.47.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "7b9eb0a77ff615d764fbbf52125e2b6cdd846db8"
-let containerEngineAPIRevision = "48e44d74d738ca3d24351ba02c4869be1a3e6998"
+let containerizationRevision = "c0607ac9aa5b759141506fbd8fc01f423d433f1e"
+let containerEngineAPIRevision = "6e8c932fc8755a4b922fd239426e9029be0554e0"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
     ?? resolvedPackageLocation(identity: "containerization").map(githubRepositoryPath(from:))
@@ -142,8 +142,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.13.2"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
         .package(
-            url: "https://github.com/apple/swift-nio-ssl.git",
-            revision: "322f3c2a4a21df31c84ca416bf65ee5e9059e440"
+            url: "https://github.com/stephenlclarke/swift-nio-ssl.git",
+            revision: "aee34db2144717ddce7bd145e45cf4fb9dab73fb"
         ),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.36.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
@@ -200,6 +200,7 @@ let package = Package(
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "TOML", package: "swift-toml"),
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationArchive", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ContainerEngineService", package: "container-engine-api"),
@@ -254,11 +255,14 @@ let package = Package(
                 "ContainerCommands",
                 "ContainerXPC",
                 "ContainerResource",
+                .product(name: "ContainerizationArchive", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
             ]
         ),
         .testTarget(
             name: "K8sPluginTests",
             dependencies: [
+                "ContainerAPIClient",
                 "ContainerK8s",
                 "ContainerResource",
                 "Yams",
@@ -328,7 +332,9 @@ let package = Package(
             dependencies: [
                 .product(name: "ContainerEngineService", package: "container-engine-api")
             ],
-            path: "Sources/ContainerEngineServiceCommand"
+            path: "Sources/ContainerEngineServiceCommand",
+            // The @main entry point is explicit even though its file is named main.swift.
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         ),
         .target(
             name: "ContainerAPIService",

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import signal
 import socket
 import subprocess
 import sys
@@ -259,6 +260,20 @@ def build(output_directory: Path) -> None:
 
 
 def run_linux_tests() -> None:
+    owned_args: list[str] = []
+    test_id = os.environ.get("CONTAINER_SERVICE_TEST_ID")
+    if test_id:
+        if not re.fullmatch(r"[a-f0-9]{32}", test_id):
+            raise RuntimeError("invalid service test ownership ID")
+        evidence = Path(os.environ["CONTAINER_SERVICE_TEST_EVIDENCE"]).resolve()
+        evidence.mkdir(parents=True, exist_ok=True)
+        owned_args = [
+            "--name", "container-service-test-" + test_id,
+            "--label", "io.container-only.owner=container-service-test-" + test_id,
+            "--cpus", "2", "--memory", "2g", "--pids-limit", "1024",
+            "--mount", f"type=bind,source={evidence},target=/evidence",
+            "-e", "SERVICE_COVERAGE=/evidence/coverage.out",
+        ]
     script = f"""
 set -eu
 find /etc/apt/sources.list.d -type f -delete
@@ -279,13 +294,14 @@ for attempt in 1 2 3 4 5; do
     sleep 1
 done
 test -S /run/systemd/journal/socket
-go test -mod=readonly -race -tags=integration ./...
+go test -mod=readonly -race -tags=integration -coverprofile="${{SERVICE_COVERAGE:-/tmp/journald.coverage.out}}" ./...
 """
     subprocess.run(
         [
             "docker",
             "run",
             "--rm",
+            *owned_args,
             "--platform",
             "linux/arm64",
             "-v",
@@ -319,7 +335,7 @@ def run_tests(output_directory: Path) -> None:
     build(output_directory)
 
 
-def load_integration_image(tag: str) -> None:
+def load_integration_image(tag: str, owner: str) -> None:
     subprocess.run(
         [
             "docker",
@@ -333,6 +349,8 @@ def load_integration_image(tag: str) -> None:
             "--build-arg",
             f"SERVICE_SOURCE_SHA256={production_source_digest()}",
             "--load",
+            "--label",
+            "io.container-only.owner=" + owner,
             "--tag",
             tag,
             ".",
@@ -343,8 +361,11 @@ def load_integration_image(tag: str) -> None:
     )
 
 
-def run_cross_language_integration() -> None:
-    suffix = uuid.uuid4().hex[:12]
+def run_cross_language_integration(test_driver: str = "swiftpm") -> None:
+    suffix = os.environ.get("CONTAINER_SERVICE_TEST_ID", uuid.uuid4().hex[:12])
+    if not re.fullmatch(r"[0-9a-f]{12,32}", suffix):
+        raise RuntimeError("invalid integration test owner")
+    owner = "container-journald-integration-" + suffix
     image = f"container-journald-service:integration-{suffix}"
     service_name = f"container-journald-service-{suffix}"
     proxy_name = f"container-journald-proxy-{suffix}"
@@ -352,15 +373,17 @@ def run_cross_language_integration() -> None:
     state_volume = f"container-journald-state-{suffix}"
     created_image = False
     try:
-        load_integration_image(image)
+        load_integration_image(image, owner)
         created_image = True
         for volume in (control_volume, state_volume):
-            subprocess.run(["docker", "volume", "create", volume], check=True)
+            subprocess.run(["docker", "volume", "create", "--label", "io.container-only.owner=" + owner, volume], check=True)
         subprocess.run(
             [
                 "docker",
                 "run",
                 "--detach",
+                "--label", "io.container-only.owner=" + owner,
+                "--cpus", "2", "--memory", "2g", "--pids-limit", "1024",
                 "--name",
                 service_name,
                 "--volume",
@@ -380,6 +403,8 @@ def run_cross_language_integration() -> None:
                 "docker",
                 "run",
                 "--detach",
+                "--label", "io.container-only.owner=" + owner,
+                "--cpus", "2", "--memory", "2g", "--pids-limit", "1024",
                 "--name",
                 proxy_name,
                 "--publish",
@@ -415,6 +440,16 @@ def run_cross_language_integration() -> None:
                 time.sleep(0.05)
         environment = os.environ.copy()
         environment["CONTAINER_JOURNALD_SERVICE_TCP_PORT"] = str(port)
+        if test_driver == "bazel":
+            subprocess.run(
+                [str(repository_root() / "Tools/bazel/run.sh"), "test",
+                 "@swiftpkg_container//:ContainerLoggingProvidersTests.rspm",
+                 "--test_filter=^JournaldServiceLinuxIntegrationTests/",
+                 "--test_env=CONTAINER_JOURNALD_SERVICE_TCP_PORT=" + str(port),
+                 "--strategy=TestRunner=local", "--nocache_test_results", "--test_timeout=120"],
+                cwd=repository_root(), env=environment, check=True,
+            )
+            return
         local_containerization = (
             repository_root().parent / "containerization-engine-sandbox"
         )
@@ -513,7 +548,8 @@ def parse_arguments() -> argparse.Namespace:
             type=Path,
             default=repository_root() / ".build" / "container-journald-service",
         )
-    subparsers.add_parser("integration")
+    integration_parser = subparsers.add_parser("integration")
+    integration_parser.add_argument("--test-driver", choices=["swiftpm", "bazel"], default="swiftpm")
     manifest_parser = subparsers.add_parser("manifest")
     manifest_parser.add_argument("--archive", type=Path, required=True)
     manifest_parser.add_argument("--output", type=Path, required=True)
@@ -524,6 +560,11 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
+    def interrupted(signum, _frame):
+        raise SystemExit(128 + signum)
+
+    for number in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(number, interrupted)
     arguments = parse_arguments()
     try:
         if arguments.command == "build":
@@ -531,7 +572,7 @@ def main() -> int:
         elif arguments.command == "test":
             run_tests(arguments.output_directory.resolve())
         elif arguments.command == "integration":
-            run_cross_language_integration()
+            run_cross_language_integration(arguments.test_driver)
         elif arguments.command == "manifest":
             write_manifest(arguments.archive.resolve(), arguments.output.resolve())
         elif arguments.command == "verify":

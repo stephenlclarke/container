@@ -1,0 +1,258 @@
+"""Bind unchanged component measurements to the published Q153 reference."""
+
+import ast
+import hashlib
+import json
+import math
+from pathlib import Path
+import subprocess
+
+from benchmark_reference import (ARCHIVE_SHA256, RUNNER_CANCELLATION_SHA256,
+                                 RUNNER_CONTRACT, SOURCE, canonical_ast, workload_digest)
+from artifacts import recipe_compatibility
+
+RECIPE_FILES = ('.bazelrc', 'MODULE.bazel', 'MODULE.bazel.lock',
+                'Tools/bazel/dependencies.bzl', 'Tools/bazel/layers.bzl',
+                'Tools/bazel/layer_build.bzl', 'Tools/bazel/test_inputs.bzl')
+WORKLOAD_UNITS = ('prepare', 'Runner.run', 'Runner.bazel', 'Runner.cli',
+                  'Runner.builder', 'Runner.tls')
+WORKLOAD_TRANSITIONS = {
+    'Runner.builder': {
+        'historical': '7bd95006cade8794a0e44bf43d554d55d3fdea75f99edaf2750749ec08777158',
+        'candidate': '2ce95d00e3ec6e9e381359f8d1cf98ed58bd42f52eda99286fa704055a6963d1',
+    },
+    'Runner.tls': {
+        'historical': '3386d86bab36115e3f4ef121f2d14412d991d9e7784c6a030da1906eee6d6ea7',
+        'candidate': 'd0e8545a6c02d2d21e009153703eb56ec360e82a50f9a70f4d55e6362f82a24c',
+    },
+}
+
+
+def command(arguments: list[str], root: Path) -> str:
+    return subprocess.check_output(arguments, cwd=root, text=True, timeout=60).strip()
+
+
+def original(root: Path, name: str) -> bytes:
+    return subprocess.check_output(['git', 'show', SOURCE + ':' + name], cwd=root, timeout=60)
+
+
+def raw_units(source: str) -> dict[str, str]:
+    """Return exact canonical AST hashes before finite compatibility admission."""
+    tree = ast.parse(source)
+    result = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in WORKLOAD_UNITS:
+            result[node.name] = hashlib.sha256(canonical_ast(node).encode()).hexdigest()
+        elif isinstance(node, ast.ClassDef) and node.name == 'Runner':
+            for method in node.body:
+                name = 'Runner.' + getattr(method, 'name', '')
+                if name in WORKLOAD_UNITS:
+                    result[name] = hashlib.sha256(canonical_ast(method).encode()).hexdigest()
+    if set(result) != set(WORKLOAD_UNITS):
+        raise RuntimeError('Component workload implementation is incomplete')
+    return result
+
+
+def units(source: str) -> dict[str, str]:
+    tree = ast.parse(source)
+    result = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in WORKLOAD_UNITS:
+            name = node.name
+            observed = workload_digest(name, node)
+            result[name] = observed
+        elif isinstance(node, ast.ClassDef) and node.name == 'Runner':
+            for method in node.body:
+                name = 'Runner.' + getattr(method, 'name', '')
+                if name in WORKLOAD_UNITS:
+                    observed = workload_digest(name, method)
+                    transition = WORKLOAD_TRANSITIONS.get(name)
+                    result[name] = (transition['historical'] if transition
+                                    and observed == transition['candidate'] else observed)
+    if set(result) != set(WORKLOAD_UNITS):
+        raise RuntimeError('Component workload implementation is incomplete')
+    return result
+
+
+def validate_inputs(reference: dict, pairs: dict, root: Path, bazel_sha256: str,
+                    admission: dict | None = None) -> list[str]:
+    """Validate every retained input and optionally return its admission provenance."""
+    inputs = reference['componentInputs']
+    if set(inputs) != set(pairs):
+        raise RuntimeError('Historical component inventory differs')
+    changed = []
+    for name, pair in pairs.items():
+        if pair['stock'] != inputs[name]['stock']['revision']:
+            raise RuntimeError('Historical upstream component pin differs: ' + name)
+        if pair['fork'] != inputs[name]['fork']['revision']:
+            if name not in {'container', 'containerization'}:
+                raise RuntimeError('Changed dependency needs a reviewed candidate-only benchmark path: ' + name)
+            changed.append(name)
+    toolchain = reference['componentToolchain']
+    prior_lock = original(root, 'Package.resolved')
+    if hashlib.sha256(prior_lock).hexdigest() != toolchain['thirdPartyLockSHA256']:
+        raise RuntimeError('Authenticated historical component dependency lock differs')
+    current_lock = (root / 'Package.resolved').read_bytes()
+    if 'containerization' in changed:
+        old_revision = inputs['containerization']['fork']['revision']
+        new_revision = pairs['containerization']['fork']
+        old_pins = json.loads(prior_lock)['pins']
+        new_pins = json.loads(current_lock)['pins']
+        if (len(old_pins) != len(new_pins)
+                or sum(row.get('identity') == 'containerization' for row in old_pins) != 1
+                or sum(row.get('identity') == 'containerization' for row in new_pins) != 1
+                or next(row['state']['revision'] for row in old_pins if row['identity'] == 'containerization') != old_revision
+                or next(row['state']['revision'] for row in new_pins if row['identity'] == 'containerization') != new_revision
+                or current_lock.count(new_revision.encode()) != 1
+                or current_lock.replace(new_revision.encode(), old_revision.encode(), 1) != prior_lock):
+            raise RuntimeError('Component dependency lock changed beyond the selected Containerization pin')
+    elif current_lock != prior_lock:
+        raise RuntimeError('Historical component dependency lock differs')
+    current_patches = {str(path.relative_to(root)) for path in (root / 'Tools/bazel').glob('*.patch')}
+    prior_patches = set(command(['git', 'ls-tree', '-r', '--name-only', SOURCE, 'Tools/bazel'], root).splitlines())
+    prior_patches = {name for name in prior_patches if name.endswith('.patch')}
+    if current_patches != prior_patches:
+        raise RuntimeError('Historical component patch inventory differs')
+    recipes = [*RECIPE_FILES, *sorted(current_patches)]
+    host_fixture = recipe_compatibility.HOST_FIXTURE
+    producer_recipe = {
+        recipe_compatibility.IMPORTER: recipe_compatibility.OLD[recipe_compatibility.IMPORTER],
+        recipe_compatibility.CONSUMER: recipe_compatibility.OLD[recipe_compatibility.CONSUMER],
+        host_fixture: hashlib.sha256(original(root, host_fixture)).hexdigest(),
+    }
+    current_recipe = {
+        recipe_compatibility.IMPORTER: hashlib.sha256((root / recipe_compatibility.IMPORTER).read_bytes()).hexdigest(),
+        recipe_compatibility.CONSUMER: hashlib.sha256((root / recipe_compatibility.CONSUMER).read_bytes()).hexdigest(),
+        host_fixture: hashlib.sha256((root / host_fixture).read_bytes()).hexdigest(),
+    }
+    try:
+        recipe_admission = recipe_compatibility.admit(producer_recipe, current_recipe, root)
+    except (OSError, ValueError) as error:
+        raise RuntimeError('Historical component recipe differs: ' + str(error)) from error
+    for name in recipes:
+        if name == host_fixture:
+            continue
+        if (root / name).read_bytes() != original(root, name):
+            raise RuntimeError('Historical component build recipe differs: ' + name)
+    old = original(root, 'Tools/bazel/fork_benchmark.py').decode()
+    current = (root / 'Tools/bazel/fork_benchmark.py').read_text()
+    if units(old) != units(current):
+        raise RuntimeError('Historical component workload or timing boundary differs')
+    workload_policy = {
+        'schema': 1,
+        'transitions': {
+            'candidateLaneSelection': WORKLOAD_TRANSITIONS,
+            'runnerCancellation': {
+                'unit': 'Runner.run',
+                'historical': RUNNER_CONTRACT['Runner.run'],
+                'candidate': RUNNER_CANCELLATION_SHA256,
+            },
+        },
+        'baseline': SOURCE,
+    }
+    workload_admission = {
+        'producerSHA256': raw_units(old),
+        'currentSHA256': raw_units(current),
+        'policySHA256': hashlib.sha256(json.dumps(
+            workload_policy, sort_keys=True, separators=(',', ':')).encode()).hexdigest(),
+        'transitionPolicy': workload_policy,
+    }
+    if admission is not None:
+        admission.update(recipe_admission=recipe_admission, workload_admission=workload_admission)
+    old_pairs = next(ast.literal_eval(node.value) for node in ast.parse(old).body
+                     if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PAIRS' for t in node.targets))
+    for name, pair in pairs.items():
+        for field in ('products', 'tests'):
+            if pair.get(field) != old_pairs[name].get(field):
+                raise RuntimeError('Historical component fixture inventory differs: ' + name)
+    for name in ('OCI_FILES', 'TLS_CASES'):
+        def constant(source):
+            return next(ast.literal_eval(node.value) for node in ast.parse(source).body
+                        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets))
+        if constant(old) != constant((root / 'Tools/bazel/fork_benchmark.py').read_text()):
+            raise RuntimeError('Historical component source fixture selection differs: ' + name)
+    swift = command(['xcrun', 'swift', '--version'], root)
+    if (bazel_sha256 != toolchain['bazelSHA256'] or toolchain['swiftVersion'] not in swift
+            or toolchain['swiftTarget'] not in swift):
+        raise RuntimeError('Historical component compiler differs')
+    host = reference['phaseHosts']['runtimeBenchmark']
+    for key, args in {'model': ['sysctl', '-n', 'hw.model'],
+                      'memoryBytes': ['sysctl', '-n', 'hw.memsize'],
+                      'macOSVersion': ['sw_vers', '-productVersion'],
+                      'macOSBuild': ['sw_vers', '-buildVersion'],
+                      'architecture': ['uname', '-m']}.items():
+        if command(args, root) != str(host[key]):
+            raise RuntimeError('Historical component host differs: ' + key)
+    if host.get('powerSource') != 'AC' or "Now drawing from 'AC Power'" not in command(['pmset', '-g', 'batt'], root):
+        raise RuntimeError('Historical component host differs: power source')
+    return changed
+
+
+def retained_rows(reference: dict, changed: list[str]) -> tuple[list[dict], list[dict]]:
+    """Old failures stay historical; these records are never fresh test results."""
+    raw = reference['components']['raw']
+    differences = reference['components']['knownCompatibilityDifferences']
+    expected_failures = {(r['component'], r['lane'], r['fixture'], r['trial']): r for r in differences}
+    identities = set()
+    if len(raw) != 236:
+        raise RuntimeError('Historical component measurements are incomplete')
+    for row in raw:
+        key = (row['component'], row['lane'], row['fixture'], row['trial'])
+        if key in identities or row['lane'] not in ('stock', 'fork'):
+            raise RuntimeError('Historical component measurement identity is duplicated')
+        identities.add(key)
+        if not math.isfinite(row['seconds']) or row['seconds'] <= 0:
+            raise RuntimeError('Historical component measurement is invalid')
+        if row['status'] and row != expected_failures.get(key):
+            raise RuntimeError('Historical component failure is unreviewed')
+    if not set(expected_failures) <= identities:
+        raise RuntimeError('Historical compatibility evidence is incomplete')
+    selected = [dict(row, historical=True, reference_archive_sha256=ARCHIVE_SHA256)
+                for row in raw if row['component'] not in changed or row['lane'] == 'stock']
+    historical_differences = [dict(row, historical=True) for row in differences if row['component'] not in changed]
+    return selected, historical_differences
+
+
+def retained_go(reference: dict) -> list[dict]:
+    rows = reference['components']['goRaw']
+    names = {row['fixture'] for row in reference['components']['goMatrix']}
+    expected = {(lane, name, trial) for lane in ('stock', 'fork') for name in names for trial in range(3)}
+    actual = {(row['lane'], row['fixture'], row['trial']) for row in rows}
+    if len(rows) != 24 or len(names) != 4 or actual != expected:
+        raise RuntimeError('Historical Go measurement inventory differs')
+    if any(row['iterations'] != 1024 or not math.isfinite(row['ns_per_op']) or row['ns_per_op'] <= 0 for row in rows):
+        raise RuntimeError('Historical Go measurements are invalid')
+    return [dict(row, historical=True, reference_archive_sha256=ARCHIVE_SHA256) for row in rows]
+
+
+def require_candidate_rows(rows: list[dict], changed: list[str], pairs: dict) -> None:
+    """An incomplete candidate must not pass on the strength of retained dependencies."""
+    for component in changed:
+        selected = [row for row in rows if row['component'] == component]
+        if component == 'container-builder-shim':
+            benchmarks = ('BenchmarkDirectReaderAt', 'BenchmarkDirectReaderAtRandom',
+                          'BenchmarkPrefetcherSequential', 'BenchmarkPrefetcherRandom')
+            expected = {'toolchain': 1, 'prepare-build': 1, 'prepare-linux-build': 1,
+                        'cached-linux-build': 3, 'prefetch-tests': 3,
+                        'component-recompile': 1, **{name: 3 for name in benchmarks}}
+        else:
+            expected = {'prepare-build': 1, 'cached-build': 3, 'component-recompile': 1,
+                        'cleanup-bazel': 1,
+                        **{name: 3 for name in pairs[component]['tests']}}
+        if component == 'container':
+            expected.update({'cli-run-help': 11, 'cli-version': 11})
+        if component == 'swift-nio-ssl':
+            expected.update({'prepare-tls': 1, 'tls-repeated_handshakes': 3,
+                             'tls-many_writes_512b': 3})
+        if {row['fixture'] for row in selected} != set(expected) or any(row['lane'] != 'fork' for row in selected):
+            raise RuntimeError('Candidate component fixture inventory is incomplete: ' + component)
+        test_fixtures = pairs[component].get('tests', [])
+        for fixture, count in expected.items():
+            measurements = [row for row in selected if row['fixture'] == fixture]
+            if fixture in test_fixtures and any(row['status'] for row in measurements):
+                count = len(measurements)  # The existing suite stops after its first failure.
+                if not 1 <= count <= 3:
+                    raise RuntimeError('Candidate test trial count is invalid')
+            if (len(measurements) != count or {row['trial'] for row in measurements} != set(range(count))
+                    or any(not math.isfinite(row['seconds']) or row['seconds'] <= 0 for row in measurements)):
+                raise RuntimeError('Candidate component measurements are incomplete: ' + fixture)

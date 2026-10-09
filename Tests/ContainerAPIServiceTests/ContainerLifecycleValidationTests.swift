@@ -122,6 +122,340 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func stoppedPrewarmFallbackRequiresOriginalAndFreshOwnedState() {
+        var state = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
+        state.prewarmed = true
+        state.prewarmCleanupRequiresLoggingClose = true
+        let captured = ContainersService.PreparedServiceRecoveryState(state)
+        #expect(captured.generation == state.generation)
+        #expect(captured.prewarmed)
+        #expect(!captured.cleanupRequired)
+        #expect(captured.startedDate == nil)
+        #expect(captured.loggingRequiresClose)
+        let context = ContainersService.PreparedServiceRecoveryContext(
+            captured: captured,
+            isDedicated: true,
+            label: "gui/501/prepared.runtime"
+        )
+        func eligible(status: RuntimeStatus = .stopped, current: ContainersService.ContainerState) -> Bool {
+            ContainersService.stoppedPreparedRuntimeMayStopService(
+                status: status,
+                context: context,
+                current: ContainersService.PreparedServiceRecoveryState(current)
+            )
+        }
+        #expect(eligible(current: state))
+        #expect(!eligible(status: .stopping, current: state))
+        #expect(!eligible(status: .running, current: state))
+        #expect(!eligible(status: .paused, current: state))
+        #expect(!eligible(status: .unknown, current: state))
+        #expect(
+            !ContainersService.stoppedPreparedRuntimeMayStopService(
+                status: .stopped,
+                context: .init(captured: captured, isDedicated: false, label: context.label),
+                current: .init(state)
+            ))
+        state.prewarmed = false
+        #expect(!eligible(current: state))
+        state.prewarmed = true
+        state.prewarmCleanupRequired = true
+        #expect(!eligible(current: state))
+        state.prewarmCleanupRequired = false
+        state.snapshot.startedDate = Date()
+        #expect(!eligible(current: state))
+        let replacement = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
+        #expect(!eligible(current: replacement))
+        var capturedTombstone = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
+        capturedTombstone.prewarmed = true
+        capturedTombstone.prewarmCleanupRequired = true
+        #expect(
+            !ContainersService.stoppedPreparedRuntimeMayStopService(
+                status: .stopped,
+                context: .init(captured: .init(capturedTombstone), isDedicated: true, label: context.label),
+                current: .init(capturedTombstone)
+            ))
+    }
+
+    @Test
+    func stoppedPrewarmServiceRecoveryReadsFreshStateBeforeExactStop() async throws {
+        var state = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
+        state.prewarmed = true
+        let label = "gui/501/prepared.runtime"
+        let context = ContainersService.PreparedServiceRecoveryContext(
+            captured: .init(state), isDedicated: true, label: label
+        )
+        var events = [String]()
+        try await ContainersService.stopStoppedPreparedServiceIfOwned(
+            context: context,
+            freshStatus: {
+                events.append("fresh-runtime-stopped")
+                return .stopped
+            },
+            currentState: {
+                events.append("locked-current-state")
+                return .init(state)
+            },
+            stopService: { selected in
+                events.append("exact-service-inactive")
+                #expect(selected == label)
+            }
+        )
+        #expect(events == ["fresh-runtime-stopped", "locked-current-state", "exact-service-inactive"])
+
+        for status in [RuntimeStatus.stopping, .running, .paused, .unknown] {
+            events.removeAll()
+            await #expect(throws: ContainerizationError.self) {
+                try await ContainersService.stopStoppedPreparedServiceIfOwned(
+                    context: context,
+                    freshStatus: {
+                        events.append("fresh-runtime-state")
+                        return status
+                    },
+                    currentState: {
+                        events.append("locked-current-state")
+                        return .init(state)
+                    },
+                    stopService: { _ in events.append("unexpected-service-stop") }
+                )
+            }
+            #expect(events == ["fresh-runtime-state", "locked-current-state"])
+        }
+
+        events.removeAll()
+        var replacement = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
+        replacement.prewarmed = true
+        await #expect(throws: ContainerizationError.self) {
+            try await ContainersService.stopStoppedPreparedServiceIfOwned(
+                context: context,
+                freshStatus: {
+                    events.append("fresh-runtime-stopped")
+                    return .stopped
+                },
+                currentState: {
+                    events.append("replacement-generation")
+                    return .init(replacement)
+                },
+                stopService: { _ in events.append("unexpected-service-stop") }
+            )
+        }
+        #expect(events == ["fresh-runtime-stopped", "replacement-generation"])
+    }
+
+    @Test
+    func stoppedPrewarmServiceRecoveryRejectsCapturedStateDrift() async {
+        var current = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
+        current.prewarmed = true
+        var notPrewarmed = current
+        notPrewarmed.prewarmed = false
+        var cleanupTombstone = current
+        cleanupTombstone.prewarmCleanupRequired = true
+        var alreadyStarted = current
+        alreadyStarted.snapshot.startedDate = Date()
+        for captured in [notPrewarmed, cleanupTombstone, alreadyStarted] {
+            var events = [String]()
+            await #expect(throws: ContainerizationError.self) {
+                try await ContainersService.stopStoppedPreparedServiceIfOwned(
+                    context: .init(
+                        captured: .init(captured),
+                        isDedicated: true,
+                        label: "gui/501/prepared.runtime"
+                    ),
+                    freshStatus: {
+                        events.append("fresh-runtime-stopped")
+                        return .stopped
+                    },
+                    currentState: {
+                        events.append("current-eligible")
+                        return .init(current)
+                    },
+                    stopService: { _ in events.append("unexpected-service-stop") }
+                )
+            }
+            #expect(events == ["fresh-runtime-stopped", "current-eligible"])
+        }
+    }
+
+    @Test
+    func stoppedPrewarmServiceRecoveryFailsClosedOnObservationOrStopError() async {
+        var state = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
+        state.prewarmed = true
+        let context = ContainersService.PreparedServiceRecoveryContext(
+            captured: .init(state), isDedicated: true, label: "gui/501/prepared.runtime"
+        )
+        var events = [String]()
+        await #expect(throws: PreparedShutdownTestError.sticky) {
+            try await ContainersService.stopStoppedPreparedServiceIfOwned(
+                context: context,
+                freshStatus: { throw PreparedShutdownTestError.sticky },
+                currentState: {
+                    events.append("unexpected-state-read")
+                    return .init(state)
+                },
+                stopService: { _ in events.append("unexpected-service-stop") }
+            )
+        }
+        #expect(events.isEmpty)
+        await #expect(throws: PreparedShutdownTestError.sticky) {
+            try await ContainersService.stopStoppedPreparedServiceIfOwned(
+                context: context,
+                freshStatus: {
+                    events.append("fresh-runtime-stopped")
+                    return .stopped
+                },
+                currentState: { throw PreparedShutdownTestError.sticky },
+                stopService: { _ in events.append("unexpected-service-stop") }
+            )
+        }
+        #expect(events == ["fresh-runtime-stopped"])
+        events.removeAll()
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) {
+            try await ContainersService.stopStoppedPreparedServiceIfOwned(
+                context: context,
+                freshStatus: {
+                    events.append("fresh-runtime-stopped")
+                    return .stopped
+                },
+                currentState: {
+                    events.append("locked-current-state")
+                    return .init(state)
+                },
+                stopService: { _ in
+                    events.append("inactive-proof-failed")
+                    throw PreparedShutdownTestError.inactiveProof
+                }
+            )
+        }
+        #expect(events == ["fresh-runtime-stopped", "locked-current-state", "inactive-proof-failed"])
+    }
+
+    @Test
+    func repeatedStoppedShutdownFailureStopsExactServiceBeforeLogging() async throws {
+        var events = ["first-shutdown-failed"]
+        var tombstoneRetained = true
+        let stoppedService = try await ContainersService.retryPreparedShutdownOrStopService(
+            initialStatus: .stopped,
+            retryShutdown: {
+                events.append("second-shutdown-failed")
+                throw PreparedShutdownTestError.sticky
+            },
+            stopIfStillEligible: {
+                events.append("exact-service-inactive")
+            }
+        )
+        #expect(stoppedService)
+        try await ContainersService.finishPreparedRuntimeCleanup(
+            stopServiceBeforeLogging: false,
+            serviceAlreadyStopped: stoppedService,
+            stopService: { events.append("unexpected-second-service-stop") },
+            cleanupLogging: { events.append("logging-cleanup") },
+            clearState: {
+                events.append("clear-tombstone")
+                tombstoneRetained = false
+            }
+        )
+        #expect(
+            events == [
+                "first-shutdown-failed", "second-shutdown-failed",
+                "exact-service-inactive", "logging-cleanup", "clear-tombstone",
+            ])
+        #expect(!tombstoneRetained)
+
+        var rejectedEvents = [String]()
+        await #expect(throws: PreparedShutdownTestError.sticky) {
+            try await ContainersService.retryPreparedShutdownOrStopService(
+                initialStatus: .stopping,
+                retryShutdown: {
+                    rejectedEvents.append("second-shutdown-failed")
+                    throw PreparedShutdownTestError.sticky
+                },
+                stopIfStillEligible: {
+                    rejectedEvents.append("unexpected-service-stop")
+                }
+            )
+        }
+        #expect(rejectedEvents == ["second-shutdown-failed"])
+    }
+
+    @Test
+    func successfulShutdownRetryUsesNormalCleanupWithoutFallback() async throws {
+        var events = [String]()
+        let stoppedService = try await ContainersService.retryPreparedShutdownOrStopService(
+            initialStatus: .stopped,
+            retryShutdown: { events.append("retry-shutdown-succeeded") },
+            stopIfStillEligible: { events.append("unexpected-forced-stop") }
+        )
+        #expect(!stoppedService)
+        try await ContainersService.finishPreparedRuntimeCleanup(
+            stopServiceBeforeLogging: false,
+            serviceAlreadyStopped: stoppedService,
+            stopService: { events.append("normal-service-inactive") },
+            cleanupLogging: { events.append("logging-cleanup") },
+            clearState: { events.append("clear-tombstone") }
+        )
+        #expect(
+            events == [
+                "retry-shutdown-succeeded", "logging-cleanup", "normal-service-inactive",
+                "clear-tombstone",
+            ])
+    }
+
+    @Test
+    func exactServiceStopFailureRetainsPreparedCleanup() async {
+        var events = [String]()
+        var tombstoneRetained = true
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) {
+            try await ContainersService.retryPreparedShutdownOrStopService(
+                initialStatus: .stopped,
+                retryShutdown: {
+                    events.append("second-shutdown-failed")
+                    throw PreparedShutdownTestError.sticky
+                },
+                stopIfStillEligible: {
+                    events.append("inactive-proof-failed")
+                    throw PreparedShutdownTestError.inactiveProof
+                }
+            )
+        }
+        #expect(events == ["second-shutdown-failed", "inactive-proof-failed"])
+        #expect(tombstoneRetained)
+
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) {
+            try await ContainersService.finishPreparedRuntimeCleanup(
+                stopServiceBeforeLogging: true,
+                serviceAlreadyStopped: false,
+                stopService: {
+                    events.append("inactive-proof-failed-again")
+                    throw PreparedShutdownTestError.inactiveProof
+                },
+                cleanupLogging: { events.append("unexpected-logging-cleanup") },
+                clearState: { tombstoneRetained = false }
+            )
+        }
+        #expect(tombstoneRetained)
+        #expect(!events.contains("unexpected-logging-cleanup"))
+    }
+
+    @Test
+    func preparedLoggingFailureRetainsTombstoneAfterServiceStop() async {
+        var events = [String]()
+        var tombstoneRetained = true
+        await #expect(throws: PreparedShutdownTestError.logging) {
+            try await ContainersService.finishPreparedRuntimeCleanup(
+                stopServiceBeforeLogging: false,
+                serviceAlreadyStopped: false,
+                stopService: { events.append("exact-service-inactive") },
+                cleanupLogging: {
+                    events.append("logging-failed")
+                    throw PreparedShutdownTestError.logging
+                },
+                clearState: { tombstoneRetained = false }
+            )
+        }
+        #expect(events == ["logging-failed", "exact-service-inactive"])
+        #expect(tombstoneRetained)
+    }
+
+    @Test
     func recoveredRunningPrewarmIsStoppedBeforeDiscard() {
         #expect(
             ContainersService.recoveredPrewarmRuntimeAction(for: .stopped)
@@ -143,6 +477,195 @@ struct ContainerLifecycleValidationTests {
             ContainersService.recoveredPrewarmRuntimeAction(for: .unknown)
                 == .reject
         )
+    }
+
+    @Test
+    func preparedCleanupOrchestratesNormalRetryAndStickyStoppedRuntime() async throws {
+        let normal = PreparedCleanupProbe(state: Self.preparedState())
+        try await normal.run()
+        #expect(normal.events == ["shutdown-1", "abort-logging", "stop-exact-service", "commit-state", "deactivate-grant"])
+        #expect(!normal.state.prewarmed)
+        #expect(!normal.state.prewarmCleanupRequired)
+        #expect(!normal.state.prewarmCleanupRequiresLoggingClose)
+        #expect(normal.state.generation == normal.context.captured.generation)
+        #expect(normal.state.snapshot.status == .stopped)
+
+        let retried = PreparedCleanupProbe(state: Self.preparedState())
+        retried.shutdownFailures = [1]
+        try await retried.run()
+        #expect(
+            retried.events == [
+                "shutdown-1", "status", "shutdown-2", "abort-logging",
+                "stop-exact-service", "commit-state", "deactivate-grant",
+            ])
+
+        let sticky = PreparedCleanupProbe(state: Self.preparedState(requiresLoggingClose: true))
+        sticky.shutdownFailures = [1, 2]
+        try await sticky.run()
+        #expect(
+            sticky.events == [
+                "shutdown-1", "status", "shutdown-2", "status", "current-state",
+                "stop-exact-service", "close-logging", "commit-state", "deactivate-grant",
+            ])
+        #expect(sticky.stopServiceCalls == 1)
+    }
+
+    @Test
+    func preparedCleanupOrchestratesActivePausedUnknownAndUnavailableRuntime() async throws {
+        let running = PreparedCleanupProbe(state: Self.preparedState())
+        running.shutdownFailures = [1]
+        running.status = .running
+        try await running.run()
+        #expect(
+            running.events == [
+                "shutdown-1", "status", "stop-runtime", "shutdown-2", "abort-logging",
+                "stop-exact-service", "commit-state", "deactivate-grant",
+            ])
+
+        let paused = PreparedCleanupProbe(state: Self.preparedState())
+        paused.shutdownFailures = [1]
+        paused.status = .paused
+        try await paused.run()
+        #expect(
+            paused.events == [
+                "shutdown-1", "status", "resume-runtime", "stop-runtime", "shutdown-2",
+                "abort-logging", "stop-exact-service", "commit-state", "deactivate-grant",
+            ])
+
+        let unknown = PreparedCleanupProbe(state: Self.preparedState())
+        unknown.shutdownFailures = [1]
+        unknown.status = .unknown
+        await #expect(throws: PreparedShutdownTestError.sticky) { try await unknown.run() }
+        #expect(unknown.events == ["shutdown-1", "status", "report-retainForRetry"])
+        #expect(unknown.state.prewarmed)
+
+        let unavailable = PreparedCleanupProbe(state: Self.preparedState())
+        unavailable.shutdownFailures = [1]
+        unavailable.status = nil
+        try await unavailable.run()
+        #expect(
+            unavailable.events == [
+                "shutdown-1", "status-unavailable", "report-confirmInactiveService",
+                "stop-exact-service", "abort-logging", "commit-state", "deactivate-grant",
+            ])
+    }
+
+    @Test
+    func preparedCleanupKeepsStateOnEligibilityAndCleanupFailures() async {
+        let changed = PreparedCleanupProbe(state: Self.preparedState())
+        changed.shutdownFailures = [1, 2]
+        changed.state = Self.preparedState()
+        await #expect(throws: ContainerizationError.self) { try await changed.run() }
+        #expect(
+            changed.events == [
+                "shutdown-1", "status", "shutdown-2", "status", "current-state",
+            ])
+
+        let inactiveProof = PreparedCleanupProbe(state: Self.preparedState())
+        inactiveProof.shutdownFailures = [1, 2]
+        inactiveProof.stopServiceError = .inactiveProof
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) {
+            try await inactiveProof.run()
+        }
+        #expect(!inactiveProof.events.contains("abort-logging"))
+        #expect(inactiveProof.state.prewarmed)
+
+        let logging = PreparedCleanupProbe(state: Self.preparedState())
+        logging.loggingError = .logging
+        await #expect(throws: PreparedShutdownTestError.logging) { try await logging.run() }
+        #expect(
+            logging.events == [
+                "shutdown-1", "abort-logging", "stop-exact-service",
+            ])
+        #expect(logging.state.prewarmed)
+
+        let normalStop = PreparedCleanupProbe(state: Self.preparedState())
+        normalStop.stopServiceError = .inactiveProof
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) {
+            try await normalStop.run()
+        }
+        #expect(
+            normalStop.events == [
+                "shutdown-1", "abort-logging", "stop-exact-service",
+            ])
+        #expect(normalStop.state.prewarmed)
+
+        let bothFailed = PreparedCleanupProbe(state: Self.preparedState())
+        bothFailed.loggingError = .logging
+        bothFailed.stopServiceError = .inactiveProof
+        await #expect(throws: PreparedShutdownTestError.logging) {
+            try await bothFailed.run()
+        }
+        #expect(
+            bothFailed.events == [
+                "shutdown-1", "abort-logging", "stop-exact-service",
+            ])
+        #expect(bothFailed.state.prewarmed)
+
+        let changedAtCommit = PreparedCleanupProbe(state: Self.preparedState())
+        changedAtCommit.replaceStateBeforeCommit = true
+        await #expect(throws: ContainerizationError.self) { try await changedAtCommit.run() }
+        #expect(
+            changedAtCommit.events == [
+                "shutdown-1", "abort-logging", "stop-exact-service", "commit-attempt",
+            ])
+        #expect(changedAtCommit.state.prewarmed)
+        #expect(changedAtCommit.state.generation != changedAtCommit.context.captured.generation)
+
+        let grant = PreparedCleanupProbe(state: Self.preparedState())
+        grant.grantError = .inactiveProof
+        await #expect(throws: PreparedShutdownTestError.inactiveProof) { try await grant.run() }
+        #expect(
+            grant.events == [
+                "shutdown-1", "abort-logging", "stop-exact-service", "commit-state",
+                "deactivate-grant",
+            ])
+        #expect(!grant.state.prewarmed)
+    }
+
+    @Test
+    func preparedCleanupCommitClearsOnlyRuntimeOwnershipAfterGuard() throws {
+        var prepared = Self.preparedState(requiresLoggingClose: true)
+        prepared.prewarmCleanupRequired = true
+        prepared.dockerStateError = "retained-docker-state"
+        prepared.restart = ContainerRestartTracker(restoringConsecutiveFailureCount: 3)
+        let captured = ContainersService.PreparedServiceRecoveryState(prepared)
+        let originalGeneration = prepared.generation
+        let originalSnapshot = prepared.snapshot
+        try ContainersService.preparedRuntimeCleanupCommitState(
+            &prepared,
+            captured: captured,
+            id: "prepared"
+        )
+        #expect(prepared.client == nil)
+        #expect(!prepared.prewarmed)
+        #expect(!prepared.prewarmCleanupRequired)
+        #expect(!prepared.prewarmCleanupRequiresLoggingClose)
+        #expect(prepared.generation == originalGeneration)
+        #expect(prepared.snapshot.configuration.id == originalSnapshot.configuration.id)
+        #expect(prepared.snapshot.status == originalSnapshot.status)
+        #expect(prepared.dockerStateError == "retained-docker-state")
+        #expect(prepared.restart.consecutiveFailures == 3)
+
+        var notPrepared = ContainersService.ContainerState(snapshot: originalSnapshot)
+        notPrepared.dockerStateError = "unchanged-error"
+        notPrepared.restart = ContainerRestartTracker(restoringConsecutiveFailureCount: 5)
+        let notPreparedGeneration = notPrepared.generation
+        let notPreparedCapture = ContainersService.PreparedServiceRecoveryState(notPrepared)
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.preparedRuntimeCleanupCommitState(
+                &notPrepared,
+                captured: notPreparedCapture,
+                id: "prepared"
+            )
+        }
+        #expect(notPrepared.generation == notPreparedGeneration)
+        #expect(notPrepared.snapshot.configuration.id == originalSnapshot.configuration.id)
+        #expect(notPrepared.snapshot.status == originalSnapshot.status)
+        #expect(!notPrepared.prewarmed)
+        #expect(!notPrepared.prewarmCleanupRequired)
+        #expect(notPrepared.dockerStateError == "unchanged-error")
+        #expect(notPrepared.restart.consecutiveFailures == 5)
     }
 
     @Test
@@ -711,6 +1234,13 @@ struct ContainerLifecycleValidationTests {
         )
     }
 
+    private static func preparedState(requiresLoggingClose: Bool = false) -> ContainersService.ContainerState {
+        var state = ContainersService.ContainerState(snapshot: snapshot(id: "prepared"))
+        state.prewarmed = true
+        state.prewarmCleanupRequiresLoggingClose = requiresLoggingClose
+        return state
+    }
+
     private static func snapshot(id: String) -> ContainerSnapshot {
         let image = ImageDescription(
             reference: "docker.io/library/alpine:latest",
@@ -734,6 +1264,100 @@ struct ContainerLifecycleValidationTests {
             status: .stopped,
             networks: [],
             startedDate: nil
+        )
+    }
+}
+
+private enum PreparedShutdownTestError: Error {
+    case sticky
+    case inactiveProof
+    case logging
+}
+
+private final class PreparedCleanupProbe {
+    var events = [String]()
+    var state: ContainersService.ContainerState
+    let context: ContainersService.PreparedServiceRecoveryContext
+    var shutdownFailures = Set<Int>()
+    var status: RuntimeStatus? = .stopped
+    var stopServiceError: PreparedShutdownTestError?
+    var loggingError: PreparedShutdownTestError?
+    var grantError: PreparedShutdownTestError?
+    var replaceStateBeforeCommit = false
+    private(set) var stopServiceCalls = 0
+    private var shutdownCalls = 0
+
+    init(state: ContainersService.ContainerState) {
+        self.state = state
+        context = .init(
+            captured: .init(state),
+            isDedicated: true,
+            label: "gui/501/prepared.runtime"
+        )
+    }
+
+    func run() async throws {
+        try await ContainersService.performPreparedRuntimeCleanup(
+            context: context,
+            operations: .init(
+                shutdown: {
+                    self.shutdownCalls += 1
+                    self.events.append("shutdown-\(self.shutdownCalls)")
+                    if self.shutdownFailures.contains(self.shutdownCalls) {
+                        throw PreparedShutdownTestError.sticky
+                    }
+                },
+                status: {
+                    guard let status = self.status else {
+                        self.events.append("status-unavailable")
+                        throw PreparedShutdownTestError.sticky
+                    }
+                    self.events.append("status")
+                    return status
+                },
+                stop: { self.events.append("stop-runtime") },
+                resume: { self.events.append("resume-runtime") },
+                currentState: {
+                    self.events.append("current-state")
+                    return .init(self.state)
+                },
+                stopService: { selected in
+                    guard selected == self.context.label else {
+                        throw PreparedShutdownTestError.inactiveProof
+                    }
+                    self.stopServiceCalls += 1
+                    self.events.append("stop-exact-service")
+                    if let error = self.stopServiceError { throw error }
+                },
+                cleanupLogging: { selection in
+                    switch selection {
+                    case .abortBootstrap: self.events.append("abort-logging")
+                    case .closeActivatedRun: self.events.append("close-logging")
+                    }
+                    if let error = self.loggingError { throw error }
+                },
+                commitState: {
+                    if self.replaceStateBeforeCommit {
+                        var replacement = ContainersService.ContainerState(snapshot: self.state.snapshot)
+                        replacement.prewarmed = true
+                        self.state = replacement
+                        self.events.append("commit-attempt")
+                    }
+                    try ContainersService.preparedRuntimeCleanupCommitState(
+                        &self.state,
+                        captured: self.context.captured,
+                        id: "prepared"
+                    )
+                    self.events.append("commit-state")
+                },
+                deactivateGrant: {
+                    self.events.append("deactivate-grant")
+                    if let error = self.grantError { throw error }
+                },
+                reportRecovery: { recovery, _ in
+                    self.events.append("report-\(recovery)")
+                }
+            )
         )
     }
 }

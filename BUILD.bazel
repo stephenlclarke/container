@@ -1,0 +1,62 @@
+load("//Tools/bazel:api_docs.bzl", "api_symbol_graphs")
+load("//Tools/bazel:layers.bzl", "declare_layers")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+exports_files(["Package.resolved"])
+declare_layers()
+
+alias(name = "semantic-helper", actual = "//Tools/ContainerSemanticHelper:payload")
+test_suite(name = "semantic-helper-tests", tests = ["//Tools/ContainerSemanticHelper:helper_tests"])
+
+filegroup(
+    name = "container",
+    testonly = True,
+    srcs = [":container-executables", ":semantic-helper"],
+)
+alias(name = "cli", actual = "@swiftpkg_container//:container.rspm")
+
+# Original repository checks are independent cached actions. They use declared
+# sources and disposable fixtures; none installs services or builds SwiftPM.
+[
+    sh_test(
+        name = name,
+        srcs = ["//Tools/bazel:repository_test.sh"],
+        args = [test],
+        data = data + [test],
+        size = "small",
+    )
+    for name, test, data in [
+        ("build-artifact-directory-tests", "Tests/ScriptTests/TestBuildArtifactDirectory.sh", ["Makefile", "Protobuf.Makefile", "Package.resolved"]),
+        ("machine-user-script-tests", "Tests/ScriptTests/TestCreateMachineUser.sh", ["Sources/Plugins/MachineAPIServer/Resources/create-user.sh", "Sources/Plugins/MachineAPIServer/Resources/init"]),
+        ("archive-checksum-tests", "Tests/ScriptTests/TestHomebrewArchiveChecksum.sh", ["scripts/write-sha256-sidecar.sh"]),
+        ("install-init-script-tests", "Tests/ScriptTests/TestInstallInit.sh", ["scripts/install-init.sh", "Makefile", "Protobuf.Makefile", "Package.resolved"]),
+        ("developer-id-archive-tests", "Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh", ["scripts/verify-developer-id-archive.sh", "Makefile"]),
+        ("debug-symbol-packaging-tests", "Tools/DebugSymbols/test_package.py", ["Tools/DebugSymbols/package.py"]),
+    ]
+]
+
+test_suite(
+    name = "repository-tests",
+    tests = [
+        ":build-artifact-directory-tests",
+        ":machine-user-script-tests",
+        ":archive-checksum-tests",
+        ":install-init-script-tests",
+        ":developer-id-archive-tests",
+        ":debug-symbol-packaging-tests",
+    ],
+)
+
+# Match the API modules documented by the original scripts/make-docs.sh.
+API_MODULES = [
+        "ContainerAPIService", "ContainerAPIClient", "ContainerRuntimeClient",
+        "ContainerRuntimeLinuxClient", "ContainerRuntimeLinuxServer", "ContainerNetworkClient",
+        "ContainerNetworkServer", "ContainerNetworkVmnetServer", "ContainerImagesService",
+        "ContainerImagesServiceClient", "ContainerResource", "ContainerLog", "ContainerPlugin",
+        "ContainerXPC", "TerminalProgress",
+ ]
+api_symbol_graphs(
+    name = "api-symbol-graphs",
+    modules = API_MODULES,
+    targets = ["@swiftpkg_container//:" + module + ".rspm" for module in API_MODULES],
+)

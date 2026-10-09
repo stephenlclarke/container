@@ -72,7 +72,7 @@ container run [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--masked-path <path>`: **Experimental.** Hide a path inside the container, in addition to the runtime defaults (or `NONE` to clear prior values and the defaults)
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
-*   `--name <name>`: Use the specified name as the container ID
+*   `--name <name>`: Container ID; maximum 63 ASCII characters
 *   `--network <network>`: Attach the container to a network. Supports `alias`,
     `mac`, `mtu`, `interface`, repeated `address`, and requested primary `ip` /
     `ip6` options; also `none` / `host`.
@@ -349,7 +349,7 @@ container create [<options>] <image> [<arguments> ...]
 *   `-l, --label <label>`: Add a key=value label to the container
 *   `--masked-path <path>`: **Experimental.** Hide a path inside the container, in addition to the runtime defaults (or `NONE` to clear prior values and the defaults)
 *   `--mount <mount>`: Add a mount to the container (format: type=<>,source=<>,target=<>,readonly)
-*   `--name <name>`: Use the specified name as the container ID
+*   `--name <name>`: Container ID; maximum 63 ASCII characters
 *   `--network <network>`: Attach the container to a network. Supports `alias`,
     `mac`, `mtu`, `interface`, repeated `address`, and requested primary `ip` /
     `ip6` options; also `none` / `host`.
@@ -596,6 +596,32 @@ container exec [--detach] [--env <env> ...] [--env-file <env-file> ...] [--gid <
 *   `--uid <uid>`: Set the user ID for the process
 *   `--ulimit <limit>`: Set resource limits (format: `<type>=<soft>[:<hard>]`)
 *   `-w, --workdir, --cwd <dir>`: Set the initial working directory inside the container
+
+### `container commit`
+
+Creates a new image from a container's filesystem. For running containers, commit automatically takes a runtime snapshot to preserve consistency.
+
+**Usage**
+
+```bash
+container commit [--debug] <container-id> <reference>
+```
+
+**Arguments**
+
+*   `<container-id>`: Container ID
+*   `<reference>`: Image reference for the committed image
+
+**Examples**
+
+```bash
+# commit a stopped container to a new image
+container stop mycontainer
+container commit mycontainer myimage:latest
+
+# commit a running container
+container commit mycontainer myimage:latest
+```
 
 ### `container export`
 

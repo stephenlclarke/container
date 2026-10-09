@@ -14,6 +14,8 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerAPIClient
+import ContainerResource
 import ContainerRuntimeLinuxClient
 import ContainerizationError
 import Foundation
@@ -22,6 +24,70 @@ import Testing
 @testable import ContainerCommands
 
 struct ContainerRunCreateCommandTests {
+    @Test
+    func startForwardsInitialInputOwnershipToBootstrap() async throws {
+        let cases: [([String], Bool, Bool)] = [
+            (["example"], false, false),
+            (["--attach", "example"], false, false),
+            (["--interactive", "example"], true, true),
+        ]
+        for (arguments, expectedEOF, expectedInput) in cases {
+            let command = try Application.ContainerStart.parse(arguments)
+            let client = RecordingStartClient()
+
+            let error = await #expect(throws: ContainerizationError.self) {
+                try await command.run(client: client)
+            }
+            #expect(error?.message == "sentinel bootstrap failure")
+            let observation = await client.observation
+            #expect(observation?.id == "example")
+            #expect(observation?.closeStdinOnEOF == expectedEOF)
+            #expect(observation?.hasInput == expectedInput)
+            #expect(await client.stopCount == 1)
+        }
+    }
+
+    @Test
+    func foregroundNonTTYInteractiveRunOwnsOnlyItsInitialStdinEOF() throws {
+        let foreground = try Application.ContainerRun.parse(["--interactive", "alpine", "sh"])
+        #expect(
+            Application.ContainerRun.closesStdinOnEOF(
+                interactive: foreground.processFlags.interactive,
+                tty: foreground.processFlags.tty,
+                detach: foreground.managementFlags.detach
+            ))
+        for arguments in [
+            ["--interactive", "--tty", "alpine", "sh"],
+            ["--interactive", "--detach", "alpine", "sh"],
+            ["alpine", "sh"],
+        ] {
+            let command = try Application.ContainerRun.parse(arguments)
+            #expect(
+                !Application.ContainerRun.closesStdinOnEOF(
+                    interactive: command.processFlags.interactive,
+                    tty: command.processFlags.tty,
+                    detach: command.managementFlags.detach
+                ))
+        }
+    }
+
+    @Test
+    func startInteractiveNonTTYUsesOwnedEOFBootstrapPolicy() throws {
+        let command = try Application.ContainerStart.parse(["--interactive", "example"])
+        #expect(
+            Application.ContainerRun.closesStdinOnEOF(
+                interactive: command.interactive,
+                tty: false,
+                detach: !command.attach && !command.interactive
+            ))
+        #expect(
+            !Application.ContainerRun.closesStdinOnEOF(
+                interactive: command.interactive,
+                tty: true,
+                detach: false
+            ))
+    }
+
     @Test
     func runParsesExplicitSharedVMIsolation() throws {
         let command = try Application.ContainerRun.parse([
@@ -532,5 +598,60 @@ struct ContainerRunCreateCommandTests {
         } throws: { _ in
             true
         }
+    }
+}
+
+private actor RecordingStartClient: ContainerStartClient {
+    struct Observation: Sendable {
+        let id: String
+        let closeStdinOnEOF: Bool
+        let hasInput: Bool
+    }
+
+    private(set) var observation: Observation?
+    private(set) var stopCount = 0
+
+    func get(id: String) async throws -> ContainerSnapshot {
+        let image = ImageDescription(
+            reference: "docker.io/library/alpine:latest",
+            descriptor: .init(
+                mediaType: "application/vnd.oci.image.manifest.v1+json",
+                digest: "sha256:" + String(repeating: "0", count: 64),
+                size: 0
+            )
+        )
+        let process = ProcessConfiguration(
+            executable: "/bin/sh",
+            arguments: [],
+            environment: [],
+            workingDirectory: "/",
+            terminal: false,
+            user: .id(uid: 0, gid: 0),
+            supplementalGroups: [],
+            rlimits: []
+        )
+        return ContainerSnapshot(
+            configuration: ContainerConfiguration(id: id, image: image, process: process),
+            status: .stopped,
+            networks: []
+        )
+    }
+
+    func bootstrap(
+        id: String,
+        stdio: [FileHandle?],
+        dynamicEnv: [String: String],
+        closeStdinOnEOF: Bool
+    ) async throws -> any ClientProcess {
+        observation = Observation(
+            id: id,
+            closeStdinOnEOF: closeStdinOnEOF,
+            hasInput: !stdio.isEmpty && stdio[0] != nil
+        )
+        throw ContainerizationError(.invalidState, message: "sentinel bootstrap failure")
+    }
+
+    func stopForFailedStart(id: String) async throws {
+        stopCount += 1
     }
 }

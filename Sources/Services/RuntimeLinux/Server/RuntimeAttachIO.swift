@@ -23,6 +23,8 @@ import Synchronization
 /// The initial process keeps one guest-side stdin pipe for its entire lifetime.
 /// Clients may come and go without closing that pipe, which is the distinction
 /// between reattaching and replacing a running process's standard input.
+/// A client may explicitly own stdin EOF; its drained descriptor then finishes
+/// only this input generation, without a later container-ID lookup.
 final class AttachableInput: ReaderStream, @unchecked Sendable {
     private struct State {
         var handles: [UUID: FileHandle] = [:]
@@ -33,12 +35,12 @@ final class AttachableInput: ReaderStream, @unchecked Sendable {
     private let streamStorage: AsyncStream<Data>
     private let continuation: AsyncStream<Data>.Continuation
 
-    init(initial: FileHandle? = nil) {
+    init(initial: FileHandle? = nil, closeOnEOF: Bool = false) {
         let pair = AsyncStream<Data>.makeStream()
         streamStorage = pair.stream
         continuation = pair.continuation
         if let initial {
-            add(initial)
+            add(initial, closeOnEOF: closeOnEOF)
         }
     }
 
@@ -46,15 +48,21 @@ final class AttachableInput: ReaderStream, @unchecked Sendable {
         streamStorage
     }
 
-    /// Registers a client-owned read handle. End-of-file detaches that client
-    /// only; it does not close the process stdin stream.
-    func add(_ handle: FileHandle) {
+    /// Registers a client-owned read handle. By default EOF detaches only that
+    /// client; explicit ownership finishes guest stdin after queued bytes drain.
+    func add(_ handle: FileHandle, closeOnEOF: Bool = false) {
         let identifier = UUID()
         let accepted = state.withLock { state in
             guard !state.finished else {
                 return false
             }
             state.handles[identifier] = handle
+            // Registration and closure share the same lifecycle lock. A queued
+            // callback resolves its handle under that lock instead of retaining
+            // a descriptor which another client's EOF may already have closed.
+            handle.readabilityHandler = { [weak self] _ in
+                self?.read(identifier, closeOnEOF: closeOnEOF)
+            }
             return true
         }
         guard accepted else {
@@ -62,45 +70,46 @@ final class AttachableInput: ReaderStream, @unchecked Sendable {
             return
         }
 
-        handle.readabilityHandler = { [weak self, weak handle] _ in
-            guard let self, let handle else {
-                return
-            }
-            let data = handle.availableData
-            if data.isEmpty {
-                self.remove(identifier, close: true)
-                return
-            }
-            self.continuation.yield(data)
-        }
     }
 
     func close() {
+        closeHandles(state.withLock { finish(&$0) })
+    }
+
+    private func read(_ identifier: UUID, closeOnEOF: Bool) {
         let handles = state.withLock { state -> [FileHandle] in
-            guard !state.finished else {
+            guard let handle = state.handles[identifier] else { return [] }
+            let data = handle.availableData
+            if !data.isEmpty {
+                continuation.yield(data)
                 return []
             }
-            state.finished = true
-            let values = Array(state.handles.values)
-            state.handles.removeAll()
-            return values
+            // Read EOF orders completion after all bytes from this client.
+            // A separate close RPC could discard bytes still in its socket.
+            if closeOnEOF {
+                return finish(&state)
+            }
+            state.handles.removeValue(forKey: identifier)
+            return [handle]
         }
+        closeHandles(handles)
+    }
+
+    /// Called with the state lock, after all earlier reads have been yielded.
+    private func finish(_ state: inout State) -> [FileHandle] {
+        guard !state.finished else { return [] }
+        state.finished = true
+        let handles = Array(state.handles.values)
+        state.handles.removeAll()
+        continuation.finish()
+        return handles
+    }
+
+    private func closeHandles(_ handles: [FileHandle]) {
         for handle in handles {
             handle.readabilityHandler = nil
             try? handle.close()
         }
-        continuation.finish()
-    }
-
-    private func remove(_ identifier: UUID, close: Bool) {
-        let handle = state.withLock { state in
-            state.handles.removeValue(forKey: identifier)
-        }
-        guard close, let handle else {
-            return
-        }
-        handle.readabilityHandler = nil
-        try? handle.close()
     }
 }
 

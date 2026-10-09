@@ -24,6 +24,56 @@ import Testing
 
 struct PluginLoaderTest {
     @Test
+    func cliHelpPlacesOnlyCLIPluginsAfterBuiltInOtherCommands() throws {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let loader = try PluginLoader(
+            appRoot: tempURL,
+            installRoot: URL(filePath: "/usr/local/"),
+            logRoot: nil,
+            pluginDirectories: [tempURL],
+            pluginFactories: [try setupMock(tempURL: tempURL)]
+        )
+        let original = "USAGE:\nOTHER SUBCOMMANDS:\n  inspect  Inspect a container\n  run      Run a container\nGLOBAL OPTIONS:"
+        let lines = loader.alterCLIHelpText(original: original).split(separator: "\n").map(String.init)
+
+        #expect(lines.count == 6)
+        #expect(lines[0] == "USAGE:")
+        #expect(lines[1] == "OTHER SUBCOMMANDS:")
+        #expect(lines[2] == "  inspect  Inspect a container")
+        #expect(lines[3] == "  run      Run a container")
+        #expect(lines[4] == "  cli" + String(repeating: " ", count: 21) + "cli")
+        #expect(lines[5] == "GLOBAL OPTIONS:")
+        #expect(!lines.contains { $0.contains("service") })
+    }
+
+    @Test
+    func cliHelpAddsMissingSectionAndPreservesTextWithoutCLIPlugins() throws {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+        let loader = try PluginLoader(
+            appRoot: tempURL,
+            installRoot: URL(filePath: "/usr/local/"),
+            logRoot: nil,
+            pluginDirectories: [tempURL],
+            pluginFactories: [try setupMock(tempURL: tempURL)]
+        )
+        let original = "USAGE:\n  container [options]"
+        #expect(loader.alterCLIHelpText(original: original) == original + "\nOTHER SUBCOMMANDS:\n  cli" + String(repeating: " ", count: 21) + "cli")
+
+        let emptyURL = tempURL.appendingPathComponent("empty")
+        try FileManager.default.createDirectory(at: emptyURL, withIntermediateDirectories: true)
+        let empty = try PluginLoader(
+            appRoot: emptyURL,
+            installRoot: URL(filePath: "/usr/local/"),
+            logRoot: nil,
+            pluginDirectories: [emptyURL],
+            pluginFactories: []
+        )
+        #expect(empty.alterCLIHelpText(original: original) == original)
+    }
+
+    @Test
     func testFindAll() async throws {
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: tempURL) }

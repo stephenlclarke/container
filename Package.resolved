@@ -1,5 +1,5 @@
 {
-  "originHash" : "ce6083fa4922af3bd92c33f556af1d859cab251798ffc1da7e1add35787bdbcd",
+  "originHash" : "ef827ef01baec0caa09dd5d6a913642751b3ef2e39bfd47f86afe3f23d7c1928",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -33,7 +33,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/container-engine-api.git",
       "state" : {
-        "revision" : "48e44d74d738ca3d24351ba02c4869be1a3e6998"
+        "revision" : "6e8c932fc8755a4b922fd239426e9029be0554e0"
       }
     },
     {
@@ -41,7 +41,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
-        "revision" : "7b9eb0a77ff615d764fbbf52125e2b6cdd846db8"
+        "revision" : "c0607ac9aa5b759141506fbd8fc01f423d433f1e"
       }
     },
     {
@@ -272,9 +272,9 @@
     {
       "identity" : "swift-nio-ssl",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-nio-ssl.git",
+      "location" : "https://github.com/stephenlclarke/swift-nio-ssl.git",
       "state" : {
-        "revision" : "322f3c2a4a21df31c84ca416bf65ee5e9059e440"
+        "revision" : "aee34db2144717ddce7bd145e45cf4fb9dab73fb"
       }
     },
     {

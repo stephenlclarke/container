@@ -21,6 +21,7 @@ trap 'rm -rf "${TEST_ROOT}"' EXIT
 MATCHED_BUILD_DIRECTORY="${TEST_ROOT}/matched-swift-build"
 DRY_RUN="$(
     make -n \
+        ROOT_DIR="$PWD" GIT_COMMIT=test RELEASE_VERSION=test \
         BUILD_CONFIGURATION=release \
         STAGING_DIR="${TEST_ROOT}/staging/" \
         HOMEBREW_ARCHIVE="${TEST_ROOT}/container.tar.gz" \

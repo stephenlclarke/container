@@ -31,6 +31,7 @@ public protocol EngineLinuxSandboxWorkloadAuthorityV1: Sendable {
         dynamicEnvironment: [String: String],
         networkEndpoints: [WorkloadNetworkEndpoint],
         stdio: [FileHandle?],
+        closeStdinOnEOF: Bool,
         controllers: [any WorkloadEffectControllerV1],
         monitorTerminal: Bool
     ) async throws -> EngineWorkloadRecordV1
@@ -201,6 +202,8 @@ public actor EngineLinuxSandboxAuthorityV1:
         let workloadConfigurationDigest: String
         let dynamicEnvironment: [String: String]
         let networkEndpoints: [WorkloadNetworkEndpoint]
+        // Omit the legacy false value to preserve existing durable identities.
+        let closeStdinOnEOF: Bool?
         let monitorTerminal: Bool
     }
 
@@ -406,6 +409,7 @@ public actor EngineLinuxSandboxAuthorityV1:
         dynamicEnvironment: [String: String] = [:],
         networkEndpoints: [WorkloadNetworkEndpoint] = [],
         stdio: [FileHandle?] = [],
+        closeStdinOnEOF: Bool = false,
         controllers: [any WorkloadEffectControllerV1] = [],
         monitorTerminal: Bool = false
     ) async throws -> EngineWorkloadRecordV1 {
@@ -434,6 +438,7 @@ public actor EngineLinuxSandboxAuthorityV1:
                 workloadConfigurationDigest: configurationDigest,
                 dynamicEnvironment: dynamicEnvironment,
                 networkEndpoints: networkEndpoints,
+                closeStdinOnEOF: closeStdinOnEOF ? true : nil,
                 monitorTerminal: monitorTerminal
             )
         )
@@ -447,7 +452,7 @@ public actor EngineLinuxSandboxAuthorityV1:
             workloadConfigurationDigest: configurationDigest,
             dynamicEnvironment: dynamicEnvironment,
             networkEndpoints: networkEndpoints,
-            stdio: stdio,
+            stdio: .init(handles: stdio, closeStdinOnEOF: closeStdinOnEOF),
             monitorTerminal: monitorTerminal
         )
         if registered.state == .running {

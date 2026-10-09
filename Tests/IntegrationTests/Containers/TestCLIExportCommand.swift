@@ -51,8 +51,11 @@ struct TestCLIExportCommand {
         try await ContainerFixture.with { f in
             let image = try f.copyWarmupImage(.alpine320)
             let name = "\(f.testID)-corrupt-rootfs"
-            try f.doCreate(name: name, image: image)
             f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
+            // Creation is lazy. Materialize and stop the runtime before
+            // corrupting metadata so initialization cannot overwrite it.
+            try await f.doLongRun(name: name, image: image, autoRemove: false)
+            try f.doStop(name)
 
             let status = try f.run(["system", "status", "--format", "json"]).check()
             let appRoot = try JSONDecoder().decode(StatusJSON.self, from: status.outputData).paths.appRoot
@@ -60,6 +63,7 @@ struct TestCLIExportCommand {
                 .appending(path: "containers", directoryHint: .isDirectory)
                 .appending(path: name, directoryHint: .isDirectory)
                 .appending(path: "rootfs.json")
+            #expect(try JSONSerialization.jsonObject(with: Data(contentsOf: rootfsMetadata)) is [String: Any])
             try Data("{".utf8).write(to: rootfsMetadata)
 
             let exportPath = f.testDir.appending("corrupt-export.tar")

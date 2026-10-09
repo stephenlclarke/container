@@ -49,9 +49,8 @@ public struct ManagedContainer: ManagedResource {
 
     /// Container name rule
     public static func nameValid(_ name: String) -> Bool {
-        // Docker container names are not DNS labels. Keep the storage key to a
-        // single filesystem component while accepting Docker-compatible names.
-        guard !name.isEmpty, name.utf8.count <= 255 else {
+        // Container IDs are used as DNS labels on the default network.
+        guard !name.isEmpty, name.utf8.count <= 63 else {
             return false
         }
         let pattern = #"^[a-zA-Z0-9][a-zA-Z0-9_.-]+$"#

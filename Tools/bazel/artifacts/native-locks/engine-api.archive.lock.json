@@ -1,0 +1,8 @@
+{
+  "asset": "engine-api-native-darwin-arm64-opt.tar.gz",
+  "repository": "stephenlclarke/container-engine-api",
+  "schema": 1,
+  "sha256": "dd6a67850f65fb2f8bad7fdf4b0a64ad3bf633642900105b883952a8c23972a2",
+  "tag": "layer-engine-api-native-0228d780f385-dd6a67850f65fb2f8bad",
+  "targetCommit": "48e44d74d738ca3d24351ba02c4869be1a3e6998"
+}

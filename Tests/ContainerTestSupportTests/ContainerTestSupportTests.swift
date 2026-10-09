@@ -23,6 +23,36 @@ import Testing
 struct ContainerTestSupportTests {
 
     @Test
+    func timedFixtureCommandRetainsBothOutputStreams() async throws {
+        let originalPath = ProcessInfo.processInfo.environment["CONTAINER_CLI_PATH"]
+        setenv("CONTAINER_CLI_PATH", "/bin/sh", 1)
+        defer { restoreEnvironment("CONTAINER_CLI_PATH", to: originalPath) }
+
+        try await ContainerFixture.with(
+            identity: .init(
+                name: Test.current?.name,
+                identifier: Test.current.map { "\($0.id)" },
+                isParameterized: Test.Case.current?.isParameterized ?? false
+            )
+        ) { fixture in
+            do {
+                _ = try fixture.run(
+                    ["-c", "printf host-stdout; printf host-stderr >&2; exec sleep 5"],
+                    timeout: 0.2)
+                Issue.record("host child should have exceeded its deadline")
+            } catch CommandError.executionFailed(let message) {
+                let prefix = "output: "
+                let path = try #require(message.components(separatedBy: prefix).last)
+                #expect(message.contains("command exceeded"))
+                let retained = URL(fileURLWithPath: path)
+                defer { try? FileManager.default.removeItem(at: retained) }
+                #expect(try Data(contentsOf: retained.appendingPathComponent("stdout")) == Data("host-stdout".utf8))
+                #expect(try Data(contentsOf: retained.appendingPathComponent("stderr")) == Data("host-stderr".utf8))
+            }
+        }
+    }
+
+    @Test
     func inspectFixtureDropsOnlyRecognizedLoggingDiagnosticProjection() throws {
         let input = Data(
             """
@@ -126,7 +156,13 @@ struct ContainerTestSupportTests {
         }
 
         try await withFakeContainerCLI {
-            try await ContainerFixture.with { fixture in
+            try await ContainerFixture.with(
+                identity: .init(
+                    name: Test.current?.name,
+                    identifier: Test.current.map { "\($0.id)" },
+                    isParameterized: Test.Case.current?.isParameterized ?? false
+                )
+            ) { fixture in
                 for command in ["build", "create", "run"] {
                     let result = try fixture.run([command, "example"])
                     #expect(
@@ -171,7 +207,13 @@ struct ContainerTestSupportTests {
     @Test
     func assertionsReportCommandFailuresWithoutTestingRuntime() async throws {
         try await withFakeContainerCLI {
-            try await ContainerFixture.with { fixture in
+            try await ContainerFixture.with(
+                identity: .init(
+                    name: Test.current?.name,
+                    identifier: Test.current.map { "\($0.id)" },
+                    isParameterized: Test.Case.current?.isParameterized ?? false
+                )
+            ) { fixture in
                 try fixture.assertContainerHasFile("fixture", at: "present")
                 try fixture.assertContainerMissingFile("fixture", at: "missing")
                 try fixture.assertImageBuilt("expected")

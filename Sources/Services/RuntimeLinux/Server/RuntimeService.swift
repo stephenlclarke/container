@@ -334,7 +334,8 @@ public actor RuntimeService {
             let stdio = message.stdio()
             let stdin = Self.attachableInput(
                 initial: stdio[0],
-                prewarming: prewarming
+                prewarming: prewarming,
+                closeOnEOF: message.bool(key: RuntimeKeys.closeStdinOnEOF.rawValue)
             )
             let stdout = AttachableOutput(
                 initial: stdio[1],
@@ -510,7 +511,9 @@ public actor RuntimeService {
             if closeStdin {
                 container.io.input?.close()
             } else if let stdin = stdio[0] {
-                container.io.input?.add(stdin)
+                container.io.input?.add(
+                    stdin, closeOnEOF: message.bool(key: RuntimeKeys.closeStdinOnEOF.rawValue)
+                )
             }
             if let stdout = stdio[1] {
                 container.io.stdout.add(stdout)
@@ -524,12 +527,13 @@ public actor RuntimeService {
 
     static func attachableInput(
         initial: FileHandle?,
-        prewarming: Bool
+        prewarming: Bool,
+        closeOnEOF: Bool = false
     ) -> AttachableInput? {
         if prewarming {
-            return AttachableInput(initial: initial)
+            return AttachableInput(initial: initial, closeOnEOF: closeOnEOF)
         }
-        return initial.map(AttachableInput.init)
+        return initial.map { AttachableInput(initial: $0, closeOnEOF: closeOnEOF) }
     }
 
     static func acceptsAttach(in state: State) -> Bool {
@@ -2389,7 +2393,19 @@ extension FileHandle: @retroactive ReaderStream, @retroactive Writer {
     }
 
     public func stream() -> AsyncStream<Data> {
-        .init { cont in
+        var metadata = stat()
+        if fstat(fileDescriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG {
+            // Darwin does not deliver another readability event at regular-file
+            // EOF. Pull bounded chunks so staged exec input closes in the guest.
+            return .init(unfolding: {
+                guard let data = try? self.read(upToCount: 64 * 1024), !data.isEmpty else {
+                    return nil
+                }
+                return data
+            })
+        }
+        return .init { cont in
+            cont.onTermination = { _ in self.readabilityHandler = nil }
             self.readabilityHandler = { handle in
                 let data = handle.availableData
                 if data.isEmpty {

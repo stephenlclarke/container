@@ -229,6 +229,23 @@ struct EngineLinuxSandboxRuntimeServiceTests {
     }
 
     @Test
+    func descriptorOwnedEOFRejectsMissingInitialInputBeforeMaterialization() async throws {
+        let sandbox = FakeEngineLinuxSandbox()
+        let service = try makeService(sandbox: sandbox)
+        _ = try await service.boot(bootRequest())
+        let fixture = try WorkloadBundleFixture()
+        defer { fixture.remove() }
+        let request = try workloadRequest(root: fixture.root, closeStdinOnEOF: true)
+
+        let error = await #expect(throws: ContainerizationError.self) {
+            _ = try await service.startWorkload(request, stdio: [])
+        }
+        #expect(error?.message == "descriptor-owned stdin EOF requires an initial stdin handle")
+        #expect(await sandbox.addCount == 0)
+        #expect(await sandbox.startCount == 0)
+    }
+
+    @Test
     func potentiallySharedWorkloadStartsSerializeMaterialization() async throws {
         let sandbox = FakeEngineLinuxSandbox(delayStartContainer: true)
         let service = try makeService(sandbox: sandbox)
@@ -838,6 +855,16 @@ struct EngineLinuxSandboxRuntimeServiceTests {
                 from: JSONEncoder().encode(workloadRequest)
             ) == workloadRequest
         )
+        var legacyStart = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(workloadRequest))
+                as? [String: Any]
+        )
+        legacyStart.removeValue(forKey: "closeStdinOnEOF")
+        let decodedLegacyStart = try JSONDecoder().decode(
+            EngineLinuxSandboxWorkloadStartRequestV1.self,
+            from: JSONSerialization.data(withJSONObject: legacyStart)
+        )
+        #expect(!decodedLegacyStart.closeStdinOnEOF)
         #expect(
             try JSONDecoder().decode(
                 WorkloadProcessObservationV1.self,
@@ -892,6 +919,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
         root: URL,
         id: String = "workload-1",
         configurationDigest: String? = nil,
+        closeStdinOnEOF: Bool = false,
         monitorTerminal: Bool = false
     ) throws -> EngineLinuxSandboxWorkloadStartRequestV1 {
         let digest =
@@ -908,6 +936,7 @@ struct EngineLinuxSandboxRuntimeServiceTests {
             workloadRoot: root,
             workloadConfigurationDigest: digest,
             dynamicEnvironment: ["BUILD_ID": "42"],
+            closeStdinOnEOF: closeStdinOnEOF,
             monitorTerminal: monitorTerminal
         )
     }

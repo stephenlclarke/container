@@ -31,7 +31,7 @@ import Testing
 @testable import ContainerAPIService
 @testable import ContainerPlugin
 
-struct ContainerLoggingAuthorityIntegrationTests {
+struct ContainerLoggingAuthorityBoundaryTests {
     @Test func providerUpgradeMigratesAndResealsDurableConfigurationBeforeCutover() async throws {
         try await withTemporaryRoot { root in
             let identity = LogDriverProviderIdentity(
@@ -762,6 +762,153 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 configuration: sealed.configuration
             )
             #expect(await provider.requestCount == 2)
+            #expect(await provider.selectedDrivers == ["test-remote-alias", descriptor.driver])
+            #expect(await provider.fullCatalogCalls == 0)
+        }
+    }
+
+    @Test func typedDefaultAndExplicitDriversOnlyRequestSelectedCatalog() async throws {
+        try await withTemporaryRoot { root in
+            let provider = RecordingLogDriverCatalogProvider(
+                catalog: BuiltinLogDriverDescriptors.current
+            )
+            let service = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: provider
+            )
+
+            let defaultPlan = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(driver: nil)
+            )
+            let defaultSealed = try await service.sealLoggingForCreate(
+                containerID: "selected-default",
+                plan: defaultPlan
+            )
+            _ = try await service.validateLoggingForStart(
+                containerID: "selected-default",
+                configuration: defaultSealed.configuration
+            )
+
+            let explicitPlan = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(driver: "none")
+            )
+            let explicitSealed = try await service.sealLoggingForCreate(
+                containerID: "selected-none",
+                plan: explicitPlan
+            )
+            _ = try await service.validateLoggingForStart(
+                containerID: "selected-none",
+                configuration: explicitSealed.configuration
+            )
+
+            _ = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: nil
+            )
+            #expect(
+                await provider.selectedDrivers
+                    == ["json-file", "json-file", "none", "none"]
+            )
+            #expect(await provider.fullCatalogCalls == 0)
+        }
+    }
+
+    @Test func systemDefaultJournaldIsSelectedForReadiness() async throws {
+        try await withTemporaryRoot { root in
+            let catalog = try LogDriverCatalog(
+                descriptors: BuiltinLogDriverDescriptors.current.descriptors
+                    + [JournaldLogDriverContract.descriptor()]
+            )
+            let provider = RecordingLogDriverCatalogProvider(catalog: catalog)
+            let service = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: provider,
+                logging: LoggingConfig(driver: "journald")
+            )
+            let plan = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(driver: nil)
+            )
+            let sealed = try await service.sealLoggingForCreate(
+                containerID: "default-journald",
+                plan: plan
+            )
+            _ = try await service.validateLoggingForStart(
+                containerID: "default-journald",
+                configuration: sealed.configuration
+            )
+            #expect(await provider.selectedDrivers == ["journald", "journald"])
+            #expect(await provider.fullCatalogCalls == 0)
+        }
+    }
+
+    @Test func unavailableSelectedJournaldFailsAtCreateAndStart() async throws {
+        try await withTemporaryRoot { root in
+            let available = try LogDriverCatalog(
+                descriptors: BuiltinLogDriverDescriptors.current.descriptors
+                    + [JournaldLogDriverContract.descriptor()]
+            )
+            let unavailable = BuiltinLogDriverDescriptors.current
+            let provider = RecordingLogDriverCatalogProvider(
+                catalogs: [available, unavailable]
+            )
+            let service = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: provider,
+                logging: LoggingConfig(driver: "journald")
+            )
+            let plan = try await service.prepareLoggingForCreate(
+                configuration: .default,
+                request: ContainerLogRequest(driver: nil)
+            )
+            let sealed = try await service.sealLoggingForCreate(
+                containerID: "unavailable-journald",
+                plan: plan
+            )
+            let startError = await #expect(throws: ContainerizationError.self) {
+                try await service.validateLoggingForStart(
+                    containerID: "unavailable-journald",
+                    configuration: sealed.configuration
+                )
+            }
+            #expect(startError?.code == .invalidState)
+            #expect(startError?.message.contains("not registered") == true)
+            let createError = await #expect(throws: ContainerLogResolutionError.self) {
+                try await service.prepareLoggingForCreate(
+                    configuration: .default,
+                    request: ContainerLogRequest(driver: nil)
+                )
+            }
+            #expect(createError == .unknownDriver("journald"))
+            #expect(await provider.selectedDrivers == ["journald", "journald", "journald"])
+            #expect(await provider.fullCatalogCalls == 0)
+        }
+    }
+
+    @Test func unknownSelectedDriverStillFailsAtCreate() async throws {
+        try await withTemporaryRoot { root in
+            let provider = RecordingLogDriverCatalogProvider(
+                catalog: BuiltinLogDriverDescriptors.current
+            )
+            let service = try makeService(
+                appRoot: root,
+                includeRuntime: false,
+                logDriverCatalogProvider: provider
+            )
+            let error = await #expect(throws: ContainerLogResolutionError.self) {
+                try await service.prepareLoggingForCreate(
+                    configuration: .default,
+                    request: ContainerLogRequest(driver: "unregistered-driver")
+                )
+            }
+            #expect(error == .unknownDriver("unregistered-driver"))
+            #expect(await provider.selectedDrivers == ["unregistered-driver"])
+            #expect(await provider.fullCatalogCalls == 0)
         }
     }
 
@@ -801,6 +948,8 @@ struct ContainerLoggingAuthorityIntegrationTests {
             #expect(error?.code == .invalidState)
             #expect(error?.message.contains("provider generation") == true)
             #expect(await provider.requestCount == 2)
+            #expect(await provider.selectedDrivers == [createDescriptor.driver, createDescriptor.driver])
+            #expect(await provider.fullCatalogCalls == 0)
         }
     }
 
@@ -1069,7 +1218,8 @@ struct ContainerLoggingAuthorityIntegrationTests {
         logDriverCatalogProvider: any LogDriverCatalogProviding = StaticLogDriverCatalogProvider(
             catalog: BuiltinLogDriverDescriptors.current
         ),
-        remoteLogDriverPlane: AuthorityRemoteLogDriverPlane? = nil
+        remoteLogDriverPlane: AuthorityRemoteLogDriverPlane? = nil,
+        logging: LoggingConfig = .init()
     ) throws -> ContainersService {
         try ContainersService(
             appRoot: appRoot,
@@ -1077,8 +1227,8 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 appRoot: appRoot,
                 includeRuntime: includeRuntime
             ),
-            containerSystemConfig: ContainerSystemConfig(),
-            log: Logger(label: "ContainerLoggingAuthorityIntegrationTests"),
+            containerSystemConfig: ContainerSystemConfig(logging: logging),
+            log: Logger(label: "ContainerLoggingAuthorityBoundaryTests"),
             logDriverCatalogProvider: logDriverCatalogProvider,
             remoteLogDriverPlane: remoteLogDriverPlane
         )
@@ -1294,6 +1444,8 @@ struct ContainerLoggingAuthorityIntegrationTests {
 private actor RecordingLogDriverCatalogProvider: LogDriverCatalogProviding {
     private var catalogs: [LogDriverCatalog]
     private(set) var requestCount = 0
+    private(set) var fullCatalogCalls = 0
+    private(set) var selectedDrivers = [String]()
 
     init(catalog: LogDriverCatalog) {
         self.catalogs = [catalog]
@@ -1305,6 +1457,16 @@ private actor RecordingLogDriverCatalogProvider: LogDriverCatalogProviding {
     }
 
     func logDriverCatalog() async throws -> LogDriverCatalog {
+        fullCatalogCalls += 1
+        return nextCatalog()
+    }
+
+    func logDriverCatalog(forSelectedDriver driver: String) async throws -> LogDriverCatalog {
+        selectedDrivers.append(driver)
+        return nextCatalog()
+    }
+
+    private func nextCatalog() -> LogDriverCatalog {
         requestCount += 1
         if catalogs.count > 1 {
             return catalogs.removeFirst()

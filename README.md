@@ -3,11 +3,8 @@
 <!-- markdownlint-disable MD013 MD033 -->
 <p>
   <img align="left" hspace="20" src="assets/container-icon.png" width="147" alt="container project icon: the standard three-row container service panel" />
-  <a href="https://github.com/stephenlclarke/container/actions/workflows/merge-build.yml?query=branch%3Amain+event%3Apush"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/stephenlclarke/container/merge-build.yml?branch=main&amp;label=container%20project%20-%20merge%20build&amp;cacheSeconds=300" /></a>
-  <a href="https://github.com/stephenlclarke/container/actions/workflows/codeql.yml?query=branch%3Amain"><img alt="CodeQL" src="https://github.com/stephenlclarke/container/actions/workflows/codeql.yml/badge.svg?branch=main" /></a>
+  <a href="https://github.com/stephenlclarke/container/actions/workflows/sonar.yml?query=branch%3Amain+event%3Apush"><img alt="Unit tests, SonarCloud and CodeQL" src="https://img.shields.io/github/actions/workflow/status/stephenlclarke/container/sonar.yml?branch=main&amp;label=unit%20tests%20and%20quality&amp;cacheSeconds=300" /></a>
   <a href="https://github.com/stephenlclarke/container/actions/workflows/homebrew.yml?query=branch%3Amain"><img alt="Homebrew" src="https://github.com/stephenlclarke/container/actions/workflows/homebrew.yml/badge.svg?branch=main" /></a>
-  <a href="https://github.com/stephenlclarke/container/actions/workflows/prebuilt-binaries.yml?query=branch%3Amain"><img alt="Prebuilt Binaries" src="https://github.com/stephenlclarke/container/actions/workflows/prebuilt-binaries.yml/badge.svg?branch=main" /></a>
-  <a href="https://github.com/stephenlclarke/container/actions/workflows/sonar.yml?query=branch%3Amain"><img alt="SonarQube" src="https://github.com/stephenlclarke/container/actions/workflows/sonar.yml/badge.svg?branch=main" /></a>
   <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Quality Gate Status" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=alert_status" /></a>
   <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Coverage" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=coverage" /></a>
   <a href="https://sonarcloud.io/summary/new_code?id=stephenlclarke_container"><img alt="Bugs" src="https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_container&amp;metric=bugs" /></a>
@@ -188,8 +185,23 @@ To retain your user data so that it is available should you reinstall later, run
   of `container`.
 - Browse the [full command reference](./docs/command-reference.md).
 - [Build and run](./BUILDING.md) `container` on your own development system.
+- [Container-only Bazel build](./Tools/bazel/README.md): build, test, compare and package container and its dependencies in reusable layers. GitHub runs native unit coverage/SonarCloud and a separate production-product CodeQL scan in parallel for the same commit. `make bazel-unattended` runs the heavy Bazel, Linux, VM, CLI, benchmark and signed/notarized release-candidate checks on the laptop, retaining separate unit, integration and combined coverage. Packaging requires both hosted jobs to pass for the same commit and attempt; local admission can wait up to 90 minutes for them. The local wrapper protects shared services, verifies restoration before resuming workers and retains recovery records after interrupted cleanup. Nested controllers allow bounded child cleanup before escalation; ordinary commands retain their existing deadlines and ten-second termination grace. The existing per-layer runtime integration target can also use that guarded wrapper for focused diagnostics before full qualification. Qualification checks the published benchmark reference and live Docker resource identity before builds, reuses verified GitHub benchmark assets for previously measured versions and measures the changed candidate. The fork comparison also offers an opt-in fresh measurement of all five candidates while retaining historical Apple baselines. Release preparation preserves the exact measured binaries separately from the re-signed distribution. These commands create release candidates without publishing or replacing the installed runtime.
+- [Apple versus fork runtime benchmarks](./Tools/bazel/RUNTIME_BENCHMARK.md): `make bazel-final` finishes the build with repeated speed comparisons. Component qualification also measures matching optimized TLS handshake and encrypted-write workloads independently of compatibility-test results.
+
+The package graph pins the merged SwiftNIO SSL Darwin trust-alert fix at `aee34db2144717ddce7bd145e45cf4fb9dab73fb`. Rebuild and qualify the enhanced dependency layers before claiming that a compiled or installed Container binary includes it; the earlier TLS parity candidate remains historical evidence.
+The enhanced Container graph also selects `container-engine-api` revision `6e8c932fc8755a4b922fd239426e9029be0554e0` to match the nested Engine stream source. See the [issue](./docs/ISSUE-native-engine-stream-pin.md) and [PR handoff](./docs/PR-native-engine-stream-pin.md); source alignment alone does not qualify refreshed SDK binaries.
+
+- Local cleanup releases Colima's startup lock only after readiness succeeds; failed startup or surviving test controllers preserve recovery authority. Original archive verification remains a separate local test after retirement of automatic GitHub packaging.
 - View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
 - Compare the [Apple upstream API reference](https://apple.github.io/container/documentation/).
+
+Foreground interactive commands without a TTY, such as `container run -i --rm IMAGE sh`, now close the guest's primary stdin after all supplied bytes are drained. This lets a finite shell script exit at EOF. TTY, detached, and later attach sessions retain their existing input behavior. The dedicated, prewarmed and shared routes passed live integration at checkpoint `44a42b3c`, including all 412 CLI cases and warmup. Its hosted Swift/Sonar job passed at 81.1% new-code coverage. The whole run remains unqualified because historical benchmark admission rejected a first-launch timing comparison and a guest usable-memory difference; both failed records are preserved, and the reviewed comparison corrections require a new complete qualification.
+
+Normal qualification now [imports published guest and builder artifacts](./docs/ISSUE-published-lower-artifacts.md) with exact source, asset and OCI checks instead of rebuilding previously qualified lower layers. The unchanged builder and newly source-built 6db guest variants have been published and independently imported from their release assets; 213 tools tests pass. The new Container candidate still needs complete qualification, including current functional and performance checks.
+
+The optimized runtime now imports four published [native dependency layers](./docs/ISSUE-native-compiled-layers.md) and verifies all eight executable links against their sealed archives. At `db4088b1`, runtime smoke and VM integration passed, but instrumented integration failed because the native action verifier classified Bazel's input-free `BaselineCoverage` metadata as dependency source compilation. The failed run and its guarded host recovery remain recorded. The corrected verifier admits only that exact coverage metadata shape; a finite two-file recipe check preserves the original four published archives and their producer proofs. A new complete qualification is required.
+
+Component benchmarks now start only after integration passes. The `bf0e10bd` attempt passed the corrected native coverage check but failed two commit-command integration cases; their failed evidence remains intact. Blocking component timing after that failure preserves the complete benchmark workloads and release gates for a successful run.
 
 ## Contributing
 
@@ -197,7 +209,7 @@ Contributions to `container` are welcome and encouraged. Please see our
 [main contributing guide](https://github.com/apple/containerization/blob/main/CONTRIBUTING.md)
 for more information.
 
-`make coverage-sonar` runs the instrumented unit suite and emits project-confined LCOV plus SonarQube generic XML. `make sonar-scan` submits that report with the exact current commit as the previous-version baseline; the hosted workflow performs both steps for pull requests and `main`.
+`make coverage-sonar` runs the instrumented unit suite and emits project-confined LCOV plus SonarQube generic XML. The export includes `Sources/ContainerTestSupport`, which Sonar scans alongside the other source modules; tests and external dependencies remain outside the production report. `make sonar-scan` submits that report with the exact current commit as the previous-version baseline; the hosted workflow performs both steps for pull requests and `main`.
 
 ## Project Status
 
@@ -212,3 +224,5 @@ The `container` application data provides forward compatibility only, guaranteed
 
 Service registration queries wait directly for process completion while preserving
 installation ownership checks. See the [runtime performance changes](docs/PR-runtime-performance.md).
+
+Container create and start revalidate the selected logging driver against the current registry. Unrelated journald readiness is deferred until journald is selected; see the [selected-driver readiness change](docs/PR-selected-logging-readiness.md) for validation status.
