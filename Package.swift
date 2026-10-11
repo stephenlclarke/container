@@ -66,7 +66,7 @@ let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSI
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:a20bf1788286e46fb2c2025acdce6b6e9cdd11394e0875e0f3297415d1c4d108"
 let scVersion = "0.49.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "fbe69a32f672f05f171961d26862baaf53734f41"
+let containerizationRevision = "7c76243f3e98ea38669f665e1bd1172db7e6b347"
 let containerEngineAPIRevision = "48e44d74d738ca3d24351ba02c4869be1a3e6998"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
@@ -148,7 +148,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.36.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.3.0"),
-        .package(url: "https://github.com/stephenlclarke/grpc-swift-nio-transport.git", revision: "44247d21352316e6ce3a39ba0f1f79ec39876c9f"),
+        .package(url: "https://github.com/stephenlclarke/grpc-swift-nio-transport.git", revision: "2ddb7175729b30e5a12f4c3cb14f15985b1b2b1e"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.2.0"),
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.20.1"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin.git", from: "1.1.0"),

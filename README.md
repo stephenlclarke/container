@@ -206,6 +206,8 @@ The optimized runtime now imports four published [native dependency layers](./do
 
 Component benchmarks now start only after integration passes. The `bf0e10bd` attempt passed the corrected native coverage check but failed two commit-command integration cases; their failed evidence remains intact. Blocking component timing after that failure preserves the complete benchmark workloads and release gates for a successful run.
 
+The current candidate selects signed SDK `7c76243f3e98ea38669f665e1bd1172db7e6b347` and gRPC transport `2ddb7175729b30e5a12f4c3cb14f15985b1b2b1e` to correct guest connection shutdown. A byte-bound manifest transition preserves the unchanged published ArgumentParser artifact; independently checked source pins and lower archive identities require fresh Foundation, SDK and Engine API artifacts. The local Linux test image includes Python for the existing coverage exporters. These source changes still require their affected native and runtime qualification; see the [dependency consumption handoff](docs/upstream/PR-connection-dependency-consumption.md).
+
 ## Contributing
 
 Contributions to `container` are welcome and encouraged. Please see our

@@ -125,6 +125,31 @@ class RecipeCompatibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
                     compatibility.admit(producer, current, self.root)
 
+    def test_exact_connection_pin_transition_preserves_unaffected_recipe(self):
+        key = compatibility.CONNECTION_PINS
+        before = dict(self.old, **{key: compatibility.CONNECTION_PINS_OLD})
+        after = dict(self.old, **{key: compatibility.CONNECTION_PINS_NEW})
+        result = compatibility.admit(before, after, self.root)
+        self.assertEqual(result['mode'], 'known-sdk-transport-pin-update')
+        self.assertEqual(result['changedFiles'], [key])
+        self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+        selected = Path(compatibility.__file__).resolve().parents[3] / key
+        self.assertEqual(compatibility.digest(selected.read_bytes()), compatibility.CONNECTION_PINS_NEW)
+
+    def test_connection_pin_transition_rejects_unknown_reverse_and_build_drift(self):
+        key = compatibility.CONNECTION_PINS
+        before = dict(self.old, **{key: compatibility.CONNECTION_PINS_OLD})
+        after = dict(self.old, **{key: compatibility.CONNECTION_PINS_NEW})
+        for producer, current in (
+                (before, dict(after, **{key: '0' * 64})),
+                (dict(before, **{key: '0' * 64}), after),
+                (after, before),
+                (before, dict(after, **{'MODULE.bazel': '0' * 64})),
+                (before, dict(after, **{'Tools/bazel/artifacts/native_format.py': '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
+
     def test_inventory_and_hash_shape_drift_is_rejected(self):
         for current in (dict(self.current, extra='0' * 64),
                         {key: value for key, value in self.current.items() if key != 'MODULE.bazel'},

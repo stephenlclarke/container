@@ -38,6 +38,9 @@ HOST_FIXTURE_NEW = '38bc850cf28df21d01a656eada236f434081233d1b8a4ab0407d9ae17d50
 PUBLIC_EVIDENCE_CHECK = 'Tools/bazel/artifacts/native_producer.py'
 PUBLIC_EVIDENCE_OLD = 'a0cf93cc6d08a47698f875faf9f835f924693d6b841021fbf4d420284c9db587'
 PUBLIC_EVIDENCE_NEW = 'd4c656f63c9119866bb60783a54a396051169d929b4bc7cf9f24fbfc1d3f5298'
+CONNECTION_PINS = 'Package.swift'
+CONNECTION_PINS_OLD = '7a26bc03b698590fd3f72e5d7b178226c26ccb18b5e72e6375e94fc987aff39b'
+CONNECTION_PINS_NEW = '2d9afbf0bf3e6d573eadb32e649e9ea11998a7ea61ff86e11a0a2088d22885bf'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -79,6 +82,13 @@ def admit(producer: object, current: object, root: Path) -> dict:
             and current[PUBLIC_EVIDENCE_CHECK] == PUBLIC_EVIDENCE_NEW):
         remaining.remove(PUBLIC_EVIDENCE_CHECK)
         modes.append('known-parameter-diagnostic-scan-update')
+    # The exact manifest delta replaces only SDK and gRPC revision literals.
+    # ArgumentParser source and build settings are identical; every group's
+    # selected source pins and lower archives are still checked independently.
+    if (CONNECTION_PINS in remaining and producer[CONNECTION_PINS] == CONNECTION_PINS_OLD
+            and current[CONNECTION_PINS] == CONNECTION_PINS_NEW):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-sdk-transport-pin-update')
     if remaining:
         raise ValueError('published native recipe differs from authenticated consumer update')
     mode = '+'.join(modes) if modes else 'exact'
