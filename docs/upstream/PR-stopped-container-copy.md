@@ -29,3 +29,7 @@ The first live candidate (`6f795d10436e`) reached the copy-only guest but failed
 - [ ] Updated user documentation after the supported behavior is qualified.
 
 Previously published Apple and Container candidate artifacts and benchmark measurements remain reusable and must not be rebuilt or rerun. These checkboxes report only completed evidence; they do not imply full Docker copy parity or release readiness.
+
+## File-mode regression follow-up
+
+The first SDK-connected live proof copied the correct bytes but changed a `0640` file to `0644`. The original failure and the 30x cold-copy timing regression remain retained in `runtime-v2`; the separate file/archive integration selection passed 38 cases. The CLI now sends the source file mode through the existing API, while the SDK and guest preserve that mode independently of the ownership flag. Explicit zero permissions use the existing full `st_mode` representation so legacy raw-RPC zero still means the default `0644`. The CLI policy suite passed (13 retained XML cases), the final SDK host suite passed 68 tests, and the Linux guest mode suite passed four tests. The new live proof remains pending. The running and created copy fixtures cover `0640`, `0664`, executable files and overwriting an existing destination. This corrects mode handling for running copies too; workload lifecycle and data/path transfer mechanics are unchanged.

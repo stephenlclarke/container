@@ -53,6 +53,15 @@ extension Application {
             return FilePath(url.standardizedFileURL.path)
         }
 
+        static func sourceFileMode(_ path: FilePath) throws -> UInt32 {
+            let source = URL(filePath: path.string).resolvingSymlinksInPath()
+            let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+            guard let permissions = attributes[.posixPermissions] as? NSNumber else {
+                throw ContainerizationError(.internalError, message: "source permissions unavailable: \(path)")
+            }
+            return permissions.uint32Value & 0o777
+        }
+
         public init() {}
 
         public static let configuration = CommandConfiguration(
@@ -117,7 +126,9 @@ extension Application {
                     throw ContainerizationError(.invalidArgument, message: "source path is not a directory: \(localPath)")
                 }
 
-                try await client.copyIn(id: id, source: srcPath.string, destination: path, createParents: true, followSymlink: followLink, preserveOwnership: archive)
+                let mode = try Self.sourceFileMode(srcPath)
+                try await client.copyIn(
+                    id: id, source: srcPath.string, destination: path, mode: mode, createParents: true, followSymlink: followLink, preserveOwnership: archive)
             case (.container, .container):
                 throw ContainerizationError(.invalidArgument, message: "copying between containers is not supported")
             case (.local, .local):

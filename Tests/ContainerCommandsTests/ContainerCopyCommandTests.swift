@@ -21,6 +21,28 @@ import Testing
 @testable import ContainerCommands
 
 struct ContainerCopyCommandTests {
+    @Test(arguments: [0o000, 0o640, 0o664, 0o755])
+    func copyReadsSourcePermissionsWithoutArchiveMode(mode: UInt32) throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let source = directory.appendingPathComponent("source")
+        try Data("payload".utf8).write(to: source)
+        try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: mode)], ofItemAtPath: source.path)
+
+        #expect(try Application.ContainerCopy.sourceFileMode(FilePath(source.path)) == mode)
+        let link = directory.appendingPathComponent("link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: source)
+        #expect(try Application.ContainerCopy.sourceFileMode(FilePath(link.path)) == mode)
+    }
+
+    @Test func copySourcePermissionsRejectMissingSource() throws {
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        #expect(throws: Error.self) {
+            try Application.ContainerCopy.sourceFileMode(FilePath(source.path))
+        }
+    }
+
     @Test func copyParsesShortArchiveFlag() throws {
         let command = try Application.ContainerCopy.parse([
             "-a",
