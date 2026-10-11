@@ -2,7 +2,7 @@
   "asset": "engine-api-native-proof.tar.gz",
   "repository": "stephenlclarke/container-engine-api",
   "schema": 1,
-  "sha256": "b5502f5636e762db2f068ccf92dedc9c02dcd272767c7d2dd7d0d9910161ae11",
-  "tag": "layer-engine-api-native-8d12494b5a91-337f7a053371833fdf52",
+  "sha256": "b3561b9df8fede2af21bc86fb1bf4c29dd7f89f5158d7f5e6bd5a99a801e52d6",
+  "tag": "layer-engine-api-native-3c2a2e414209-8f52f1f87bcc2fb122e3",
   "targetCommit": "48e44d74d738ca3d24351ba02c4869be1a3e6998"
 }
