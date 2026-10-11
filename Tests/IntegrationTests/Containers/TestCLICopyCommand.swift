@@ -98,16 +98,21 @@ struct TestCLICopyCommand {
         }
     }
 
-    @Test func testCopyToNonRunningContainerFails() async throws {
+    @Test func testCopyToCreatedContainerSucceeds() async throws {
         try await ContainerFixture.with { f in
             let image = WarmupImage.alpine320.rawValue
             let name = "\(f.testID)-c"
             try f.doCreate(name: name, image: image)
             f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
             let src = f.testDir.appending("norun.txt")
-            try "test".write(toFile: src.string, atomically: true, encoding: .utf8)
-            let result = try f.run(["copy", src.string, "\(name):/tmp/"])
-            #expect(result.status != 0, "expected copy to non-running container to fail")
+            let content = "copy before first start"
+            try content.write(toFile: src.string, atomically: true, encoding: .utf8)
+            try f.run(["copy", src.string, "\(name):/tmp/"]).check()
+
+            let dest = f.testDir.appending("created-copy.txt")
+            try f.run(["copy", "\(name):/tmp/norun.txt", dest.string]).check()
+            #expect(try String(contentsOfFile: dest.string, encoding: .utf8) == content)
+            #expect(try f.getContainerStatus(name) == "stopped")
         }
     }
 
