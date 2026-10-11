@@ -29,6 +29,10 @@ struct TestCLICopyColdStopped {
     private let payload = Data("cold-copy-payload\n".utf8)
     private let archivePayload = Data("archive-copy-payload\n".utf8)
 
+    private struct CreationEnvelope: Decodable {
+        let options: ContainerCreateOptions
+    }
+
     @Test(arguments: [false, true])
     func copyDoesNotRunWorkloadOrChangeLogs(prewarm: Bool) async throws {
         try await ContainerFixture.with { fixture in
@@ -66,11 +70,11 @@ struct TestCLICopyColdStopped {
             )
 
             let bundle = try containerBundleURL(id: name)
-            let options = try JSONDecoder().decode(
-                ContainerCreateOptions.self,
-                from: Data(contentsOf: bundle.appendingPathComponent("options.json"))
+            let creation = try JSONDecoder().decode(
+                CreationEnvelope.self,
+                from: Data(contentsOf: bundle.appendingPathComponent("runtime-configuration.json"))
             )
-            #expect(options.prewarm == prewarm)
+            #expect(creation.options.prewarm == prewarm)
             if prewarm {
                 try await waitForBootstrap(name)
             }
