@@ -134,7 +134,7 @@ class RecipeCompatibilityTests(unittest.TestCase):
         self.assertEqual(result['changedFiles'], [key])
         self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
         selected = Path(compatibility.__file__).resolve().parents[3] / key
-        self.assertEqual(compatibility.digest(selected.read_bytes()), compatibility.STOPPED_COPY_SYMLINK_PINS)
+        self.assertEqual(compatibility.digest(selected.read_bytes()), compatibility.STOPPED_COPY_OFFLINE_PINS)
 
     def test_connection_pin_transition_rejects_unknown_reverse_and_build_drift(self):
         key = compatibility.CONNECTION_PINS
@@ -197,6 +197,24 @@ class RecipeCompatibilityTests(unittest.TestCase):
                 (dict(self.old, **{key: '0' * 64}), current),
                 (current, dict(self.old, **{key: compatibility.STOPPED_COPY_MODE_PINS})),
                 (dict(self.old, **{key: compatibility.STOPPED_COPY_MODE_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_offline_copy_transition_reuses_only_exact_unchanged_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        current = dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS})
+        for previous in (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,
+                         compatibility.STOPPED_COPY_SYMLINK_PINS):
+            accepted = compatibility.admit(dict(self.old, **{key: previous}), current, self.root)
+            self.assertEqual(accepted['mode'], 'known-stopped-copy-offline-sdk-and-test-update')
+            self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.STOPPED_COPY_SYMLINK_PINS})),
+                (dict(self.old, **{key: compatibility.STOPPED_COPY_SYMLINK_PINS}),
                  dict(current, **{'MODULE.bazel': '0' * 64}))):
             with self.subTest(producer=producer, selected=selected):
                 with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):

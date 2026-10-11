@@ -5541,6 +5541,17 @@ public actor ContainersService {
     public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
+            if let rootfs = try self.offlineCopyRootfs(id: id) {
+                let log = self.log
+                let copied = try await Task.detached {
+                    try OfflineStoppedCopy.copyOut(
+                        rootfs: rootfs, source: source, destination: destination,
+                        createParents: createParents, followSymlink: followSymlink,
+                        preserveOwnership: preserveOwnership, log: log
+                    )
+                }.value
+                if copied { return }
+            }
             try await self.withCopyClient(id: id) { client in
                 try await client.copyOut(
                     source: source,
@@ -5563,6 +5574,12 @@ public actor ContainersService {
     ) async throws {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
+            if let rootfs = try self.offlineCopyRootfs(id: id) {
+                let copied = try await Task.detached {
+                    try OfflineStoppedCopy.copyOut(rootfs: rootfs, source: source, archive: archive, followSymlink: followSymlink)
+                }.value
+                if copied { return }
+            }
             try await self.withCopyClient(id: id) { client in
                 try await client.copyOut(
                     source: source,
@@ -5572,6 +5589,15 @@ public actor ContainersService {
                 )
             }
         }
+    }
+
+    /// Called only while holding the lifecycle slot, excluding concurrent boot,
+    /// prewarm, deletion and disk mounting for this container.
+    private func offlineCopyRootfs(id: String) throws -> URL? {
+        let state = try self._getContainerState(id: id)
+        guard OfflineStoppedCopy.canReadRootfs(state) else { return nil }
+        let bundle = ContainerResource.Bundle(path: try Self.containerPath(root: self.containerRoot, id: id))
+        return try OfflineStoppedCopy.rootfsURL(bundle: bundle, options: self.getContainerCreationOptions(id: id))
     }
 
     /// Get statistics for the container.
