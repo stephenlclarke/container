@@ -43,6 +43,7 @@ CONNECTION_PINS_OLD = '7a26bc03b698590fd3f72e5d7b178226c26ccb18b5e72e6375e94fc98
 CONNECTION_PINS_NEW = '2d9afbf0bf3e6d573eadb32e649e9ea11998a7ea61ff86e11a0a2088d22885bf'
 STOPPED_COPY_PINS = 'a275c95095dde749cf02e389e3647c3a71d410163f0d11139f11324811b05f8f'
 STOPPED_COPY_MODE_PINS = '319b15ccaeda30dfcd93669171ef66e19adaada3b3b2ccc8d605d930487eac6b'
+STOPPED_COPY_SYMLINK_PINS = '304e9cff133c88056b78483fe1acc502535a0d4d5875a796031312be46a1151c'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -106,6 +107,14 @@ def admit(producer: object, current: object, root: Path) -> dict:
             and current[CONNECTION_PINS] == STOPPED_COPY_MODE_PINS):
         remaining.remove(CONNECTION_PINS)
         modes.append('known-stopped-copy-mode-sdk-pin-update')
+    # Only the SDK revision changes for standalone-link preservation. Existing
+    # group source/lower identities continue to reject an unchanged old SDK.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS)
+            and current[CONNECTION_PINS] == STOPPED_COPY_SYMLINK_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-stopped-copy-symlink-sdk-pin-update')
     if remaining:
         raise ValueError('published native recipe differs from authenticated consumer update')
     mode = '+'.join(modes) if modes else 'exact'
