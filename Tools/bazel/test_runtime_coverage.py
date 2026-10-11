@@ -15,6 +15,19 @@ from runtime_benchmark import RuntimeRunner
 
 
 class RuntimeCoverageTests(unittest.TestCase):
+    def test_alias_plugin_paths_keep_native_coverage_filenames(self):
+        paths = {
+            'libexec/container/plugins/build/bin/build': 'a' * 64,
+            'libexec/container/plugins/builder/bin/builder': 'b' * 64,
+            'libexec/container/plugins/k8s/bin/k8s': 'c' * 64,
+            'libexec/container/plugins/extra/bin/extra': 'd' * 64,
+        }
+        self.assertEqual(runtime_coverage.coverage_product_names(paths), {
+            'libexec/container/plugins/build/bin/build': 'container-build',
+            'libexec/container/plugins/builder/bin/builder': 'container-builder',
+            'libexec/container/plugins/k8s/bin/k8s': 'k8s',
+        })
+
     def test_setup_only_profiles_cannot_replace_runtime_service_coverage(self):
         cli = 'SF:Sources/ContainerCommands/Version.swift\nDA:1,1\nend_of_record\n'
         api = 'SF:Sources/APIServer/APIServer.swift\nDA:1,1\nend_of_record\n'

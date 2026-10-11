@@ -14,7 +14,7 @@ import tempfile
 
 from fork_benchmark import ROOT, STORAGE, Runner, digest, install_signal_handlers
 from preflight import CONFIG
-from runtime_benchmark import IDENTITY, LEGACY_PLUGINS, PLUGINS
+from runtime_benchmark import IDENTITY, LEGACY_PLUGINS, PLUGINS, plugin_native_name, plugin_relative_path
 from runtime_integration import verify_prepared
 
 SERVICES = {'journald': 'ContainerJournaldService', 'gelf': 'ContainerGELFService'}
@@ -30,6 +30,7 @@ def retain_measured_products(prepared: Path, evidence: Path, *, lane: str = 'for
     source_path = prepared / 'source-inputs.json'
     source = json.loads(source_path.read_text())[lane]
     layout = fingerprint.get('product_layout')
+    plugin_paths = {name: f'libexec/container/plugins/{name}/bin/{name}' for name in PLUGINS}
     if lane == 'stock' and layout in (None, 'stock-original'):
         plugins = LEGACY_PLUGINS
     elif lane == 'fork' and layout is None:
@@ -38,10 +39,13 @@ def retain_measured_products(prepared: Path, evidence: Path, *, lane: str = 'for
         plugins = LEGACY_PLUGINS
     elif lane == 'fork' and layout == 'container-executables-v2':
         plugins = PLUGINS
+    elif lane == 'fork' and layout == 'container-executables-v3':
+        plugins = PLUGINS
+        plugin_paths = {name: plugin_relative_path(name) for name in PLUGINS}
     else:
         raise RuntimeError('Unknown measured product layout')
     expected = {'bin/container', 'bin/container-apiserver'} | {
-        f'libexec/container/plugins/{name}/bin/{name}' for name in plugins}
+        plugin_paths[name] for name in plugins}
     if lane == 'fork':
         expected |= {'bin/container-engine', 'libexec/container/helpers/container-semantic-helper',
                      'libexec/container/helpers/container-semantic-helper.manifest.json'}
@@ -122,7 +126,7 @@ def copy_products(prepared: Path, output: Path) -> dict:
         source = install / relative
         if digest(source) != expected:
             raise RuntimeError('Prepared release output changed: ' + relative)
-        destination = output / source.name
+        destination = output / plugin_native_name(relative)
         if destination.exists():
             raise RuntimeError('Ambiguous product name: ' + source.name)
         shutil.copyfile(source, destination)

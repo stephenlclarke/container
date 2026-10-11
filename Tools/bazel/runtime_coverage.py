@@ -12,7 +12,7 @@ import tempfile
 from artifacts import native_consumer, native_layers
 from coverage import export_reports, line_counts, merge_lcov, run_command, source_files
 from fork_benchmark import BAZEL, ROOT, STORAGE, digest
-from runtime_benchmark import INSTALLS, PLUGINS, RuntimeRunner, build_environment, checked, own, stage, stop_owned
+from runtime_benchmark import INSTALLS, PLUGINS, RuntimeRunner, build_environment, checked, own, plugin_relative_path, stage, stop_owned
 
 
 def require_idle(installation: Path) -> None:
@@ -36,6 +36,15 @@ def validate_runtime_coverage(text: str, full_suite: bool) -> dict[str, int]:
     if not all(modules.values()):
         raise RuntimeError('Runtime coverage omitted exercised service counters: ' + str(modules))
     return modules
+
+
+def coverage_product_names(relative_paths: dict[str, str]) -> dict[str, str]:
+    """Map installed executable paths to native names used by llvm-cov."""
+    names = {'container', 'container-apiserver', 'container-engine', *PLUGINS}
+    plugin_products = {plugin_relative_path(name): name for name in PLUGINS}
+    return {relative: plugin_products.get(relative, Path(relative).name)
+            for relative in relative_paths
+            if plugin_products.get(relative, Path(relative).name) in names}
 
 
 class RuntimeCoverage:
@@ -99,9 +108,8 @@ class RuntimeCoverage:
         binaries = self.evidence / 'binaries'
         binaries.mkdir()
         names = {'container', 'container-apiserver', 'container-engine', *PLUGINS}
-        for relative in metadata['binaries']:
-            if Path(relative).name in names:
-                shutil.copy2(self.installation / relative, binaries / Path(relative).name)
+        for relative, name in coverage_product_names(metadata['binaries']).items():
+            shutil.copy2(self.installation / relative, binaries / name)
         if {p.name for p in binaries.iterdir()} != names:
             raise RuntimeError('Instrumented runtime omitted Swift executables')
         self.result['binaries'] = {p.name: digest(p) for p in sorted(binaries.iterdir())}

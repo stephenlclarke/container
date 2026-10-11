@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import release_artifact as release
 from fork_benchmark import digest
+from runtime_benchmark import plugin_relative_path
 
 
 class MeasuredProductsTests(unittest.TestCase):
@@ -17,9 +18,10 @@ class MeasuredProductsTests(unittest.TestCase):
         prepared = root / 'prepared'
         prepared.mkdir()
         install = root / 'install'
-        plugins = release.PLUGINS if layout == 'container-executables-v2' else release.LEGACY_PLUGINS
+        plugins = release.PLUGINS if layout in {'container-executables-v2', 'container-executables-v3'} else release.LEGACY_PLUGINS
         paths = {'bin/container', 'bin/container-apiserver'} | {
-            f'libexec/container/plugins/{name}/bin/{name}' for name in plugins}
+            (plugin_relative_path(name) if layout == 'container-executables-v3'
+             else f'libexec/container/plugins/{name}/bin/{name}') for name in plugins}
         if lane == 'fork':
             paths |= {'bin/container-engine', 'libexec/container/helpers/container-semantic-helper',
                       'libexec/container/helpers/container-semantic-helper.manifest.json'}
@@ -41,7 +43,8 @@ class MeasuredProductsTests(unittest.TestCase):
 
     def test_exact_fork_and_stock_bytes_modes_only_and_no_overwrite(self):
         for lane, layout, count in [('fork', None, 10), ('stock', None, 7),
-                                    ('fork', 'container-executables-v2', 12)]:
+                                    ('fork', 'container-executables-v2', 12),
+                                    ('fork', 'container-executables-v3', 12)]:
             with self.subTest(lane=lane, layout=layout), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 prepared, install, hashes = self.fixture(root, lane, layout)
@@ -61,13 +64,15 @@ class MeasuredProductsTests(unittest.TestCase):
 
     def test_candidate_layout_rejects_missing_new_plugin_and_legacy_layout_rejects_extra(self):
         for layout, missing in [('container-executables-v2', 'container-build'),
+                                ('container-executables-v3', 'container-builder'),
                                 (None, 'container-builder')]:
             with self.subTest(layout=layout), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 prepared, _, _ = self.fixture(root, layout=layout)
                 path = prepared / 'fork-fingerprint.json'
                 record = json.loads(path.read_text())
-                name = f'libexec/container/plugins/{missing}/bin/{missing}'
+                name = (plugin_relative_path(missing) if layout == 'container-executables-v3'
+                        else f'libexec/container/plugins/{missing}/bin/{missing}')
                 if layout is None:
                     record['binaries'][name] = '0' * 64
                 else:

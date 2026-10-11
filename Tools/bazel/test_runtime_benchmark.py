@@ -13,6 +13,18 @@ import runtime_benchmark as runtime
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_plugin_install_paths_keep_native_product_identity(self):
+        self.assertEqual(runtime.plugin_relative_path('container-build'),
+                         'libexec/container/plugins/build/bin/build')
+        self.assertEqual(runtime.plugin_relative_path('container-builder'),
+                         'libexec/container/plugins/builder/bin/builder')
+        self.assertEqual(runtime.plugin_relative_path('k8s'),
+                         'libexec/container/plugins/k8s/bin/k8s')
+        self.assertEqual(runtime.plugin_native_name(runtime.plugin_relative_path('container-build')),
+                         'container-build')
+        self.assertEqual(runtime.plugin_native_name(runtime.plugin_relative_path('container-builder')),
+                         'container-builder')
+
     def test_guest_receipt_rejects_wrong_source_and_tampered_archive(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

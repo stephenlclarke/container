@@ -12,7 +12,7 @@ import time
 import unittest
 from unittest import mock
 
-from runtime_benchmark import RuntimeRunner
+from runtime_benchmark import RuntimeRunner, plugin_relative_path
 import runtime_integration
 from runtime_integration import EOFIntegrationRunner, owned_cli_processes, require_commit_cases, require_eof_cases, retain_layer_reports, stop_test_children, test_filter
 
@@ -184,7 +184,7 @@ class IntegrationReportsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             executable = root / 'bin/container'
-            plugin = root / 'libexec/container/plugins/k8s/bin/k8s'
+            plugin = root / plugin_relative_path('container-build')
             executable.parent.mkdir()
             plugin.parent.mkdir(parents=True)
             # Relocated Apple binaries retain launch constraints and may be

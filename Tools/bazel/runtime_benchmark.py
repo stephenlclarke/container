@@ -35,10 +35,25 @@ LEGACY_PLUGINS = {
 }
 PLUGINS = {**LEGACY_PLUGINS,
            'container-build': 'ContainerBuild', 'container-builder': 'ContainerBuilder'}
+PLUGIN_INSTALL_NAMES = {'container-build': 'build', 'container-builder': 'builder'}
 FIXTURES = ('start-exit', 'warm-exec', 'sha256-128m', 'write-sync-64m',
             'image-save', 'image-load-warm', 'build-no-cache', 'build-cached')
 KERNEL_SHA = '8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5'
 KERNEL_MEMBER = './opt/kata/share/kata-containers/vmlinux-6.18.35-197-debug'
+
+
+def plugin_relative_path(name: str) -> str:
+    """Return the installed plugin path while preserving the native product name."""
+    installed = PLUGIN_INSTALL_NAMES.get(name, name)
+    return f'libexec/container/plugins/{installed}/bin/{installed}'
+
+
+def plugin_native_name(relative_path: str) -> str:
+    """Restore native product filenames when packaging installed plugin aliases."""
+    for native in PLUGIN_INSTALL_NAMES:
+        if relative_path == plugin_relative_path(native):
+            return native
+    return Path(relative_path).name
 
 
 def verified_guest(receipt: Path, workspace: Path = ROOT) -> dict:
@@ -461,8 +476,9 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
     for name in names:
         source = executables[name]
         if name in selected_plugins:
-            directory = install / 'libexec/container/plugins' / name
-            destination = directory / 'bin' / name
+            relative = Path(plugin_relative_path(name))
+            directory = install / relative.parent.parent
+            destination = install / relative
             plugin_source = workspace / 'Sources/Plugins' / selected_plugins[name]
             directory.mkdir(parents=True, exist_ok=True)
             shutil.copy2(plugin_source / 'config.toml', directory / 'config.toml')
@@ -523,7 +539,7 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
     state = STATE / lane
     metadata = {'lane': lane, 'workspace': str(workspace), 'install': str(install),
                 'state': str(state), 'binaries': fingerprints, 'kernel_sha256': kernel_sha,
-                'product_layout': 'container-executables-v2' if lane == 'fork' else 'stock-original',
+                'product_layout': 'container-executables-v3' if lane == 'fork' else 'stock-original',
                 'init_image': init, 'builder_image': builder_image, 'workload_image': ALPINE,
                 'cli_version': checked([str(install / 'bin/container'), '--version'],
                                        env=dict(env, LLVM_PROFILE_FILE=profile_file) if profile_file else env),

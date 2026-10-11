@@ -44,6 +44,8 @@ builder-shim revisions in an installed package.
 
 The source build now packages `container-build` and `container-builder` plugins alongside the runtime. The [current upstream integration handoff](docs/upstream/PR-apple-main-sync-20261011.md) records their compatibility adapter, executable inventory and pending candidate qualification; published releases and historical benchmark identities retain their original revisions.
 
+Runtime qualification installs those products at the `build` and `builder` plugin paths expected by the Makefile, while signing and entitlement checks retain their native product names. New measured-product evidence records layout v3; historical v2 evidence remains readable, and release packaging restores the native filenames required by the Makefile.
+
 The source candidate preserves the effective image entrypoint and command when committing a container, including later command overrides. The [commit compatibility handoff](docs/upstream/PR-2350.md) describes backward compatibility for saved configurations and the pending matched-stack integration proof.
 
 Native layer publication retains raw compiler diagnostics in its proof bundle. The [evidence scanner handoff](docs/PR-native-evidence-diagnostic-scan.md) describes the narrow parameter-assignment exception and the byte-bound recipe transition used to reuse an unchanged qualified lower layer.

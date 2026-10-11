@@ -7,6 +7,7 @@ import unittest
 
 from fork_benchmark import digest
 from release_artifact import copy_products, notarize
+from runtime_benchmark import plugin_relative_path
 
 
 class ReleaseArtifactTests(unittest.TestCase):
@@ -25,6 +26,28 @@ class ReleaseArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'output changed'):
                 copy_products(root, root / 'invalid')
             self.assertFalse((root / 'invalid/container').exists())
+
+    def test_install_aliases_are_copied_under_native_product_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            install = root / 'install'
+            binaries = {}
+            for name in ('container-build', 'container-builder'):
+                relative = plugin_relative_path(name)
+                source = install / relative
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.write_bytes(('measured ' + name).encode())
+                binaries[relative] = digest(source)
+            prepared = root / 'prepared'
+            prepared.mkdir()
+            (prepared / 'fork-fingerprint.json').write_text(json.dumps({
+                'install': str(install), 'binaries': binaries}))
+            output = root / 'products'
+            copy_products(prepared, output)
+            self.assertEqual({path.name for path in output.iterdir()},
+                             {'container-build', 'container-builder'})
+            for name in ('container-build', 'container-builder'):
+                self.assertEqual((output / name).read_bytes(), ('measured ' + name).encode())
 
     def test_notary_submission_is_retained_before_wait_and_invalid_fails(self):
         with tempfile.TemporaryDirectory() as directory:

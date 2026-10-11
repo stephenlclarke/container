@@ -17,7 +17,7 @@ from fork_benchmark import ROOT, digest, install_signal_handlers
 from fork_benchmark import BAZEL, STORAGE
 from artifacts import native_consumer, native_layers
 from runtime_coverage import RuntimeCoverage
-from runtime_benchmark import INSTALLS, PLUGINS, STATE, RuntimeRunner, build_inputs, environment, own, reset_state, start_lane, stop_owned
+from runtime_benchmark import INSTALLS, PLUGINS, STATE, RuntimeRunner, build_inputs, environment, own, plugin_relative_path, reset_state, start_lane, stop_owned
 
 LAYERS = ['Containers', 'Run', 'Volumes', 'Network', 'Images', 'Build', 'System', 'Registry', 'Machine', 'K8s']
 EOF_SELECTION = '^TestCLIPrimaryInputEOF/'
@@ -74,7 +74,7 @@ def owned_cli_processes(executable: Path, records: Path) -> dict[int, str]:
     allowed = {str(executable)}
     if executable.name == 'container':
         # CLI dispatch uses exec for plugins, preserving the recorded PID/birth.
-        allowed.update(str(executable.parent.parent / 'libexec/container/plugins' / name / 'bin' / name)
+        allowed.update(str(executable.parent.parent / plugin_relative_path(name))
                        for name in PLUGINS)
     listing = subprocess.check_output(['ps', '-axo', 'pid=,comm='], text=True, timeout=10)
     for line in listing.splitlines():
