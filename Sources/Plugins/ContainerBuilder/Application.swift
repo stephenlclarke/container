@@ -15,10 +15,29 @@
 //===----------------------------------------------------------------------===//
 
 import ArgumentParser
+import ContainerAPIClient
+import TerminalProgress
 
-public enum ListFormat: String, CaseIterable, ExpressibleByArgument, Sendable {
-    case json
-    case table
-    case yaml
-    case toml
+@main
+struct Application: AsyncParsableCommand {
+    public init() {}
+
+    static func main() async {
+        // The root CLI's handlers are discarded when it execs into this plugin.
+        ProgressBar.restoreCursorAtExit()
+        await main(nil)
+    }
+
+    public static let configuration = CommandConfiguration(
+        commandName: "builder",
+        abstract: "Manage an image builder instance",
+        subcommands: [
+            BuilderStart.self,
+            BuilderStatus.self,
+            BuilderStop.self,
+            BuilderDelete.self,
+        ])
+
+    @OptionGroup
+    public var logOptions: Flags.Logging
 }

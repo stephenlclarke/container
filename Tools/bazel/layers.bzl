@@ -342,7 +342,7 @@ LAYERS = {
     "container-build": struct(
         package = "container",
         products = ["ContainerBuild"],
-        tests = ["ContainerBuildTests"],
+        tests = ["ContainerBuildTests", "ContainerBuilderPluginTests"],
         compile_checks = [],
     ),
     "container-images": struct(
@@ -407,7 +407,7 @@ LAYERS = {
     ),
     "container-executables": struct(
         package = "container",
-        products = ["container", "container-engine", "container-apiserver", "container-core-images", "container-network-vmnet", "container-runtime-linux", "machine-apiserver", "k8s"],
+        products = ["container", "container-engine", "container-apiserver", "container-core-images", "container-network-vmnet", "container-runtime-linux", "machine-apiserver", "k8s", "container-build", "container-builder"],
         tests = [],
         compile_checks = [],
     ),

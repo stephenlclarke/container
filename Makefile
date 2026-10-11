@@ -19,7 +19,10 @@ else
 # Version and build configuration variables
 BUILD_CONFIGURATION ?= debug
 WARNINGS_AS_ERRORS ?= true
-SWIFT_CONFIGURATION := $(if $(filter-out false,$(WARNINGS_AS_ERRORS)),-Xswiftc -warnings-as-errors) -Xswiftc -enable-testing
+# Extra swift build flags, appended last so callers can add to (rather than
+# replace) the configuration above.
+SWIFT_CONFIGURATION_EXTRA ?=
+SWIFT_CONFIGURATION := $(if $(filter-out false,$(WARNINGS_AS_ERRORS)),-Xswiftc -warnings-as-errors) -Xswiftc -enable-testing $(SWIFT_CONFIGURATION_EXTRA)
 # Optional runner arguments for `swift test`. CI passes `--no-parallel`
 # explicitly so the runner configuration remains stable across SwiftPM defaults.
 # Swift Testing schedules suites concurrently by default. Several tests create
@@ -38,7 +41,7 @@ export CONTAINERIZATION_REF ?= $(shell python3 -c 'import json; pin=next((p for 
 # Commonly used locations
 SWIFT := "/usr/bin/swift"
 PYTHON3 ?= python3
-HAWKEYE ?= $(shell command -v hawkeye 2>/dev/null || printf '%s' .local/bin/hawkeye)
+HAWKEYE ?= .local/bin/hawkeye
 # Shared swift build invocation; callers append --build-tests / --product / etc.
 SWIFT_BUILD = $(SWIFT) build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION)
 DEST_DIR ?= /usr/local/
@@ -71,6 +74,8 @@ DSYM_PATH := bin/$(BUILD_CONFIGURATION)/bundle/container-dSYM.zip
 DEBUG_SYMBOL_BUILD_TOOL := Tools/DebugSymbols/package.py
 DEBUG_SYMBOL_PRODUCTS := \
 	container \
+	container-build \
+	container-builder \
 	container-apiserver \
 	container-engine \
 	container-core-images \
@@ -81,6 +86,10 @@ DEBUG_SYMBOL_PRODUCTS := \
 HOMEBREW_ARCHIVE ?= bin/$(BUILD_CONFIGURATION)/container-homebrew-$(BUILD_CONFIGURATION)-arm64.tar.gz
 CODESIGN_OPTS ?= --force --sign - --timestamp=none
 
+# Default isolated application data root under the project directory so test runs do not touch your
+# own installation. Override with APP_ROOT=/your/path, or APP_ROOT= (empty) to run against
+# the default ~/Library/Application Support/com.apple.container.
+APP_ROOT ?= $(ROOT_DIR)/.test-data
 
 # Conditionally use a temporary data directory for integration tests
 SYSTEM_START_OPTS :=
@@ -109,6 +118,9 @@ SUDO ?= sudo
 .DEFAULT_GOAL := all
 
 include Protobuf.Makefile
+
+.PHONY: verify
+verify: all test integration
 
 .PHONY: all
 all: container
@@ -269,6 +281,8 @@ $(STAGING_DIR): semantic-helper journald-service gelf-service
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/services/gelf)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin)"
 	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/k8s/resources)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/build/bin)"
+	@mkdir -p "$(join $(STAGING_DIR), libexec/container/plugins/builder/bin)"
 
 	@install "$(BUILD_BIN_DIR)/container" "$(join $(STAGING_DIR), bin/container)"
 	@install "$(BUILD_BIN_DIR)/container-apiserver" "$(join $(STAGING_DIR), bin/container-apiserver)"
@@ -282,7 +296,6 @@ $(STAGING_DIR): semantic-helper journald-service gelf-service
 	@install "$(BUILD_BIN_DIR)/machine-apiserver" "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
 	@install Sources/Plugins/MachineAPIServer/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/config.toml)"
 	@install Sources/Plugins/MachineAPIServer/Resources/init "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/init)"
-	@install Sources/Plugins/MachineAPIServer/Resources/create-user.sh "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/create-user.sh)"
 	@install "$(SEMANTIC_HELPER_BINARY)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
 	@install -m 0644 "$(SEMANTIC_HELPER_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
 	@install -m 0644 "$(JOURNALD_SERVICE_ARCHIVE)" "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)"
@@ -298,6 +311,10 @@ $(STAGING_DIR): semantic-helper journald-service gelf-service
 	@install "$(BUILD_BIN_DIR)/k8s" "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
 	@install Sources/Plugins/K8s/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/k8s/config.toml)"
 	@install Sources/Plugins/K8s/Resources/kindnet.yaml "$(join $(STAGING_DIR), libexec/container/plugins/k8s/resources/kindnet.yaml)"
+	@install "$(BUILD_BIN_DIR)/container-build" "$(join $(STAGING_DIR), libexec/container/plugins/build/bin/build)"
+	@install Sources/Plugins/ContainerBuild/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/build/config.toml)"
+	@install "$(BUILD_BIN_DIR)/container-builder" "$(join $(STAGING_DIR), libexec/container/plugins/builder/bin/builder)"
+	@install Sources/Plugins/ContainerBuilder/config.toml "$(join $(STAGING_DIR), libexec/container/plugins/builder/config.toml)"
 
 	@echo Install update script
 	@install scripts/update-container.sh "$(join $(STAGING_DIR), bin/update-container.sh)"
@@ -328,6 +345,8 @@ installer-pkg: $(STAGING_DIR)
 		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/build/bin/build)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/builder/bin/builder)"
 
 	@echo Creating application installer
 	@pkgbuild --root "$(STAGING_DIR)" --identifier com.apple.container-installer --install-location /usr/local --version "$(RELEASE_VERSION)" "$(PKG_PATH)"
@@ -375,12 +394,9 @@ dsym:
 		--archive "$(DSYM_PATH)" \
 		$(foreach product,$(DEBUG_SYMBOL_PRODUCTS),--product "$(product)")
 
-.PHONY: test test-build-artifact-directory test-create-machine-user test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+.PHONY: test test-build-artifact-directory test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 test-build-artifact-directory:
 	@bash Tests/ScriptTests/TestBuildArtifactDirectory.sh
-
-test-create-machine-user:
-	@Tests/ScriptTests/TestCreateMachineUser.sh
 
 test-debug-symbol-packaging:
 	@$(PYTHON3) -m unittest Tools/DebugSymbols/test_package.py
@@ -394,7 +410,7 @@ test-install-init:
 test-verify-developer-id-archive:
 	@Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh
 
-test: build-tests test-build-artifact-directory test-create-machine-user test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+test: build-tests test-build-artifact-directory test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 	@$(SWIFT) test --skip-build -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 
 .PHONY: install-kernel
@@ -433,7 +449,7 @@ INTEGRATION_TEST_BINARY = $(shell \
 		-perm -111 2>/dev/null | sort | head -n 1)
 INTEGRATION_TEST_OBJECT_FLAGS = $(if $(INTEGRATION_TEST_BINARY),-object $(INTEGRATION_TEST_BINARY))
 # All product binaries that may be instrumented for coverage.
-# Used as additional -object args to llvm-cov for integration/combined reports.
+# Used as additional -object args to llvm-cov for all reports.
 COV_BINARIES := \
 	$(BUILD_BIN_DIR)/container \
 	$(BUILD_BIN_DIR)/container-apiserver \
@@ -441,7 +457,9 @@ COV_BINARIES := \
 	$(BUILD_BIN_DIR)/container-runtime-linux \
 	$(BUILD_BIN_DIR)/container-network-vmnet \
 	$(BUILD_BIN_DIR)/container-core-images \
-	$(BUILD_BIN_DIR)/machine-apiserver
+	$(BUILD_BIN_DIR)/machine-apiserver \
+	$(BUILD_BIN_DIR)/container-build \
+	$(BUILD_BIN_DIR)/container-builder
 COV_OBJECT_FLAGS := $(patsubst %,-object %,$(COV_BINARIES))
 # Set of files we do not want to get caught in the coverage generation
 LLVM_COV_IGNORE := \
@@ -579,6 +597,11 @@ integration: container
 	@echo "HOSTNAME: $$(hostname)"
 	$(RUN_INTEGRATION)
 
+.PHONY: integration-only
+integration-only:
+	@echo "HOSTNAME: $$(hostname)"
+	$(RUN_INTEGRATION)
+
 .PHONY: coverage-integration
 coverage-integration: INTEGRATION_SWIFT_EXTRA = --skip-build --enable-code-coverage
 coverage-integration: INTEGRATION_POST_TEST = cp $(COV_DATA_DIR)/*.profraw $(COVERAGE_OUTPUT_DIR)/integration/ || true ;
@@ -644,7 +667,7 @@ coverage-unit: build-tests
 	@$(SWIFT) test --skip-build --enable-code-coverage -c $(BUILD_CONFIGURATION) $(SWIFT_CONFIGURATION) $(SWIFT_TEST_FLAGS) --skip TestCLI --skip IntegrationTests
 	@echo Merging unit coverage profdata...
 	@xcrun llvm-profdata merge -sparse $(COV_DATA_DIR)/*.profraw -o $(COVERAGE_OUTPUT_DIR)/unit/default.profdata
-	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/unit/default.profdata,unit)
+	$(call GENERATE_COV_REPORTS,$(COVERAGE_OUTPUT_DIR)/unit/default.profdata,unit,$(COV_OBJECT_FLAGS))
 
 .PHONY: fmt
 fmt: swift-fmt update-licenses
@@ -662,17 +685,29 @@ swift-fmt-check:
 	@echo Applying the standard code formatting...
 	@$(SWIFT) format lint --recursive --strict --configuration .swift-format-nolint $(SWIFT_SRC)
 
+.PHONY: hawkeye
+hawkeye:
+	@if ! command -v "$(HAWKEYE)" >/dev/null 2>&1; then ./scripts/install-hawkeye.sh; fi
+
 .PHONY: update-licenses
-update-licenses:
+update-licenses: hawkeye
 	@echo Updating license headers...
 	@HAWKEYE="$(HAWKEYE)" ./scripts/ensure-hawkeye-exists.sh
-	@"$(HAWKEYE)" format --fail-if-unknown --fail-if-updated false
+	@if "$(HAWKEYE)" format --help 2>&1 | grep -q -- '--fail-on-unknown'; then \
+		"$(HAWKEYE)" format --fail-on-unknown; \
+	else \
+		"$(HAWKEYE)" format --fail-if-unknown --fail-if-updated false; \
+	fi
 
 .PHONY: check-licenses
-check-licenses:
+check-licenses: hawkeye
 	@echo Checking license headers existence in source files...
 	@HAWKEYE="$(HAWKEYE)" ./scripts/ensure-hawkeye-exists.sh
-	@"$(HAWKEYE)" check --fail-if-unknown
+	@if "$(HAWKEYE)" check --help 2>&1 | grep -q -- '--fail-on-unknown'; then \
+		"$(HAWKEYE)" check --fail-on-unknown; \
+	else \
+		"$(HAWKEYE)" check --fail-if-unknown; \
+	fi
 
 .PHONY: pre-commit
 pre-commit:
@@ -706,7 +741,10 @@ cleancontent:
 	@rm -rf ~/Library/Application\ Support/com.apple.container
 
 .PHONY: clean
-clean:
+clean: cleantest cleanbuild
+
+.PHONY: cleanbuild
+cleanbuild:
 	@echo Cleaning build files...
 	@rm -rf bin/ libexec/
 	@rm -rf _site _serve
@@ -714,4 +752,12 @@ clean:
 	@rm -rf $(COVERAGE_OUTPUT_DIR)
 	@$(SWIFT) package clean
 
+.PHONY: cleantest
+cleantest:
+	@echo Stopping container services...
+	@bin/container system stop 2>/dev/null || true
+	@scripts/ensure-container-stopped.sh -a || true
+	@if [ -n "$(APP_ROOT)" ]; then echo "Removing $(APP_ROOT)..." ; rm -rf "$(APP_ROOT)" ; fi
+	@echo "Removing $(SCRATCH_ROOT)..."
+	@rm -rf "$(SCRATCH_ROOT)"
 endif

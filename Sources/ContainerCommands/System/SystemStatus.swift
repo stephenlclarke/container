@@ -51,9 +51,12 @@ extension Application {
                 serviceNamespace: serviceNamespace
             )
             let engineSocket = engineConfiguration.publicSocketPath.string
-            let engineRegistered = try ServiceManager.isRegistered(
-                fullServiceLabel: engineConfiguration.launchdLabel
-            )
+            // A sandboxed status query may be unable to inspect launchd; let the
+            // health probes decide without treating an unknown result as absent.
+            let engineRegistered =
+                (try? ServiceManager.isRegistered(
+                    fullServiceLabel: engineConfiguration.launchdLabel
+                )) ?? true
             let engineRunning: Bool
             do {
                 try ContainerEngineHealthProbe.systemInfo(
@@ -67,7 +70,7 @@ extension Application {
                 engineRunning
                 ? "running"
                 : (engineRegistered ? "not running" : "unregistered")
-            let isRegistered = try ServiceManager.isRegistered(fullServiceLabel: "\(servicePrefix)apiserver")
+            let isRegistered = (try? ServiceManager.isRegistered(fullServiceLabel: "\(servicePrefix)apiserver")) ?? true
             if !isRegistered {
                 try Output.render(
                     payload: StatusPayload(

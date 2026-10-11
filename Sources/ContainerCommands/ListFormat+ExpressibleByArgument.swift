@@ -1,5 +1,5 @@
 //===----------------------------------------------------------------------===//
-// Copyright © 2025-2026 Apple Inc. and the container project authors.
+// Copyright © 2026 Apple Inc. and the container project authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,24 +15,11 @@
 //===----------------------------------------------------------------------===//
 
 import ArgumentParser
-import ContainerAPIClient
+import ContainerResource
 
-extension Application {
-    public struct BuilderCommand: AsyncLoggableCommand {
-        public init() {}
-
-        public static let builderResourceDir = "builder"
-        public static let configuration = CommandConfiguration(
-            commandName: "builder",
-            abstract: "Manage an image builder instance",
-            subcommands: [
-                BuilderStart.self,
-                BuilderStatus.self,
-                BuilderStop.self,
-                BuilderDelete.self,
-            ])
-
-        @OptionGroup
-        public var logOptions: Flags.Logging
-    }
-}
+// `ListFormat` lives in `ContainerResource`, which must not depend on ArgumentParser
+// (a CLI-parsing concern, not a resource/data-model concern). ArgumentParser already
+// provides a free `init?(argument:)` for any `RawRepresentable where RawValue == String`,
+// so this retroactive conformance is zero-cost — declared once here for every command
+// in this target that uses `@Option var format: ListFormat`.
+extension ListFormat: ExpressibleByArgument {}

@@ -42,6 +42,8 @@ and [release policy](https://github.com/stephenlclarke/container-compose/blob/ma
 `container system version` reports the exact runtime, `containerization`, and
 builder-shim revisions in an installed package.
 
+The source build now packages `container-build` and `container-builder` plugins alongside the runtime. The [current upstream integration handoff](docs/upstream/PR-apple-main-sync-20261011.md) records their compatibility adapter, executable inventory and pending candidate qualification; published releases and historical benchmark identities retain their original revisions.
+
 As of 15 September 2026, source-bearing `main` revision `ef78345f59fd`
 passes the merge build, SonarQube, signed Prebuilt Binaries, and downstream
 matched-stack publication. Recent exact-main SonarQube analyses report an `OK`

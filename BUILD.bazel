@@ -27,7 +27,6 @@ alias(name = "cli", actual = "@swiftpkg_container//:container.rspm")
     )
     for name, test, data in [
         ("build-artifact-directory-tests", "Tests/ScriptTests/TestBuildArtifactDirectory.sh", ["Makefile", "Protobuf.Makefile", "Package.resolved"]),
-        ("machine-user-script-tests", "Tests/ScriptTests/TestCreateMachineUser.sh", ["Sources/Plugins/MachineAPIServer/Resources/create-user.sh", "Sources/Plugins/MachineAPIServer/Resources/init"]),
         ("archive-checksum-tests", "Tests/ScriptTests/TestHomebrewArchiveChecksum.sh", ["scripts/write-sha256-sidecar.sh"]),
         ("install-init-script-tests", "Tests/ScriptTests/TestInstallInit.sh", ["scripts/install-init.sh", "Makefile", "Protobuf.Makefile", "Package.resolved"]),
         ("developer-id-archive-tests", "Tests/ScriptTests/TestVerifyDeveloperIDArchive.sh", ["scripts/verify-developer-id-archive.sh", "Makefile"]),
@@ -39,7 +38,6 @@ test_suite(
     name = "repository-tests",
     tests = [
         ":build-artifact-directory-tests",
-        ":machine-user-script-tests",
         ":archive-checksum-tests",
         ":install-init-script-tests",
         ":developer-id-archive-tests",

@@ -13,12 +13,13 @@ from fork_benchmark import digest
 
 
 class MeasuredProductsTests(unittest.TestCase):
-    def fixture(self, root, lane='fork'):
+    def fixture(self, root, lane='fork', layout=None):
         prepared = root / 'prepared'
         prepared.mkdir()
         install = root / 'install'
+        plugins = release.PLUGINS if layout == 'container-executables-v2' else release.LEGACY_PLUGINS
         paths = {'bin/container', 'bin/container-apiserver'} | {
-            f'libexec/container/plugins/{name}/bin/{name}' for name in release.PLUGINS}
+            f'libexec/container/plugins/{name}/bin/{name}' for name in plugins}
         if lane == 'fork':
             paths |= {'bin/container-engine', 'libexec/container/helpers/container-semantic-helper',
                       'libexec/container/helpers/container-semantic-helper.manifest.json'}
@@ -30,16 +31,20 @@ class MeasuredProductsTests(unittest.TestCase):
             path.chmod(0o644 if name.endswith('.json') else 0o755)
             hashes[name] = digest(path)
         (install / '.runtime-benchmark-owner.json').write_text('private owner state')
-        (prepared / (lane + '-fingerprint.json')).write_text(json.dumps(
-            dict(lane=lane, install=str(install), binaries=hashes, kernel_sha256='b' * 64, workload_image='image@sha256:' + 'c' * 64)))
+        fingerprint = dict(lane=lane, install=str(install), binaries=hashes,
+                           kernel_sha256='b' * 64, workload_image='image@sha256:' + 'c' * 64)
+        if layout is not None:
+            fingerprint['product_layout'] = layout
+        (prepared / (lane + '-fingerprint.json')).write_text(json.dumps(fingerprint))
         (prepared / 'source-inputs.json').write_text(json.dumps({lane: 'a' * 40}))
         return prepared, install, hashes
 
     def test_exact_fork_and_stock_bytes_modes_only_and_no_overwrite(self):
-        for lane, count in [('fork', 10), ('stock', 7)]:
-            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as directory:
+        for lane, layout, count in [('fork', None, 10), ('stock', None, 7),
+                                    ('fork', 'container-executables-v2', 12)]:
+            with self.subTest(lane=lane, layout=layout), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                prepared, install, hashes = self.fixture(root, lane)
+                prepared, install, hashes = self.fixture(root, lane, layout)
                 result = release.retain_measured_products(prepared, root, lane=lane)
                 self.assertEqual(len(result['payload']), count)
                 self.assertFalse(result['resigned'])
@@ -53,6 +58,23 @@ class MeasuredProductsTests(unittest.TestCase):
                 self.assertEqual(hashes, {name: digest(install / name) for name in hashes})
                 with self.assertRaisesRegex(RuntimeError, 'already exists'):
                     release.retain_measured_products(prepared, root, lane=lane)
+
+    def test_candidate_layout_rejects_missing_new_plugin_and_legacy_layout_rejects_extra(self):
+        for layout, missing in [('container-executables-v2', 'container-build'),
+                                (None, 'container-builder')]:
+            with self.subTest(layout=layout), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared, _, _ = self.fixture(root, layout=layout)
+                path = prepared / 'fork-fingerprint.json'
+                record = json.loads(path.read_text())
+                name = f'libexec/container/plugins/{missing}/bin/{missing}'
+                if layout is None:
+                    record['binaries'][name] = '0' * 64
+                else:
+                    del record['binaries'][name]
+                path.write_text(json.dumps(record))
+                with self.assertRaisesRegex(RuntimeError, 'inventory'):
+                    release.retain_measured_products(prepared, root)
 
     def test_drift_unexpected_path_and_symlink_fail_without_completed_manifest(self):
         for mutation in ('bytes', 'extra', 'symlink', 'directory-symlink', 'special-mode'):

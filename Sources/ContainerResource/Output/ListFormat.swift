@@ -14,22 +14,9 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import ContainerResource
-import MachineAPIClient
-import Testing
-
-@testable import MachineAPIService
-
-struct UserSetupTests {
-    @Test func namedUserPreservesSupplementaryGroups() {
-        let setup = UserSetup(username: "machine-user", uid: 501, gid: 20)
-
-        #expect(setup.user == .raw(userString: "machine-user"))
-    }
-
-    @Test func unnamedUserFallsBackToNumericIdentity() {
-        let setup = UserSetup(username: "", uid: 501, gid: 20)
-
-        #expect(setup.user == .id(uid: 501, gid: 20))
-    }
+public enum ListFormat: String, CaseIterable, Sendable {
+    case json
+    case table
+    case yaml
+    case toml
 }

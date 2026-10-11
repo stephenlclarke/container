@@ -128,6 +128,45 @@ struct K8sNodeRowTests {
     }
 }
 
+// MARK: - K8sHelper.workerContainerNames
+
+@Suite("K8sHelper.workerContainerNames")
+struct WorkerContainerNamesTests {
+    @Test func emptyInputProducesNoNames() {
+        #expect(K8sHelper.workerContainerNames(from: [], clusterName: "dev").isEmpty)
+    }
+
+    @Test func excludesControlPlane() throws {
+        let cp = try makeControlPlane("dev")
+        let names = K8sHelper.workerContainerNames(from: [cp], clusterName: "dev")
+        #expect(names.isEmpty)
+    }
+
+    @Test func includesMatchingWorkers() throws {
+        let cp = try makeControlPlane("dev")
+        let w1 = try makeWorker("dev-worker-1")
+        let w2 = try makeWorker("dev-worker-2")
+        let names = K8sHelper.workerContainerNames(from: [cp, w2, w1], clusterName: "dev")
+        #expect(names == ["dev-worker-1", "dev-worker-2"])
+    }
+
+    @Test func excludesNestedClusterWorkersAndInvalidSuffixes() throws {
+        let own = try makeWorker("dev-worker-1")
+        let nested = try makeWorker("dev-worker-blue-worker-1")
+        let zero = try makeWorker("dev-worker-0")
+        let padded = try makeWorker("dev-worker-01")
+        let names = K8sHelper.workerContainerNames(from: [nested, zero, own, padded], clusterName: "dev")
+        #expect(names == ["dev-worker-1"])
+    }
+
+    @Test func excludesWorkersFromOtherClusters() throws {
+        let w1 = try makeWorker("dev-worker-1")
+        let other = try makeWorker("dev2-worker-1")
+        let names = K8sHelper.workerContainerNames(from: [w1, other], clusterName: "dev")
+        #expect(names == ["dev-worker-1"])
+    }
+}
+
 // MARK: - buildK8sRows ordering and grouping
 
 @Suite("K8sHelper.buildK8sRows")
@@ -167,6 +206,17 @@ struct BuildK8sRowsTests {
         #expect(rows[0].clusterName == "k8s-dev")
         #expect(rows[1].snapshot.id == "k8s-dev-worker-1")
         #expect(rows[1].clusterName == "k8s-dev")
+    }
+
+    @Test func nestedClusterWorkersStayWithTheirOwnControlPlane() throws {
+        let cp = try makeControlPlane("dev")
+        let nestedCP = try makeControlPlane("dev-worker-blue")
+        let own = try makeWorker("dev-worker-1")
+        let nested = try makeWorker("dev-worker-blue-worker-1")
+        let rows = K8sHelper.buildK8sRows(from: [nested, own, nestedCP, cp])
+        #expect(rows.first { $0.snapshot.id == own.id }?.clusterName == "dev")
+        #expect(rows.first { $0.snapshot.id == nested.id }?.clusterName == "dev-worker-blue")
+        #expect(rows.filter { $0.snapshot.id == nested.id }.count == 1)
     }
 
     @Test func workersGroupedUnderCorrectControlPlane() throws {

@@ -14,7 +14,7 @@ import tempfile
 
 from fork_benchmark import ROOT, STORAGE, Runner, digest, install_signal_handlers
 from preflight import CONFIG
-from runtime_benchmark import IDENTITY, PLUGINS
+from runtime_benchmark import IDENTITY, LEGACY_PLUGINS, PLUGINS
 from runtime_integration import verify_prepared
 
 SERVICES = {'journald': 'ContainerJournaldService', 'gelf': 'ContainerGELFService'}
@@ -29,8 +29,19 @@ def retain_measured_products(prepared: Path, evidence: Path, *, lane: str = 'for
     fingerprint = json.loads(fingerprint_path.read_text())
     source_path = prepared / 'source-inputs.json'
     source = json.loads(source_path.read_text())[lane]
+    layout = fingerprint.get('product_layout')
+    if lane == 'stock' and layout in (None, 'stock-original'):
+        plugins = LEGACY_PLUGINS
+    elif lane == 'fork' and layout is None:
+        # Older retained fork fingerprints record exactly the original eight
+        # products. Their source and bytes remain bound by the fingerprint.
+        plugins = LEGACY_PLUGINS
+    elif lane == 'fork' and layout == 'container-executables-v2':
+        plugins = PLUGINS
+    else:
+        raise RuntimeError('Unknown measured product layout')
     expected = {'bin/container', 'bin/container-apiserver'} | {
-        f'libexec/container/plugins/{name}/bin/{name}' for name in PLUGINS}
+        f'libexec/container/plugins/{name}/bin/{name}' for name in plugins}
     if lane == 'fork':
         expected |= {'bin/container-engine', 'libexec/container/helpers/container-semantic-helper',
                      'libexec/container/helpers/container-semantic-helper.manifest.json'}

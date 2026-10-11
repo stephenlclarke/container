@@ -1,0 +1,391 @@
+//===----------------------------------------------------------------------===//
+// Copyright © 2026 Apple Inc. and the container project authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//   https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//===----------------------------------------------------------------------===//
+
+import ContainerAPIClient
+import ContainerPersistence
+import ContainerResource
+import Containerization
+import ContainerizationError
+import ContainerizationExtras
+import ContainerizationOCI
+import Foundation
+import Logging
+import TerminalProgress
+
+extension Builder {
+    public static let builderResourceDir = "builder"
+
+    public static func start(
+        cpus: Int64?,
+        memory: String?,
+        log: Logger,
+        dnsNameservers: [String] = [],
+        dnsDomain: String? = nil,
+        dnsSearchDomains: [String] = [],
+        dnsOptions: [String] = [],
+        enableSSHForwarding: Bool = false,
+        sshAuthSocketPath: String? = nil,
+        sshSocketMounts: [BuildSSHForwarding.SocketMount] = [],
+        builderContainerId: String = Builder.builderContainerId,
+        progressUpdate: @escaping ProgressUpdateHandler,
+        containerSystemConfig: ContainerSystemConfig,
+    ) async throws {
+        guard ManagedContainer.nameValid(builderContainerId) else {
+            throw ContainerizationError(.invalidArgument, message: "container ID \(builderContainerId) is not a valid container ID")
+        }
+
+        await progressUpdate([
+            .setDescription("Fetching BuildKit image"),
+            .setItemsName("blobs"),
+        ])
+        let taskManager = ProgressTaskCoordinator()
+        let fetchTask = await taskManager.startTask()
+
+        let builderImage: String = containerSystemConfig.build.image
+        let systemHealth = try await ClientHealthCheck.ping(timeout: .seconds(10))
+        let startupLock = try BuilderStartupLock.acquire(
+            appRoot: systemHealth.appRoot,
+            builderContainerId: builderContainerId
+        )
+        defer { startupLock.unlock() }
+        let exportsMount: String = systemHealth.appRoot
+            .appendingPathComponent(Builder.builderResourceDir)
+            .absolutePath()
+
+        if !FileManager.default.fileExists(atPath: exportsMount) {
+            try FileManager.default.createDirectory(
+                atPath: exportsMount,
+                withIntermediateDirectories: true,
+                attributes: nil
+            )
+        }
+
+        let builderPlatform = ContainerizationOCI.Platform(arch: "arm64", os: "linux", variant: "v8")
+
+        var targetEnvVars: [String] = []
+        if let buildkitColors = ProcessInfo.processInfo.environment["BUILDKIT_COLORS"] {
+            targetEnvVars.append("BUILDKIT_COLORS=\(buildkitColors)")
+        }
+        if ProcessInfo.processInfo.environment["NO_COLOR"] != nil {
+            targetEnvVars.append("NO_COLOR=true")
+        }
+        targetEnvVars.sort()
+        let targetSSHAuthSocketPath =
+            enableSSHForwarding
+            ? sshAuthSocketPath ?? (sshSocketMounts.isEmpty ? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] : nil)
+            : nil
+        let targetSSHSocketLabelValue =
+            enableSSHForwarding
+            ? BuildSSHForwarding.builderSocketLabelValue(
+                socketMounts: sshSocketMounts,
+                environmentSocketGuestPath: targetSSHAuthSocketPath
+            ) ?? targetSSHAuthSocketPath
+            : nil
+
+        let defaultBuildCPUs: Int = containerSystemConfig.build.cpus
+        let defaultBuildMemory = containerSystemConfig.build.memory
+        let resources = try Parser.resources(
+            cpus: cpus.map(Double.init),
+            memory: memory,
+            defaultCPUs: defaultBuildCPUs,
+            defaultMemory: defaultBuildMemory,
+        )
+
+        let client = ContainerClient()
+        let builderImageAliases = try Utility.imageReferenceAliases(
+            builderImage,
+            containerSystemConfig: containerSystemConfig
+        )
+        let existingContainer = try? await client.get(id: builderContainerId)
+        if let existingContainer {
+            let existingImage = existingContainer.configuration.image.reference
+            let existingResources = existingContainer.configuration.resources
+            let existingEnv = existingContainer.configuration.initProcess.environment
+            let existingDNS = existingContainer.configuration.dns
+            let existingSSHAuthSocketPath = existingContainer.configuration.labels[BuildSSHForwarding.builderSocketLabel]
+
+            let existingManagedEnv = existingEnv.filter { envVar in
+                envVar.hasPrefix("BUILDKIT_COLORS=") || envVar.hasPrefix("NO_COLOR=")
+            }.sorted()
+
+            let envChanged = existingManagedEnv != targetEnvVars
+
+            // Check if we need to recreate the builder due to different image
+            let imageChanged = !builderImageAliases.contains(existingImage)
+            let cpuChanged = existingResources.cpus != resources.cpus
+            let memChanged = existingResources.memoryInBytes != resources.memoryInBytes
+            let sshChanged =
+                enableSSHForwarding
+                && existingSSHAuthSocketPath != targetSSHSocketLabelValue
+            let dnsChanged = Self.dnsOverridesChanged(
+                existingDNS: existingDNS,
+                dnsNameservers: dnsNameservers,
+                dnsDomain: dnsDomain,
+                dnsSearchDomains: dnsSearchDomains,
+                dnsOptions: dnsOptions
+            )
+
+            switch existingContainer.status {
+            case .running:
+                guard imageChanged || cpuChanged || memChanged || envChanged || sshChanged || dnsChanged else {
+                    // If image, mem, cpu, env, SSH, and DNS are compatible, continue using the existing builder.
+                    return
+                }
+                // If they changed, stop and delete the existing builder
+                try await client.stop(id: existingContainer.id)
+                try await client.delete(id: existingContainer.id)
+            case .stopped:
+                // If the builder is stopped and matches our requirements, start it
+                // Otherwise, delete it and create a new one
+                guard imageChanged || cpuChanged || memChanged || envChanged || sshChanged || dnsChanged else {
+                    try await startBuildKit(
+                        client: client,
+                        id: existingContainer.id,
+                        progressUpdate,
+                        nil,
+                        sshAuthSocketPath: targetSSHAuthSocketPath,
+                        inheritSSHAuthSocketFromEnvironment: sshSocketMounts.isEmpty
+                    )
+                    return
+                }
+                try await client.delete(id: existingContainer.id)
+            case .paused:
+                // A paused builder is still the existing workload. Resume it
+                // before reuse or replacement so lifecycle operations remain explicit.
+                try await client.unpause(id: existingContainer.id)
+                guard imageChanged || cpuChanged || memChanged || envChanged || sshChanged || dnsChanged else {
+                    return
+                }
+                try await client.stop(id: existingContainer.id)
+                try await client.delete(id: existingContainer.id)
+            case .stopping:
+                throw ContainerizationError(
+                    .invalidState,
+                    message: "builder is stopping, please wait until it is fully stopped before proceeding"
+                )
+            case .unknown:
+                break
+            }
+        }
+
+        let useRosetta = containerSystemConfig.build.rosetta
+        let shimArguments = Self.shimArguments(
+            useRosetta: useRosetta,
+            dnsDomain: dnsDomain,
+            dnsSearchDomains: dnsSearchDomains,
+            dnsOptions: dnsOptions
+        )
+
+        let image = try await ClientImage.fetch(
+            reference: builderImage,
+            platform: builderPlatform,
+            containerSystemConfig: containerSystemConfig,
+            progressUpdate: ProgressTaskCoordinator.handler(for: fetchTask, from: progressUpdate)
+        )
+        // Unpack fetched image before use
+        await progressUpdate([
+            .setDescription("Unpacking BuildKit image"),
+            .setItemsName("entries"),
+        ])
+
+        let unpackTask = await taskManager.startTask()
+        _ = try await image.getCreateSnapshot(
+            platform: builderPlatform,
+            progressUpdate: ProgressTaskCoordinator.handler(for: unpackTask, from: progressUpdate)
+        )
+
+        let imageDesc = ImageDescription(
+            reference: image.reference,
+            descriptor: image.descriptor
+        )
+
+        let imageConfig = try await image.config(for: builderPlatform).config
+        var environment = imageConfig?.env ?? []
+        environment.append(contentsOf: targetEnvVars)
+
+        let processConfig = ProcessConfiguration(
+            executable: "/usr/local/bin/container-builder-shim",
+            arguments: shimArguments,
+            environment: environment,
+            workingDirectory: "/",
+            terminal: false,
+            user: .id(uid: 0, gid: 0)
+        )
+
+        var config = ContainerConfiguration(id: builderContainerId, image: imageDesc, process: processConfig)
+        config.resources = resources
+        config.ssh = enableSSHForwarding && sshSocketMounts.isEmpty
+        config.labels = [
+            ResourceLabelKeys.plugin: "builder",
+            ResourceLabelKeys.role: ResourceRoleValues.builder,
+        ]
+        if let targetSSHSocketLabelValue {
+            config.labels[BuildSSHForwarding.builderSocketLabel] = targetSSHSocketLabelValue
+        }
+        config.capAdd = ["ALL"]
+        config.mounts = [
+            .init(
+                type: .tmpfs,
+                source: "",
+                destination: "/run",
+                options: []
+            ),
+            .init(
+                type: .virtiofs,
+                source: exportsMount,
+                destination: "/var/lib/container-builder-shim/exports",
+                options: []
+            ),
+        ]
+        config.mounts.append(
+            contentsOf: sshSocketMounts.map { socketMount in
+                .virtiofs(source: socketMount.hostPath, destination: socketMount.guestPath, options: [])
+            })
+        // Enable Rosetta only if the user didn't ask to disable it
+        config.rosetta = useRosetta
+
+        let networkClient = NetworkClient()
+        guard let defaultNetwork = try await networkClient.builtin else {
+            throw ContainerizationError(.invalidState, message: "default network is not present")
+        }
+        config.networks = [
+            AttachmentConfiguration(network: defaultNetwork.id, options: AttachmentOptions(hostname: builderContainerId))
+        ]
+        config.dns = ContainerConfiguration.DNSConfiguration(
+            nameservers: dnsNameservers,
+            domain: dnsDomain,
+            searchDomains: dnsSearchDomains,
+            options: dnsOptions
+        )
+
+        let kernel = try await {
+            await progressUpdate([
+                .setDescription("Fetching kernel"),
+                .setItemsName("binary"),
+            ])
+
+            let kernel = try await ClientKernel.getDefaultKernel(for: .current)
+            return kernel
+        }()
+
+        await progressUpdate([
+            .setDescription("Starting BuildKit container")
+        ])
+
+        do {
+            try await client.create(
+                configuration: config,
+                options: .default,
+                kernel: kernel
+            )
+        } catch let error as ContainerizationError where error.code == .exists {
+            // A concurrent `container build` invocation already created the builder
+            // while we were fetching the image/kernel above. `bootstrap` below is
+            // idempotent, so just proceed against the container the winner created.
+        }
+
+        try await startBuildKit(
+            client: client,
+            id: builderContainerId,
+            progressUpdate,
+            taskManager,
+            sshAuthSocketPath: targetSSHAuthSocketPath,
+            inheritSSHAuthSocketFromEnvironment: sshSocketMounts.isEmpty
+        )
+        log.debug("starting BuildKit and BuildKit-shim")
+    }
+
+    public static func shimArguments(
+        useRosetta: Bool,
+        dnsDomain: String?,
+        dnsSearchDomains: [String],
+        dnsOptions: [String]
+    ) -> [String] {
+        var arguments = [
+            "--debug",
+            "--vsock",
+            "--dns-nameserver",
+            DNSProxyProtocol.guestAddress,
+        ]
+        if !useRosetta {
+            arguments.append("--enable-qemu")
+        }
+
+        let searchDomains =
+            dnsSearchDomains.isEmpty
+            ? dnsDomain.map { [$0] } ?? []
+            : dnsSearchDomains
+        for searchDomain in searchDomains {
+            arguments.append(contentsOf: ["--dns-search-domain", searchDomain])
+        }
+        for option in dnsOptions {
+            arguments.append(contentsOf: ["--dns-option", option])
+        }
+        return arguments
+    }
+
+    public static func dnsOverridesChanged(
+        existingDNS: ContainerConfiguration.DNSConfiguration?,
+        dnsNameservers: [String],
+        dnsDomain: String?,
+        dnsSearchDomains: [String],
+        dnsOptions: [String]
+    ) -> Bool {
+        (!dnsNameservers.isEmpty && existingDNS?.nameservers != dnsNameservers)
+            || (dnsDomain != nil && existingDNS?.domain != dnsDomain)
+            || (!dnsSearchDomains.isEmpty && existingDNS?.searchDomains != dnsSearchDomains)
+            || (!dnsOptions.isEmpty && existingDNS?.options != dnsOptions)
+    }
+}
+// MARK: - BuildKit Start Helper
+
+/// Starts the BuildKit process within the container
+/// This function handles bootstrapping the container and starting the BuildKit process
+private func startBuildKit(
+    client: ContainerClient,
+    id: String,
+    _ progress: @escaping ProgressUpdateHandler,
+    _ taskManager: ProgressTaskCoordinator? = nil,
+    sshAuthSocketPath: String? = nil,
+    inheritSSHAuthSocketFromEnvironment: Bool = true
+) async throws {
+    do {
+        let io = try ProcessIO.create(
+            tty: false,
+            interactive: false,
+            detach: true
+        )
+        defer { try? io.close() }
+
+        var dynamicEnv: [String: String] = [:]
+        let inheritedSSHAuthSocket = inheritSSHAuthSocketFromEnvironment ? ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"] : nil
+        if let sshAuthSock = sshAuthSocketPath ?? inheritedSSHAuthSocket {
+            dynamicEnv["SSH_AUTH_SOCK"] = sshAuthSock
+        }
+
+        let process = try await client.bootstrap(id: id, stdio: io.stdio, dynamicEnv: dynamicEnv)
+        try await process.start()
+        await taskManager?.finish()
+        try io.closeAfterStart()
+    } catch {
+        try? await client.stop(id: id)
+        try? await client.delete(id: id)
+        if error is ContainerizationError {
+            throw error
+        }
+        throw ContainerizationError(.internalError, message: "failed to start BuildKit: \(error)")
+    }
+}

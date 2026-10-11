@@ -57,7 +57,7 @@ class NativeConsumerTests(unittest.TestCase):
                           for index in range(len(self.names))],
             'depSetOfFiles': [{'id': 1, 'directArtifactIds': list(range(1, len(self.names) + 1))}],
             'actions': [{'targetId': i, 'mnemonic': 'CppLink', 'inputDepSetIds': [1]}
-                        for i in range(1, 9)],
+                        for i in range(1, len(native_consumer.LINKS) + 1)],
         }
 
     def verify(self):
@@ -66,7 +66,7 @@ class NativeConsumerTests(unittest.TestCase):
                         '\nINFO: Build completed successfully\n')
         return native_consumer.verify_action_graph(path, self.admission, self.loaded)
 
-    def test_eight_links_bind_owned_archive_bytes(self):
+    def test_ten_links_bind_owned_archive_bytes(self):
         proof = self.verify()
         self.assertEqual(set(proof['links']), native_consumer.LINKS)
         self.assertEqual(len(proof['archiveInputs']), 3)
@@ -81,12 +81,13 @@ class NativeConsumerTests(unittest.TestCase):
 
     def test_omitted_link_is_rejected(self):
         self.graph['actions'].pop()
-        with self.assertRaisesRegex(ValueError, 'eight Container links'):
+        with self.assertRaisesRegex(ValueError, 'ten Container links'):
             self.verify()
 
     def test_dependency_source_compile_is_rejected(self):
-        self.graph['targets'].append({'id': 9, 'label': '@@' + self.name + '//:Lower'})
-        self.graph['actions'].append({'targetId': 9, 'mnemonic': 'SwiftCompile'})
+        owner = len(native_consumer.LINKS) + 1
+        self.graph['targets'].append({'id': owner, 'label': '@@' + self.name + '//:Lower'})
+        self.graph['actions'].append({'targetId': owner, 'mnemonic': 'SwiftCompile'})
         with self.assertRaisesRegex(ValueError, 'source action'):
             self.verify()
 
@@ -109,7 +110,8 @@ class NativeConsumerTests(unittest.TestCase):
     def add_baseline(self):
         repository = self.name
         name = 'Lower'
-        self.graph['targets'].append({'id': 9, 'label': '@@' + repository + '//:' + name})
+        owner = len(native_consumer.LINKS) + 1
+        self.graph['targets'].append({'id': owner, 'label': '@@' + repository + '//:' + name})
         parts = ['bazel-out', 'darwin_arm64-opt-ST-02f1c27084ad', 'testlogs',
                  'external', repository, name, 'baseline_coverage.dat']
         parent = None
@@ -120,7 +122,7 @@ class NativeConsumerTests(unittest.TestCase):
             self.graph['pathFragments'].append(row)
             parent = number
         self.graph['artifacts'].append({'id': 50, 'pathFragmentId': parent})
-        action = {'targetId': 9, 'mnemonic': 'BaselineCoverage',
+        action = {'targetId': owner, 'mnemonic': 'BaselineCoverage',
                   'configurationId': 3, 'outputIds': [50], 'primaryOutputId': 50}
         self.graph['actions'].append(action)
         return action
@@ -166,7 +168,7 @@ class NativeConsumerTests(unittest.TestCase):
                 self.graph['artifacts'] = self.graph['artifacts'][:-1]
                 self.graph['actions'] = self.graph['actions'][:-1]
 
-    def test_staged_eight_products_must_match_successful_bep(self):
+    def test_staged_ten_products_must_match_successful_bep(self):
         output = self.root / 'execution'
         paths = []
         records = {}
@@ -180,7 +182,7 @@ class NativeConsumerTests(unittest.TestCase):
             records[relative] = {'sha256': hashlib.sha256(name.encode()).hexdigest(),
                                  'size': len(name)}
         receipt = {'build': {'files': records}}
-        self.assertEqual(len(native_consumer.verify_staged_products(paths, output, receipt)), 8)
+        self.assertEqual(len(native_consumer.verify_staged_products(paths, output, receipt)), 10)
         (output / paths[0]).write_bytes(b'changed')
         with self.assertRaisesRegex(ValueError, 'differs from successful'):
             native_consumer.verify_staged_products(paths, output, receipt)

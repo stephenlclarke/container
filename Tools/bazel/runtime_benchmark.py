@@ -29,10 +29,12 @@ STOCK_INIT = 'ghcr.io/apple/containerization/vminit@sha256:4c1836052eafcbc944c40
 BUILDERS = {
     'stock': 'ghcr.io/apple/container-builder-shim/builder@sha256:b5b3f7fa81e662db6929f1ad66d835d151a1b03f682cfe5f9fcb17fa46d6bcc9',
 }
-PLUGINS = {
+LEGACY_PLUGINS = {
     'container-runtime-linux': 'RuntimeLinux', 'container-network-vmnet': 'NetworkVmnet',
     'container-core-images': 'CoreImages', 'machine-apiserver': 'MachineAPIServer', 'k8s': 'K8s',
 }
+PLUGINS = {**LEGACY_PLUGINS,
+           'container-build': 'ContainerBuild', 'container-builder': 'ContainerBuilder'}
 FIXTURES = ('start-exit', 'warm-exec', 'sha256-128m', 'write-sync-64m',
             'image-save', 'image-load-warm', 'build-no-cache', 'build-cached')
 KERNEL_SHA = '8736c054d9223974735394f822000823baef509e1c33405ec798240fa9b6e4b5'
@@ -451,16 +453,17 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
                        if lane == 'fork' else None)
     executables = {Path(p).name.removesuffix('.rspm.__impl'): execution / p
                    for p in files if p.endswith('.rspm.__impl') and '/Contents/Resources/DWARF/' not in p}
-    names = ['container', 'container-apiserver', *PLUGINS]
+    selected_plugins = PLUGINS if lane == 'fork' else LEGACY_PLUGINS
+    names = ['container', 'container-apiserver', *selected_plugins]
     if lane == 'fork':
         names.append('container-engine')
     fingerprints = {}
     for name in names:
         source = executables[name]
-        if name in PLUGINS:
+        if name in selected_plugins:
             directory = install / 'libexec/container/plugins' / name
             destination = directory / 'bin' / name
-            plugin_source = workspace / 'Sources/Plugins' / PLUGINS[name]
+            plugin_source = workspace / 'Sources/Plugins' / selected_plugins[name]
             directory.mkdir(parents=True, exist_ok=True)
             shutil.copy2(plugin_source / 'config.toml', directory / 'config.toml')
             if (plugin_source / 'Resources').exists():
@@ -520,6 +523,7 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
     state = STATE / lane
     metadata = {'lane': lane, 'workspace': str(workspace), 'install': str(install),
                 'state': str(state), 'binaries': fingerprints, 'kernel_sha256': kernel_sha,
+                'product_layout': 'container-executables-v2' if lane == 'fork' else 'stock-original',
                 'init_image': init, 'builder_image': builder_image, 'workload_image': ALPINE,
                 'cli_version': checked([str(install / 'bin/container'), '--version'],
                                        env=dict(env, LLVM_PROFILE_FILE=profile_file) if profile_file else env),

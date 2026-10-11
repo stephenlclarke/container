@@ -31,7 +31,8 @@ LINKS = frozenset(
     '@@+dependencies+swiftpkg_container//:' + name + '.rspm.__impl'
     for name in ('container', 'container-apiserver', 'container-engine',
                  'container-runtime-linux', 'container-network-vmnet',
-                 'container-core-images', 'machine-apiserver', 'k8s')
+                 'container-core-images', 'machine-apiserver', 'k8s',
+                 'container-build', 'container-builder')
 )
 ALLOWED_IMPORTED_ACTIONS = frozenset(
     ('FileWrite', 'TemplateExpand', 'ExecutableSymlink', 'SymlinkTree',
@@ -190,7 +191,7 @@ def verify_action_graph(path: Path, admission: dict, loaded: dict[str, str],
                 'repositories': sorted(repositories),
             }
     if set(links) != LINKS:
-        raise ValueError('native action graph omitted one of eight Container links')
+        raise ValueError('native action graph omitted one of ten Container links')
     if not REQUIRED_LINK_REPOSITORIES.issubset({name for row in links.values()
                                                 for name in row['repositories']}):
         raise ValueError('native Container products omit a selected compiled lower layer')
@@ -305,7 +306,7 @@ def verify_receipt(path: Path, admission: dict, revision: str,
 
 
 def verify_staged_products(files: list[str], execution: Path, record: dict) -> dict[str, str]:
-    """Bind the unsigned eight copied executables to successful BEP output bytes."""
+    """Bind all ten candidate executables to successful BEP output bytes."""
     selected = {}
     for relative in files:
         if (not relative.endswith('.rspm.__impl')

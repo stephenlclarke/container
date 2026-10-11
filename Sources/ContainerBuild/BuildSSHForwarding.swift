@@ -17,29 +17,35 @@
 import ArgumentParser
 import Foundation
 
-struct BuildSSHForwarding: Equatable, Sendable {
-    static let guestSocketPath = "/var/host-services/ssh-auth.sock"
-    static let builderSocketLabel = "com.apple.container.builder.ssh-auth-sock"
+public struct BuildSSHForwarding: Equatable, Sendable {
+    public static let guestSocketPath = "/var/host-services/ssh-auth.sock"
+    public static let builderSocketLabel = "com.apple.container.builder.ssh-auth-sock"
 
-    struct SocketMount: Equatable, Sendable {
-        let id: String
-        let hostPath: String
-        let guestPath: String
+    public struct SocketMount: Equatable, Sendable {
+        public let id: String
+        public let hostPath: String
+        public let guestPath: String
+
+        public init(id: String, hostPath: String, guestPath: String) {
+            self.id = id
+            self.hostPath = hostPath
+            self.guestPath = guestPath
+        }
     }
 
-    let metadataValues: [String]
-    let socketMounts: [SocketMount]
-    let environmentSocketGuestPath: String?
+    public let metadataValues: [String]
+    public let socketMounts: [SocketMount]
+    public let environmentSocketGuestPath: String?
 
-    var isEnabled: Bool {
+    public var isEnabled: Bool {
         !socketMounts.isEmpty
     }
 
-    var builderSocketLabelValue: String? {
+    public var builderSocketLabelValue: String? {
         Self.builderSocketLabelValue(socketMounts: socketMounts, environmentSocketGuestPath: environmentSocketGuestPath)
     }
 
-    static func builderSocketLabelValue(socketMounts: [SocketMount], environmentSocketGuestPath: String?) -> String? {
+    public static func builderSocketLabelValue(socketMounts: [SocketMount], environmentSocketGuestPath: String?) -> String? {
         guard !socketMounts.isEmpty else { return nil }
         let mounts =
             socketMounts
@@ -49,7 +55,7 @@ struct BuildSSHForwarding: Equatable, Sendable {
         return [environmentSocketGuestPath ?? "-", mounts].joined(separator: "|")
     }
 
-    static func resolve(
+    public static func resolve(
         values: [String],
         environment: [String: String] = ProcessInfo.processInfo.environment,
         isSocket: (String) -> Bool = isUnixSocket
@@ -135,7 +141,7 @@ struct BuildSSHForwarding: Equatable, Sendable {
         return value.isEmpty ? nil : value
     }
 
-    private static func isUnixSocket(_ path: String) -> Bool {
+    public static func isUnixSocket(_ path: String) -> Bool {
         let attributes = try? FileManager.default.attributesOfItem(atPath: path)
         return attributes?[.type] as? FileAttributeType == .typeSocket
     }
@@ -204,7 +210,7 @@ struct BuildSSHForwarding: Equatable, Sendable {
     }
 
     private struct SSHSpec: Sendable {
-        let id: String
+        public let id: String
         let path: String?
 
         init(_ rawValue: String) {

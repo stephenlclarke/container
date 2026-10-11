@@ -315,7 +315,7 @@ public actor MachinesService {
         }
     }
 
-    public func create(configuration: MachineConfiguration, resources: MachineResources?, bootConfig: MachineConfig) async throws {
+    public func create(configuration: MachineConfiguration, bootConfig: MachineConfig) async throws {
         self.log.debug("\(#function)")
 
         let path = try self.bundlePath(id: configuration.id)
@@ -332,7 +332,6 @@ public actor MachinesService {
                         path: path,
                         machineConfiguration: configuration,
                         resourceRoot: resourceRoot,
-                        resources: resources,
                         bootConfig: bootConfig,
                     )
                 },

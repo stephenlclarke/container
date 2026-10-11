@@ -29,7 +29,8 @@ class IntegrationReportsTests(unittest.TestCase):
             (prepared / 'compiled-consumer.json').write_text('{"passed":true}\n')
             names = ('container', 'container-apiserver', 'container-engine',
                      'container-runtime-linux', 'container-network-vmnet',
-                     'container-core-images', 'machine-apiserver', 'k8s')
+                     'container-core-images', 'machine-apiserver', 'k8s',
+                     'container-build', 'container-builder')
             records = {'bazel-out/opt/bin/external/+dependencies+swiftpkg_container/' +
                        name + '.rspm.__impl': {'sha256': str(index) * 64}
                        for index, name in enumerate(names, 1)}
