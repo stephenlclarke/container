@@ -1,8 +1,8 @@
 {
-  "schema": 1,
-  "repository": "stephenlclarke/containerization",
-  "tag": "layer-guest-6db16197bbad-ad496f555e48",
-  "targetCommit": "6db16197bbad8196a78132f86529daa89125aafb",
   "asset": "qualified-guest-artifacts.json",
-  "sha256": "9bfdaf6fd72cac2f42601b9a7c395fcff9a066aae1270cff53ec7d59818839ac"
+  "repository": "stephenlclarke/containerization",
+  "schema": 1,
+  "sha256": "df3dfa379de684b504db4eb97adc3b881268981b0326fa6028e51498171fc3a5",
+  "tag": "layer-guest-7c76243f3e98-f5f9e21fcb19",
+  "targetCommit": "7c76243f3e98ea38669f665e1bd1172db7e6b347"
 }
