@@ -2,7 +2,7 @@
   "asset": "foundation-native-proof.tar.gz",
   "repository": "stephenlclarke/container",
   "schema": 1,
-  "sha256": "2e0c8856521c8dce06ce7ac713aa40c26e9300eaccdd40050b986e1dce838767",
-  "tag": "layer-foundation-native-2c1efa788a87-07a7ea5f2f04842f18d9",
-  "targetCommit": "2c1efa788a87ffcadafd618819d84fb2bd4443b4"
+  "sha256": "ee9d389b75d5af265b77daae18e0538cd5271150a4b81fe8a3bb52c2ce5f6eb1",
+  "tag": "layer-foundation-native-052489b767ae-9d1d28f565fd4bdb3d9f",
+  "targetCommit": "052489b767ae9fdfc9ce1db368fb88182179b1e7"
 }
