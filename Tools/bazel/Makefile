@@ -90,6 +90,13 @@ bazel-eof-integration:
 		--evidence "$(QUALIFICATION_EVIDENCE)/eof-integration" \
 		--layer Run --test-filter '^TestCLIPrimaryInputEOF/'
 
+STOPPED_COPY_ORACLE ?=
+.PHONY: bazel-stopped-copy
+bazel-stopped-copy:
+	@test -n "$(PREPARED_RUNTIME)" && test -n "$(STOPPED_COPY_ORACLE)" || { printf '%s\n' 'Set PREPARED_RUNTIME and STOPPED_COPY_ORACLE to retained, matching evidence directories.'; exit 2; }
+	@python3 Tools/bazel/stopped_copy.py --source "$(CURDIR)" --prepared "$(PREPARED_RUNTIME)" \
+		--oracle "$(STOPPED_COPY_ORACLE)" --evidence "$(QUALIFICATION_EVIDENCE)/stopped-copy"
+
 .PHONY: bazel-release-artifact
 bazel-release-artifact:
 	@test -n "$(PREPARED_RUNTIME)" && test -n "$(SERVICE_ARTIFACTS)" || { printf '%s\n' 'Set PREPARED_RUNTIME and SERVICE_ARTIFACTS to source-matched evidence.'; exit 2; }

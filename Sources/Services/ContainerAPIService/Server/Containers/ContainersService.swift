@@ -124,12 +124,14 @@ public actor ContainersService {
     struct ContainerState {
         var snapshot: ContainerSnapshot
         var prewarmed = false
+        var copyRuntime = false
         var prewarmCleanupRequired = false
         var prewarmCleanupRequiresLoggingClose = false
         var client: ManagedRuntimeClient? = nil {
             didSet {
                 if client == nil {
                     prewarmed = false
+                    copyRuntime = false
                     prewarmCleanupRequired = false
                     prewarmCleanupRequiresLoggingClose = false
                 }
@@ -296,13 +298,17 @@ public actor ContainersService {
     /// Serializes lifecycle mutations per container. Composite operations call
     /// their private implementation methods while holding this slot instead of
     /// relying on task-local reentrancy, which unstructured child tasks inherit.
-    private func withLifecycleMutation<T>(
+    func withLifecycleMutation<T>(
         id: String,
         operation: () async throws -> T
     ) async rethrows -> T {
         await acquireLifecycleMutation(id: id)
         defer { releaseLifecycleMutation(id: id) }
         return try await operation()
+    }
+
+    func lifecycleMutationWaiterCount(for id: String) -> Int {
+        lifecycleMutationWaiters[id]?.count ?? 0
     }
 
     private func withLifecycleMutations<T>(
@@ -2248,6 +2254,7 @@ public actor ContainersService {
         closeStdinOnEOF: Bool = false
     ) async throws {
         try await withLifecycleMutation(id: id) {
+            try await self.discardCopyRuntimeIfPresent(id: id)
             if try await self.consumeDedicatedPrewarm(id: id, stdio: stdio, closeStdinOnEOF: closeStdinOnEOF) {
                 return
             }
@@ -2273,6 +2280,7 @@ public actor ContainersService {
         dynamicEnv: [String: String]
     ) async throws -> Bool {
         try await withLifecycleMutation(id: id) {
+            try await self.discardCopyRuntimeIfPresent(id: id)
             if try await self.consumeDedicatedPrewarm(id: id, stdio: stdio) {
                 return true
             }
@@ -2291,6 +2299,7 @@ public actor ContainersService {
         dynamicEnv: [String: String],
         onlyIfNeverStarted: Bool,
         prewarming: Bool = false,
+        copyOnly: Bool = false,
         closeStdinOnEOF: Bool = false
     ) async throws -> Bool {
         log.debug(
@@ -2377,20 +2386,25 @@ public actor ContainersService {
             // A prior bootstrap may have stopped its runtime but failed part
             // way through retryable logging cleanup. Finish that cleanup
             // before preparing a replacement run for the same container.
-            try await self.remoteLogDriverPlane?.abortBootstrap(
-                containerID: id
-            )
-            let authenticatedProtectedOptions =
-                try await self
-                .validateLoggingForStart(
-                    containerID: id,
-                    configuration: plan.configuration.logging
+            if !copyOnly {
+                try await self.remoteLogDriverPlane?.abortBootstrap(
+                    containerID: id
                 )
+            }
+            let authenticatedProtectedOptions: [String: String]?
+            if copyOnly {
+                authenticatedProtectedOptions = nil
+            } else {
+                authenticatedProtectedOptions =
+                    try await self
+                    .validateLoggingForStart(
+                        containerID: id,
+                        configuration: plan.configuration.logging
+                    )
+            }
             timings.finish("logging-validation")
 
-            let networkAttachments = Self.networkBootstrapAttachments(
-                for: plan.configuration
-            )
+            let networkAttachments = copyOnly ? [] : Self.networkBootstrapAttachments(for: plan.configuration)
             let networkBootstrapInfos: [NetworkBootstrapInfo]
             if networkAttachments.isEmpty {
                 networkBootstrapInfos = []
@@ -2407,19 +2421,18 @@ public actor ContainersService {
             timings.finish("network-resolution")
 
             let runtimeStdio: [FileHandle?]
-            if let remoteLogDriverPlane = self.remoteLogDriverPlane {
+            if !copyOnly, let remoteLogDriverPlane = self.remoteLogDriverPlane {
                 runtimeStdio =
                     try await remoteLogDriverPlane
                     .prepareBootstrap(
                         containerID: id,
                         bundle: ContainerResource.Bundle(path: plan.path),
                         configuration: plan.configuration,
-                        authenticatedProtectedOptions:
-                            authenticatedProtectedOptions,
+                        authenticatedProtectedOptions: authenticatedProtectedOptions ?? [:],
                         stdio: stdio
                     )
             } else {
-                runtimeStdio = stdio
+                runtimeStdio = copyOnly ? [nil, nil, nil] : stdio
             }
             timings.finish("logging-prepare")
 
@@ -2493,7 +2506,7 @@ public actor ContainersService {
             // the client before the ambiguous RPC so failed cleanup can be
             // retained as a retryable tombstone.
             bootstrappedClient = runtimeClient
-            if runtimeClient.isDedicated {
+            if runtimeClient.isDedicated, !copyOnly {
                 try self.stageDedicatedEngineSocketGrant(id: id)
                 expectedBootstrapOperationGeneration = try lifecycleRecord(
                     id: id
@@ -2505,6 +2518,7 @@ public actor ContainersService {
                     networkBootstrapInfos: networkBootstrapInfos,
                     dynamicEnv: dynamicEnv,
                     prewarming: prewarming,
+                    copyOnly: copyOnly,
                     closeStdinOnEOF: closeStdinOnEOF
                 )
             } catch {
@@ -2526,7 +2540,7 @@ public actor ContainersService {
                     bootstrapFinishedAt: bootstrapFinishedAt
                 )
             )
-            if let tuple = try await runtimeClient.engineSocketWorkloadTuple() {
+            if !copyOnly, let tuple = try await runtimeClient.engineSocketWorkloadTuple() {
                 try self.stageEngineSocketGrant(
                     id: id,
                     processGeneration: tuple.processGeneration,
@@ -2540,28 +2554,33 @@ public actor ContainersService {
                 await Self.runtimeBootstrapLimiter.releasePermit()
                 runtimeBootstrapPermitHeld = false
             }
-            try await self.remoteLogDriverPlane?.bootstrapSucceeded(
-                containerID: id
-            )
+            if !copyOnly {
+                try await self.remoteLogDriverPlane?.bootstrapSucceeded(
+                    containerID: id
+                )
+            }
             timings.finish("logging-commit")
 
-            let token = UUID()
-            runtimeClientToken = token
-            try await self.exitMonitor.registerProcess(id: id) {
-                [weak self] callbackID, status in
-                guard let self else {
-                    return
+            if !copyOnly {
+                let token = UUID()
+                runtimeClientToken = token
+                try await self.exitMonitor.registerProcess(id: id) {
+                    [weak self] callbackID, status in
+                    guard let self else {
+                        return
+                    }
+                    try await self.handleContainerExit(
+                        id: callbackID,
+                        code: status,
+                        runtimeClientToken: token
+                    )
                 }
-                try await self.handleContainerExit(
-                    id: callbackID,
-                    code: status,
-                    runtimeClientToken: token
-                )
             }
             timings.finish("exit-monitor")
 
             let commitOperationGeneration =
                 expectedBootstrapOperationGeneration
+            let commitRuntimeClientToken = runtimeClientToken
             try await self.lock.withLock(
                 logMetadata: ["acquirer": "\(#function)-commit", "id": "\(id)"]
             ) { context in
@@ -2590,7 +2609,10 @@ public actor ContainersService {
 
                 state.client = runtimeClient
                 state.prewarmed = prewarming
-                await self.setRuntimeClientToken(token, id: id)
+                state.copyRuntime = copyOnly
+                if let commitRuntimeClientToken {
+                    await self.setRuntimeClientToken(commitRuntimeClientToken, id: id)
+                }
                 await self.setContainerState(id, state, context: context)
             }
             timings.finish("state-commit")
@@ -2633,7 +2655,8 @@ public actor ContainersService {
                     try await retainDedicatedBootstrapCleanupTombstone(
                         id: id,
                         client: bootstrappedClient,
-                        plannedContainerGeneration: plan.containerGeneration
+                        plannedContainerGeneration: plan.containerGeneration,
+                        copyRuntime: copyOnly
                     )
                     do {
                         _ = try await discardDedicatedPrewarm(id: id)
@@ -2659,9 +2682,11 @@ public actor ContainersService {
                 !loggingCleanupDeferredToTombstone
             {
                 do {
-                    try await self.remoteLogDriverPlane?.abortBootstrap(
-                        containerID: id
-                    )
+                    if !copyOnly {
+                        try await self.remoteLogDriverPlane?.abortBootstrap(
+                            containerID: id
+                        )
+                    }
                 } catch {
                     loggingCleanupError = error
                     log.warning(
@@ -2677,11 +2702,77 @@ public actor ContainersService {
             if let loggingCleanupError {
                 throw loggingCleanupError
             }
-            if runtimeAndLoggingCleanupFinished || bootstrappedClient == nil {
+            if !copyOnly && (runtimeAndLoggingCleanupFinished || bootstrappedClient == nil) {
                 try? self.deactivateEngineSocketGrant(id: id)
             }
             throw bootstrapError
         }
+    }
+
+    private func withCopyClient<T>(id: String, operation: (ManagedRuntimeClient) async throws -> T) async throws -> T {
+        let state = try self._getContainerState(id: id)
+        if state.snapshot.status == .running {
+            return try await operation(state.getClient())
+        }
+        guard state.snapshot.status == .stopped else {
+            throw ContainerizationError(.invalidState, message: "container \(id) is not running or stopped")
+        }
+        guard state.snapshot.configuration.effectiveIsolation == .dedicatedVM else {
+            throw ContainerizationError(.unsupported, message: "copying stopped shared-vm containers is unavailable")
+        }
+
+        if let client = state.client, !state.copyRuntime, !state.prewarmCleanupRequired {
+            return try await operation(client)
+        }
+
+        _ = try await self.discardDedicatedPrewarm(id: id)
+        _ = try await self.bootstrap(
+            id: id,
+            stdio: [nil, nil, nil],
+            dynamicEnv: [:],
+            onlyIfNeverStarted: false,
+            copyOnly: true
+        )
+
+        return try await Self.withCopyRuntimeCleanup(
+            operation: { try await operation(self._getContainerState(id: id).getClient()) },
+            cleanup: { _ = try await self.discardDedicatedPrewarm(id: id) },
+            cleanupFailure: { error in
+                self.log.error(
+                    "failed to clean up stopped-container copy runtime",
+                    metadata: ["id": "\(id)", "error": "\(error)"]
+                )
+            }
+        )
+    }
+
+    static func withCopyRuntimeCleanup<T>(
+        isolation _: isolated (any Actor)? = #isolation,
+        operation: () async throws -> T,
+        cleanup: () async throws -> Void,
+        cleanupFailure: (any Error) -> Void
+    ) async throws -> T {
+        let result: T
+        do {
+            result = try await operation()
+        } catch {
+            let operationError = error
+            do {
+                try await cleanup()
+            } catch {
+                cleanupFailure(error)
+            }
+            throw operationError
+        }
+        try await cleanup()
+        return result
+    }
+
+    private func discardCopyRuntimeIfPresent(id: String) async throws {
+        guard try self._getContainerState(id: id).copyRuntime else {
+            return
+        }
+        _ = try await self.discardDedicatedPrewarm(id: id)
     }
 
     private func consumeDedicatedPrewarm(
@@ -2783,6 +2874,7 @@ public actor ContainersService {
     struct PreparedServiceRecoveryState {
         let generation: UUID
         let prewarmed: Bool
+        let copyRuntime: Bool
         let cleanupRequired: Bool
         let startedDate: Date?
         let loggingRequiresClose: Bool
@@ -2790,6 +2882,7 @@ public actor ContainersService {
         init(_ state: ContainerState) {
             generation = state.generation
             prewarmed = state.prewarmed
+            copyRuntime = state.copyRuntime
             cleanupRequired = state.prewarmCleanupRequired
             startedDate = state.snapshot.startedDate
             loggingRequiresClose = state.prewarmCleanupRequiresLoggingClose
@@ -2808,9 +2901,12 @@ public actor ContainersService {
         current: PreparedServiceRecoveryState
     ) -> Bool {
         status == .stopped && context.isDedicated
-            && context.captured.prewarmed && current.prewarmed
-            && !context.captured.cleanupRequired && !current.cleanupRequired
-            && context.captured.startedDate == nil && current.startedDate == nil
+            && ((context.captured.prewarmed && current.prewarmed
+                && context.captured.startedDate == nil && current.startedDate == nil)
+                || (context.captured.copyRuntime && current.copyRuntime
+                    && context.captured.startedDate == current.startedDate))
+            && ((!context.captured.cleanupRequired && !current.cleanupRequired)
+                || (context.captured.copyRuntime && current.copyRuntime))
             && context.captured.generation == current.generation
     }
 
@@ -2986,7 +3082,7 @@ public actor ContainersService {
         id: String
     ) throws {
         guard state.generation == captured.generation,
-            state.prewarmed || state.prewarmCleanupRequired
+            state.prewarmed || state.copyRuntime || state.prewarmCleanupRequired
         else {
             throw ContainerizationError(
                 .invalidState,
@@ -3002,7 +3098,7 @@ public actor ContainersService {
             logMetadata: ["acquirer": "\(#function)-capture", "id": "\(id)"]
         ) { context -> (ManagedRuntimeClient, ContainerConfiguration, PreparedServiceRecoveryState)? in
             let state = try await self.getContainerState(id: id, context: context)
-            guard state.prewarmed || state.prewarmCleanupRequired,
+            guard state.prewarmed || state.copyRuntime || state.prewarmCleanupRequired,
                 let client = state.client
             else {
                 return nil
@@ -3057,6 +3153,9 @@ public actor ContainersService {
                     try Self.stopRuntimeServiceAndConfirmInactive(fullServiceLabel: label)
                 },
                 cleanupLogging: { cleanup in
+                    guard !captured.copyRuntime else {
+                        return
+                    }
                     switch cleanup {
                     case .abortBootstrap:
                         try await self.remoteLogDriverPlane?.abortBootstrap(containerID: id)
@@ -3077,7 +3176,11 @@ public actor ContainersService {
                         await self.setContainerState(id, state, context: context)
                     }
                 },
-                deactivateGrant: { try self.deactivateEngineSocketGrant(id: id) },
+                deactivateGrant: {
+                    if !captured.copyRuntime {
+                        try self.deactivateEngineSocketGrant(id: id)
+                    }
+                },
                 reportRecovery: { recovery, error in
                     switch recovery {
                     case .retainForRetry:
@@ -3121,7 +3224,8 @@ public actor ContainersService {
     private func retainDedicatedBootstrapCleanupTombstone(
         id: String,
         client: ManagedRuntimeClient,
-        plannedContainerGeneration: UUID
+        plannedContainerGeneration: UUID,
+        copyRuntime: Bool = false
     ) async throws {
         try await self.lock.withLock(
             logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]
@@ -3141,6 +3245,7 @@ public actor ContainersService {
             }
             state.client = client
             state.prewarmed = false
+            state.copyRuntime = copyRuntime
             state.prewarmCleanupRequired = true
             state.prewarmCleanupRequiresLoggingClose = false
             await self.setContainerState(id, state, context: context)
@@ -3902,6 +4007,7 @@ public actor ContainersService {
             )
         }
 
+        try await self.discardCopyRuntimeIfPresent(id: id)
         let currentState = try self._getContainerState(id: id)
         if currentState.snapshot.status == .stopped {
             guard
@@ -5396,14 +5502,18 @@ public actor ContainersService {
         async throws
     {
         self.log.debug("\(#function)")
-
-        let state = try self._getContainerState(id: id)
-        guard state.snapshot.status == .running else {
-            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        try await withLifecycleMutation(id: id) {
+            try await self.withCopyClient(id: id) { client in
+                try await client.copyIn(
+                    source: source,
+                    destination: destination,
+                    mode: mode,
+                    createParents: createParents,
+                    followSymlink: followSymlink,
+                    preserveOwnership: preserveOwnership
+                )
+            }
         }
-        let client = try state.getClient()
-        try await client.copyIn(
-            source: source, destination: destination, mode: mode, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
     }
 
     /// Stream a tar archive from the host into a container directory.
@@ -5415,30 +5525,32 @@ public actor ContainersService {
         preserveOwnership: Bool = false
     ) async throws {
         self.log.debug("\(#function)")
-
-        let state = try self._getContainerState(id: id)
-        guard state.snapshot.status == .running else {
-            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        try await withLifecycleMutation(id: id) {
+            try await self.withCopyClient(id: id) { client in
+                try await client.copyIn(
+                    archive: archive,
+                    destination: destination,
+                    createParents: createParents,
+                    preserveOwnership: preserveOwnership
+                )
+            }
         }
-        let client = try state.getClient()
-        try await client.copyIn(
-            archive: archive,
-            destination: destination,
-            createParents: createParents,
-            preserveOwnership: preserveOwnership
-        )
     }
 
     /// Copy a file or directory from the container to the host.
     public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         self.log.debug("\(#function)")
-
-        let state = try self._getContainerState(id: id)
-        guard state.snapshot.status == .running else {
-            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        try await withLifecycleMutation(id: id) {
+            try await self.withCopyClient(id: id) { client in
+                try await client.copyOut(
+                    source: source,
+                    destination: destination,
+                    createParents: createParents,
+                    followSymlink: followSymlink,
+                    preserveOwnership: preserveOwnership
+                )
+            }
         }
-        let client = try state.getClient()
-        try await client.copyOut(source: source, destination: destination, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership)
     }
 
     /// Stream a container path to the host as an uncompressed tar archive.
@@ -5450,18 +5562,16 @@ public actor ContainersService {
         copyContents: Bool = false
     ) async throws {
         self.log.debug("\(#function)")
-
-        let state = try self._getContainerState(id: id)
-        guard state.snapshot.status == .running else {
-            throw ContainerizationError(.invalidState, message: "container \(id) is not running")
+        try await withLifecycleMutation(id: id) {
+            try await self.withCopyClient(id: id) { client in
+                try await client.copyOut(
+                    source: source,
+                    archive: archive,
+                    followSymlink: followSymlink,
+                    copyContents: copyContents
+                )
+            }
         }
-        let client = try state.getClient()
-        try await client.copyOut(
-            source: source,
-            archive: archive,
-            followSymlink: followSymlink,
-            copyContents: copyContents
-        )
     }
 
     /// Get statistics for the container.

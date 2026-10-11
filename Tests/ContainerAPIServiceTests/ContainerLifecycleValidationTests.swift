@@ -177,6 +177,98 @@ struct ContainerLifecycleValidationTests {
     }
 
     @Test
+    func stoppedCopyRuntimeCleanupOwnsTheStartedContainerService() {
+        var state = ContainersService.ContainerState(snapshot: Self.snapshot(id: "copied"))
+        state.snapshot.startedDate = Date(timeIntervalSince1970: 1)
+        state.copyRuntime = true
+        state.prewarmed = true
+        let captured = ContainersService.PreparedServiceRecoveryState(state)
+        let context = ContainersService.PreparedServiceRecoveryContext(
+            captured: captured,
+            isDedicated: true,
+            label: "gui/501/copied.runtime"
+        )
+
+        #expect(
+            ContainersService.stoppedPreparedRuntimeMayStopService(
+                status: .stopped,
+                context: context,
+                current: .init(state)
+            )
+        )
+
+        var cleanupTombstone = state
+        cleanupTombstone.prewarmCleanupRequired = true
+        #expect(
+            ContainersService.stoppedPreparedRuntimeMayStopService(
+                status: .stopped,
+                context: .init(captured: .init(cleanupTombstone), isDedicated: true, label: context.label),
+                current: .init(cleanupTombstone)
+            )
+        )
+
+        var changed = state
+        changed.copyRuntime = false
+        #expect(
+            !ContainersService.stoppedPreparedRuntimeMayStopService(
+                status: .stopped,
+                context: context,
+                current: .init(changed)
+            )
+        )
+        #expect(state.snapshot.startedDate == Date(timeIntervalSince1970: 1))
+
+        var cleaned = state
+        #expect(throws: Never.self) {
+            try ContainersService.preparedRuntimeCleanupCommitState(
+                &cleaned,
+                captured: captured,
+                id: "copied"
+            )
+        }
+        #expect(cleaned.client == nil)
+        #expect(!cleaned.copyRuntime)
+        #expect(!cleaned.prewarmed)
+    }
+
+    @Test
+    func stoppedCopyCleanupRunsAfterSuccessAndFailure() async throws {
+        var cleanupCount = 0
+        let result = try await ContainersService.withCopyRuntimeCleanup(
+            operation: { "copied" },
+            cleanup: { cleanupCount += 1 },
+            cleanupFailure: { _ in Issue.record("unexpected cleanup failure") }
+        )
+        #expect(result == "copied")
+        #expect(cleanupCount == 1)
+
+        let operationError = ContainerizationError(.invalidArgument, message: "copy failed")
+        cleanupCount = 0
+        let thrown = await #expect(throws: ContainerizationError.self) {
+            try await ContainersService.withCopyRuntimeCleanup(
+                operation: { throw operationError },
+                cleanup: { cleanupCount += 1 },
+                cleanupFailure: { _ in Issue.record("unexpected cleanup failure") }
+            )
+        }
+        #expect(thrown?.message == "copy failed")
+        #expect(cleanupCount == 1)
+    }
+
+    @Test
+    func stoppedCopyFailureRetainsOriginalErrorWhenCleanupAlsoFails() async throws {
+        let cleanupError = ContainerizationError(.invalidState, message: "cleanup failed")
+        let thrown = await #expect(throws: ContainerizationError.self) {
+            try await ContainersService.withCopyRuntimeCleanup(
+                operation: { throw ContainerizationError(.invalidArgument, message: "copy failed") },
+                cleanup: { throw cleanupError },
+                cleanupFailure: { error in #expect((error as? ContainerizationError)?.message == "cleanup failed") }
+            )
+        }
+        #expect(thrown?.message == "copy failed")
+    }
+
+    @Test
     func stoppedPrewarmServiceRecoveryReadsFreshStateBeforeExactStop() async throws {
         var state = ContainersService.ContainerState(snapshot: Self.snapshot(id: "prepared"))
         state.prewarmed = true

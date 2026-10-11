@@ -26,6 +26,83 @@ import Testing
 @testable import ContainerAPIService
 
 struct ContainerCreationReservationsTests {
+    @Test("Copy, start, and delete mutations share the per-container lifecycle fence")
+    func lifecycleFenceSerializesSameContainerMutations() async throws {
+        let appRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("container-lifecycle-fence-\(UUID())")
+        defer {
+            try? FileManager.default.removeItem(at: appRoot)
+        }
+        let pluginLoader = try PluginLoader(
+            appRoot: appRoot,
+            installRoot: appRoot,
+            logRoot: nil,
+            pluginDirectories: [],
+            pluginFactories: []
+        )
+        let service = try ContainersService(
+            appRoot: appRoot,
+            pluginLoader: pluginLoader,
+            containerSystemConfig: ContainerSystemConfig(),
+            log: Logger(label: "com.apple.container.test.lifecycle-fence")
+        )
+        let recorder = LifecycleMutationTestRecorder()
+
+        let copy = Task {
+            try await service.withLifecycleMutation(id: "same") {
+                await recorder.holdCopy()
+                await recorder.record("copy.exit")
+                throw ContainerizationError(.invalidArgument, message: "copy failed")
+            }
+        }
+        await recorder.waitFor("copy.enter")
+
+        let start = Task {
+            try await service.withLifecycleMutation(id: "same") {
+                await recorder.record("start.enter")
+            }
+        }
+        let delete = Task {
+            try await service.withLifecycleMutation(id: "same") {
+                await recorder.record("delete.enter")
+            }
+        }
+        let otherContainer = Task {
+            try await service.withLifecycleMutation(id: "other") {
+                await recorder.record("other.enter")
+            }
+        }
+
+        await recorder.waitFor("other.enter")
+        while await service.lifecycleMutationWaiterCount(for: "same") != 2 {
+            await Task.yield()
+        }
+        #expect(await recorder.events() == ["copy.enter", "other.enter"])
+
+        await recorder.releaseCopy()
+        let copyError = await #expect(throws: ContainerizationError.self) {
+            try await copy.value
+        }
+        #expect(copyError?.message == "copy failed")
+        try await start.value
+        try await delete.value
+        try await otherContainer.value
+
+        let events = await recorder.events()
+        #expect(events.first == "copy.enter")
+        let copyExitIndex = events.firstIndex(of: "copy.exit")
+        let startIndex = events.firstIndex(of: "start.enter")
+        let deleteIndex = events.firstIndex(of: "delete.enter")
+        #expect(copyExitIndex != nil)
+        #expect(startIndex != nil)
+        #expect(deleteIndex != nil)
+        if let copyExitIndex, let startIndex, let deleteIndex {
+            #expect(copyExitIndex < startIndex)
+            #expect(copyExitIndex < deleteIndex)
+        }
+        #expect(events.contains("other.enter"))
+    }
+
     @Test("A unique container can reserve its identity")
     func reserveUniqueContainer() throws {
         var reservations = ContainerCreationReservations()
@@ -171,5 +248,43 @@ struct ContainerCreationReservationsTests {
             networks: [],
             startedDate: nil
         )
+    }
+}
+
+private actor LifecycleMutationTestRecorder {
+    private var recordedEvents: [String] = []
+    private var eventWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var copyRelease: CheckedContinuation<Void, Never>?
+
+    func record(_ event: String) {
+        recordedEvents.append(event)
+        for waiter in eventWaiters.removeValue(forKey: event) ?? [] {
+            waiter.resume()
+        }
+    }
+
+    func waitFor(_ event: String) async {
+        guard !recordedEvents.contains(event) else {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            eventWaiters[event, default: []].append(continuation)
+        }
+    }
+
+    func holdCopy() async {
+        await withCheckedContinuation { continuation in
+            copyRelease = continuation
+            record("copy.enter")
+        }
+    }
+
+    func releaseCopy() {
+        copyRelease?.resume()
+        copyRelease = nil
+    }
+
+    func events() -> [String] {
+        recordedEvents
     }
 }

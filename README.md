@@ -236,3 +236,5 @@ installation ownership checks. See the [runtime performance changes](docs/PR-run
 Container create and start revalidate the selected logging driver against the current registry. Unrelated journald readiness is deferred until journald is selected; see the [selected-driver readiness change](docs/PR-selected-logging-readiness.md) for validation status.
 
 The candidate dependency graph selects the validated SDK, SSL and gRPC fork revisions explicitly; see the [lower-fork consumption handoff](docs/upstream/PR-lower-fork-selection.md). Published historical binaries and benchmark results retain their original graphs.
+
+The candidate stopped-container copy implementation uses a temporary dedicated guest for filesystem access, serializes copying with lifecycle mutations, and avoids starting the workload or opening its logs. Shared-VM stopped copy remains explicitly unsupported. The [copy handoff](docs/upstream/PR-stopped-container-copy.md) records the focused regression results and the pending live CLI qualification; this is not a full Docker copy-parity claim.

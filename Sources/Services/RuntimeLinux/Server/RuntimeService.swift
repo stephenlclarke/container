@@ -222,16 +222,33 @@ public actor RuntimeService {
 
             let dynamicEnv = try message.dynamicEnv()
             let prewarming = message.bool(key: RuntimeKeys.prewarming.rawValue)
+            let copyOnlyBootstrap = message.bool(key: RuntimeKeys.copyOnlyBootstrap.rawValue)
 
             let bundle = ContainerResource.Bundle(path: self.root)
             let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: self.root)
             var config = try bundle.configuration
-            let loggingPlan = try ContainerLogRuntimePlan(configuration: config)
-            let loggingCapture = try loggingPlan.activate(
-                bundle: bundle,
-                terminal: config.initProcess.terminal
-            )
-            var loggingCaptureNeedsClose = true
+            if copyOnlyBootstrap {
+                config = Self.configurationForCopyOnlyBootstrap(config)
+            }
+            // A stopped-container copy needs the mounted rootfs and the
+            // containerization copy RPCs, but it must not open workload log
+            // files or truncate/capture the next run's output.
+            let loggingCapture: ContainerLogRuntimeCapture
+            if copyOnlyBootstrap {
+                loggingCapture = ContainerLogRuntimeCapture(
+                    stdout: nil,
+                    stderr: nil,
+                    session: nil,
+                    publicLogPath: nil
+                )
+            } else {
+                let loggingPlan = try ContainerLogRuntimePlan(configuration: config)
+                loggingCapture = try loggingPlan.activate(
+                    bundle: bundle,
+                    terminal: config.initProcess.terminal
+                )
+            }
+            var loggingCaptureNeedsClose = !copyOnlyBootstrap
             defer {
                 if loggingCaptureNeedsClose {
                     loggingCapture.close()
@@ -405,8 +422,10 @@ public actor RuntimeService {
                     )
                 }
 
-                try await self.initializeWaiters(for: id)
-                try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
+                if !copyOnlyBootstrap {
+                    try await self.initializeWaiters(for: id)
+                    try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
+                }
                 await self.setState(.booted)
             } catch {
                 do {
@@ -1699,6 +1718,24 @@ public actor RuntimeService {
         config: ContainerConfiguration
     ) -> [AttachmentConfiguration] {
         config.hostNetwork ? [] : config.networks
+    }
+
+    static func configurationForCopyOnlyBootstrap(
+        _ configuration: ContainerConfiguration
+    ) -> ContainerConfiguration {
+        var copyConfiguration = configuration
+        copyConfiguration.networks = []
+        copyConfiguration.publishedPorts = []
+        copyConfiguration.publishedSockets = []
+        copyConfiguration.inboundSockets = []
+        copyConfiguration.dns = nil
+        copyConfiguration.hostNetwork = false
+        // Host-gateway entries require an allocated container network. Copy
+        // bootstraps intentionally have none and do not start a workload that
+        // could consume /etc/hosts, so do not resolve workload host entries.
+        copyConfiguration.hosts = []
+        copyConfiguration.ssh = false
+        return copyConfiguration
     }
 
     struct LinuxDeviceMetadata: Sendable {

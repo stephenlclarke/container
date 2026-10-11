@@ -56,6 +56,47 @@ struct RuntimeServiceHostsTests {
     }
 
     @Test
+    func copyOnlyBootstrapKeepsMountsAndSuppressesNetworking() throws {
+        var config = runtimeTestConfiguration(id: "copy-only")
+        config.networks = [
+            AttachmentConfiguration(
+                network: "default",
+                options: AttachmentOptions(hostname: "copy-only")
+            )
+        ]
+        config.dns = ContainerConfiguration.DNSConfiguration(nameservers: ["192.0.2.1"])
+        config.hosts = [
+            ContainerConfiguration.HostEntry(
+                ipAddress: ContainerConfiguration.HostEntry.hostGatewayAddress,
+                hostnames: ["host.docker.internal"]
+            )
+        ]
+        config.publishedPorts = [
+            try PublishPort(
+                hostAddress: try IPAddress("127.0.0.1"),
+                hostPort: 8080,
+                containerPort: 80,
+                proto: .tcp,
+                count: 1
+            )
+        ]
+        config.mounts = [
+            .virtiofs(source: "/tmp/copy-mount", destination: "/data", options: [])
+        ]
+
+        let copyConfig = RuntimeService.configurationForCopyOnlyBootstrap(config)
+
+        #expect(copyConfig.networks.isEmpty)
+        #expect(copyConfig.publishedPorts.isEmpty)
+        #expect(copyConfig.dns == nil)
+        #expect(copyConfig.hosts.isEmpty)
+        #expect(config.hosts.count == 1)
+        #expect(copyConfig.mounts.count == 1)
+        #expect(copyConfig.mounts[0].source == config.mounts[0].source)
+        #expect(copyConfig.mounts[0].destination == config.mounts[0].destination)
+    }
+
+    @Test
     func blockMountPassesSubpathToContainerization() {
         var filesystem = Filesystem.block(
             format: "ext4",

@@ -39,6 +39,7 @@ enum ManagedRuntimeClient: Sendable {
         networkBootstrapInfos: [NetworkBootstrapInfo],
         dynamicEnv: [String: String] = [:],
         prewarming: Bool = false,
+        copyOnly: Bool = false,
         closeStdinOnEOF: Bool = false
     ) async throws {
         switch self {
@@ -48,6 +49,7 @@ enum ManagedRuntimeClient: Sendable {
                 networkBootstrapInfos: networkBootstrapInfos,
                 dynamicEnv: dynamicEnv,
                 prewarming: prewarming,
+                copyOnly: copyOnly,
                 closeStdinOnEOF: closeStdinOnEOF
             )
         case .shared(let client):

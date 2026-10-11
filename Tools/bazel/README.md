@@ -178,6 +178,8 @@ The Smithy source-generation plugin is represented by a native Bazel action. It 
 
 ## Build boundaries
 
+The focused `bazel-stopped-copy` target exercises the signed candidate against retained Docker created/exited copy evidence. Set `PREPARED_RUNTIME` and `STOPPED_COPY_ORACLE` to matching evidence directories, then run `Tools/bazel/unattended.py --target bazel-stopped-copy --evidence /absolute/path/to/new-evidence` with those variables exported. It checks bytes, permissions, sparse logical content, hardlinks, symlinks, state, events, workload-log integrity, persistence and failure cleanup. It records per-command monotonic durations, JUnit and a timing matrix, retaining failures at or above 10x the corresponding Docker copy duration. The Docker oracle and published unchanged binaries are reused; this focused diagnostic does not replace full qualification.
+
 The active graph contains this repository and 39 pinned Swift package dependencies, plus the same-repository Go helper's pinned module dependencies. The two DocC-only lockfile packages are not imported. The internal K8s module belongs to this container repository; no separate Kubernetes repository is admitted.
 
 Normal builds produce debug artifacts. `bazel-final` also builds optimized binaries, signs the private benchmark installations and runs VMs. Packaging, publishing and family-wide release gates remain outside this check. The engine command keeps its original `main.swift` filename and explicitly selects Swift's library parsing mode for its `@main` entry point.

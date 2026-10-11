@@ -87,6 +87,7 @@ extension RuntimeClient {
         networkBootstrapInfos: [NetworkBootstrapInfo],
         dynamicEnv: [String: String] = [:],
         prewarming: Bool = false,
+        copyOnly: Bool = false,
         closeStdinOnEOF: Bool = false
     ) async throws {
         let request = XPCMessage(route: RuntimeRoutes.bootstrap.rawValue)
@@ -111,6 +112,7 @@ extension RuntimeClient {
             let dynamicEnv = try JSONEncoder().encode(dynamicEnv)
             request.set(key: RuntimeKeys.dynamicEnv.rawValue, value: dynamicEnv)
             request.set(key: RuntimeKeys.prewarming.rawValue, value: prewarming)
+            request.set(key: RuntimeKeys.copyOnlyBootstrap.rawValue, value: copyOnly)
             request.set(key: RuntimeKeys.closeStdinOnEOF.rawValue, value: closeStdinOnEOF)
 
             let infosData = try JSONEncoder().encode(networkBootstrapInfos)

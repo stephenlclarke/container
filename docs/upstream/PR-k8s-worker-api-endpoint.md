@@ -9,10 +9,12 @@ See the [matching issue](ISSUE-k8s-worker-api-endpoint.md).
 ## Validation
 
 - [x] Optimized `K8sPluginTests` component: 98 tests passed, no failures or skips.
-- [ ] `testCreateWithWorkersRegistersAllNodes` integration case after the active runtime session is complete.
+- [x] Both original worker-join failures pass, with three nodes Ready; the complete original CLI integration suite passes 431 tests with no failures or skips.
 - [x] Independent source review: no actionable findings; Swift formatting and scoped Markdown lint passed.
 
-The regression proof retained the old loopback behavior and failed for both one and three workers while the zero-worker cases passed. Swift Testing reports those two parameter cases as one JUnit test with four failed assertions. The corrected component passed afterward. The original full CLI run passed 429 of 431 tests; its two worker-join failures are retained, and runtime validation of this correction is pending.
+The regression proof retained the old loopback behavior and failed for both one and three workers while the zero-worker cases passed. Swift Testing reports those two parameter cases as one JUnit test with four failed assertions. The corrected component passed afterward. The original full CLI run passed 429 of 431 tests; its two worker-join failures remain retained alongside the corrected exact-source integration results and eight runtime workloads with seven fresh candidate samples each. Historical Apple measurements were reused without rebuilding or rerunning that baseline.
+
+The [measured candidate checkpoint](https://github.com/stephenlclarke/container/releases/tag/candidate-performance-aa05963f815b-83e37af4a629) contains the exact signed executables for `aa05963f815b5ab5cdfaee43932301beb9699321`, benchmark/parity provenance, raw logs, JUnit and preserved failed attempts. All four assets were downloaded and checksum-verified after publication. This is a measured candidate checkpoint, not a notarized production distribution or a claim of complete Docker parity; main integration and unavailable exact-head GitHub authority remain programme close-out work.
 
 ## Compatibility and risks
 
