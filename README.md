@@ -225,3 +225,5 @@ Service registration queries wait directly for process completion while preservi
 installation ownership checks. See the [runtime performance changes](docs/PR-runtime-performance.md).
 
 Container create and start revalidate the selected logging driver against the current registry. Unrelated journald readiness is deferred until journald is selected; see the [selected-driver readiness change](docs/PR-selected-logging-readiness.md) for validation status.
+
+The candidate dependency graph selects the validated SDK, SSL and gRPC fork revisions explicitly; see the [lower-fork consumption handoff](docs/upstream/PR-lower-fork-selection.md). Published historical binaries and benchmark results retain their original graphs.
