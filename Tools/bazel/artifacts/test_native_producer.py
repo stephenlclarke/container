@@ -524,6 +524,43 @@ class NativeProducerTests(unittest.TestCase):
         self.assertNotEqual(record['sha256'], record['originalSHA256'])
         self.assertEqual(record['normalization'], native_producer.ENV_POLICY)
 
+    def test_public_proof_preserves_parameter_assignment_diagnostic(self):
+        fixture = self.fixture()
+        log = fixture.output / 'source-build.raw.log'
+        diagnostic = b'3827 |             self.uploadSequenceToken = uploadSequenceToken\n'
+        log.write_bytes(diagnostic)
+        fixture.receipt['sourceBuildLogSHA256'] = native_layers.digest(log)
+        fixture.save_receipt()
+        locks = fixture.plan()
+        proof = fixture.directory / 'publication' / locks['proof']['asset']
+        sidecar = json.loads((fixture.directory / 'publication' / locks['evidence']['asset']).read_text())
+        self.assertTrue(native_producer.verify_proof_bundle(proof, sidecar)['passed'])
+        with tarfile.open(proof, 'r:gz') as archive:
+            self.assertEqual(archive.extractfile('argument-parser/producer/source-build.raw.log').read(), diagnostic)
+        self.assertEqual(log.read_bytes(), diagnostic)
+        record = sidecar['proofBundle']['files']['argument-parser/producer/source-build.raw.log']
+        self.assertIsNone(record['normalization'])
+        self.assertEqual(record['sha256'], record['originalSHA256'])
+
+    def test_parameter_diagnostic_exception_does_not_allow_credential_values(self):
+        fixture = self.fixture()
+        log = fixture.output / 'credential-check.log'
+        values = [
+            'self.uploadSequenceToken = uploadSequenceToken',
+            '3827 | self.uploadSequenceToken = otherLongIdentifier',
+            '3827 | self.uploadSequenceToken = ghp_' + 'a' * 25,
+            '3827 | self.uploadSequenceToken = uploadSequenceToken; password=' + 'a' * 25,
+            '3827 | self.ghp_' + 'a' * 25 + ' = ghp_' + 'a' * 25,
+            'password=' + 'a' * 25,
+            'authorization: bearer ' + 'a' * 25,
+            '-----BEGIN PRIVATE KEY-----',
+        ]
+        for value in values:
+            with self.subTest(case=values.index(value)):
+                log.write_text(value + '\n')
+                with self.assertRaisesRegex(ValueError, 'credential-like'):
+                    native_producer._public_bytes(log)
+
     def test_public_proof_refuses_credentials_outside_environment_dump(self):
         fixture = self.fixture()
         log = fixture.output / 'source-build.raw.log'

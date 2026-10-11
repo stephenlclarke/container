@@ -304,6 +304,27 @@ CREDENTIAL = re.compile(
     r'|(?i:(?:token|password|secret|api_key)\s*=\s*[^\s"<>]{12,})')
 
 
+PARAMETER_DIAGNOSTIC = re.compile(
+    r'\s*[0-9]+[ \t]+\|[ \t]*self\.(?P<field>[A-Za-z_][A-Za-z0-9_]*)'
+    r'[ \t]*=[ \t]*(?P=field)[ \t]*')
+CREDENTIAL_ASSIGNMENT = re.compile(
+    r'(?i:(?:token|password|secret|api_key)\s*=\s*[A-Za-z_][A-Za-z0-9_]*)')
+
+
+def _contains_credentials(text: str) -> bool:
+    for match in CREDENTIAL.finditer(text):
+        start = text.rfind('\n', 0, match.start()) + 1
+        end = text.find('\n', match.end())
+        line = text[start:len(text) if end == -1 else end]
+        # Swift warning excerpts print parameter-to-property assignments. An
+        # identical unquoted identifier is a reference, not a credential value.
+        # Keep the raw excerpt; literals and standalone token formats still fail.
+        if PARAMETER_DIAGNOSTIC.fullmatch(line) and CREDENTIAL_ASSIGNMENT.fullmatch(match.group()):
+            continue
+        return True
+    return False
+
+
 def _public_bytes(path: Path, *, events: bool = False) -> tuple[bytes, str | None]:
     raw = path.read_bytes()
     policy = None
@@ -340,7 +361,7 @@ def _public_bytes(path: Path, *, events: bool = False) -> tuple[bytes, str | Non
                 line = (json.dumps(row, sort_keys=True) + '\n').encode()
             output.append(line)
         raw = b''.join(output)
-    if CREDENTIAL.search(raw.decode('utf-8')):
+    if _contains_credentials(raw.decode('utf-8')):
         raise ValueError('credential-like material prevents public evidence export')
     return raw, policy
 

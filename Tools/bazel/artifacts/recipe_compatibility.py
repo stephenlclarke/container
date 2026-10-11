@@ -35,6 +35,9 @@ NEW = {
 HOST_FIXTURE = 'Tools/bazel/async-http-client-host-tests.patch'
 HOST_FIXTURE_OLD = '9d437e372b38bca686d7839b48566442bdd41239e1b300010567b0861a328282'
 HOST_FIXTURE_NEW = '38bc850cf28df21d01a656eada236f434081233d1b8a4ab0407d9ae17d50e70f'
+PUBLIC_EVIDENCE_CHECK = 'Tools/bazel/artifacts/native_producer.py'
+PUBLIC_EVIDENCE_OLD = 'a0cf93cc6d08a47698f875faf9f835f924693d6b841021fbf4d420284c9db587'
+PUBLIC_EVIDENCE_NEW = 'd4c656f63c9119866bb60783a54a396051169d929b4bc7cf9f24fbfc1d3f5298'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -69,6 +72,13 @@ def admit(producer: object, current: object, root: Path) -> dict:
             and current[HOST_FIXTURE] == HOST_FIXTURE_NEW):
         remaining.remove(HOST_FIXTURE)
         modes.append('known-host-timeout-fixture-update')
+    # This byte-bound change only recognizes a Swift parameter-assignment
+    # diagnostic in the public evidence credential scan. No compiled inputs,
+    # build flags, archive bytes or evidence normalization rules change.
+    if (PUBLIC_EVIDENCE_CHECK in remaining and producer[PUBLIC_EVIDENCE_CHECK] == PUBLIC_EVIDENCE_OLD
+            and current[PUBLIC_EVIDENCE_CHECK] == PUBLIC_EVIDENCE_NEW):
+        remaining.remove(PUBLIC_EVIDENCE_CHECK)
+        modes.append('known-parameter-diagnostic-scan-update')
     if remaining:
         raise ValueError('published native recipe differs from authenticated consumer update')
     mode = '+'.join(modes) if modes else 'exact'

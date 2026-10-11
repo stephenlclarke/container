@@ -100,6 +100,31 @@ class RecipeCompatibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
                     compatibility.admit(producer, current, self.root)
 
+    def test_exact_diagnostic_scan_transition_preserves_compiled_recipe(self):
+        key = compatibility.PUBLIC_EVIDENCE_CHECK
+        before = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_OLD})
+        after = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_NEW})
+        result = compatibility.admit(before, after, self.root)
+        self.assertEqual(result['mode'], 'known-parameter-diagnostic-scan-update')
+        self.assertEqual(result['changedFiles'], [key])
+        self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+        selected = Path(compatibility.__file__).with_name('native_producer.py')
+        self.assertEqual(compatibility.digest(selected.read_bytes()), compatibility.PUBLIC_EVIDENCE_NEW)
+
+    def test_diagnostic_scan_transition_rejects_unknown_reverse_and_build_drift(self):
+        key = compatibility.PUBLIC_EVIDENCE_CHECK
+        before = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_OLD})
+        after = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_NEW})
+        for producer, current in (
+                (before, dict(after, **{key: '0' * 64})),
+                (dict(before, **{key: '0' * 64}), after),
+                (after, before),
+                (before, dict(after, **{'Package.swift': '0' * 64})),
+                (before, dict(after, **{'Tools/bazel/artifacts/native_format.py': '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
+
     def test_inventory_and_hash_shape_drift_is_rejected(self):
         for current in (dict(self.current, extra='0' * 64),
                         {key: value for key, value in self.current.items() if key != 'MODULE.bazel'},

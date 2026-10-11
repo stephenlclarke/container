@@ -46,6 +46,8 @@ The source build now packages `container-build` and `container-builder` plugins 
 
 The source candidate preserves the effective image entrypoint and command when committing a container, including later command overrides. The [commit compatibility handoff](docs/upstream/PR-2350.md) describes backward compatibility for saved configurations and the pending matched-stack integration proof.
 
+Native layer publication retains raw compiler diagnostics in its proof bundle. The [evidence scanner handoff](docs/PR-native-evidence-diagnostic-scan.md) describes the narrow parameter-assignment exception and the byte-bound recipe transition used to reuse an unchanged qualified lower layer.
+
 As of 15 September 2026, source-bearing `main` revision `ef78345f59fd`
 passes the merge build, SonarQube, signed Prebuilt Binaries, and downstream
 matched-stack publication. Recent exact-main SonarQube analyses report an `OK`
