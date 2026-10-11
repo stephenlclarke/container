@@ -16,6 +16,13 @@ import uuid
 import xml.etree.ElementTree as ET
 
 
+def workload_log_payloads(files: dict) -> dict:
+    """Compare actual log records independently of asynchronous create metadata."""
+    return {name: row for name, row in files.items()
+            if row['size'] > 0 and (Path(name).name.startswith(('stdio.log', 'stdio.jsonl'))
+                                   or name.startswith('logging-v2/json-file/'))}
+
+
 def timing_pairs(operations: list[dict], reference: dict) -> list[dict]:
     """Pair only identical copy fixtures, including their full command overhead."""
     references = {}
@@ -137,6 +144,7 @@ def main() -> int:
             payload.chmod(0o640)
             workload = 'test -f /tmp/payload; cp /tmp/payload /tmp/persisted; printf executed > /tmp/workload-executed'
             owned.append(created)
+            create_to_copy_started = time.monotonic()
             command('create-never-started', ['create', *resources, '--name', created, ALPINE, 'sh', '-ec', workload])
             before = snapshot(created, 'created-before')
             if before['status']['state'] != 'stopped' or before['status'].get('startedDate') is not None:
@@ -144,6 +152,18 @@ def main() -> int:
             started, since = time.monotonic(), time.time()
             logs = workload_logs(created)
             command('copy-into-created', ['cp', str(payload), created + ':/tmp/payload'])
+            result['createdThroughFirstCopySeconds'] = time.monotonic() - create_to_copy_started
+            after_first_copy = workload_logs(created)
+            result['createdFirstCopyLogs'] = {
+                'before': logs, 'after': after_first_copy,
+                'scope': 'Default CLI create may initialize logging metadata asynchronously; '
+                         'first-copy timing includes any wait for that work. Actual log records must remain unchanged. '
+                         'Isolated cold/prewarmed integration fixtures prove complete log-bundle immutability.'}
+            if workload_log_payloads(after_first_copy) != workload_log_payloads(logs):
+                raise RuntimeError('Created copy changed workload log records')
+            # The first copy has crossed the per-container lifecycle fence, so
+            # create-time prewarming cannot race the subsequent full snapshot.
+            logs = after_first_copy
             copied = evidence / 'created-copy'
             command('copy-out-created', ['cp', created + ':/tmp/payload', str(copied)])
             if copied.read_bytes() != payload.read_bytes() or stat.S_IMODE(copied.stat().st_mode) != 0o640:

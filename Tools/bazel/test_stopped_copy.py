@@ -2,7 +2,26 @@
 
 import unittest
 
-from stopped_copy import timing_pairs
+from stopped_copy import timing_pairs, workload_log_payloads
+
+
+class StoppedCopyLogTests(unittest.TestCase):
+    def test_empty_create_metadata_is_not_a_workload_record(self):
+        files = {'logging-v2/history-sequence-v1.bin': {'size': 57, 'sha256': 'metadata'},
+                 'logging-v2/process-generation-v1.bin': {'size': 48, 'sha256': 'generation'},
+                 'logging-v2/json-file/json.log': {'size': 0, 'sha256': 'empty'}}
+        self.assertEqual(workload_log_payloads(files), {})
+
+    def test_nonempty_current_rotated_and_legacy_logs_are_all_observed(self):
+        names = ['stdio.log', 'stdio.jsonl.1', 'logging-v2/json-file/json.log',
+                 'logging-v2/json-file/json.log.1']
+        files = {name: {'size': 9, 'sha256': name} for name in names}
+        self.assertEqual(workload_log_payloads(files), files)
+
+    def test_payload_changes_cannot_be_hidden_as_metadata_initialization(self):
+        before = {'logging-v2/json-file/json.log': {'size': 3, 'sha256': 'old'}}
+        after = {'logging-v2/json-file/json.log': {'size': 3, 'sha256': 'new'}}
+        self.assertNotEqual(workload_log_payloads(before), workload_log_payloads(after))
 
 
 class StoppedCopyTimingTests(unittest.TestCase):
