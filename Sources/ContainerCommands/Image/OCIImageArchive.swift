@@ -20,6 +20,27 @@ import ContainerizationOCI
 import Foundation
 
 enum OCIImageArchive {
+    private static func imageCommand(
+        for process: ProcessConfiguration, sourceConfig: ImageConfig?
+    ) -> ProcessConfiguration.ImageCommand {
+        let argv = [process.executable] + process.arguments
+        if let command = process.imageCommand,
+            (command.entrypoint ?? []) + (command.command ?? []) == argv
+        {
+            return command
+        }
+        // Legacy records lack the requested split. Preserve the source entrypoint
+        // when it still matches argv; an explicit historical override is ambiguous.
+        let entrypoint = sourceConfig?.entrypoint == [""] ? [] : sourceConfig?.entrypoint
+        if let entrypoint, !entrypoint.isEmpty {
+            if argv.starts(with: entrypoint) {
+                return .init(entrypoint: entrypoint, command: Array(argv.dropFirst(entrypoint.count)))
+            }
+            return .init(entrypoint: [process.executable], command: process.arguments)
+        }
+        return .init(entrypoint: entrypoint, command: argv)
+    }
+
     static func create(
         from rootfsArchive: URL,
         in temporaryDirectory: URL,
@@ -29,13 +50,14 @@ enum OCIImageArchive {
     ) throws -> URL {
         let platform = container.configuration.platform
         let process = container.configuration.initProcess
+        let command = imageCommand(for: process, sourceConfig: sourceImage.config)
         var labels = sourceImage.config?.labels ?? [:]
         labels.merge(container.configuration.labels) { _, containerValue in containerValue }
         let imageConfig = ImageConfig(
             user: process.user.description,
             env: process.environment,
-            entrypoint: [process.executable],
-            cmd: process.arguments,
+            entrypoint: command.entrypoint,
+            cmd: command.command,
             workingDir: process.workingDirectory,
             labels: labels,
             stopSignal: container.configuration.stopSignal

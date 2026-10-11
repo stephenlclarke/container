@@ -1632,34 +1632,29 @@ public struct Parser {
             return "/"
         }()
 
-        let processArguments: [String]? = {
-            var result: [String] = []
-            let hasEntrypointOverride = managementFlags.entrypoint != nil
-            if managementFlags.clearEntrypoint {
-                // Keep the image command while explicitly omitting the image
-                // entrypoint. This represents an OCI empty Entrypoint array.
-            } else if let entrypoint = managementFlags.entrypoint {
-                if !entrypoint.isEmpty {
-                    result = [entrypoint]
-                }
-            } else if let entrypoint = config?.entrypoint, !entrypoint.isEmpty, entrypoint != [""] {
-                result = entrypoint
-            }
-            if !arguments.isEmpty {
-                result.append(contentsOf: arguments)
-            } else {
-                if let cmd = config?.cmd, !hasEntrypointOverride || managementFlags.clearEntrypoint, !cmd.isEmpty {
-                    result.append(contentsOf: cmd)
-                }
-            }
-            return result.count > 0 ? result : nil
-        }()
-
         if managementFlags.clearEntrypoint, managementFlags.entrypoint != nil {
             throw ContainerizationError(.invalidArgument, message: "--clear-entrypoint cannot be combined with --entrypoint")
         }
 
-        guard let commandToRun = processArguments, commandToRun.count > 0 else {
+        let entrypoint: [String]?
+        if managementFlags.clearEntrypoint {
+            entrypoint = []
+        } else if let override = managementFlags.entrypoint {
+            entrypoint = override.isEmpty ? [] : [override]
+        } else {
+            entrypoint = config?.entrypoint == [""] ? [] : config?.entrypoint
+        }
+        let command: [String]?
+        if !arguments.isEmpty {
+            command = arguments
+        } else if managementFlags.entrypoint == nil {
+            command = config?.cmd
+        } else {
+            command = nil
+        }
+        let imageCommand = ProcessConfiguration.ImageCommand(entrypoint: entrypoint, command: command)
+        let commandToRun = (entrypoint ?? []) + (command ?? [])
+        guard !commandToRun.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "command/entrypoint not specified for container process")
         }
 
@@ -1689,7 +1684,8 @@ public struct Parser {
             rlimits: rlimits,
             oomScoreAdj: processFlags.oomScoreAdj,
             privileged: processFlags.privileged,
-            noNewPrivileges: try securityOptions(managementFlags.securityOpts).noNewPrivileges
+            noNewPrivileges: try securityOptions(managementFlags.securityOpts).noNewPrivileges,
+            imageCommand: imageCommand
         )
     }
 

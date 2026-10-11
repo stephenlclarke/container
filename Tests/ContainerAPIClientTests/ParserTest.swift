@@ -1432,6 +1432,7 @@ struct ParserTest {
 
         #expect(result.executable == "./uname")
         #expect(result.workingDirectory == "/bin")
+        #expect(result.imageCommand == .init(entrypoint: ["./uname"], command: nil))
     }
 
     @Test
@@ -1445,6 +1446,7 @@ struct ParserTest {
 
         #expect(result.executable == "/usr/local/bin/server")
         #expect(result.arguments == ["--serve", "8080"])
+        #expect(result.imageCommand == .init(entrypoint: [], command: ["/usr/local/bin/server", "--serve", "8080"]))
     }
 
     @Test
@@ -1500,6 +1502,7 @@ struct ParserTest {
 
         #expect(result.executable == "/usr/local/bin/server")
         #expect(result.arguments == ["--serve", "8080"])
+        #expect(result.imageCommand == .init(entrypoint: ["/usr/local/bin/server"], command: ["--serve", "8080"]))
     }
 
     @Test

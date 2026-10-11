@@ -767,3 +767,30 @@ struct ContainerConfigurationStopTests {
         #expect(decoded.stopTimeoutInSeconds == nil)
     }
 }
+
+struct ProcessImageCommandPersistenceTests {
+    @Test func legacyProcessOmitsCommandMetadata() throws {
+        let process = makeTestConfiguration().initProcess
+        let data = try JSONEncoder().encode(process)
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["imageCommand"] == nil)
+        let decoded = try JSONDecoder().decode(ProcessConfiguration.self, from: data)
+        #expect(decoded.imageCommand == nil)
+        #expect(decoded.executable == process.executable)
+        #expect(decoded.arguments == process.arguments)
+    }
+
+    @Test(arguments: [
+        ProcessConfiguration.ImageCommand(entrypoint: nil, command: ["/bin/sh"]),
+        ProcessConfiguration.ImageCommand(entrypoint: [], command: ["/bin/sh"]),
+        ProcessConfiguration.ImageCommand(entrypoint: ["/bin/sh"], command: nil),
+        ProcessConfiguration.ImageCommand(entrypoint: ["/bin/sh"], command: []),
+        ProcessConfiguration.ImageCommand(entrypoint: ["/usr/bin/env", "sh"], command: ["-c", "true"]),
+    ])
+    func roundTripsCommandSplit(_ command: ProcessConfiguration.ImageCommand) throws {
+        var config = makeTestConfiguration()
+        config.initProcess.imageCommand = command
+        let decoded = try JSONDecoder().decode(ContainerConfiguration.self, from: JSONEncoder().encode(config))
+        #expect(decoded.initProcess.imageCommand == command)
+    }
+}

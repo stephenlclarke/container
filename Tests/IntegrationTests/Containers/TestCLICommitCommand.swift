@@ -57,6 +57,9 @@ struct TestCLICommitCommand {
                 #expect(result.output.trimmingCharacters(in: .whitespacesAndNewlines) == reference)
                 #expect(try f.isImagePresent(reference))
                 try assertCommittedImageMetadata(f, reference: reference, platform: platform)
+                let override = try f.run(["run", "--rm", reference, "echo", "committed-command-override"])
+                try override.check("committed image command override failed")
+                #expect(override.output.trimmingCharacters(in: .whitespacesAndNewlines) == "committed-command-override")
 
                 try await f.withContainer(image: reference, tag: "committed", containerArgs: []) { committedName in
                     let output = try f.doExec(committedName, cmd: ["cat", "/committed-file"])
@@ -100,8 +103,8 @@ struct TestCLICommitCommand {
         let image = try decoder.decode(Image.self, from: blobData(manifest.config, in: extractedDirectory))
         #expect(image.rootfs.diffIDs == manifest.layers.map { $0.digest })
         #expect(image.history?.count == manifest.layers.count)
-        #expect(image.config?.entrypoint == ["sleep"])
-        #expect(image.config?.cmd == ["infinity"])
+        #expect(image.config?.entrypoint == nil)
+        #expect(image.config?.cmd == ["sleep", "infinity"])
     }
 
     private func blobData(_ descriptor: Descriptor, in directory: FilePath) throws -> Data {
