@@ -33,6 +33,14 @@ public struct K8sCreate: AsyncParsableCommand {
         abstract: "Create and start a local Kubernetes cluster and worker nodes"
     )
 
+    // kubeadm persists this endpoint and workers follow it during discovery.
+    // Only a single-node cluster can use loopback across VM address changes.
+    static func controlPlaneEndpoint(vmIP: String, workers: UInt) -> String {
+        workers == 0
+            ? K8sHelper.nodeLocalControlPlaneEndpoint
+            : "\(vmIP):\(K8sHelper.clusterContainerPort)"
+    }
+
     @Option(name: .long, help: "Cluster name (default: \(K8sHelper.defaultName))")
     var name: String = K8sHelper.defaultName
 
@@ -110,6 +118,7 @@ public struct K8sCreate: AsyncParsableCommand {
         var workerNames: [String] = []
         do {
             let vmIP = try await provisioner.address(name: name, log: log)
+            let controlPlaneEndpoint = Self.controlPlaneEndpoint(vmIP: vmIP, workers: workers)
             var sans = ["127.0.0.1"]
             if let fqdn { sans.append(contentsOf: [vmIP, fqdn]) }
 
@@ -117,10 +126,7 @@ public struct K8sCreate: AsyncParsableCommand {
             try await K8sHelper.prepareNode(nodeID: name, client: client, log: log)
             try await K8sHelper.bootstrapControlPlane(
                 nodeID: name, nodeImage: nodeImage, apiServerSANs: sans, advertiseAddress: vmIP,
-                // All in-VM Kubernetes clients (including host-networked kube-proxy)
-                // can reach the single-node API through loopback. This endpoint is
-                // independent of the container's rotating vmnet address.
-                controlPlaneEndpoint: K8sHelper.nodeLocalControlPlaneEndpoint,
+                controlPlaneEndpoint: controlPlaneEndpoint,
                 schedulable: provisioner.roles.contains(StandardRoles.worker),
                 customCNIManifest: customCNIManifest,
                 skipCNI: skipCNI,
@@ -128,7 +134,6 @@ public struct K8sCreate: AsyncParsableCommand {
 
             if workers > 0 {
                 let (token, caCertHash) = try await K8sHelper.createJoinToken(nodeID: name, client: client)
-                let controlPlaneEndpoint = "\(vmIP):\(K8sHelper.clusterContainerPort)"
                 for i in 1...workers {
                     let workerName = "\(name)-worker-\(i)"
                     progress.set(description: "Joining worker \(workerName)")

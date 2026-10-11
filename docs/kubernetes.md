@@ -91,6 +91,8 @@ container k8s create --name my-cluster --workers 3
 
 When `--workers` is greater than `0`, the control-plane node is tainted so pods only schedule onto worker nodes, matching typical multi-node cluster behavior. Worker nodes share the same `--node-image`, `--cpus`, and `--memory` settings as the control plane, and are named `<cluster-name>-worker-<n>`.
 
+Multi-node clusters use the control-plane VM address as the shared API endpoint so workers can reach it. If the control-plane container is recreated with a different address, recreate the cluster and its workers. Single-node clusters use loopback and remain independent of the VM address.
+
 ### Access clusters with kubectl
 
 Once a cluster is created, `kubectl` works normally:
