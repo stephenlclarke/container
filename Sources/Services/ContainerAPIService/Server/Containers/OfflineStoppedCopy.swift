@@ -37,6 +37,14 @@ enum OfflineStoppedCopy {
             && !state.prewarmCleanupRequiresLoggingClose
     }
 
+    /// With no mounts there is no writable destination in a read-only rootfs.
+    /// Mounted destinations retain the runtime's existing path resolution.
+    static func validateCopyInRootfs(_ configuration: ContainerConfiguration) throws {
+        if configuration.readOnly && configuration.mounts.isEmpty {
+            throw ContainerizationError(.invalidState, message: "container rootfs is marked read-only")
+        }
+    }
+
     /// Called before the first offline access while holding the lifecycle slot.
     /// RuntimeLinux observes the same final readiness marker on a later boot.
     static func prepareRootfs(bundle: ContainerResource.Bundle, options: ContainerCreateOptions) throws -> URL? {

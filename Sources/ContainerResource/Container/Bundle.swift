@@ -100,7 +100,11 @@ extension Bundle {
         get throws {
             do {
                 _ = try configuration
-                return true
+                let kernel = try self.kernel
+                guard kernel.path.standardizedFileURL == path.appendingPathComponent(Self.kernelBinaryFilename).standardizedFileURL,
+                    Self.regularFileExists(kernel.path), Self.regularFileExists(URL(fileURLWithPath: initialFilesystem.source))
+                else { return false }
+                return try Self.filesystemExists(containerRootfs)
             } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
                 return false
             }
@@ -116,6 +120,16 @@ extension Bundle {
     ) throws -> Bundle {
         let bundle = Bundle(path: path)
         guard try !bundle.isPrepared else { throw POSIXError(.EEXIST) }
+        // Legacy versions wrote config before rootfs preparation. Keep an already
+        // materialized rootfs (and its copied data) when repairing other resources.
+        let existingConfiguration = try? bundle.configuration
+        let existingRootfs = try? bundle.containerRootfs
+        let preserveRootfs = existingRootfs.map(Self.filesystemExists) ?? false
+        if existingConfiguration != nil, existingRootfs == nil, Self.regularFileExists(bundle.containerRootfsBlock) {
+            // Without its descriptor an old image may contain copied data. Do not
+            // guess its provenance or erase it while repairing legacy readiness.
+            throw POSIXError(.ENOTRECOVERABLE)
+        }
         guard case .block(let format, _, _) = initialFilesystem.type, format == "ext4" else {
             throw POSIXError(.EINVAL)
         }
@@ -138,13 +152,15 @@ extension Bundle {
         try JSONEncoder().encode(finalKernel).write(to: stage.appendingPathComponent(kernelFilename))
         _ = try initialFilesystem.clone(to: stage.appendingPathComponent(initfsFilename).path)
 
-        if let override = options?.rootFsOverride {
+        if preserveRootfs {
+            // Its descriptor and backing image already belong to this container.
+        } else if let override = options?.rootFsOverride {
             try JSONEncoder().encode(override).write(to: staged.containerRootfsConfig)
         } else if let rootfs = containerRootFilesystem {
             var finalRootfs = try rootfs.clone(to: staged.containerRootfsBlock.path)
             // Metadata must name the final bundle, never the staging directory.
             finalRootfs.source = bundle.containerRootfsBlock.path
-            if containerConfiguration?.readOnly == true, !finalRootfs.options.contains("ro") {
+            if (existingConfiguration ?? containerConfiguration)?.readOnly == true, !finalRootfs.options.contains("ro") {
                 finalRootfs.options.append("ro")
             }
             try JSONEncoder().encode(finalRootfs).write(to: staged.containerRootfsConfig)
@@ -162,11 +178,28 @@ extension Bundle {
             try didPublish(name)
         }
         try syncResource(path, directory: true)
-        if let containerConfiguration {
+        if let configuration = existingConfiguration ?? containerConfiguration {
             // No observer can mistake a partial preparation for a ready bundle.
-            try bundle.setDurably(configuration: containerConfiguration)
+            try bundle.setDurably(configuration: configuration)
         }
         return bundle
+    }
+
+    private static func regularFileExists(_ url: URL) -> Bool {
+        var status = stat()
+        return lstat(url.path, &status) == 0 && status.st_mode & S_IFMT == S_IFREG
+    }
+
+    private static func filesystemExists(_ filesystem: Filesystem) -> Bool {
+        switch filesystem.type {
+        case .block, .volume:
+            return regularFileExists(URL(fileURLWithPath: filesystem.source))
+        case .virtiofs:
+            var directory: ObjCBool = false
+            return FileManager.default.fileExists(atPath: filesystem.source, isDirectory: &directory) && directory.boolValue
+        case .tmpfs:
+            return true
+        }
     }
 
     private static func removePreparationStage(_ stage: URL, allowedNames: [String]) throws {

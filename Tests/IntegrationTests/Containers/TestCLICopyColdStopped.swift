@@ -166,6 +166,48 @@ struct TestCLICopyColdStopped {
         }
     }
 
+    @Test
+    func readonlyCopyInFailsBeforePreparationAndCopyOutStillWorks() async throws {
+        try await ContainerFixture.with { fixture in
+            let imageReference = try fixture.copyWarmupImage(.alpine320)
+            let name = "\(fixture.testID)-readonly-copy"
+            fixture.addCleanup { try fixture.doRemoveIfExists(name, force: true, ignoreFailure: true) }
+            let image = try await ClientImage.get(reference: imageReference, containerSystemConfig: ContainerSystemConfig())
+            var configuration = ContainerConfiguration(
+                id: name, image: image.description,
+                process: .init(executable: "/bin/true", arguments: [], environment: []))
+            configuration.readOnly = true
+            configuration.resources.cpus = 1
+            configuration.resources.memoryInBytes = 512 * 1024 * 1024
+            let kernel = try await ClientKernel.getDefaultKernel(for: .current)
+            try await ContainerClient().create(
+                configuration: configuration,
+                options: .init(autoRemove: false, prewarm: false), kernel: kernel)
+            let path = try containerBundleURL(id: name)
+            let bundle = ContainerResource.Bundle(path: path)
+            let before = try canonicalInspect(fixture, name: name)
+            let logsBefore = try snapshotLogArtifacts(bundle: path)
+            let source = fixture.testDir.appending("readonly-source")
+            try payload.write(to: URL(filePath: source.string))
+            let directory = fixture.testDir.appending("readonly-directory")
+            try FileManager.default.createDirectory(atPath: directory.string, withIntermediateDirectories: false)
+            try payload.write(to: URL(fileURLWithPath: directory.string).appendingPathComponent("payload"))
+            for input in [source.string, directory.string] {
+                let result = try fixture.run(["cp", input, "\(name):/tmp/readonly-copy"])
+                #expect(result.status == 1)
+            }
+            #expect(try !bundle.isPrepared)
+            #expect(!FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path))
+            #expect(!FileManager.default.fileExists(atPath: bundle.bootlog.path))
+            #expect(try canonicalInspect(fixture, name: name) == before)
+            #expect(try snapshotLogArtifacts(bundle: path) == logsBefore)
+            try fixture.run(["cp", "\(name):/etc/alpine-release", fixture.testDir.appending("release").string]).check()
+            #expect(try bundle.isPrepared)
+            #expect(!FileManager.default.fileExists(atPath: bundle.bootlog.path))
+            #expect(try canonicalInspect(fixture, name: name) == before)
+        }
+    }
+
     private func containerBundleURL(id: String) throws -> URL {
         guard let appRoot = ProcessInfo.processInfo.environment["CONTAINER_APP_ROOT"] else {
             throw CommandError.executionFailed("CONTAINER_APP_ROOT is required to inspect copy bundle state")

@@ -92,6 +92,34 @@ struct BundlePreparationTests {
         #expect(try !fixture.bundle.isPrepared)
     }
 
+    @Test(arguments: ["kernel.bin", "kernel.json", "initfs.ext4", "rootfs.ext4"])
+    func legacyConfigFirstPartialBundleRecovers(missing: String) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.prepare()
+        let copied = Data("preserve-offline-copied-data".utf8)
+        try copied.write(to: fixture.bundle.containerRootfsBlock)
+        try FileManager.default.removeItem(at: fixture.bundle.path.appendingPathComponent(missing))
+        #expect(try !fixture.bundle.isPrepared)
+        _ = try fixture.prepare()
+        #expect(try fixture.bundle.isPrepared)
+        let expected = missing == "rootfs.ext4" ? fixture.rootBytes : copied
+        #expect(try Data(contentsOf: fixture.bundle.containerRootfsBlock) == expected)
+        try fixture.checkState()
+    }
+
+    @Test
+    func legacyImageWithoutDescriptorIsPreserved() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        _ = try fixture.prepare()
+        try FileManager.default.removeItem(at: fixture.bundle.path.appendingPathComponent("rootfs.json"))
+        #expect(try !fixture.bundle.isPrepared)
+        #expect(throws: POSIXError.self) { try fixture.prepare() }
+        #expect(try Data(contentsOf: fixture.bundle.containerRootfsBlock) == fixture.rootBytes)
+        try fixture.checkState()
+    }
+
     @Test
     func readonlyAndOverrideKeepTheirRuntimeSemantics() throws {
         let fixture = try Fixture()

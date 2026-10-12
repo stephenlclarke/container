@@ -102,6 +102,22 @@ struct OfflineStoppedCopyTests {
     }
 
     @Test
+    func readonlyRootRejectsWritesWhileReadEligibilityIsUnchanged() throws {
+        let image = ImageDescription(
+            reference: "alpine",
+            descriptor: .init(
+                mediaType: "application/vnd.oci.image.manifest.v1+json", digest: "sha256:" + String(repeating: "0", count: 64), size: 0))
+        var configuration = ContainerConfiguration(id: "readonly", image: image, process: .init(executable: "/bin/true", arguments: [], environment: []))
+        #expect(throws: Never.self) { try OfflineStoppedCopy.validateCopyInRootfs(configuration) }
+        configuration.readOnly = true
+        #expect(throws: ContainerizationError.self) { try OfflineStoppedCopy.validateCopyInRootfs(configuration) }
+        let state = ContainersService.ContainerState(snapshot: ContainerSnapshot(configuration: configuration, status: .stopped, networks: []))
+        #expect(OfflineStoppedCopy.canReadRootfs(state))
+        configuration.mounts = [.tmpfs(destination: "/tmp", options: [])]
+        #expect(throws: Never.self) { try OfflineStoppedCopy.validateCopyInRootfs(configuration) }
+    }
+
+    @Test
     func firstOfflineAccessMaterializesAndReusesPrivateFilesystem() throws {
         let fixture = try Fixture()
         defer { fixture.remove() }

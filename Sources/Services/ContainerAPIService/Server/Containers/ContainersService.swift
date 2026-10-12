@@ -5503,6 +5503,7 @@ public actor ContainersService {
     {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
+            try OfflineStoppedCopy.validateCopyInRootfs(self._getContainerState(id: id).snapshot.configuration)
             if let helper = OfflineStoppedCopyIn.discoverHelper(),
                 let rootfs = try await self.offlineCopyRootfs(id: id)
             {
@@ -5539,6 +5540,7 @@ public actor ContainersService {
     ) async throws {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
+            try OfflineStoppedCopy.validateCopyInRootfs(self._getContainerState(id: id).snapshot.configuration)
             try await self.withCopyClient(id: id) { client in
                 try await client.copyIn(
                     archive: archive,

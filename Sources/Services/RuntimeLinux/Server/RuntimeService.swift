@@ -2660,8 +2660,7 @@ extension RuntimeService {
 
         let bundle = ContainerResource.Bundle(path: path)
         do {
-            _ = try bundle.configuration
-            return true
+            return try bundle.isPrepared
         } catch {
             return false
         }

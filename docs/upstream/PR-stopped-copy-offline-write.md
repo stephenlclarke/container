@@ -16,6 +16,10 @@ Native and Bazel builds produce the helper, manifest and corresponding-source ar
 
 The first cold copy lazily prepares the bundle under the same lifecycle fence. Kernel/init/rootfs resources are staged privately, fsynced and installed before publishing the durable configuration readiness marker. Metadata uses final paths. Crash retries replace only unpublished reserved resources, preserving runtime configuration, lifecycle and logs; a later real start consumes the prepared rootfs instead of cloning over copied data.
 
+A newly captured read-only Docker fixture rejects both regular and directory copy-in; the prior signed fork incorrectly accepted both. Copy-in now rejects an immutable root with no writable mounts before materialization or guest transfer. Read-only copy-out stays eligible. Mounted destinations retain existing runtime path handling and require their separate parity fixture.
+
+Legacy config-first partial bundles now check required resources, rather than trusting any decodable config. Repair preserves an existing described rootfs and current container configuration. An existing legacy image whose descriptor is missing is retained with an explicit recovery error rather than erased or assigned guessed provenance.
+
 ## Testing
 
 - Focused component evidence: 15 helper cases, independent e2fsck/debugfs checks, sandbox denial tests, four Swift commit transactions and six noncommit checks pass in transaction-v6.
