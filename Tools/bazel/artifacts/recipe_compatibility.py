@@ -46,6 +46,7 @@ STOPPED_COPY_MODE_PINS = '319b15ccaeda30dfcd93669171ef66e19adaada3b3b2ccc8d605d9
 STOPPED_COPY_SYMLINK_PINS = '304e9cff133c88056b78483fe1acc502535a0d4d5875a796031312be46a1151c'
 STOPPED_COPY_OFFLINE_PINS = 'bb3c022964a4a6ce44ed18e37b7f618c9f2ae9e5a7b0fd2a6ee923398ec641f6'
 UNALIGNED_METADATA_PINS = 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083'
+COPY_FIXTURE_PINS = 'd8665fe69c80762453638756577b35ae35971561db4bed8d272e3ad5b589d513'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -137,6 +138,17 @@ def admit(producer: object, current: object, root: Path) -> dict:
             and current[CONNECTION_PINS] == UNALIGNED_METADATA_PINS):
         remaining.remove(CONNECTION_PINS)
         modes.append('known-unaligned-metadata-sdk-pin-update')
+    # Only the SDK revision changes for the copy-out integration fixture.
+    # SDK source identity still forces a new SDK artifact; independently
+    # authenticated unchanged lower layers retain their original bytes.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS,
+                                               STOPPED_COPY_SYMLINK_PINS, STOPPED_COPY_OFFLINE_PINS,
+                                               UNALIGNED_METADATA_PINS)
+            and current[CONNECTION_PINS] == COPY_FIXTURE_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-copy-fixture-sdk-pin-update')
     if remaining:
         raise ValueError('published native recipe differs from authenticated consumer update')
     mode = '+'.join(modes) if modes else 'exact'

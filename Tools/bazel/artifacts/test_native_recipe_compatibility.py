@@ -133,8 +133,6 @@ class RecipeCompatibilityTests(unittest.TestCase):
         self.assertEqual(result['mode'], 'known-sdk-transport-pin-update')
         self.assertEqual(result['changedFiles'], [key])
         self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
-        selected = Path(compatibility.__file__).resolve().parents[3] / key
-        self.assertEqual(compatibility.digest(selected.read_bytes()), 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083')
 
     def test_connection_pin_transition_rejects_unknown_reverse_and_build_drift(self):
         key = compatibility.CONNECTION_PINS
@@ -235,6 +233,29 @@ class RecipeCompatibilityTests(unittest.TestCase):
                 (dict(self.old, **{key: '0' * 64}), current),
                 (current, dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS})),
                 (dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_copy_fixture_sdk_pin_transition_reuses_only_exact_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        selected_sha = compatibility.digest((Path(__file__).resolve().parents[3] / 'Package.swift').read_bytes())
+        self.assertEqual(selected_sha, 'd8665fe69c80762453638756577b35ae35971561db4bed8d272e3ad5b589d513')
+        current = dict(self.old, **{key: selected_sha})
+        previous_pins = (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,
+                         compatibility.STOPPED_COPY_SYMLINK_PINS, compatibility.STOPPED_COPY_OFFLINE_PINS,
+                         compatibility.UNALIGNED_METADATA_PINS)
+        for previous in previous_pins:
+            with self.subTest(previous=previous):
+                accepted = compatibility.admit(dict(self.old, **{key: previous}), current, self.root)
+                self.assertEqual(accepted['mode'], 'known-copy-fixture-sdk-pin-update')
+                self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.UNALIGNED_METADATA_PINS})),
+                (dict(self.old, **{key: compatibility.UNALIGNED_METADATA_PINS}),
                  dict(current, **{'MODULE.bazel': '0' * 64}))):
             with self.subTest(producer=producer, selected=selected):
                 with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
