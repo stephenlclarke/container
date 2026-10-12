@@ -15,6 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerRuntimeClient
 import ContainerizationArchive
 import ContainerizationEXT4
 import ContainerizationError
@@ -34,6 +35,30 @@ enum OfflineStoppedCopy {
             && state.client == nil
             && !state.prewarmed && !state.copyRuntime && !state.prewarmCleanupRequired
             && !state.prewarmCleanupRequiresLoggingClose
+    }
+
+    /// Called before the first offline access while holding the lifecycle slot.
+    /// RuntimeLinux observes the same final readiness marker on a later boot.
+    static func prepareRootfs(bundle: ContainerResource.Bundle, options: ContainerCreateOptions) throws -> URL? {
+        guard options.rootFsOverride == nil else { return nil }
+        if try !bundle.isPrepared {
+            let runtime = try RuntimeConfiguration.readRuntimeConfiguration(from: bundle.path)
+            guard runtime.path.standardizedFileURL == bundle.path.standardizedFileURL,
+                let configuration = runtime.containerConfiguration,
+                configuration.effectiveIsolation == .dedicatedVM,
+                configuration.runtimeHandler == "container-runtime-linux", configuration.mounts.isEmpty,
+                runtime.options?.rootFsOverride == nil,
+                let filesystem = runtime.containerRootFilesystem,
+                case .block(let format, _, _) = filesystem.type,
+                format == "ext4", filesystem.destination == "/", filesystem.sourceSubpath == nil
+            else { return nil }
+            _ = try ContainerResource.Bundle.create(
+                path: runtime.path, initialFilesystem: runtime.initialFilesystem,
+                kernel: runtime.kernel, containerConfiguration: configuration,
+                containerRootFilesystem: filesystem, options: runtime.options
+            )
+        }
+        return try rootfsURL(bundle: bundle, options: options)
     }
 
     static func rootfsURL(bundle: ContainerResource.Bundle, options: ContainerCreateOptions) throws -> URL? {

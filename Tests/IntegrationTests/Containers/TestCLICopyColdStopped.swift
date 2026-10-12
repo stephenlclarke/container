@@ -88,6 +88,15 @@ struct TestCLICopyColdStopped {
             try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: source.string)
             try fixture.run(["cp", source.string, "\(name):/tmp/stopped-copy-file"]).check()
 
+            if !prewarm {
+                // The first regular copy must finish before any copy-only guest boot.
+                let prepared = ContainerResource.Bundle(path: bundle)
+                #expect(try prepared.isPrepared)
+                #expect(try prepared.containerRootfs.source == prepared.containerRootfsBlock.path)
+                #expect(!FileManager.default.fileExists(atPath: prepared.bootlog.path))
+                #expect(try snapshotLogArtifacts(bundle: bundle) == logsBefore)
+            }
+
             let copiedFile = fixture.testDir.appending("copied-file.txt")
             try fixture.run(["cp", "\(name):/tmp/stopped-copy-file", copiedFile.string]).check()
             #expect(try Data(contentsOf: URL(filePath: copiedFile.string)) == payload)

@@ -15,6 +15,8 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerResource
+import ContainerRuntimeClient
+import Containerization
 import ContainerizationArchive
 import ContainerizationEXT4
 import ContainerizationError
@@ -97,6 +99,52 @@ struct OfflineStoppedCopyTests {
         try FileManager.default.removeItem(at: fixture.image)
         try FileManager.default.createSymbolicLink(at: fixture.image, withDestinationURL: other)
         #expect(try OfflineStoppedCopy.rootfsURL(bundle: bundle, options: .default) == nil)
+    }
+
+    @Test
+    func firstOfflineAccessMaterializesAndReusesPrivateFilesystem() throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let bundle = ContainerResource.Bundle(path: fixture.directory.appendingPathComponent("cold"))
+        let kernel = Kernel(path: fixture.directory.appendingPathComponent("kernel"), platform: .linuxArm)
+        try Data("kernel".utf8).write(to: kernel.path)
+        let configuration = ContainerConfiguration(
+            id: "cold",
+            image: .init(
+                reference: "alpine",
+                descriptor: .init(
+                    mediaType: "application/vnd.oci.image.manifest.v1+json", digest: "sha256:" + String(repeating: "0", count: 64), size: 0)),
+            process: .init(executable: "/bin/true", arguments: [], environment: []))
+        let filesystem = Filesystem.block(format: "ext4", source: fixture.image.path, destination: "/", options: [])
+        try RuntimeConfiguration(
+            path: bundle.path, initialFilesystem: filesystem, kernel: kernel,
+            containerConfiguration: configuration, containerRootFilesystem: filesystem,
+            options: .default
+        ).writeRuntimeConfiguration()
+        let runtimeBefore = try Data(contentsOf: bundle.path.appendingPathComponent("runtime-configuration.json"))
+        let sourceBefore = try Data(contentsOf: fixture.image)
+        #expect(try !bundle.isPrepared)
+        #expect(try OfflineStoppedCopy.prepareRootfs(bundle: bundle, options: .default) == bundle.containerRootfsBlock)
+        #expect(try bundle.isPrepared)
+        let output = fixture.directory.appendingPathComponent("cold-output")
+        #expect(
+            try OfflineStoppedCopy.copyOut(
+                rootfs: bundle.containerRootfsBlock, source: "/real/target", destination: output.path,
+                createParents: true, followSymlink: false, preserveOwnership: false, log: log))
+        #expect(try Data(contentsOf: output) == fixture.payload)
+        let handle = try FileHandle(forUpdating: bundle.containerRootfsBlock)
+        defer { try? handle.close() }
+        // A padding-byte edit detects accidental recloning on repeat access.
+        try handle.seek(toOffset: 32)
+        try handle.write(contentsOf: Data([0x7a]))
+        #expect(try OfflineStoppedCopy.prepareRootfs(bundle: bundle, options: .default) == bundle.containerRootfsBlock)
+        let reopened = try FileHandle(forReadingFrom: bundle.containerRootfsBlock)
+        defer { try? reopened.close() }
+        try reopened.seek(toOffset: 32)
+        #expect(try reopened.read(upToCount: 1) == Data([0x7a]))
+        #expect(try Data(contentsOf: fixture.image) == sourceBefore)
+        #expect(try Data(contentsOf: bundle.path.appendingPathComponent("runtime-configuration.json")) == runtimeBefore)
+        #expect(try OfflineStoppedCopy.prepareRootfs(bundle: bundle, options: .init(autoRemove: false, rootFsOverride: filesystem)) == nil)
     }
 
     @Test(arguments: [0o000, 0o640, 0o755])

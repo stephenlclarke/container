@@ -14,6 +14,8 @@ The helper uses authenticated e2fsprogs 1.47.4 sources with static, system-only 
 
 Native and Bazel builds produce the helper, manifest and corresponding-source archive. Product inventory v4 retains all three and signing updates only the executable hash. Historical inventories and baseline results retain their original identity.
 
+The first cold copy lazily prepares the bundle under the same lifecycle fence. Kernel/init/rootfs resources are staged privately, fsynced and installed before publishing the durable configuration readiness marker. Metadata uses final paths. Crash retries replace only unpublished reserved resources, preserving runtime configuration, lifecycle and logs; a later real start consumes the prepared rootfs instead of cloning over copied data.
+
 ## Testing
 
 - Focused component evidence: 15 helper cases, independent e2fsck/debugfs checks, sandbox denial tests, four Swift commit transactions and six noncommit checks pass in transaction-v6.

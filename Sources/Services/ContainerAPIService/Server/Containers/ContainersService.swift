@@ -5504,7 +5504,7 @@ public actor ContainersService {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
             if let helper = OfflineStoppedCopyIn.discoverHelper(),
-                let rootfs = try self.offlineCopyRootfs(id: id)
+                let rootfs = try await self.offlineCopyRootfs(id: id)
             {
                 let log = self.log
                 let copied = try await Task.detached {
@@ -5554,7 +5554,7 @@ public actor ContainersService {
     public func copyOut(id: String, source: String, destination: String, createParents: Bool = true, followSymlink: Bool = false, preserveOwnership: Bool = false) async throws {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
-            if let rootfs = try self.offlineCopyRootfs(id: id) {
+            if let rootfs = try await self.offlineCopyRootfs(id: id) {
                 let log = self.log
                 let copied = try await Task.detached {
                     try OfflineStoppedCopy.copyOut(
@@ -5587,7 +5587,7 @@ public actor ContainersService {
     ) async throws {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
-            if let rootfs = try self.offlineCopyRootfs(id: id) {
+            if let rootfs = try await self.offlineCopyRootfs(id: id) {
                 let copied = try await Task.detached {
                     try OfflineStoppedCopy.copyOut(rootfs: rootfs, source: source, archive: archive, followSymlink: followSymlink)
                 }.value
@@ -5606,11 +5606,14 @@ public actor ContainersService {
 
     /// Called only while holding the lifecycle slot, excluding concurrent boot,
     /// prewarm, deletion and disk mounting for this container.
-    private func offlineCopyRootfs(id: String) throws -> URL? {
+    private func offlineCopyRootfs(id: String) async throws -> URL? {
         let state = try self._getContainerState(id: id)
         guard OfflineStoppedCopy.canReadRootfs(state) else { return nil }
         let bundle = ContainerResource.Bundle(path: try Self.containerPath(root: self.containerRoot, id: id))
-        return try OfflineStoppedCopy.rootfsURL(bundle: bundle, options: self.getContainerCreationOptions(id: id))
+        let options = try self.getContainerCreationOptions(id: id)
+        return try await Task.detached {
+            try OfflineStoppedCopy.prepareRootfs(bundle: bundle, options: options)
+        }.value
     }
 
     /// Get statistics for the container.
