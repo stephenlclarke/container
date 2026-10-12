@@ -51,7 +51,9 @@ enum OfflineStoppedCopy {
         guard options.rootFsOverride == nil else { return nil }
         if try !bundle.isPrepared {
             let runtime = try RuntimeConfiguration.readRuntimeConfiguration(from: bundle.path)
-            guard runtime.path.standardizedFileURL == bundle.path.standardizedFileURL,
+            // URL equality also compares cached directory hints. Codable URLs can
+            // retain a different hint after create, despite naming the same path.
+            guard runtime.path.standardizedFileURL.path == bundle.path.standardizedFileURL.path,
                 let configuration = runtime.containerConfiguration,
                 configuration.effectiveIsolation == .dedicatedVM,
                 configuration.runtimeHandler == "container-runtime-linux", configuration.mounts.isEmpty,
