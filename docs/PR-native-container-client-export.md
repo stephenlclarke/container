@@ -29,3 +29,13 @@ All 83 deterministic producer/format/evidence/importer/consumer tests pass. Inst
 ## Pending admission
 
 This change is not a published client layer or a Compose compatibility result. Root still owns finite recipe readmission, actual native client compilation/qualification, publication and matched Compose consumer proof. Compose must admit the unchanged native graph and proof identities explicitly; native archives must not be relabeled as legacy enhanced artifacts. Historical performance baselines are not rebuilt or rerun.
+
+## Linked local-package packaging correction
+
+The first native client production attempt completed its build and BEP checks, then failed packaging because the local SwiftPM external repository links `.bazelrc` outside its linked view. That view also links source and test directories, which recursive metadata collection does not descend. The original failed attempt remains retained; it is not a qualified client archive.
+
+Only `container-sdk` packaging now materializes the exact already-admitted clean producer commit with `git archive` into a private temporary source tree. Safe tar extraction rejects escaping tracked links. The authentic generated external `BUILD.bazel` replaces the archived build entry after unlinking it, preserving generated-header/test-data declarations without following an archived build symlink. Existing strict package confinement and all other group paths remain unchanged. Ignored and untracked host files never enter this tracked snapshot.
+
+Focused offline regressions exercise linked-view rejection, tracked header/test-data retention, exact archive revision, generated build replacement, escaping links, temporary cleanup and unchanged dependency-group behavior. A fresh immutable native production attempt and root-owned finite recipe admission remain required; no native rebuild or qualification is claimed by these tests.
+
+The packaging correction passes all 88 focused deterministic tests. Instrumented coverage executes every new helper statement and both outcomes of its group/revision branches. The production packaging call site remains unexecuted offline; the successful native build must be repackaged from a fresh immutable checkpoint before qualification can be claimed.

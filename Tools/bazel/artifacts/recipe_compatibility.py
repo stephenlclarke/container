@@ -55,7 +55,7 @@ CLIENT_EXPORT_OLD = {
 }
 CLIENT_EXPORT_NEW = {
     'Tools/bazel/artifacts/native_layers.py': 'f43d9e6bc78a67c398ddeede7b4935faf9dab143dfc12c5fc4aa77feed0f4bac',
-    'Tools/bazel/artifacts/native_producer.py': '0012e9485381ed5c98597d53fb119e784a4edffe159ed7f69971be6f12b4695d',
+    'Tools/bazel/artifacts/native_producer.py': 'edc4841f65f5f8335189009c09a92d405158b943c4a54b8c4b4fe03af7afec29',
     'Tools/bazel/artifacts/native_format.py': 'e31ccbf27a71c738b26654795fa0d061acca8a6584896493c43928a7608ebf68',
     'Tools/bazel/artifacts/native_evidence.py': '0a6d6f68a175ec382cf87733836f3901525f997a4d9165d6c60b9e88aeb763c7',
 }

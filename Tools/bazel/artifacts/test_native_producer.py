@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import io
 import json
 import shutil
 import tarfile
@@ -217,6 +218,90 @@ class SealedProducerFixture:
              mock.patch.object(native_producer, '_source_state', side_effect=lambda root: copy.deepcopy(self.current)), \
              mock.patch.object(native_layers, 'import_layers', return_value=copy.deepcopy(self.lower)):
             return native_producer.publish(self.receipt_path, self.qualification, destination)
+
+
+class PackageSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.external = self.root / 'external'
+        self.external.mkdir()
+        (self.external / 'BUILD.bazel').write_text('hdrs = ["Sources/include/client.h"]\n')
+        self.commit = 'a' * 40
+
+    def archive(self, escaping=False):
+        payload = io.BytesIO()
+        with tarfile.open(fileobj=payload, mode='w') as archive:
+            for name, data in {'.bazelrc': b'tracked config',
+                               'Sources/include/client.h': b'header',
+                               'Tests/Fixtures/data.json': b'fixture',
+                               'tracked-build-target': b'unchanged'}.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(data)
+                archive.addfile(member, io.BytesIO(data))
+            member = tarfile.TarInfo('BUILD.bazel')
+            member.type = tarfile.SYMTYPE
+            member.linkname = '../outside-private' if escaping else 'tracked-build-target'
+            archive.addfile(member)
+        return payload.getvalue()
+
+    def test_linked_view_uses_exact_archive_and_retains_headers_and_test_data(self):
+        host = self.root / 'host'
+        host.mkdir()
+        (host / '.bazelrc').write_text('host private config')
+        (host / 'ignored-secret').write_text('private')
+        (host / 'Sources').mkdir()
+        (host / 'Tests').mkdir()
+        for name in ('.bazelrc', 'Sources', 'Tests'):
+            (self.external / name).symlink_to(host / name)
+        with self.assertRaisesRegex(ValueError, 'symlink leaves'):
+            native_format.package_files(self.external, '')
+        with mock.patch.object(native_producer.subprocess, 'check_output',
+                               return_value=self.archive()) as git:
+            with native_producer._package_source('container-sdk', self.root, self.commit,
+                                                 self.external) as source:
+                members = native_format.package_files(source, (source / 'BUILD.bazel').read_text())
+                self.assertEqual(members['.bazelrc'], b'tracked config')
+                self.assertEqual(members['Sources/include/client.h'], b'header')
+                self.assertEqual(members['Tests/Fixtures/data.json'], b'fixture')
+                self.assertNotIn('ignored-secret', members)
+                self.assertFalse((source / 'BUILD.bazel').is_symlink())
+                self.assertEqual((source / 'tracked-build-target').read_bytes(), b'unchanged')
+                self.assertEqual((source / 'BUILD.bazel').read_bytes(),
+                                 (self.external / 'BUILD.bazel').read_bytes())
+            self.assertFalse(source.exists())
+        git.assert_called_once_with(
+            ['git', '-C', str(self.root), 'archive', '--format=tar', self.commit], timeout=60)
+
+    def test_escaping_tracked_link_is_rejected(self):
+        with mock.patch.object(native_producer.subprocess, 'check_output',
+                               return_value=self.archive(escaping=True)):
+            with self.assertRaises(tarfile.LinkOutsideDestinationError):
+                with native_producer._package_source('container-sdk', self.root, self.commit,
+                                                     self.external):
+                    self.fail('escaping tracked link was admitted')
+
+    def test_other_groups_keep_original_source_without_archiving(self):
+        with mock.patch.object(native_producer.subprocess, 'check_output') as git:
+            with native_producer._package_source('foundation', self.root, '', self.external) as source:
+                self.assertEqual(source, self.external)
+        git.assert_not_called()
+
+    def test_invalid_commit_rejected_before_archiving(self):
+        with mock.patch.object(native_producer.subprocess, 'check_output') as git:
+            with self.assertRaisesRegex(ValueError, 'immutable source commit'):
+                with native_producer._package_source('container-sdk', self.root, 'HEAD', self.external):
+                    self.fail('symbolic commit was admitted')
+        git.assert_not_called()
+
+    def test_temporary_source_is_removed_on_packaging_failure(self):
+        with mock.patch.object(native_producer.subprocess, 'check_output', return_value=self.archive()):
+            with self.assertRaisesRegex(ValueError, 'packaging failed'):
+                with native_producer._package_source('container-sdk', self.root, self.commit,
+                                                     self.external) as source:
+                    raise ValueError('packaging failed')
+            self.assertFalse(source.exists())
 
 
 class NativeProducerTests(unittest.TestCase):

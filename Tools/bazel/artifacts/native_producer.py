@@ -20,7 +20,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
@@ -60,6 +62,27 @@ def _lower_groups(group: str) -> tuple[str, ...]:
     if group == 'container-sdk':
         return native_layers.GROUPS
     return () if group == 'foundation' else ('foundation',)
+
+
+@contextmanager
+def _package_source(group: str, root: Path, commit: str, external: Path):
+    """Materialize the self-owned local package without walking its linked view."""
+    if group != 'container-sdk':
+        yield external
+        return
+    if not native_layers.COMMIT.fullmatch(commit):
+        raise ValueError('Container SDK packaging requires an immutable source commit')
+    tracked = subprocess.check_output(
+        ['git', '-C', str(root), 'archive', '--format=tar', commit], timeout=60)
+    with tempfile.TemporaryDirectory(prefix='container-sdk-source-') as temporary:
+        source = Path(temporary) / 'source'
+        source.mkdir(mode=0o700)
+        with tarfile.open(fileobj=io.BytesIO(tracked), mode='r:') as archive:
+            archive.extractall(path=source, filter='data')
+        build = source / 'BUILD.bazel'
+        build.unlink(missing_ok=True)
+        shutil.copyfile(external / 'BUILD.bazel', build)
+        yield source
 
 
 def _run_bazel(root: Path, action: str, flags: list[str], target: str | list[str],
@@ -201,7 +224,9 @@ def produce(group: str, output: Path, *, development_proof: bool = False,
         name = allowed[repository]
         source = base / 'external' / ('+dependencies+' + repository)
         generated_build_sha = native_layers.digest(source / 'BUILD.bazel')
-        overlay = native_format.package_overlay(repository, source, binaries[repository], identity)
+        with _package_source(group, root, before['commit'], source) as package_source:
+            overlay = native_format.package_overlay(
+                repository, package_source, binaries[repository], identity)
         prefix = group + '/' + repository + '/'
         members.update({prefix + name: content for name, content in overlay.items()})
         packages[name] = {'sourceCommit': selected[name]['state']['revision'],

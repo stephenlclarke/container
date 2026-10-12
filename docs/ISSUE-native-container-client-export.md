@@ -25,3 +25,13 @@ Qualification requires 15 finite existing host test targets covering the client,
 Deterministic producer/evidence/format tests pass 62 cases; existing importer/consumer tests pass 21 cases. New regressions cover own-source identity, all four lower replacements, production selection, the source client/XPC inventory and portable proof replay. No Swift compilation, VM operation, publication or native qualification was executed for this change.
 
 The export changes recipe hashes. The finite four-file recipe transition is implemented; root review and actual lower-artifact readmission from the new immutable checkpoint remain required. Actual source-mode client qualification, SDK production/publication and separate Compose native consumer admission remain pending. Historical binaries, benchmarks and failed evidence stay unchanged.
+
+## Linked local-package packaging correction
+
+The first native client production attempt completed its build and BEP checks, then failed packaging because the local SwiftPM external repository links `.bazelrc` outside its linked view. That view also links source and test directories, which recursive metadata collection does not descend. The original failed attempt remains retained; it is not a qualified client archive.
+
+Only `container-sdk` packaging now materializes the exact already-admitted clean producer commit with `git archive` into a private temporary source tree. Safe tar extraction rejects escaping tracked links. The authentic generated external `BUILD.bazel` replaces the archived build entry after unlinking it, preserving generated-header/test-data declarations without following an archived build symlink. Existing strict package confinement and all other group paths remain unchanged. Ignored and untracked host files never enter this tracked snapshot.
+
+Focused offline regressions exercise linked-view rejection, tracked header/test-data retention, exact archive revision, generated build replacement, escaping links, temporary cleanup and unchanged dependency-group behavior. A fresh immutable native production attempt and root-owned finite recipe admission remain required; no native rebuild or qualification is claimed by these tests.
+
+The packaging correction passes all 88 focused deterministic tests. Instrumented coverage executes every new helper statement and both outcomes of its group/revision branches. The production packaging call site remains unexecuted offline; the successful native build must be repackaged from a fresh immutable checkpoint before qualification can be claimed.
