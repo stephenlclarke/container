@@ -27,9 +27,17 @@ enum OfflineStoppedCopyIn {
         createParents: Bool, followSymlink: Bool, preserveOwnership: Bool,
         helper: URL, log: Logger
     ) throws -> Bool {
+        let clock = ContinuousClock()
+        var started = clock.now
+        func phase(_ name: String) {
+            let now = clock.now
+            log.debug("copyIn: writer phase", metadata: ["phase": "\(name)", "duration": "\(started.duration(to: now))"])
+            started = now
+        }
         guard !source.utf8.contains(0), !destination.utf8.contains(0),
-            verifyHelper(helper)
+            verifyHelper(helper, log: log)
         else { return false }
+        phase("authenticateHelper")
         let originalSource = URL(fileURLWithPath: source)
         let resolvedSource = followSymlink ? originalSource.resolvingSymlinksInPath() : originalSource
         let sourceFD = Darwin.open(resolvedSource.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
@@ -68,6 +76,7 @@ enum OfflineStoppedCopyIn {
         defer { Darwin.close(imageFD) }
         guard fchmod(imageFD, 0o600) == 0 else { return false }
 
+        phase("clonePrivateImage")
         let permissions = mode & 0o777
         let arguments = [
             helper.path, "--protocol=1", destination, originalSource.lastPathComponent,
@@ -83,6 +92,7 @@ enum OfflineStoppedCopyIn {
                 cec_run(path, $0.baseAddress, imageFD, sourceFD, 30, &status)
             }
         }
+        phase("helperTransfer")
         guard launch == 0, status == 0 else {
             log.debug("copyIn: offline helper selected guest transfer", metadata: ["launch": "\(launch)", "status": "\(status)"])
             return false
@@ -98,6 +108,7 @@ enum OfflineStoppedCopyIn {
             log.debug("copyIn: offline readback selected guest transfer", metadata: ["error": "\(error)"])
             return false
         }
+        phase("independentReadback")
         var current = stat()
         var sourceAfter = stat()
         var stagedInfo = stat()
@@ -112,6 +123,7 @@ enum OfflineStoppedCopyIn {
         // The rename already committed. A sync failure must be reported rather
         // than falling back and accidentally performing the copy a second time.
         guard fsync(parentFD) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        phase("commit")
         return true
     }
 
@@ -156,7 +168,9 @@ enum OfflineStoppedCopyIn {
         }
     }
 
-    private static func verifyHelper(_ helper: URL) -> Bool {
+    private static func verifyHelper(_ helper: URL, log: Logger) -> Bool {
+        let clock = ContinuousClock()
+        let started = clock.now
         let manifest = helper.deletingLastPathComponent().appendingPathComponent(helperName + ".manifest.json")
         guard let bytes = try? Data(contentsOf: manifest), bytes.count <= 1024 * 1024,
             let fields = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any],
@@ -164,6 +178,9 @@ enum OfflineStoppedCopyIn {
             let executable = try? Data(contentsOf: helper, options: .mappedIfSafe),
             fields["binarySHA256"] as? String == SHA256.hash(data: executable).map({ String(format: "%02x", $0) }).joined()
         else { return false }
+        log.debug("copyIn: writer phase", metadata: ["phase": "helperDigest", "duration": "\(started.duration(to: clock.now))"])
+        let signatureStarted = clock.now
+        defer { log.debug("copyIn: writer phase", metadata: ["phase": "helperSignature", "duration": "\(signatureStarted.duration(to: clock.now))"]) }
         var code: SecStaticCode?
         guard SecStaticCodeCreateWithPath(helper as CFURL, [], &code) == errSecSuccess, let code else { return false }
         return SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSStrictValidate), nil) == errSecSuccess
