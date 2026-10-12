@@ -103,10 +103,24 @@ def vm_build_plan(root: Path, guest_source: str) -> tuple[list[str], list[str], 
     return labels, ['--config=release', *native_layers.bazel_flags(admission)], admission
 
 
+def vm_reached_imports(graph: dict, admission: dict) -> set[str]:
+    """Include file-only cc_import inputs, but do not require unused repositories."""
+    fragments = {row['id']: row for row in graph.get('pathFragments', [])}
+    reached = {row['label'].split('//', 1)[0].removeprefix('@@') for row in graph['targets']
+               if row['label'].startswith('@@+dependencies+swiftpkg_')}
+    reached.update(row['label'] for row in fragments.values()
+                   if row['label'].startswith('+dependencies+swiftpkg_')
+                   and fragments.get(row.get('parentId'), {}).get('label') == 'external')
+    reached.discard('+dependencies+swiftpkg_containerization')
+    if not reached or not reached.issubset(admission['overrides']):
+        raise ValueError('VM graph reaches an unverified lower repository')
+    return reached
+
+
 def verify_vm_actions(graph: dict, admission: dict, loaded: dict[str, str]) -> dict:
     """Cache hits cannot hide lower source compilation or omit a changed SDK tool."""
     imported = set(admission['overrides'])
-    if not imported or set(loaded) != imported:
+    if not imported or set(loaded) != vm_reached_imports(graph, admission):
         raise ValueError('VM graph has no exact loaded repository set')
     targets = {row['id']: row['label'] for row in graph['targets']}
     required = {'@@+dependencies+swiftpkg_containerization//:' + name + '.rspm.__impl'
@@ -155,7 +169,6 @@ def compile_vm_tools(runner: Runner, evidence: Path, guest_source: str) -> dict[
     # environment selects macOS Bash 3.2, which rejects empty launcher arrays.
     base = Path(checked([*bazel, 'info', 'output_base'], cwd=ROOT, env=env))
     execution = Path(checked([*bazel, 'info', 'execution_root'], cwd=ROOT, env=env))
-    loaded = native_layers.verify_loaded_repositories(admission, base)
     binaries = {}
     selected = {}
     for name, label in zip(('cctl', 'containerization-integration'), labels):
@@ -178,7 +191,12 @@ def compile_vm_tools(runner: Runner, evidence: Path, guest_source: str) -> dict[
     if queried['status']:
         raise RuntimeError('VM action graph query failed')
     graph_path = Path(queried['log'])
-    graph = verify_vm_actions(native_consumer._graph(graph_path), admission, loaded)
+    configured = native_consumer._graph(graph_path)
+    reached = vm_reached_imports(configured, admission)
+    selected_admission = {**admission, 'overrides': {key: admission['overrides'][key] for key in reached}}
+    loaded = native_layers.verify_loaded_repositories(selected_admission, base)
+    graph = verify_vm_actions(configured, admission, loaded)
+    graph['unreachedOverrides'] = sorted(set(admission['overrides']) - reached)
     harness = {name: digest(ROOT / name) for name in
                ('Tools/bazel/vm_integration.py', 'Tools/bazel/test_vm_integration.py')}
     snapshot = native_evidence.verify_source_snapshot(

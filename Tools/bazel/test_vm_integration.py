@@ -9,7 +9,7 @@ from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 from vm_integration import (GPU_SKIP_REASON, retain_results, stage_runc, validate_skips,
-                            vm_build_plan, verify_vm_actions, compile_vm_tools, private_child, remove_run_home)
+                            vm_build_plan, verify_vm_actions, compile_vm_tools, private_child, remove_run_home, vm_reached_imports)
 
 
 class VMResultsTests(unittest.TestCase):
@@ -55,7 +55,7 @@ class VMResultsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'loaded repository'):
             verify_vm_actions(graph, admission, {})
         targets[2]['label'] = '@@+dependencies+swiftpkg_swift_nio//:NIO.rspm.__impl'
-        with self.assertRaisesRegex(ValueError, 'source action'):
+        with self.assertRaisesRegex(ValueError, 'unverified lower'):
             verify_vm_actions(graph, admission, loaded)
 
     def test_vm_build_uses_identical_verified_flags_and_binds_outputs(self):
@@ -99,6 +99,7 @@ class VMResultsTests(unittest.TestCase):
                     patch('vm_integration.native_evidence.verify_build', return_value={'passed': True}) as build, \
                     patch('vm_integration.native_evidence.verify_source_snapshot', return_value={'passed': True}) as snapshot, \
                     patch('vm_integration.native_consumer._graph', return_value={}), \
+                    patch('vm_integration.vm_reached_imports', return_value=set()), \
                     patch('vm_integration.verify_vm_actions', return_value={'passed': True}):
                 observed = compile_vm_tools(FakeRunner(), root, 'a' * 40)
                 self.assertEqual(set(observed), {'cctl', 'containerization-integration'})
@@ -156,6 +157,22 @@ class VMResultsTests(unittest.TestCase):
             remove_run_home(parent, home)
             self.assertFalse(home.exists())
             self.assertTrue(outside.exists())
+
+    def test_vm_loaded_mapping_covers_file_only_imports_and_omits_unused(self):
+        admission = {'overrides': {'+dependencies+swiftpkg_swift_log': '/log',
+                                  '+dependencies+swiftpkg_swift_argument_parser': '/parser',
+                                  '+dependencies+swiftpkg_aws_crt_swift': '/unreached'}}
+        graph = {'targets': [{'label': '@@+dependencies+swiftpkg_containerization//:cctl.rspm'},
+                             {'label': '@@+dependencies+swiftpkg_swift_log//:Logging.rspm'}],
+                 'pathFragments': [{'id': 1, 'label': 'external'},
+                                   {'id': 2, 'label': '+dependencies+swiftpkg_swift_argument_parser', 'parentId': 1}]}
+        self.assertEqual(vm_reached_imports(graph, admission),
+                         {'+dependencies+swiftpkg_swift_log', '+dependencies+swiftpkg_swift_argument_parser'})
+        del admission['overrides']['+dependencies+swiftpkg_swift_argument_parser']
+        with self.assertRaisesRegex(ValueError, 'unverified lower'):
+            vm_reached_imports(graph, admission)
+        with self.assertRaisesRegex(ValueError, 'unverified lower'):
+            vm_reached_imports({'targets': [], 'pathFragments': []}, admission)
 
     def test_failures_and_skips_remain_visible(self):
         with tempfile.TemporaryDirectory() as directory:
