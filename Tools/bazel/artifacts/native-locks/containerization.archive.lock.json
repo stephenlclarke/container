@@ -2,7 +2,7 @@
   "asset": "containerization-native-darwin-arm64-opt.tar.gz",
   "repository": "stephenlclarke/containerization",
   "schema": 1,
-  "sha256": "9f9ec16a8d7c62e884898f9c3323f6915c6405598357ac6bd4f8f32b84bee93c",
-  "tag": "layer-containerization-native-8f458f14e312-9f9ec16a8d7c62e88489",
-  "targetCommit": "e4e39e2a197730d64a35b5d5116af6f3b3915c4b"
+  "sha256": "0f1277edc21411d7c5c11780615058a5e0531b985fccb3d2fe4ba48527b45a20",
+  "tag": "layer-containerization-native-80a3b34ec73c-0f1277edc21411d7c5c1",
+  "targetCommit": "518f92a006c94c55e21422f3cf2f93c2f039d053"
 }

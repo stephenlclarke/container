@@ -2,7 +2,7 @@
 
 ## Steps to reproduce
 
-The current SDK source is `518f92a006c94c55e21422f3cf2f93c2f039d053`, which extracts copy-transfer operations without changing the public contract. Container still selects the preceding `e4e39e2` SDK and its published native layer.
+The current SDK source is `518f92a006c94c55e21422f3cf2f93c2f039d053`, which extracts copy-transfer operations without changing the public contract. The preceding native layer targeted `e4e39e2`; the source and native locks now select the qualified `518f92a` release documented in the PR handoff.
 
 ## Problem description
 
