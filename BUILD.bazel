@@ -6,12 +6,13 @@ exports_files(["Package.resolved"])
 declare_layers()
 
 alias(name = "semantic-helper", actual = "//Tools/ContainerSemanticHelper:payload")
+alias(name = "offline-ext4-helper", actual = "//Tools/ContainerOfflineExt4:payload")
 test_suite(name = "semantic-helper-tests", tests = ["//Tools/ContainerSemanticHelper:helper_tests"])
 
 filegroup(
     name = "container",
     testonly = True,
-    srcs = [":container-executables", ":semantic-helper"],
+    srcs = [":container-executables", ":semantic-helper", ":offline-ext4-helper"],
 )
 alias(name = "cli", actual = "@swiftpkg_container//:container.rspm")
 

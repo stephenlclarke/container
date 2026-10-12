@@ -1,0 +1,13 @@
+genrule(
+    name = "payload",
+    srcs = ["copy.c", "copy_sandbox.c", "copy_sandbox.h", "build.py", "README.md", "BUILD.bazel", "@offline_ext4_source//file"],
+    outs = [
+        "dist/container-ext4-copy",
+        "dist/container-ext4-copy.manifest.json",
+        "dist/container-ext4-copy.source.tar.gz",
+    ],
+    cmd = "/usr/bin/python3 $(location build.py) build " +
+          "--source-archive $(location @offline_ext4_source//file) " +
+          "--output-dir $(@D)/dist",
+    visibility = ["//visibility:public"],
+)

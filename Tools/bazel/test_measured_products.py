@@ -18,19 +18,23 @@ class MeasuredProductsTests(unittest.TestCase):
         prepared = root / 'prepared'
         prepared.mkdir()
         install = root / 'install'
-        plugins = release.PLUGINS if layout in {'container-executables-v2', 'container-executables-v3'} else release.LEGACY_PLUGINS
+        plugins = release.PLUGINS if layout in {'container-executables-v2', 'container-executables-v3', 'container-executables-v4'} else release.LEGACY_PLUGINS
         paths = {'bin/container', 'bin/container-apiserver'} | {
-            (plugin_relative_path(name) if layout == 'container-executables-v3'
+            (plugin_relative_path(name) if layout in {'container-executables-v3', 'container-executables-v4'}
              else f'libexec/container/plugins/{name}/bin/{name}') for name in plugins}
         if lane == 'fork':
             paths |= {'bin/container-engine', 'libexec/container/helpers/container-semantic-helper',
                       'libexec/container/helpers/container-semantic-helper.manifest.json'}
+            if layout == 'container-executables-v4':
+                paths |= {'libexec/container/helpers/container-ext4-copy',
+                          'libexec/container/helpers/container-ext4-copy.manifest.json',
+                          'libexec/container/helpers/container-ext4-copy.source.tar.gz'}
         hashes = {}
         for name in paths:
             path = install / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(('signed measured bytes: ' + name).encode())
-            path.chmod(0o644 if name.endswith('.json') else 0o755)
+            path.chmod(0o644 if name.endswith(('.json', '.tar.gz')) else 0o755)
             hashes[name] = digest(path)
         (install / '.runtime-benchmark-owner.json').write_text('private owner state')
         fingerprint = dict(lane=lane, install=str(install), binaries=hashes,
@@ -44,7 +48,8 @@ class MeasuredProductsTests(unittest.TestCase):
     def test_exact_fork_and_stock_bytes_modes_only_and_no_overwrite(self):
         for lane, layout, count in [('fork', None, 10), ('stock', None, 7),
                                     ('fork', 'container-executables-v2', 12),
-                                    ('fork', 'container-executables-v3', 12)]:
+                                    ('fork', 'container-executables-v3', 12),
+                                    ('fork', 'container-executables-v4', 15)]:
             with self.subTest(lane=lane, layout=layout), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 prepared, install, hashes = self.fixture(root, lane, layout)
@@ -77,6 +82,19 @@ class MeasuredProductsTests(unittest.TestCase):
                     record['binaries'][name] = '0' * 64
                 else:
                     del record['binaries'][name]
+                path.write_text(json.dumps(record))
+                with self.assertRaisesRegex(RuntimeError, 'inventory'):
+                    release.retain_measured_products(prepared, root)
+
+    def test_offline_helper_layout_requires_binary_manifest_and_corresponding_source(self):
+        for name in ('container-ext4-copy', 'container-ext4-copy.manifest.json',
+                     'container-ext4-copy.source.tar.gz'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared, _, _ = self.fixture(root, layout='container-executables-v4')
+                path = prepared / 'fork-fingerprint.json'
+                record = json.loads(path.read_text())
+                del record['binaries']['libexec/container/helpers/' + name]
                 path.write_text(json.dumps(record))
                 with self.assertRaisesRegex(RuntimeError, 'inventory'):
                     release.retain_measured_products(prepared, root)

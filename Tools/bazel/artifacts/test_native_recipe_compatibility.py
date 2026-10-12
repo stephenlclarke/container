@@ -60,6 +60,25 @@ class RecipeCompatibilityTests(unittest.TestCase):
         self.assertEqual(result['policySHA256'], compatibility.digest(
             Path(compatibility.__file__).read_bytes()))
 
+    def test_complete_offline_helper_vector_reuses_only_known_lower_recipes(self):
+        before = dict(self.current, **compatibility.OFFLINE_HELPER_OLD)
+        after = dict(self.current, **compatibility.OFFLINE_HELPER_NEW)
+        result = compatibility.admit(before, after, self.root)
+        self.assertEqual(result['mode'], 'known-offline-copy-service-helper-addition')
+        self.assertEqual(set(result['changedFiles']), set(compatibility.OFFLINE_HELPER_NEW))
+        self.assertNotEqual(result['currentRecipeSHA256'], result['producerRecipeSHA256'])
+        self.assertEqual(compatibility.admit(after, after, self.root)['mode'], 'exact')
+        for key in compatibility.OFFLINE_HELPER_NEW:
+            with self.subTest(partial=key), self.assertRaises(ValueError):
+                compatibility.admit(before, dict(after, **{key: before[key]}), self.root)
+            with self.subTest(unknown=key), self.assertRaises(ValueError):
+                compatibility.admit(before, dict(after, **{key: '0' * 64}), self.root)
+        for producer, current in ((after, before),
+                                  (before, dict(after, **{'Tools/bazel/layers.bzl': '0' * 64})),
+                                  (dict(before, **{'MODULE.bazel': '0' * 64}), after)):
+            with self.subTest(producer=producer, current=current), self.assertRaises(ValueError):
+                compatibility.admit(producer, current, self.root)
+
     def test_partial_reversed_or_unknown_pair_is_rejected(self):
         for before, after in ((self.old, dict(self.old, **{compatibility.CONSUMER:
                                                          compatibility.NEW[compatibility.CONSUMER]})),
@@ -219,8 +238,14 @@ class RecipeCompatibilityTests(unittest.TestCase):
 
     def test_copy_transfer_pin_transition_retains_only_known_unchanged_lower_recipes(self):
         key = compatibility.CONNECTION_PINS
-        selected_sha = compatibility.digest((Path(__file__).resolve().parents[3] / 'Package.swift').read_bytes())
-        self.assertEqual(selected_sha, 'd837233bb3a60b38fb40314ecb8e4025aadbd2ecbeacface9fec82a278687a91')
+        manifest = (Path(__file__).resolve().parents[3] / 'Package.swift').read_text()
+        self.assertEqual(compatibility.digest(manifest.encode()), compatibility.OFFLINE_HELPER_NEW[key])
+        manifest = manifest.replace('                "COfflineCopyProcess",\n', '', 1).replace(
+            '        .target(\n            name: "COfflineCopyProcess",\n'
+            '            path: "Sources/COfflineCopyProcess",\n'
+            '            publicHeadersPath: "include"\n        ),\n', '', 1)
+        selected_sha = compatibility.digest(manifest.encode())
+        self.assertEqual(selected_sha, compatibility.COPY_TRANSFER_PINS)
         current = dict(self.old, **{key: selected_sha})
         previous_pins = (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
                          compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,

@@ -39,7 +39,7 @@ def retain_measured_products(prepared: Path, evidence: Path, *, lane: str = 'for
         plugins = LEGACY_PLUGINS
     elif lane == 'fork' and layout == 'container-executables-v2':
         plugins = PLUGINS
-    elif lane == 'fork' and layout == 'container-executables-v3':
+    elif lane == 'fork' and layout in {'container-executables-v3', 'container-executables-v4'}:
         plugins = PLUGINS
         plugin_paths = {name: plugin_relative_path(name) for name in PLUGINS}
     else:
@@ -49,6 +49,10 @@ def retain_measured_products(prepared: Path, evidence: Path, *, lane: str = 'for
     if lane == 'fork':
         expected |= {'bin/container-engine', 'libexec/container/helpers/container-semantic-helper',
                      'libexec/container/helpers/container-semantic-helper.manifest.json'}
+        if layout == 'container-executables-v4':
+            expected |= {'libexec/container/helpers/container-ext4-copy',
+                         'libexec/container/helpers/container-ext4-copy.manifest.json',
+                         'libexec/container/helpers/container-ext4-copy.source.tar.gz'}
     if (fingerprint.get('lane') != lane or set(fingerprint['binaries']) != expected
             or len(source) != 40 or any(char not in '0123456789abcdef' for char in source)):
         raise RuntimeError('Measured executable inventory or source differs')
@@ -130,7 +134,7 @@ def copy_products(prepared: Path, output: Path) -> dict:
         if destination.exists():
             raise RuntimeError('Ambiguous product name: ' + source.name)
         shutil.copyfile(source, destination)
-        destination.chmod(0o755 if source.suffix != '.json' else 0o644)
+        destination.chmod(0o644 if source.name.endswith(('.json', '.tar.gz')) else 0o755)
     return fingerprint
 
 
@@ -196,11 +200,14 @@ def build(evidence: Path, prepared: Path, services: Path, profile: str | None) -
             copy_products(prepared, products)
             directories = service_directories(runner, services, work / 'services')
             archive = work / 'container-homebrew-arm64.tar.gz'
-            package_arguments = ['make', '-o', 'build', '-o', 'semantic-helper',
+            package_arguments = ['make', '-o', 'build', '-o', 'semantic-helper', '-o', 'offline-ext4-helper',
                         'BUILD_CONFIGURATION=release', 'BUILD_BIN_DIR=' + str(products),
                         'STAGING_DIR=' + str(work / 'staging') + '/', 'HOMEBREW_ARCHIVE=' + str(archive),
                         'SEMANTIC_HELPER_BINARY=' + str(products / 'container-semantic-helper'),
                         'SEMANTIC_HELPER_MANIFEST=' + str(products / 'container-semantic-helper.manifest.json'),
+                        'OFFLINE_EXT4_BINARY=' + str(products / 'container-ext4-copy'),
+                        'OFFLINE_EXT4_MANIFEST=' + str(products / 'container-ext4-copy.manifest.json'),
+                        'OFFLINE_EXT4_SOURCE=' + str(products / 'container-ext4-copy.source.tar.gz'),
                         'JOURNALD_SERVICE_BUILD_DIR=' + str(directories['journald']),
                         'GELF_SERVICE_BUILD_DIR=' + str(directories['gelf']),
                         'CONTAINER_SERVICE_WORKLOADS_PREBUILT=true',
@@ -236,7 +243,7 @@ def build(evidence: Path, prepared: Path, services: Path, profile: str | None) -
                 if installed.read_bytes()[:4] in {b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe'}:
                     run_command(runner, 'installer-signature-' + installed.name,
                                 ['codesign', '--verify', '--strict', str(installed)])
-                elif relative.endswith('container-semantic-helper.manifest.json'):
+                elif relative.endswith(('container-semantic-helper.manifest.json', 'container-ext4-copy.manifest.json')):
                     continue  # The original recipe verifies this signed-binary hash manifest.
                 elif digest(installed) != expected_installer[relative]:
                     raise RuntimeError('Installer payload differs from archive: ' + relative)

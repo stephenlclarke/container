@@ -1,5 +1,13 @@
 module(name = "container")
 
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+http_file(
+    name = "offline_ext4_source",
+    urls = ["https://downloads.sourceforge.net/project/e2fsprogs/e2fsprogs/v1.47.4/e2fsprogs-1.47.4.tar.gz"],
+    sha256 = "2cec05f39c20ee621f14926195664e66e6017190ac8e4bbdb16d86082e43c5da",
+    downloaded_file_path = "e2fsprogs-1.47.4.tar.gz",
+)
+
 bazel_dep(name = "rules_swift", version = "3.6.1", repo_name = "build_bazel_rules_swift")
 bazel_dep(name = "apple_support", version = "1.24.2")
 bazel_dep(name = "rules_cc", version = "0.2.14")

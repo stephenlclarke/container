@@ -54,6 +54,20 @@ SEMANTIC_HELPER_BUILD_DIR := $(ROOT_DIR)/.build/container-semantic-helper
 SEMANTIC_HELPER_BINARY := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper
 SEMANTIC_HELPER_MANIFEST := $(SEMANTIC_HELPER_BUILD_DIR)/container-semantic-helper.manifest.json
 SEMANTIC_HELPER_BUILD_TOOL := Tools/ContainerSemanticHelper/build.py
+OFFLINE_EXT4_BUILD_DIR := $(ROOT_DIR)/.build/container-ext4-copy
+OFFLINE_EXT4_BUILD_TOOL := Tools/ContainerOfflineExt4/build.py
+OFFLINE_EXT4_BINARY := $(OFFLINE_EXT4_BUILD_DIR)/container-ext4-copy
+OFFLINE_EXT4_MANIFEST := $(OFFLINE_EXT4_BUILD_DIR)/container-ext4-copy.manifest.json
+OFFLINE_EXT4_SOURCE := $(OFFLINE_EXT4_BUILD_DIR)/container-ext4-copy.source.tar.gz
+
+.PHONY: offline-ext4-helper test-offline-ext4-helper
+offline-ext4-helper:
+	@$(PYTHON3) $(OFFLINE_EXT4_BUILD_TOOL) build --output-dir "$(OFFLINE_EXT4_BUILD_DIR)" $(if $(OFFLINE_EXT4_SOURCE_ARCHIVE),--source-archive "$(OFFLINE_EXT4_SOURCE_ARCHIVE)")
+
+# Explicit independent fixtures/oracles keep test tools out of product inputs.
+test-offline-ext4-helper:
+	@$(PYTHON3) Tools/ContainerOfflineExt4/test.py --helper "$(OFFLINE_EXT4_BUILD_DIR)/container-ext4-copy" \
+		--fixture "$(OFFLINE_EXT4_TEST_FIXTURE)" --fsck "$(OFFLINE_EXT4_TEST_FSCK)" --debugfs "$(OFFLINE_EXT4_TEST_DEBUGFS)"
 JOURNALD_SERVICE_BUILD_DIR := $(ROOT_DIR)/.build/container-journald-service
 JOURNALD_SERVICE_ARCHIVE := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.oci.tar
 JOURNALD_SERVICE_MANIFEST := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.manifest.json
@@ -212,7 +226,7 @@ verify-gelf-service: gelf-service
 		--manifest "$(GELF_SERVICE_MANIFEST)"
 
 .PHONY: build
-build: semantic-helper
+build: semantic-helper offline-ext4-helper
 	@echo Building container binaries...
 	@$(SWIFT) --version
 	@$(SWIFT_BUILD)
@@ -267,7 +281,7 @@ install: installer-pkg
 		$(SUDO) installer -pkg $(PKG_PATH) -target / ; \
 	fi
 
-$(STAGING_DIR): semantic-helper journald-service gelf-service
+$(STAGING_DIR): semantic-helper offline-ext4-helper journald-service gelf-service
 	@echo Installing container binaries from "$(BUILD_BIN_DIR)" into "$(STAGING_DIR)"...
 	@rm -rf "$(STAGING_DIR)"
 	@mkdir -p "$(join $(STAGING_DIR), bin)"
@@ -298,6 +312,9 @@ $(STAGING_DIR): semantic-helper journald-service gelf-service
 	@install Sources/Plugins/MachineAPIServer/Resources/init "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/resources/init)"
 	@install "$(SEMANTIC_HELPER_BINARY)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
 	@install -m 0644 "$(SEMANTIC_HELPER_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
+	@install "$(OFFLINE_EXT4_BINARY)" "$(join $(STAGING_DIR), libexec/container/helpers/container-ext4-copy)"
+	@install -m 0644 "$(OFFLINE_EXT4_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/helpers/container-ext4-copy.manifest.json)"
+	@install -m 0644 "$(OFFLINE_EXT4_SOURCE)" "$(join $(STAGING_DIR), libexec/container/helpers/container-ext4-copy.source.tar.gz)"
 	@install -m 0644 "$(JOURNALD_SERVICE_ARCHIVE)" "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.oci.tar)"
 	@install -m 0644 "$(JOURNALD_SERVICE_MANIFEST)" "$(join $(STAGING_DIR), libexec/container/services/journald/container-journald-service.manifest.json)"
 	@$(PYTHON3) $(JOURNALD_SERVICE_BUILD_TOOL) verify \
@@ -332,6 +349,9 @@ installer-pkg: $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
 	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.semantic-helper "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.ext4-copy "$(join $(STAGING_DIR), libexec/container/helpers/container-ext4-copy)"
+	@$(PYTHON3) $(OFFLINE_EXT4_BUILD_TOOL) manifest --output-dir "$(join $(STAGING_DIR), libexec/container/helpers)"
+	@$(PYTHON3) $(OFFLINE_EXT4_BUILD_TOOL) verify --output-dir "$(join $(STAGING_DIR), libexec/container/helpers)"
 	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) manifest \
 		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
 		--output "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"
@@ -366,6 +386,9 @@ homebrew-package: build $(STAGING_DIR)
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. --entitlements=signing/container-network-vmnet.entitlements "$(join $(STAGING_DIR), libexec/container/plugins/container-network-vmnet/bin/container-network-vmnet)"
 	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/machine-apiserver/bin/machine-apiserver)"
 	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.semantic-helper "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)"
+	@codesign $(CODESIGN_OPTS) --identifier com.apple.container.ext4-copy "$(join $(STAGING_DIR), libexec/container/helpers/container-ext4-copy)"
+	@$(PYTHON3) $(OFFLINE_EXT4_BUILD_TOOL) manifest --output-dir "$(join $(STAGING_DIR), libexec/container/helpers)"
+	@$(PYTHON3) $(OFFLINE_EXT4_BUILD_TOOL) verify --output-dir "$(join $(STAGING_DIR), libexec/container/helpers)"
 	@$(PYTHON3) $(SEMANTIC_HELPER_BUILD_TOOL) manifest \
 		--binary "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper)" \
 		--output "$(join $(STAGING_DIR), libexec/container/helpers/container-semantic-helper.manifest.json)"

@@ -60,6 +60,16 @@ CLIENT_EXPORT_NEW = {
     'Tools/bazel/artifacts/native_format.py': 'e31ccbf27a71c738b26654795fa0d061acca8a6584896493c43928a7608ebf68',
     'Tools/bazel/artifacts/native_evidence.py': '0a6d6f68a175ec382cf87733836f3901525f997a4d9165d6c60b9e88aeb763c7',
 }
+OFFLINE_HELPER_OLD = {
+    'Package.swift': 'd837233bb3a60b38fb40314ecb8e4025aadbd2ecbeacface9fec82a278687a91',
+    'MODULE.bazel': '08b8b9c67faa1c20a655885494e4d96a8480008c19b029bf00d820c579df1815',
+    'BUILD.bazel': '0929383453d110928af982dff086287ef3fb395d16555b97562b36aa44d11b59',
+}
+OFFLINE_HELPER_NEW = {
+    'Package.swift': '3fd7dd179885795055c00fc561c1f1be2e09088d84a96acd061ad711adf80839',
+    'MODULE.bazel': '9e5faa5a8a04d9b322f3a7cb0a73286dc963815beb10ceae0eec825a5b69fe41',
+    'BUILD.bazel': 'eefb3fb6a569e6c5dcf2eb94f30a2ea9d0337ead828e8f1fc390107e020c6582',
+}
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -83,6 +93,21 @@ def admit(producer: object, current: object, root: Path) -> dict:
     changed = {key for key in producer if producer[key] != current[key]}
     remaining = set(changed)
     modes = []
+    # This exact vector adds a C process target to ContainerAPIService and a
+    # separate GPL helper to the top-level runtime filegroup. It does not change
+    # lower package targets, pins, compiler flags, toolchain or archive inputs.
+    # Only the complete reviewed vector can replay the prior lower recipe.
+    if any(key in remaining and current.get(key) == value
+           for key, value in OFFLINE_HELPER_NEW.items()):
+        if any(current.get(key) != value for key, value in OFFLINE_HELPER_NEW.items()):
+            raise ValueError('published native recipe differs from authenticated consumer update')
+        prior = admit(producer, dict(current, **OFFLINE_HELPER_OLD), root)
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        return {**prior,
+                'mode': ((prior['mode'] + '+') if prior['mode'] != 'exact' else '')
+                        + 'known-offline-copy-service-helper-addition',
+                'currentRecipeSHA256': digest(canonical(current)),
+                'changedFiles': sorted(changed)}
     # This complete reviewed vector adds an export-only Container client group.
     # Replay existing finite transitions through the exact pre-export recipe,
     # then retain the actual selected recipe identity in the returned binding.

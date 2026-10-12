@@ -354,6 +354,7 @@ let package = Package(
         .target(
             name: "ContainerAPIService",
             dependencies: [
+                "COfflineCopyProcess",
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationArchive", package: "containerization"),
                 .product(name: "ContainerizationEXT4", package: "containerization"),
@@ -681,6 +682,11 @@ let package = Package(
         .target(
             name: "CSemanticHelperProcess",
             path: "Sources/CSemanticHelperProcess",
+            publicHeadersPath: "include"
+        ),
+        .target(
+            name: "COfflineCopyProcess",
+            path: "Sources/COfflineCopyProcess",
             publicHeadersPath: "include"
         ),
         .target(

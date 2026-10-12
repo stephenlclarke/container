@@ -5503,6 +5503,19 @@ public actor ContainersService {
     {
         self.log.debug("\(#function)")
         try await withLifecycleMutation(id: id) {
+            if let helper = OfflineStoppedCopyIn.discoverHelper(),
+                let rootfs = try self.offlineCopyRootfs(id: id)
+            {
+                let log = self.log
+                let copied = try await Task.detached {
+                    try OfflineStoppedCopyIn.copy(
+                        rootfs: rootfs, source: source, destination: destination, mode: mode,
+                        createParents: createParents, followSymlink: followSymlink,
+                        preserveOwnership: preserveOwnership, helper: helper, log: log
+                    )
+                }.value
+                if copied { return }
+            }
             try await self.withCopyClient(id: id) { client in
                 try await client.copyIn(
                     source: source,

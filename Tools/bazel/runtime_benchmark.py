@@ -507,6 +507,10 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
             source = next(execution / p for p in files if p.endswith('/dist/' + name))
             copy_replacing(source, helpers / name)
             fingerprints[str((helpers / name).relative_to(install))] = digest(helpers / name)
+        for name in ['container-ext4-copy', 'container-ext4-copy.manifest.json', 'container-ext4-copy.source.tar.gz']:
+            source = next(execution / p for p in files if p.endswith('/dist/' + name))
+            copy_replacing(source, helpers / name)
+            fingerprints[str((helpers / name).relative_to(install))] = digest(helpers / name)
     if lane == 'fork':
         products = evidence / 'debug-products'
         products.mkdir()
@@ -539,7 +543,7 @@ def stage(lane: str, workspace: Path, output_root: Path, evidence: Path,
     state = STATE / lane
     metadata = {'lane': lane, 'workspace': str(workspace), 'install': str(install),
                 'state': str(state), 'binaries': fingerprints, 'kernel_sha256': kernel_sha,
-                'product_layout': 'container-executables-v3' if lane == 'fork' else 'stock-original',
+                'product_layout': 'container-executables-v4' if lane == 'fork' else 'stock-original',
                 'init_image': init, 'builder_image': builder_image, 'workload_image': ALPINE,
                 'cli_version': checked([str(install / 'bin/container'), '--version'],
                                        env=dict(env, LLVM_PROFILE_FILE=profile_file) if profile_file else env),
