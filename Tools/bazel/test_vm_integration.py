@@ -102,6 +102,10 @@ class VMResultsTests(unittest.TestCase):
                     patch('vm_integration.verify_vm_actions', return_value={'passed': True}):
                 observed = compile_vm_tools(FakeRunner(), root, 'a' * 40)
                 self.assertEqual(set(observed), {'cctl', 'containerization-integration'})
+                self.assertTrue(commands[0][0].endswith('/Tools/bazel/run.sh'))
+                for query in commands[1:]:
+                    self.assertTrue(query[0].endswith('bazel-8.8.0-darwin-arm64'))
+                    self.assertTrue(query[1].startswith('--output_user_root='))
                 self.assertEqual(build.call_args.kwargs['expected_options'], flags)
                 self.assertEqual(snapshot.call_args.args[1:3], ('c' * 40, root))
                 self.assertEqual(set(snapshot.call_args.args[3]),

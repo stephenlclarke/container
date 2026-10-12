@@ -14,7 +14,7 @@ import time
 import uuid
 import xml.etree.ElementTree as ET
 
-from fork_benchmark import ROOT, STORAGE, Runner, digest, install_signal_handlers
+from fork_benchmark import BAZEL, ROOT, STORAGE, Runner, digest, install_signal_handlers
 from artifacts import native_consumer, native_evidence, native_layers
 from runtime_benchmark import IDENTITY, INSTALLS, build_environment, checked, copy_replacing, own, verified_guest
 
@@ -150,14 +150,17 @@ def compile_vm_tools(runner: Runner, evidence: Path, guest_source: str) -> dict[
     for suffix in ('.log', '.events.json', '.source.txt', '.diff', '.inputs.sha256'):
         shutil.copy2(raw.with_suffix(suffix), evidence / ('vm-source-build' + suffix))
     env = build_environment()
-    base = Path(checked([launcher, 'info', 'output_base'], cwd=ROOT, env=env).splitlines()[-1])
-    execution = Path(checked([launcher, 'info', 'execution_root'], cwd=ROOT, env=env).splitlines()[-1])
+    bazel = [str(BAZEL), '--output_user_root=' + str(STORAGE / 'output')]
+    # Metadata queries use the enrolled binary directly: the normalized build
+    # environment selects macOS Bash 3.2, which rejects empty launcher arrays.
+    base = Path(checked([*bazel, 'info', 'output_base'], cwd=ROOT, env=env))
+    execution = Path(checked([*bazel, 'info', 'execution_root'], cwd=ROOT, env=env))
     loaded = native_layers.verify_loaded_repositories(admission, base)
     binaries = {}
     selected = {}
     for name, label in zip(('cctl', 'containerization-integration'), labels):
         queried = runner.run('vm', 'fork', 'query-' + name, 0,
-                             [launcher, 'cquery', label, *flags, '--output=files'], ROOT, 120)
+                             [*bazel, 'cquery', label, *flags, '--output=files'], ROOT, 120)
         if queried['status']:
             raise RuntimeError('VM configured output query failed')
         paths = [line for line in Path(queried['log']).read_text().splitlines()
@@ -169,7 +172,7 @@ def compile_vm_tools(runner: Runner, evidence: Path, guest_source: str) -> dict[
     build = native_evidence.verify_build(evidence / 'vm-source-build.events.json', labels,
                                         required_files=selected, expected_options=flags)
     queried = runner.run('vm', 'fork', 'action-graph', 0,
-                         [launcher, 'aquery', 'deps(set(' + ' '.join(labels) + '))', *flags,
+                         [*bazel, 'aquery', 'deps(set(' + ' '.join(labels) + '))', *flags,
                           '--output=jsonproto', '--include_artifacts=true',
                           '--include_commandline=true'], ROOT, 120)
     if queried['status']:
