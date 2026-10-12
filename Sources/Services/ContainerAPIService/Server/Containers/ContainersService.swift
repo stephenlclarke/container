@@ -5502,12 +5502,16 @@ public actor ContainersService {
         async throws
     {
         self.log.debug("\(#function)")
+        let clock = ContinuousClock()
+        let requested = clock.now
         try await withLifecycleMutation(id: id) {
+            self.log.debug("copyIn: offline phase", metadata: ["id": "\(id)", "phase": "lifecycleFence", "duration": "\(requested.duration(to: clock.now))"])
             try OfflineStoppedCopy.validateCopyInRootfs(self._getContainerState(id: id).snapshot.configuration)
             if let helper = OfflineStoppedCopyIn.discoverHelper(),
                 let rootfs = try await self.offlineCopyRootfs(id: id)
             {
                 let log = self.log
+                let transferStarted = clock.now
                 let copied = try await Task.detached {
                     try OfflineStoppedCopyIn.copy(
                         rootfs: rootfs, source: source, destination: destination, mode: mode,
@@ -5515,6 +5519,7 @@ public actor ContainersService {
                         preserveOwnership: preserveOwnership, helper: helper, log: log
                     )
                 }.value
+                self.log.debug("copyIn: offline phase", metadata: ["id": "\(id)", "phase": "transaction", "duration": "\(transferStarted.duration(to: clock.now))", "copied": "\(copied)"])
                 if copied { return }
             }
             try await self.withCopyClient(id: id) { client in
@@ -5613,9 +5618,13 @@ public actor ContainersService {
         guard OfflineStoppedCopy.canReadRootfs(state) else { return nil }
         let bundle = ContainerResource.Bundle(path: try Self.containerPath(root: self.containerRoot, id: id))
         let options = try self.getContainerCreationOptions(id: id)
-        return try await Task.detached {
+        let clock = ContinuousClock()
+        let started = clock.now
+        let rootfs = try await Task.detached {
             try OfflineStoppedCopy.prepareRootfs(bundle: bundle, options: options)
         }.value
+        self.log.debug("copyIn: offline phase", metadata: ["id": "\(id)", "phase": "prepareRootfs", "duration": "\(started.duration(to: clock.now))"])
+        return rootfs
     }
 
     /// Get statistics for the container.
