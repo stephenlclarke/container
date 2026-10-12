@@ -45,6 +45,7 @@ STOPPED_COPY_PINS = 'a275c95095dde749cf02e389e3647c3a71d410163f0d11139f11324811b
 STOPPED_COPY_MODE_PINS = '319b15ccaeda30dfcd93669171ef66e19adaada3b3b2ccc8d605d930487eac6b'
 STOPPED_COPY_SYMLINK_PINS = '304e9cff133c88056b78483fe1acc502535a0d4d5875a796031312be46a1151c'
 STOPPED_COPY_OFFLINE_PINS = 'bb3c022964a4a6ce44ed18e37b7f618c9f2ae9e5a7b0fd2a6ee923398ec641f6'
+UNALIGNED_METADATA_PINS = 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -126,6 +127,16 @@ def admit(producer: object, current: object, root: Path) -> dict:
             and current[CONNECTION_PINS] == STOPPED_COPY_OFFLINE_PINS):
         remaining.remove(CONNECTION_PINS)
         modes.append('known-stopped-copy-offline-sdk-and-test-update')
+    # Only the SDK revision changes to adopt the existing Compose unaligned
+    # metadata repair. Source-pin and lower-chain checks still force a new SDK
+    # artifact while retaining the exact ArgumentParser and foundation archives.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS,
+                                               STOPPED_COPY_SYMLINK_PINS, STOPPED_COPY_OFFLINE_PINS)
+            and current[CONNECTION_PINS] == UNALIGNED_METADATA_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-unaligned-metadata-sdk-pin-update')
     if remaining:
         raise ValueError('published native recipe differs from authenticated consumer update')
     mode = '+'.join(modes) if modes else 'exact'

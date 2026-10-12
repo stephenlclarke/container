@@ -134,7 +134,7 @@ class RecipeCompatibilityTests(unittest.TestCase):
         self.assertEqual(result['changedFiles'], [key])
         self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
         selected = Path(compatibility.__file__).resolve().parents[3] / key
-        self.assertEqual(compatibility.digest(selected.read_bytes()), compatibility.STOPPED_COPY_OFFLINE_PINS)
+        self.assertEqual(compatibility.digest(selected.read_bytes()), 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083')
 
     def test_connection_pin_transition_rejects_unknown_reverse_and_build_drift(self):
         key = compatibility.CONNECTION_PINS
@@ -215,6 +215,26 @@ class RecipeCompatibilityTests(unittest.TestCase):
                 (dict(self.old, **{key: '0' * 64}), current),
                 (current, dict(self.old, **{key: compatibility.STOPPED_COPY_SYMLINK_PINS})),
                 (dict(self.old, **{key: compatibility.STOPPED_COPY_SYMLINK_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_unaligned_sdk_pin_transition_reuses_only_exact_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        current = dict(self.old, **{key: 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083'})
+        previous_pins = (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,
+                         compatibility.STOPPED_COPY_SYMLINK_PINS, compatibility.STOPPED_COPY_OFFLINE_PINS)
+        for previous in previous_pins:
+            with self.subTest(previous=previous):
+                accepted = compatibility.admit(dict(self.old, **{key: previous}), current, self.root)
+                self.assertEqual(accepted['mode'], 'known-unaligned-metadata-sdk-pin-update')
+                self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS})),
+                (dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS}),
                  dict(current, **{'MODULE.bazel': '0' * 64}))):
             with self.subTest(producer=producer, selected=selected):
                 with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
