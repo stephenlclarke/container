@@ -11,9 +11,11 @@ import shutil
 import signal
 import subprocess
 import time
+import uuid
 import xml.etree.ElementTree as ET
 
-from fork_benchmark import BAZEL, ROOT, STORAGE, Runner, digest, install_signal_handlers
+from fork_benchmark import ROOT, STORAGE, Runner, digest, install_signal_handlers
+from artifacts import native_consumer, native_evidence, native_layers
 from runtime_benchmark import IDENTITY, INSTALLS, build_environment, checked, copy_replacing, own, verified_guest
 
 GPU_SKIPS = {
@@ -88,13 +90,135 @@ def stage_runc(guest: dict, binaries: Path) -> dict:
     return pin
 
 
+def vm_build_plan(root: Path, guest_source: str) -> tuple[list[str], list[str], dict]:
+    """Keep the changed SDK source-built while admitting its exact lower prefix."""
+    if native_layers.pin_records(root)['containerization']['state']['revision'] != guest_source:
+        raise ValueError('VM guest source differs from selected SDK')
+    admission = native_layers.import_layers(root, groups=('foundation',))
+    if (set(admission['layers']) != {'argument-parser', 'foundation'}
+            or '+dependencies+swiftpkg_containerization' in admission['overrides']):
+        raise ValueError('VM tools require a source-built SDK and only its lower prefix')
+    labels = ['@swiftpkg_containerization//:' + name + '.rspm'
+              for name in ('cctl', 'containerization-integration')]
+    return labels, ['--config=release', *native_layers.bazel_flags(admission)], admission
+
+
+def verify_vm_actions(graph: dict, admission: dict, loaded: dict[str, str]) -> dict:
+    """Cache hits cannot hide lower source compilation or omit a changed SDK tool."""
+    imported = set(admission['overrides'])
+    if not imported or set(loaded) != imported:
+        raise ValueError('VM graph has no exact loaded repository set')
+    targets = {row['id']: row['label'] for row in graph['targets']}
+    required = {'@@+dependencies+swiftpkg_containerization//:' + name + '.rspm.__impl'
+                for name in ('cctl', 'containerization-integration')}
+    links, compiled, actions = set(), 0, {}
+    for action in graph['actions']:
+        label = targets.get(action['targetId'])
+        if label is None:
+            raise ValueError('VM action owner target is missing')
+        if label.startswith('@@+dependencies+swiftpkg_'):
+            canonical = label.split('//', 1)[0].removeprefix('@@')
+            if canonical == '+dependencies+swiftpkg_containerization':
+                compiled += action['mnemonic'] == 'SwiftCompile'
+            elif (canonical not in imported
+                  or action['mnemonic'] not in native_consumer.ALLOWED_IMPORTED_ACTIONS):
+                raise ValueError('VM dependency source action remains reachable: ' + label)
+            else:
+                actions[action['mnemonic']] = actions.get(action['mnemonic'], 0) + 1
+        if action['mnemonic'] == 'CppLink' and label in required:
+            if label in links:
+                raise ValueError('VM tool links more than once')
+            links.add(label)
+    if links != required or not compiled:
+        raise ValueError('VM graph omitted a source-built SDK tool')
+    return {'sdkCompileActions': compiled, 'links': sorted(links),
+            'importedActions': actions, 'loadedBUILD': loaded}
+
+
+def compile_vm_tools(runner: Runner, evidence: Path, guest_source: str) -> dict[str, Path]:
+    """Retain build outputs and prove both tools use one verified dependency vector."""
+    labels, flags, admission = vm_build_plan(ROOT, guest_source)
+    launcher = str(ROOT / 'Tools/bazel/run.sh')
+    (evidence / 'native-lower-admission.json').write_text(json.dumps(admission, indent=2) + '\n')
+    row = runner.run('vm', 'fork', 'build', 0, [launcher, 'build', *labels, *flags], ROOT, 1800)
+    if row['status']:
+        raise RuntimeError('VM integration compilation failed')
+    logs = re.findall(r'^Evidence: (/.+\.log)$', Path(row['log']).read_text(), re.M)
+    if len(logs) != 1:
+        raise ValueError('VM build lacks one retained Bazel evidence log')
+    raw = Path(logs[0])
+    for suffix in ('.log', '.events.json', '.source.txt', '.diff', '.inputs.sha256'):
+        shutil.copy2(raw.with_suffix(suffix), evidence / ('vm-source-build' + suffix))
+    env = build_environment()
+    base = Path(checked([launcher, 'info', 'output_base'], cwd=ROOT, env=env).splitlines()[-1])
+    execution = Path(checked([launcher, 'info', 'execution_root'], cwd=ROOT, env=env).splitlines()[-1])
+    loaded = native_layers.verify_loaded_repositories(admission, base)
+    binaries = {}
+    selected = {}
+    for name, label in zip(('cctl', 'containerization-integration'), labels):
+        queried = runner.run('vm', 'fork', 'query-' + name, 0,
+                             [launcher, 'cquery', label, *flags, '--output=files'], ROOT, 120)
+        if queried['status']:
+            raise RuntimeError('VM configured output query failed')
+        paths = [line for line in Path(queried['log']).read_text().splitlines()
+                 if line.startswith('bazel-out/') and line.endswith('/' + name + '.rspm.__impl')
+                 and '/Contents/Resources/DWARF/' not in line]
+        if len(paths) != 1:
+            raise ValueError('VM configured executable selection is ambiguous')
+        binaries[name] = selected[paths[0]] = execution / paths[0]
+    build = native_evidence.verify_build(evidence / 'vm-source-build.events.json', labels,
+                                        required_files=selected, expected_options=flags)
+    queried = runner.run('vm', 'fork', 'action-graph', 0,
+                         [launcher, 'aquery', 'deps(set(' + ' '.join(labels) + '))', *flags,
+                          '--output=jsonproto', '--include_artifacts=true',
+                          '--include_commandline=true'], ROOT, 120)
+    if queried['status']:
+        raise RuntimeError('VM action graph query failed')
+    graph_path = Path(queried['log'])
+    graph = verify_vm_actions(native_consumer._graph(graph_path), admission, loaded)
+    harness = {name: digest(ROOT / name) for name in
+               ('Tools/bazel/vm_integration.py', 'Tools/bazel/test_vm_integration.py')}
+    snapshot = native_evidence.verify_source_snapshot(
+        evidence / 'vm-source-build.events.json', admission['source'], ROOT,
+        {**admission['recipeSHA256'], **harness})
+    proof = {'source': admission['source'], 'sdk': guest_source, 'passed': True,
+             'sourceSnapshot': snapshot, 'harnessSHA256': harness,
+             'build': build, 'graph': graph, 'actionGraphSHA256': digest(graph_path),
+             'admissionSHA256': digest(evidence / 'native-lower-admission.json'),
+             'unsignedBinaries': {name: digest(path) for name, path in binaries.items()}}
+    (evidence / 'vm-build.json').write_text(json.dumps(proof, indent=2) + '\n')
+    return binaries
+
+
+def private_child(parent: Path, name: str) -> Path:
+    """Reject redirected staging/state paths before creating or writing them."""
+    child = parent / name
+    if (child.is_symlink() or child.resolve().parent != parent.resolve()
+            or (child.exists() and (not child.is_dir() or child.stat().st_uid != os.getuid()))):
+        raise RuntimeError('VM child is not a private owned directory: ' + str(child))
+    child.mkdir(mode=0o700, exist_ok=True)
+    return child
+
+
+def remove_run_home(parent: Path, home: Path) -> None:
+    """Remove only the fresh, marked state belonging to this invocation."""
+    if home.parent != parent or not home.name.startswith('run-'):
+        raise RuntimeError('VM run home escaped its installation')
+    private_child(parent, home.name)
+    marker = home / '.runtime-benchmark-owner.json'
+    expected = {'owner': 'container-runtime-benchmark', 'lane': 'containerization-integration-state', 'schema': 1}
+    if marker.is_symlink() or not marker.is_file() or json.loads(marker.read_text()) != expected:
+        raise RuntimeError('VM run home has no matching ownership marker')
+    shutil.rmtree(home)
+
+
 def run(evidence: Path, guest_receipt: Path, selection: str | None) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
     result = {'passed': False, 'selection': selection, 'failures': []}
     directory = INSTALLS / 'containerization-integration'
     own(directory, 'containerization-integration')
-    binaries = directory / 'bin'
-    binaries.mkdir(exist_ok=True)
+    binaries = private_child(directory, 'bin')
+    home = None
     executables = {str(binaries / name) for name in ('cctl', 'containerization-integration')}
     runner = Runner(evidence, STORAGE)
     with (INSTALLS / 'benchmark.lock').open('w') as lock:
@@ -105,17 +229,9 @@ def run(evidence: Path, guest_receipt: Path, selection: str | None) -> None:
             guest = verified_guest(guest_receipt)
             result['runc'] = stage_runc(guest, binaries)
             shutil.copy2(guest_receipt, evidence / 'guest-artifact.json')
-            labels = ['@swiftpkg_containerization//:' + name + '.rspm' for name in ('cctl', 'containerization-integration')]
-            row = runner.run('vm', 'fork', 'build', 0, [str(ROOT / 'Tools/bazel/run.sh'), 'build',
-                             *labels, '--config=release'], ROOT, 1800)
-            if row['status']:
-                raise RuntimeError('VM integration compilation failed')
-            bazel = [str(BAZEL), '--output_user_root=' + str(STORAGE / 'output')]
-            env = build_environment()
-            execution = Path(checked(bazel + ['info', 'execution_root'], cwd=ROOT, env=env))
-            for name, label in zip(('cctl', 'containerization-integration'), labels):
-                paths = checked(bazel + ['cquery', label, '--config=release', '--output=files'], cwd=ROOT, env=env).splitlines()
-                source = next(execution / path for path in paths if path.endswith('.rspm.__impl') and '/Contents/Resources/DWARF/' not in path)
+            compiled = compile_vm_tools(runner, evidence, guest['identity']['source'])
+            result['build_proof_sha256'] = digest(evidence / 'vm-build.json')
+            for name, source in compiled.items():
                 destination = binaries / name
                 copy_replacing(source, destination)
                 destination.chmod(0o755)
@@ -126,10 +242,9 @@ def run(evidence: Path, guest_receipt: Path, selection: str | None) -> None:
             if not kernel.exists():
                 raise RuntimeError('Prepare the qualified kernel assets before VM integration')
             copy_replacing(kernel, binaries / 'vmlinux-arm64')
-            home = directory / 'home'
-            temporary = directory / 'tmp'
-            home.mkdir(exist_ok=True)
-            temporary.mkdir(exist_ok=True)
+            home = directory / ('run-' + uuid.uuid4().hex[:12])
+            own(home, 'containerization-integration-state')
+            temporary = private_child(home, 'tmp')
             runner.env.update(HOME=str(home), CFFIXED_USER_HOME=str(home), TMPDIR=str(temporary) + '/')
             probe = runner.run('vm', 'fork', 'home-isolation', 0,
                                ['xcrun', 'swift', '-e', 'import Foundation; print(FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.path)'],
@@ -180,11 +295,11 @@ def run(evidence: Path, guest_receipt: Path, selection: str | None) -> None:
             result['cleanup_complete'] = not processes(executables)
             if result['cleanup_complete']:
                 try:
-                    temporary = directory / 'tmp'
-                    if temporary.is_symlink():
-                        raise RuntimeError('Refusing a symlinked VM temporary directory')
-                    if temporary.exists():
-                        shutil.rmtree(temporary)
+                    if home is not None:
+                        if result['passed']:
+                            remove_run_home(directory, home)
+                        else:
+                            result['retained_failed_home'] = str(home)
                     (binaries / 'init.block').unlink(missing_ok=True)
                 except (OSError, RuntimeError) as error:
                     result['cleanup_complete'] = False
