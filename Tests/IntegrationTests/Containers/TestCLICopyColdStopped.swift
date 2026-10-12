@@ -167,6 +167,30 @@ struct TestCLICopyColdStopped {
     }
 
     @Test
+    func defaultCLIKeepCreatedContainerColdUntilFirstStart() async throws {
+        try await ContainerFixture.with { fixture in
+            let image = try fixture.copyWarmupImage(.alpine320)
+            let name = "\(fixture.testID)-cli-cold-copy"
+            fixture.addCleanup { try fixture.doRemoveIfExists(name, force: true, ignoreFailure: true) }
+            try fixture.run([
+                "create", "--name", name, "--network", "none", "--cpus", "1", "--memory", "512m", image,
+                "sh", "-ec", "test \"$(cat /tmp/payload)\" = 'cold-copy-payload'",
+            ]).check()
+            let path = try containerBundleURL(id: name)
+            let creation = try JSONDecoder().decode(
+                CreationEnvelope.self,
+                from: Data(contentsOf: path.appendingPathComponent("runtime-configuration.json")))
+            #expect(!creation.options.prewarm)
+            let source = fixture.testDir.appending("cli-source")
+            try payload.write(to: URL(filePath: source.string))
+            try fixture.run(["cp", source.string, "\(name):/tmp/payload"]).check()
+            #expect(try ContainerResource.Bundle(path: path).isPrepared)
+            #expect(!FileManager.default.fileExists(atPath: path.appendingPathComponent("vminitd.log").path))
+            try fixture.run(["start", "--attach", name]).check()
+        }
+    }
+
+    @Test
     func readonlyCopyInFailsBeforePreparationAndCopyOutStillWorks() async throws {
         try await ContainerFixture.with { fixture in
             let imageReference = try fixture.copyWarmupImage(.alpine320)

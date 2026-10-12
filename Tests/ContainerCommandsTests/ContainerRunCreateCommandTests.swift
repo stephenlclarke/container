@@ -25,6 +25,14 @@ import Testing
 
 struct ContainerRunCreateCommandTests {
     @Test
+    func createPrewarmingIsExplicit() throws {
+        let cold = try Application.ContainerCreate.parse(["alpine", "true"])
+        #expect(try !cold.creationOptions.prewarm)
+        let prepared = try Application.ContainerCreate.parse(["--prewarm", "alpine", "true"])
+        #expect(try prepared.creationOptions.prewarm)
+    }
+
+    @Test
     func startForwardsInitialInputOwnershipToBootstrap() async throws {
         let cases: [([String], Bool, Bool)] = [
             (["example"], false, false),

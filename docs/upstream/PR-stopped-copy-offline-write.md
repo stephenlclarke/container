@@ -20,6 +20,8 @@ A newly captured read-only Docker fixture rejects both regular and directory cop
 
 Legacy config-first partial bundles now check required resources, rather than trusting any decodable config. Repair preserves an existing described rootfs and current container configuration. An existing legacy image whose descriptor is missing is retained with an explicit recovery error rather than erased or assigned guessed provenance.
 
+CLI creation leaves the VM cold by default, with `--prewarm` preserving explicit background preparation. The API default remains unchanged. This avoids first copy waiting behind speculative bootstrap; a later start pays the VM boot cost. End-to-end create/copy/start and retained-reference timing are recorded separately so this tradeoff cannot be hidden by moving time across command boundaries.
+
 ## Testing
 
 - Focused component evidence: 15 helper cases, independent e2fsck/debugfs checks, sandbox denial tests, four Swift commit transactions and six noncommit checks pass in transaction-v6.
