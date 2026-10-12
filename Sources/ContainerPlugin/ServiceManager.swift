@@ -310,8 +310,47 @@ public struct ServiceManager {
 
     /// Check if a service has been registered or not.
     public static func isRegistered(fullServiceLabel label: String) throws -> Bool {
-        let result = try runLaunchctlCommand(args: ["list", label])
-        return result.status == 0
+        try isRegistered(fullServiceLabel: label, runner: runLaunchctlCommand)
+    }
+
+    static func isRegistered(
+        fullServiceLabel label: String,
+        runner: LaunchctlCommandRunner
+    ) throws -> Bool {
+        let components = label.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        if components.count == 1, !label.isEmpty {
+            // Existing callers also pass a bare label in the current domain.
+            return try runner(["list", label], deregistrationTimeoutSeconds).status == 0
+        }
+
+        let missingDiagnostic: String
+        if components.count == 2, components[0] == "system", !components[1].isEmpty {
+            missingDiagnostic = "Could not find service \"\(components[1])\" in domain for system"
+        } else if components.count == 3, UInt32(components[1]) != nil,
+            !components[2].isEmpty, components[0] == "gui"
+        {
+            missingDiagnostic = "Could not find service \"\(components[2])\" in domain for user gui: \(components[1])"
+        } else if components.count == 3, UInt32(components[1]) != nil,
+            !components[2].isEmpty, components[0] == "user"
+        {
+            missingDiagnostic = "Could not find service \"\(components[2])\" in domain for uid: \(components[1])"
+        } else {
+            throw ContainerizationError(.invalidArgument, message: "invalid launchd service target \(label)")
+        }
+
+        let result = try runner(["print", label], deregistrationTimeoutSeconds)
+        if result.status == 0 {
+            return true
+        }
+        if result.status == 113,
+            result.standardError.split(whereSeparator: \.isNewline).contains(where: { $0 == missingDiagnostic })
+        {
+            return false
+        }
+        throw ContainerizationError(
+            .internalError,
+            message: "could not confirm launchd service \(label) is inactive (status \(result.status))"
+        )
     }
 
     private static func getLaunchdSessionType() throws -> String {

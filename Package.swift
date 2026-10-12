@@ -64,9 +64,9 @@ let containerSource = ProcessInfo.processInfo.environment["CONTAINER_SOURCE"] ??
 let builderShimRepository = ProcessInfo.processInfo.environment["BUILDER_SHIM_REPOSITORY"] ?? "ghcr.io/stephenlclarke/container-builder-shim/builder"
 let builderShimVersion = ProcessInfo.processInfo.environment["BUILDER_SHIM_VERSION"] ?? "current-34938703559-016040197215"
 let builderShimDigest = ProcessInfo.processInfo.environment["BUILDER_SHIM_DIGEST"] ?? "sha256:a20bf1788286e46fb2c2025acdce6b6e9cdd11394e0875e0f3297415d1c4d108"
-let scVersion = "0.47.0"
+let scVersion = "0.49.0"
 let containerEngineAPIVersion = Version(0, 3, 5)
-let containerizationRevision = "7b9eb0a77ff615d764fbbf52125e2b6cdd846db8"
+let containerizationRevision = "f98a11cb494529e2ed4f889deadef10515ee1740"
 let containerEngineAPIRevision = "48e44d74d738ca3d24351ba02c4869be1a3e6998"
 let scSource =
     ProcessInfo.processInfo.environment["CONTAINERIZATION_SOURCE"]
@@ -142,13 +142,13 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.13.2"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.80.0"),
         .package(
-            url: "https://github.com/apple/swift-nio-ssl.git",
-            revision: "322f3c2a4a21df31c84ca416bf65ee5e9059e440"
+            url: "https://github.com/stephenlclarke/swift-nio-ssl.git",
+            revision: "8f2f979a28610f47714d50eccfe16b435e7e04a5"
         ),
         .package(url: "https://github.com/apple/swift-protobuf.git", from: "1.36.0"),
         .package(url: "https://github.com/apple/swift-system.git", from: "1.6.4"),
         .package(url: "https://github.com/grpc/grpc-swift-2.git", from: "2.3.0"),
-        .package(url: "https://github.com/grpc/grpc-swift-nio-transport.git", from: "2.9.0"),
+        .package(url: "https://github.com/stephenlclarke/grpc-swift-nio-transport.git", revision: "2ddb7175729b30e5a12f4c3cb14f15985b1b2b1e"),
         .package(url: "https://github.com/grpc/grpc-swift-protobuf.git", from: "2.2.0"),
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.20.1"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin.git", from: "1.1.0"),
@@ -197,14 +197,17 @@ let package = Package(
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "NIO", package: "swift-nio"),
                 .product(name: "SwiftProtobuf", package: "swift-protobuf"),
                 .product(name: "TOML", package: "swift-toml"),
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationArchive", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ContainerEngineService", package: "container-engine-api"),
                 "ContainerBuild",
                 "ContainerAPIClient",
+                "ContainerImagesServiceClient",
                 "ContainerLog",
                 "ContainerPersistence",
                 "ContainerPlugin",
@@ -228,13 +231,20 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationArchive", package: "containerization"),
+                .product(name: "ContainerizationExtras", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "ContainerizationOS", package: "containerization"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "GRPCCore", package: "grpc-swift-2"),
                 .product(name: "GRPCNIOTransportHTTP2", package: "grpc-swift-nio-transport"),
                 .product(name: "GRPCProtobuf", package: "grpc-swift-protobuf"),
+                .product(name: "SystemPackage", package: "swift-system"),
                 "ContainerAPIClient",
+                "ContainerImagesServiceClient",
+                "ContainerLog",
+                "ContainerPersistence",
+                "ContainerResource",
+                "TerminalProgress",
             ]
         ),
         .testTarget(
@@ -250,15 +260,24 @@ let package = Package(
         .testTarget(
             name: "ContainerCommandsTests",
             dependencies: [
+                .product(name: "Containerization", package: "containerization"),
                 "ContainerAPIClient",
                 "ContainerCommands",
+                "ContainerBuild",
                 "ContainerXPC",
                 "ContainerResource",
+                .product(name: "ContainerizationArchive", package: "containerization"),
+                .product(name: "ContainerizationOCI", package: "containerization"),
             ]
+        ),
+        .testTarget(
+            name: "ContainerBuilderPluginTests",
+            dependencies: ["container-builder"]
         ),
         .testTarget(
             name: "K8sPluginTests",
             dependencies: [
+                "ContainerAPIClient",
                 "ContainerK8s",
                 "ContainerResource",
                 "Yams",
@@ -328,11 +347,14 @@ let package = Package(
             dependencies: [
                 .product(name: "ContainerEngineService", package: "container-engine-api")
             ],
-            path: "Sources/ContainerEngineServiceCommand"
+            path: "Sources/ContainerEngineServiceCommand",
+            // The @main entry point is explicit even though its file is named main.swift.
+            swiftSettings: [.unsafeFlags(["-parse-as-library"])]
         ),
         .target(
             name: "ContainerAPIService",
             dependencies: [
+                "COfflineCopyProcess",
                 .product(name: "Containerization", package: "containerization"),
                 .product(name: "ContainerizationArchive", package: "containerization"),
                 .product(name: "ContainerizationEXT4", package: "containerization"),
@@ -365,6 +387,8 @@ let package = Package(
             name: "ContainerAPIServiceTests",
             dependencies: [
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "ContainerizationArchive", package: "containerization"),
+                .product(name: "ContainerizationEXT4", package: "containerization"),
                 .product(name: "ContainerizationOCI", package: "containerization"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "NIOCore", package: "swift-nio"),
@@ -638,9 +662,11 @@ let package = Package(
                 .product(name: "Collections", package: "swift-collections"),
                 .product(name: "ContainerEngineRuntimeSPI", package: "container-engine-api"),
                 .product(name: "Containerization", package: "containerization"),
+                .product(name: "TOML", package: "swift-toml"),
                 "ContainerXPC",
                 "CAuditToken",
                 "CVersion",
+                "Yams",
             ]
         ),
         .testTarget(
@@ -656,6 +682,11 @@ let package = Package(
         .target(
             name: "CSemanticHelperProcess",
             path: "Sources/CSemanticHelperProcess",
+            publicHeadersPath: "include"
+        ),
+        .target(
+            name: "COfflineCopyProcess",
+            path: "Sources/COfflineCopyProcess",
             publicHeadersPath: "include"
         ),
         .target(
@@ -962,6 +993,33 @@ let package = Package(
                 "MachineAPIClient",
                 "MachineAPIService",
             ]
+        ),
+        .executableTarget(
+            name: "container-build",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                "ContainerAPIClient",
+                "ContainerCommands",
+                "TerminalProgress",
+            ],
+            path: "Sources/Plugins/ContainerBuild",
+            exclude: ["config.toml"]
+        ),
+        .executableTarget(
+            name: "container-builder",
+            dependencies: [
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "ContainerizationExtras", package: "containerization"),
+                .product(name: "Logging", package: "swift-log"),
+                "ContainerAPIClient",
+                "ContainerBuild",
+                "ContainerLog",
+                "ContainerPersistence",
+                "ContainerResource",
+                "TerminalProgress",
+            ],
+            path: "Sources/Plugins/ContainerBuilder",
+            exclude: ["config.toml"]
         ),
     ]
 )

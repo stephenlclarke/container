@@ -1,0 +1,378 @@
+#!/usr/bin/env python3
+##===----------------------------------------------------------------------===##
+## Copyright © 2026 container project authors.
+##
+## Licensed under the Apache License, Version 2.0 (the "License");
+## you may not use this file except in compliance with the License.
+## You may obtain a copy of the License at
+##
+##   https://www.apache.org/licenses/LICENSE-2.0
+##
+## Unless required by applicable law or agreed to in writing, software
+## distributed under the License is distributed on an "AS IS" BASIS,
+## WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+## See the License for the specific language governing permissions and
+## limitations under the License.
+##===----------------------------------------------------------------------===##
+
+"""Finite old-producer/current-consumer native recipe compatibility tests."""
+
+from pathlib import Path
+import json
+import shutil
+import tempfile
+import unittest
+
+from Tools.bazel.artifacts import recipe_compatibility as compatibility
+
+
+class RecipeCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        policy = self.root / 'Tools/bazel/artifacts/recipe_compatibility.py'
+        policy.parent.mkdir(parents=True)
+        shutil.copyfile(Path(compatibility.__file__), policy)
+        self.old = dict(compatibility.OLD,
+                        **{'Package.swift': 'a' * 64,
+                           'MODULE.bazel': 'b' * 64,
+                           'Tools/bazel/layers.bzl': 'c' * 64,
+                           'Tools/bazel/compile.patch': 'd' * 64,
+                           'Tools/bazel/artifacts/native_format.py': 'e' * 64,
+                           'Tools/bazel/artifacts/release_asset.py': 'f' * 64})
+        self.current = dict(self.old, **compatibility.NEW)
+
+    def admit(self):
+        return compatibility.admit(self.old, self.current, self.root)
+
+    def test_exact_recipe_keeps_exact_producer_identity(self):
+        result = compatibility.admit(self.old, self.old, self.root)
+        self.assertEqual(result['mode'], 'exact')
+        self.assertEqual(result['changedFiles'], [])
+        self.assertEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+
+    def test_exact_two_file_transition_is_recorded(self):
+        result = self.admit()
+        self.assertEqual(result['mode'], 'known-consumer-verifier-update')
+        self.assertEqual(result['changedFiles'], sorted(compatibility.OLD))
+        self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+        self.assertEqual(result['policySHA256'], compatibility.digest(
+            Path(compatibility.__file__).read_bytes()))
+
+    def test_complete_offline_helper_vector_reuses_only_known_lower_recipes(self):
+        before = dict(self.current, **compatibility.OFFLINE_HELPER_OLD)
+        after = dict(self.current, **compatibility.OFFLINE_HELPER_NEW)
+        result = compatibility.admit(before, after, self.root)
+        self.assertEqual(result['mode'], 'known-offline-copy-service-helper-addition')
+        self.assertEqual(set(result['changedFiles']), set(compatibility.OFFLINE_HELPER_NEW))
+        self.assertNotEqual(result['currentRecipeSHA256'], result['producerRecipeSHA256'])
+        self.assertEqual(compatibility.admit(after, after, self.root)['mode'], 'exact')
+        for key in compatibility.OFFLINE_HELPER_NEW:
+            with self.subTest(partial=key), self.assertRaises(ValueError):
+                compatibility.admit(before, dict(after, **{key: before[key]}), self.root)
+            with self.subTest(unknown=key), self.assertRaises(ValueError):
+                compatibility.admit(before, dict(after, **{key: '0' * 64}), self.root)
+        for producer, current in ((after, before),
+                                  (before, dict(after, **{'Tools/bazel/layers.bzl': '0' * 64})),
+                                  (dict(before, **{'MODULE.bazel': '0' * 64}), after)):
+            with self.subTest(producer=producer, current=current), self.assertRaises(ValueError):
+                compatibility.admit(producer, current, self.root)
+
+    def test_partial_reversed_or_unknown_pair_is_rejected(self):
+        for before, after in ((self.old, dict(self.old, **{compatibility.CONSUMER:
+                                                         compatibility.NEW[compatibility.CONSUMER]})),
+                              (self.current, self.old),
+                              (dict(self.old, **{compatibility.CONSUMER: '0' * 64}), self.current),
+                              (self.old, dict(self.current, **{compatibility.IMPORTER: '1' * 64}))):
+            with self.subTest(before=before, after=after):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(before, after, self.root)
+
+    def test_unrelated_build_or_exporter_change_is_rejected(self):
+        for key in ('Package.swift', 'MODULE.bazel', 'Tools/bazel/layers.bzl',
+                    'Tools/bazel/compile.patch', 'Tools/bazel/artifacts/native_format.py',
+                    'Tools/bazel/artifacts/release_asset.py'):
+            changed = dict(self.current, **{key: '0' * 64})
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                compatibility.admit(self.old, changed, self.root)
+
+    def test_exact_host_fixture_transition_preserves_archive_recipe(self):
+        for verifier_update in (False, True):
+            before = dict(self.old, **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_OLD})
+            after = dict(self.current if verifier_update else self.old,
+                         **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_NEW})
+            with self.subTest(verifier_update=verifier_update):
+                result = compatibility.admit(before, after, self.root)
+                self.assertIn('known-host-timeout-fixture-update', result['mode'])
+                self.assertIn(compatibility.HOST_FIXTURE, result['changedFiles'])
+                self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+
+    def test_host_fixture_transition_rejects_unknown_reverse_and_build_drift(self):
+        before = dict(self.old, **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_OLD})
+        after = dict(self.current, **{compatibility.HOST_FIXTURE: compatibility.HOST_FIXTURE_NEW})
+        for producer, current in (
+                (before, dict(after, **{compatibility.HOST_FIXTURE: '0' * 64})),
+                (after, before),
+                (before, dict(after, **{'Package.swift': '0' * 64})),
+                (before, dict(after, **{compatibility.IMPORTER: '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
+
+    def test_exact_diagnostic_scan_transition_preserves_compiled_recipe(self):
+        key = compatibility.PUBLIC_EVIDENCE_CHECK
+        before = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_OLD})
+        after = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_NEW})
+        result = compatibility.admit(before, after, self.root)
+        self.assertEqual(result['mode'], 'known-parameter-diagnostic-scan-update')
+        self.assertEqual(result['changedFiles'], [key])
+        self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+
+    def test_diagnostic_scan_transition_rejects_unknown_reverse_and_build_drift(self):
+        key = compatibility.PUBLIC_EVIDENCE_CHECK
+        before = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_OLD})
+        after = dict(self.old, **{key: compatibility.PUBLIC_EVIDENCE_NEW})
+        for producer, current in (
+                (before, dict(after, **{key: '0' * 64})),
+                (dict(before, **{key: '0' * 64}), after),
+                (after, before),
+                (before, dict(after, **{'Package.swift': '0' * 64})),
+                (before, dict(after, **{'Tools/bazel/artifacts/native_format.py': '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
+
+    def test_exact_connection_pin_transition_preserves_unaffected_recipe(self):
+        key = compatibility.CONNECTION_PINS
+        before = dict(self.old, **{key: compatibility.CONNECTION_PINS_OLD})
+        after = dict(self.old, **{key: compatibility.CONNECTION_PINS_NEW})
+        result = compatibility.admit(before, after, self.root)
+        self.assertEqual(result['mode'], 'known-sdk-transport-pin-update')
+        self.assertEqual(result['changedFiles'], [key])
+        self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
+
+    def test_connection_pin_transition_rejects_unknown_reverse_and_build_drift(self):
+        key = compatibility.CONNECTION_PINS
+        before = dict(self.old, **{key: compatibility.CONNECTION_PINS_OLD})
+        after = dict(self.old, **{key: compatibility.CONNECTION_PINS_NEW})
+        for producer, current in (
+                (before, dict(after, **{key: '0' * 64})),
+                (dict(before, **{key: '0' * 64}), after),
+                (after, before),
+                (before, dict(after, **{'MODULE.bazel': '0' * 64})),
+                (before, dict(after, **{'Tools/bazel/artifacts/native_format.py': '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
+
+    def test_stopped_copy_pin_transition_reuses_only_known_unchanged_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        current = dict(self.old, **{key: compatibility.STOPPED_COPY_PINS})
+        for previous in (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW):
+            before = dict(self.old, **{key: previous})
+            accepted = compatibility.admit(before, current, self.root)
+            self.assertEqual(accepted['mode'], 'known-stopped-copy-sdk-pin-update')
+            self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.CONNECTION_PINS_NEW})),
+                (dict(self.old, **{key: compatibility.CONNECTION_PINS_NEW}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_copy_mode_pin_transition_reuses_only_known_unchanged_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        current = dict(self.old, **{key: compatibility.STOPPED_COPY_MODE_PINS})
+        for previous in (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS):
+            before = dict(self.old, **{key: previous})
+            accepted = compatibility.admit(before, current, self.root)
+            self.assertEqual(accepted['mode'], 'known-stopped-copy-mode-sdk-pin-update')
+            self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.STOPPED_COPY_PINS})),
+                (dict(self.old, **{key: compatibility.STOPPED_COPY_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_symlink_pin_transition_reuses_only_known_unchanged_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        current = dict(self.old, **{key: compatibility.STOPPED_COPY_SYMLINK_PINS})
+        for previous in (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS):
+            accepted = compatibility.admit(dict(self.old, **{key: previous}), current, self.root)
+            self.assertEqual(accepted['mode'], 'known-stopped-copy-symlink-sdk-pin-update')
+            self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.STOPPED_COPY_MODE_PINS})),
+                (dict(self.old, **{key: compatibility.STOPPED_COPY_MODE_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_offline_copy_transition_reuses_only_exact_unchanged_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        current = dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS})
+        for previous in (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,
+                         compatibility.STOPPED_COPY_SYMLINK_PINS):
+            accepted = compatibility.admit(dict(self.old, **{key: previous}), current, self.root)
+            self.assertEqual(accepted['mode'], 'known-stopped-copy-offline-sdk-and-test-update')
+            self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.STOPPED_COPY_SYMLINK_PINS})),
+                (dict(self.old, **{key: compatibility.STOPPED_COPY_SYMLINK_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_registry_public_pin_transition_reuses_only_reviewed_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        manifest = (Path(__file__).resolve().parents[3] / 'Package.swift').read_text()
+        self.assertEqual(compatibility.digest(manifest.encode()), compatibility.REGISTRY_PUBLIC_PINS)
+        prior_manifest = manifest.replace(
+            "f98a11cb494529e2ed4f889deadef10515ee1740", "518f92a006c94c55e21422f3cf2f93c2f039d053")
+        self.assertEqual(compatibility.digest(prior_manifest.encode()), compatibility.OFFLINE_HELPER_NEW[key])
+        before = dict(self.old, **compatibility.OFFLINE_HELPER_NEW)
+        current = dict(before, **{key: compatibility.REGISTRY_PUBLIC_PINS})
+        accepted = compatibility.admit(before, current, self.root)
+        self.assertEqual(accepted['mode'], 'known-registry-public-sdk-pin-update')
+        self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(before, **{key: '0' * 64}), current),
+                (current, before),
+                (before, dict(current, **{'MODULE.bazel': '0' * 64})),
+                (before, dict(current, **{key: '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_copy_transfer_pin_transition_retains_only_known_unchanged_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        manifest = (Path(__file__).resolve().parents[3] / 'Package.swift').read_text()
+        manifest = manifest.replace('f98a11cb494529e2ed4f889deadef10515ee1740', '518f92a006c94c55e21422f3cf2f93c2f039d053')
+        self.assertEqual(compatibility.digest(manifest.encode()), compatibility.OFFLINE_HELPER_NEW[key])
+        manifest = manifest.replace('                "COfflineCopyProcess",\n', '', 1).replace(
+            '        .target(\n            name: "COfflineCopyProcess",\n'
+            '            path: "Sources/COfflineCopyProcess",\n'
+            '            publicHeadersPath: "include"\n        ),\n', '', 1)
+        selected_sha = compatibility.digest(manifest.encode())
+        self.assertEqual(selected_sha, compatibility.COPY_TRANSFER_PINS)
+        current = dict(self.old, **{key: selected_sha})
+        previous_pins = (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,
+                         compatibility.STOPPED_COPY_SYMLINK_PINS, compatibility.STOPPED_COPY_OFFLINE_PINS,
+                         compatibility.UNALIGNED_METADATA_PINS, compatibility.COPY_FIXTURE_PINS)
+        for previous in previous_pins:
+            before = dict(self.old, **{key: previous})
+            accepted = compatibility.admit(before, current, self.root)
+            self.assertEqual(accepted['mode'], 'known-copy-transfer-sdk-pin-update')
+            self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.COPY_FIXTURE_PINS})),
+                (dict(self.old, **{key: compatibility.COPY_FIXTURE_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_unaligned_sdk_pin_transition_reuses_only_exact_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        current = dict(self.old, **{key: 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083'})
+        previous_pins = (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,
+                         compatibility.STOPPED_COPY_SYMLINK_PINS, compatibility.STOPPED_COPY_OFFLINE_PINS)
+        for previous in previous_pins:
+            with self.subTest(previous=previous):
+                accepted = compatibility.admit(dict(self.old, **{key: previous}), current, self.root)
+                self.assertEqual(accepted['mode'], 'known-unaligned-metadata-sdk-pin-update')
+                self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS})),
+                (dict(self.old, **{key: compatibility.STOPPED_COPY_OFFLINE_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_copy_fixture_sdk_pin_transition_reuses_only_exact_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        selected_sha = 'd8665fe69c80762453638756577b35ae35971561db4bed8d272e3ad5b589d513'
+        current = dict(self.old, **{key: selected_sha})
+        previous_pins = (compatibility.CONNECTION_PINS_OLD, compatibility.CONNECTION_PINS_NEW,
+                         compatibility.STOPPED_COPY_PINS, compatibility.STOPPED_COPY_MODE_PINS,
+                         compatibility.STOPPED_COPY_SYMLINK_PINS, compatibility.STOPPED_COPY_OFFLINE_PINS,
+                         compatibility.UNALIGNED_METADATA_PINS)
+        for previous in previous_pins:
+            with self.subTest(previous=previous):
+                accepted = compatibility.admit(dict(self.old, **{key: previous}), current, self.root)
+                self.assertEqual(accepted['mode'], 'known-copy-fixture-sdk-pin-update')
+                self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(self.old, **{key: '0' * 64}), current),
+                (current, dict(self.old, **{key: compatibility.UNALIGNED_METADATA_PINS})),
+                (dict(self.old, **{key: compatibility.UNALIGNED_METADATA_PINS}),
+                 dict(current, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
+    def test_client_export_recipe_transition_keeps_exact_lower_chain(self):
+        before = dict(self.old, **compatibility.CLIENT_EXPORT_OLD,
+                      **{compatibility.CONSUMER: compatibility.NEW[compatibility.CONSUMER]})
+        selected = dict(before, **compatibility.CLIENT_EXPORT_NEW)
+        for legacy in (False, True):
+            producer = dict(before)
+            if legacy:
+                producer.update(compatibility.OLD)
+                producer[compatibility.PUBLIC_EVIDENCE_CHECK] = compatibility.PUBLIC_EVIDENCE_OLD
+            with self.subTest(legacy=legacy):
+                result = compatibility.admit(producer, selected, self.root)
+                self.assertIn('known-client-exporter-only-update', result['mode'])
+                self.assertEqual(result['changedFiles'], sorted(
+                    key for key in selected if selected[key] != producer[key]))
+                canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+                self.assertEqual(result['currentRecipeSHA256'], compatibility.digest(canonical(selected)))
+        for key, expected in compatibility.CLIENT_EXPORT_NEW.items():
+            self.assertEqual(compatibility.digest((Path(__file__).resolve().parents[3] / key).read_bytes()), expected)
+        for producer, current in (
+                (before, dict(selected, **{compatibility.IMPORTER: compatibility.CLIENT_EXPORT_OLD[compatibility.IMPORTER]})),
+                (before, dict(selected, **{compatibility.PUBLIC_EVIDENCE_CHECK: '0' * 64})),
+                (selected, before),
+                (before, dict(selected, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
+
+    def test_inventory_and_hash_shape_drift_is_rejected(self):
+        for current in (dict(self.current, extra='0' * 64),
+                        {key: value for key, value in self.current.items() if key != 'MODULE.bazel'},
+                        dict(self.current, **{'MODULE.bazel': 'not-a-sha'})):
+            with self.subTest(current=current), self.assertRaisesRegex(ValueError, 'incomplete or malformed'):
+                compatibility.admit(self.old, current, self.root)
+
+    def test_selected_source_policy_mismatch_or_symlink_is_rejected(self):
+        policy = self.root / 'Tools/bazel/artifacts/recipe_compatibility.py'
+        policy.write_text(policy.read_text() + '# drift\n')
+        with self.assertRaisesRegex(ValueError, 'policy differs'):
+            self.admit()
+        policy.unlink()
+        policy.symlink_to(Path(compatibility.__file__))
+        with self.assertRaisesRegex(ValueError, 'policy differs'):
+            self.admit()
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -474,6 +474,7 @@ package protocol EngineLinuxSandboxGELFTCPAuthorityV1: Sendable {
         dynamicEnvironment: [String: String],
         networkEndpoints: [WorkloadNetworkEndpoint],
         stdio: [FileHandle?],
+        closeStdinOnEOF: Bool,
         controllers: [any WorkloadEffectControllerV1],
         monitorTerminal: Bool
     ) async throws -> EngineWorkloadRecordV1
@@ -565,6 +566,7 @@ package actor EngineLinuxSandboxGELFTCPConnectorV1 {
             dynamicEnvironment: [:],
             networkEndpoints: [],
             stdio: diagnosticStdio,
+            closeStdinOnEOF: false,
             controllers: [],
             monitorTerminal: true
         )

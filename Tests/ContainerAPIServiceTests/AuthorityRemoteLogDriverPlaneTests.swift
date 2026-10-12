@@ -44,6 +44,7 @@ private enum AuthorityCatalogJournaldServiceError: Error {
 
 private actor AuthorityCatalogJournaldService: JournaldService {
     private var generation: UInt64?
+    private var cancelReadiness = false
     private(set) var readinessCalls = 0
 
     init(generation: UInt64?) {
@@ -54,8 +55,15 @@ private actor AuthorityCatalogJournaldService: JournaldService {
         self.generation = generation
     }
 
+    func setCancelReadiness(_ cancelReadiness: Bool) {
+        self.cancelReadiness = cancelReadiness
+    }
+
     func activeSandboxGeneration() throws -> UInt64 {
         readinessCalls += 1
+        if cancelReadiness {
+            throw CancellationError()
+        }
         guard let generation else {
             throw AuthorityCatalogJournaldServiceError.unavailable
         }
@@ -275,6 +283,75 @@ struct AuthorityRemoteLogDriverPlaneTests {
             await service.setGeneration(10)
             #expect(
                 try await plane.logDriverCatalog()
+                    .descriptor(named: "journald") != nil
+            )
+            #expect(await service.readinessCalls == 3)
+        }
+    }
+
+    @Test
+    func selectedCatalogDoesNotStartUnrelatedJournald() async throws {
+        try await withTemporaryRoot { root in
+            let service = AuthorityCatalogJournaldService(generation: nil)
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory:
+                    AuthorityUnavailableAWSLogsClientFactory(),
+                journaldService: service
+            )
+
+            #expect(
+                try await plane.logDriverCatalog(forSelectedDriver: "json-file")
+                    .descriptor(named: "json-file") != nil
+            )
+            #expect(
+                try await plane.logDriverCatalog(forSelectedDriver: "awslogs")
+                    .descriptor(named: "awslogs") != nil
+            )
+            #expect(
+                try await plane.logDriverCatalog(forSelectedDriver: "unknown")
+                    .descriptor(named: "unknown") == nil
+            )
+            #expect(await service.readinessCalls == 0)
+            #expect(
+                try await plane.logDriverCatalog()
+                    .descriptor(named: "journald") == nil
+            )
+            #expect(await service.readinessCalls == 1)
+        }
+    }
+
+    @Test
+    func selectedJournaldCatalogRechecksReadiness() async throws {
+        try await withTemporaryRoot { root in
+            let service = AuthorityCatalogJournaldService(generation: 9)
+            let plane = try await AuthorityRemoteLogDriverPlane.create(
+                appRoot: root,
+                awsLogsClientFactory:
+                    AuthorityUnavailableAWSLogsClientFactory(),
+                journaldService: service
+            )
+
+            #expect(
+                try await plane.logDriverCatalog(forSelectedDriver: "journald")
+                    .descriptor(named: "journald") != nil
+            )
+            #expect(await service.readinessCalls == 1)
+            await service.setGeneration(nil)
+            #expect(
+                try await plane.logDriverCatalog(forSelectedDriver: "journald")
+                    .descriptor(named: "journald") == nil
+            )
+            #expect(await service.readinessCalls == 2)
+            await service.setCancelReadiness(true)
+            await #expect(throws: CancellationError.self) {
+                _ = try await plane.logDriverCatalog(
+                    forSelectedDriver: "journald"
+                )
+            }
+            #expect(await service.readinessCalls == 3)
+            #expect(
+                try await plane.advertisedLogDriverCatalog()
                     .descriptor(named: "journald") != nil
             )
             #expect(await service.readinessCalls == 3)

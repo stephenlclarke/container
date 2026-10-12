@@ -1,0 +1,43 @@
+diff --git a/Sources/ArgumentParserTestHelpers/TestHelpers.swift b/Sources/ArgumentParserTestHelpers/TestHelpers.swift
+--- a/Sources/ArgumentParserTestHelpers/TestHelpers.swift
++++ b/Sources/ArgumentParserTestHelpers/TestHelpers.swift
+@@ -370,7 +370,14 @@
+ 
+     let arguments = Array(command.dropFirst())
+     let commandName = String(command.first!)
+-    let commandURL = debugURL.appendingPathComponent(commandName)
++    let commandURL: URL
++    if ProcessInfo.processInfo.environment["TEST_SRCDIR"] != nil {
++      commandURL = bazelTestSourceURL(#filePath)
++        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
++        .appendingPathComponent(commandName + ".rspm")
++    } else {
++      commandURL = debugURL.appendingPathComponent(commandName)
++    }
+     guard (try? commandURL.checkResourceIsReachable()) ?? false else {
+       XCTFail(
+         "No executable at '\(commandURL.standardizedFileURL.path)'.",
+@@ -461,7 +468,7 @@
+     file: StaticString = #filePath,
+     line: UInt = #line
+   ) throws -> String? {
+-    let snapshotDirectoryURL = URL(fileURLWithPath: "\(file)")
++    let snapshotDirectoryURL = bazelTestSourceURL("\(file)")
+       .deletingLastPathComponent()
+       .appendingPathComponent("Snapshots")
+     let snapshotFileURL =
+@@ -631,3 +638,14 @@
+       line: line)
+   }
+ }
++
++// Bazel external-package runfiles live beside _main, not under _main/external.
++private func bazelTestSourceURL(_ file: String) -> URL {
++  if let root = ProcessInfo.processInfo.environment["TEST_SRCDIR"],
++    let prefix = file.range(of: "external/")
++  {
++    return URL(fileURLWithPath: root)
++      .appendingPathComponent(String(file[prefix.upperBound...]))
++  }
++  return URL(fileURLWithPath: file)
++}

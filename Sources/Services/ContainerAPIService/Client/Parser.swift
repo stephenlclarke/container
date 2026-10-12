@@ -177,6 +177,50 @@ public struct Parser {
         return (ids.dedupe(), names.dedupe())
     }
 
+    /// Resolve a username/uid/gid triple for an account that's about to be created (as opposed
+    /// to `user(user:uid:gid:defaultUser:)`, which selects an *existing* identity to run a
+    /// process as). `user` uses the same `<name|uid>[:<gid>]` format, but unlike
+    /// `user(user:uid:gid:defaultUser:)` the group component must be numeric — there's no existing
+    /// `/etc/group` on the not-yet-created account to resolve a group name against.
+    ///
+    /// Each of the three pieces is resolved independently, falling back in order from `user`, to
+    /// the matching `uid`/`gid` argument, to the default. `user` only wins outright over `uid`/`gid`
+    /// when it actually specifies that piece (e.g. `--user 1500 --uid 9999` keeps 1500) — a bare
+    /// name in `user` doesn't specify a uid/gid, so `uid`/`gid` still apply in that case.
+    public static func userAccount(
+        user: String?, uid: UInt32?, gid: UInt32?,
+        defaultUsername: String, defaultUID: UInt32, defaultGID: UInt32
+    ) throws -> (username: String, uid: UInt32, gid: UInt32) {
+        var username = defaultUsername
+        var resolvedUID: UInt32?
+        var resolvedGID: UInt32?
+
+        if let user, !user.isEmpty {
+            let parts = user.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            let primary = String(parts[0])
+
+            if !primary.isEmpty {
+                if let uidValue = UInt32(primary) {
+                    resolvedUID = uidValue
+                } else {
+                    username = primary
+                }
+            }
+
+            if parts.count == 2 {
+                guard let gidValue = UInt32(parts[1]) else {
+                    throw ContainerizationError(
+                        .invalidArgument,
+                        message: "invalid group '\(parts[1])' in --user '\(user)': group must be numeric"
+                    )
+                }
+                resolvedGID = gidValue
+            }
+        }
+
+        return (username, resolvedUID ?? uid ?? defaultUID, resolvedGID ?? gid ?? defaultGID)
+    }
+
     public static func platform(os: String, arch: String) -> ContainerizationOCI.Platform {
         .init(arch: arch, os: os)
     }
@@ -1588,34 +1632,29 @@ public struct Parser {
             return "/"
         }()
 
-        let processArguments: [String]? = {
-            var result: [String] = []
-            let hasEntrypointOverride = managementFlags.entrypoint != nil
-            if managementFlags.clearEntrypoint {
-                // Keep the image command while explicitly omitting the image
-                // entrypoint. This represents an OCI empty Entrypoint array.
-            } else if let entrypoint = managementFlags.entrypoint {
-                if !entrypoint.isEmpty {
-                    result = [entrypoint]
-                }
-            } else if let entrypoint = config?.entrypoint, !entrypoint.isEmpty, entrypoint != [""] {
-                result = entrypoint
-            }
-            if !arguments.isEmpty {
-                result.append(contentsOf: arguments)
-            } else {
-                if let cmd = config?.cmd, !hasEntrypointOverride || managementFlags.clearEntrypoint, !cmd.isEmpty {
-                    result.append(contentsOf: cmd)
-                }
-            }
-            return result.count > 0 ? result : nil
-        }()
-
         if managementFlags.clearEntrypoint, managementFlags.entrypoint != nil {
             throw ContainerizationError(.invalidArgument, message: "--clear-entrypoint cannot be combined with --entrypoint")
         }
 
-        guard let commandToRun = processArguments, commandToRun.count > 0 else {
+        let entrypoint: [String]?
+        if managementFlags.clearEntrypoint {
+            entrypoint = []
+        } else if let override = managementFlags.entrypoint {
+            entrypoint = override.isEmpty ? [] : [override]
+        } else {
+            entrypoint = config?.entrypoint == [""] ? [] : config?.entrypoint
+        }
+        let command: [String]?
+        if !arguments.isEmpty {
+            command = arguments
+        } else if managementFlags.entrypoint == nil {
+            command = config?.cmd
+        } else {
+            command = nil
+        }
+        let imageCommand = ProcessConfiguration.ImageCommand(entrypoint: entrypoint, command: command)
+        let commandToRun = (entrypoint ?? []) + (command ?? [])
+        guard !commandToRun.isEmpty else {
             throw ContainerizationError(.invalidArgument, message: "command/entrypoint not specified for container process")
         }
 
@@ -1645,7 +1684,8 @@ public struct Parser {
             rlimits: rlimits,
             oomScoreAdj: processFlags.oomScoreAdj,
             privileged: processFlags.privileged,
-            noNewPrivileges: try securityOptions(managementFlags.securityOpts).noNewPrivileges
+            noNewPrivileges: try securityOptions(managementFlags.securityOpts).noNewPrivileges,
+            imageCommand: imageCommand
         )
     }
 

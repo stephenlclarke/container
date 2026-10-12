@@ -1,0 +1,8 @@
+{
+  "asset": "guest-runc.oci.tar",
+  "repository": "stephenlclarke/containerization",
+  "schema": 1,
+  "sha256": "6a133a169e84c1071dbe63107b89aabccc66555d1992724bc394ccb7f23b1a54",
+  "tag": "layer-guest-7c76243f3e98-f5f9e21fcb19",
+  "targetCommit": "7c76243f3e98ea38669f665e1bd1172db7e6b347"
+}

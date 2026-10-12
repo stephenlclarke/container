@@ -1,0 +1,8 @@
+{
+  "asset": "foundation-native-proof.tar.gz",
+  "repository": "stephenlclarke/container",
+  "schema": 1,
+  "sha256": "fc00b3e30b0ac16449be19f3db06ee54a0a2557c5ca71150bfe9a51c43cb180f",
+  "tag": "layer-foundation-native-51d84a95dbe7-059225a5ab021aad4db9",
+  "targetCommit": "51d84a95dbe74376eb61e2527a62d5a2fc3e28d2"
+}

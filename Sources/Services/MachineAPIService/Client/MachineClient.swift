@@ -29,15 +29,44 @@ public struct MachineClient: Sendable {
         ContainerServiceNamespace.current.machineAPIServerIdentifier
     }
 
-    public static func machineConfigFromFlags(
+    public static func machineConfigFromFlags(  // NOSONAR: swift:S107 - source-compatible legacy adapter; implementation uses ConfigurationFlags.
         id: String,
         image: String,
         management: Flags.MachineManagement,
+        user: Flags.MachineUser,
         registry: Flags.Registry,
         imageFetch: Flags.ImageFetch,
         containerSystemConfig: ContainerSystemConfig,
         progressUpdate: @escaping ProgressUpdateHandler
-    ) async throws -> (MachineConfiguration, MachineResources?) {
+    ) async throws -> MachineConfiguration {
+        try await machineConfigFromFlags(
+            id: id, image: image,
+            flags: .init(management: management, user: user, registry: registry, imageFetch: imageFetch),
+            containerSystemConfig: containerSystemConfig, progressUpdate: progressUpdate)
+    }
+
+    public struct ConfigurationFlags {
+        public var management: Flags.MachineManagement
+        public var user: Flags.MachineUser
+        public var registry: Flags.Registry
+        public var imageFetch: Flags.ImageFetch
+
+        public init(management: Flags.MachineManagement, user: Flags.MachineUser, registry: Flags.Registry, imageFetch: Flags.ImageFetch) {
+            self.management = management
+            self.user = user
+            self.registry = registry
+            self.imageFetch = imageFetch
+        }
+    }
+
+    public static func machineConfigFromFlags(
+        id: String, image: String, flags: ConfigurationFlags,
+        containerSystemConfig: ContainerSystemConfig, progressUpdate: @escaping ProgressUpdateHandler
+    ) async throws -> MachineConfiguration {
+        let management = flags.management
+        let user = flags.user
+        let registry = flags.registry
+        let imageFetch = flags.imageFetch
         var requestedPlatform = Parser.platform(os: management.os, arch: management.arch)
         // Prefer --platform
         if let platform = management.platform {
@@ -70,10 +99,14 @@ public struct MachineClient: Sendable {
             platform: requestedPlatform,
             progressUpdate: ProgressTaskCoordinator.handler(for: unpackTask, from: progressUpdate))
 
+        let (username, uid, gid) = try Parser.userAccount(
+            user: user.user, uid: user.uid, gid: user.gid,
+            defaultUsername: NSUserName(), defaultUID: getuid(), defaultGID: getgid())
         let userSetup = UserSetup(
-            username: NSUserName(),
-            uid: getuid(),
-            gid: getgid())
+            username: username,
+            uid: uid,
+            gid: gid,
+            home: user.home)
 
         let config = try MachineConfiguration(
             id: id,
@@ -81,10 +114,7 @@ public struct MachineClient: Sendable {
             platform: requestedPlatform,
             userSetup: userSetup)
 
-        let resources = try? await Self.fetchMachineArtifact(
-            reference: img.reference, platform: requestedPlatform, scheme: scheme)
-
-        return (config, resources)
+        return config
     }
 
     private let xpcClient: XPCClient
@@ -127,7 +157,6 @@ public struct MachineClient: Sendable {
     /// Create a new container machine with the given configuration
     public func create(
         configuration: MachineConfiguration,
-        resources: MachineResources?,
         bootConfig: MachineConfig,
     ) async throws {
         do {
@@ -135,11 +164,6 @@ public struct MachineClient: Sendable {
 
             let config = try JSONEncoder().encode(configuration)
             request.set(key: MachineKeys.machineConfig.rawValue, value: config)
-
-            if let resources {
-                let data = try JSONEncoder().encode(resources)
-                request.set(key: MachineKeys.machineResources.rawValue, value: data)
-            }
 
             let bootData = try JSONEncoder().encode(bootConfig)
             request.set(key: MachineKeys.bootConfig.rawValue, value: bootData)
@@ -313,144 +337,5 @@ public struct MachineClient: Sendable {
                 cause: error
             )
         }
-    }
-}
-
-// MARK: Container machine artifact fetching
-
-extension MachineClient {
-    enum RegistryAuthenticationMode: Equatable {
-        case environment
-        case anonymous
-        case keychain
-    }
-
-    /// Fetch machine metadata from an OCI artifact attached to an image via the referrers API.
-    ///
-    /// Returns `nil` if no artifact is found or the registry doesn't support referrers.
-    static func fetchMachineArtifact(
-        reference: String,
-        platform: Platform,
-        scheme: RequestScheme
-    ) async throws -> MachineResources? {
-        let ref = try Reference.parse(reference)
-        guard let domain = ref.resolvedDomain else {
-            return nil
-        }
-
-        let insecure = try scheme.schemeFor(host: ref.resolvedDomain ?? "", internalDnsDomain: nil) == .http
-
-        let environment = ProcessInfo.processInfo.environment
-        let auth: Authentication?
-        switch Self.authenticationMode(host: domain, environment: environment) {
-        case .environment:
-            guard let username = environment["CONTAINER_REGISTRY_USER"],
-                let password = environment["CONTAINER_REGISTRY_TOKEN"]
-            else {
-                throw ContainerizationError(
-                    .internalError,
-                    message: "incomplete environment credentials for host \(domain)"
-                )
-            }
-            auth = BasicAuthentication(
-                username: username,
-                password: password)
-        case .anonymous:
-            auth = nil
-        case .keychain:
-            let keychain = KeychainHelper(securityDomain: Constants.keychainID)
-            auth = try? keychain.lookup(hostname: domain)
-        }
-
-        let client = try RegistryClient(reference: reference, insecure: insecure, auth: auth)
-        let name = ref.path
-
-        // Resolve the image reference to get the manifest digest.
-        // We need the platform-specific manifest digest, not the index digest.
-        let tag = ref.digest ?? ref.tag ?? "latest"
-        let topDescriptor = try await client.resolve(name: name, tag: tag)
-
-        // If the top-level is an index, find the platform-specific manifest
-        let manifestDigest: String
-        switch topDescriptor.mediaType {
-        case MediaTypes.index, MediaTypes.dockerManifest:
-            let index: Index = try await client.fetch(name: name, descriptor: topDescriptor)
-            guard let platformDesc = index.manifests.first(where: { $0.platform == platform }) else {
-                return nil
-            }
-            manifestDigest = platformDesc.digest
-        case MediaTypes.imageManifest:
-            manifestDigest = topDescriptor.digest
-        default:
-            return nil
-        }
-
-        // Query referrers API for container machine config artifacts
-        let referrersIndex = try await client.referrers(
-            name: name,
-            digest: manifestDigest,
-            artifactType: MachineResources.configMediaType
-        )
-
-        guard let artifactDesc = referrersIndex.manifests.first else {
-            return nil
-        }
-
-        // Fetch the artifact manifest
-        let artifactManifest: Manifest = try await client.fetch(name: name, descriptor: artifactDesc)
-
-        // Extract metadata JSON and setup script from artifact layers
-        var resources: MachineResources?
-        var setupScript: String?
-
-        for layer in artifactManifest.layers {
-            if layer.mediaType == MachineResources.configMediaType {
-                let data = try await client.fetchData(name: name, descriptor: layer)
-                resources = try JSONDecoder().decode(MachineResources.self, from: data)
-            } else if layer.mediaType == MachineResources.setupScriptMediaType {
-                let data = try await client.fetchData(name: name, descriptor: layer)
-                let script = String(decoding: data, as: UTF8.self)
-                if !script.isEmpty {
-                    setupScript = script
-                }
-            }
-        }
-
-        return merge(resources: resources, setupScript: setupScript)
-    }
-
-    static func authenticationMode(
-        host: String,
-        environment: [String: String]
-    ) -> RegistryAuthenticationMode {
-        if environment["CONTAINER_REGISTRY_HOST"] == host,
-            environment["CONTAINER_REGISTRY_USER"] != nil,
-            environment["CONTAINER_REGISTRY_TOKEN"] != nil
-        {
-            return .environment
-        }
-
-        let normalizedHost = host.lowercased()
-        let anonymousHosts =
-            environment["CONTAINER_REGISTRY_ANONYMOUS_HOSTS"]?
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
-            ?? []
-        if anonymousHosts.contains(normalizedHost) {
-            return .anonymous
-        }
-        return .keychain
-    }
-
-    /// Merge a separately-fetched setup script into the decoded machine resources.
-    ///
-    /// `MachineResources` is a value type, so mutating a copy bound via `if var`
-    /// would not affect the returned value. Assign through the optional instead.
-    static func merge(resources: MachineResources?, setupScript: String?) -> MachineResources? {
-        var resources = resources
-        if let setupScript {
-            resources?.setupScript = setupScript
-        }
-        return resources
     }
 }

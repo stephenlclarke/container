@@ -72,9 +72,15 @@ public enum RuntimeKeys: String {
     /// client-owned standard streams arrive.
     case prewarming
 
+    /// Whether bootstrap is creating a temporary runtime only for filesystem
+    /// copy operations, without workload networking or published ports.
+    case copyOnlyBootstrap
+
     /// Whether the first foreground client has no stdin and the deferred
     /// prewarming relay must therefore receive end-of-file.
     case closeStdin
+    /// Finish the init input stream only after this client's descriptor drains.
+    case closeStdinOnEOF
 
     /// Per-network connection info passed to the runtime so it can allocate directly.
     case networkBootstrapInfos

@@ -50,6 +50,9 @@ extension Application {
         @OptionGroup
         public var logOptions: Flags.Logging
 
+        @Flag(help: "Prepare a dedicated virtual machine in the background before its first start.")
+        var prewarm: Bool = false
+
         @Argument(help: "Image name")
         var image: String
 
@@ -61,6 +64,18 @@ extension Application {
                 try Parser.loggingRequest(
                     driver: managementFlags.logDriver,
                     options: managementFlags.logOpt
+                )
+            }
+        }
+
+        var creationOptions: ContainerCreateOptions {
+            get throws {
+                try Parser.createOptions(
+                    autoRemove: managementFlags.remove,
+                    restart: managementFlags.restart,
+                    restartDelay: managementFlags.restartDelay,
+                    restartWindow: managementFlags.restartWindow,
+                    prewarm: prewarm
                 )
             }
         }
@@ -142,12 +157,7 @@ extension Application {
                 log: log
             )
 
-            let options = try Parser.createOptions(
-                autoRemove: managementFlags.remove,
-                restart: managementFlags.restart,
-                restartDelay: managementFlags.restartDelay,
-                restartWindow: managementFlags.restartWindow
-            )
+            let options = try creationOptions
             let runtimeData = try LinuxRuntimeData.encoded(from: managementFlags)
             try await client.create(
                 configuration: ck.0,

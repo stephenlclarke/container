@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Container Build Runner</string>
+	<key>CFBundleExecutable</key>
+	<string>ContainerBuildRunner</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.stephenlclarke.container.qualification-runner</string>
+	<key>CFBundleName</key>
+	<string>Container Build Runner</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>2</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Run container build and integration tests against temporary local virtual machines.</string>
+</dict>
+</plist>

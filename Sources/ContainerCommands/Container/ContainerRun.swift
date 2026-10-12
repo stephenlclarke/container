@@ -31,6 +31,10 @@ import TerminalProgress
 
 extension Application {
     public struct ContainerRun: AsyncLoggableCommand {
+        static func closesStdinOnEOF(interactive: Bool, tty: Bool, detach: Bool) -> Bool {
+            interactive && !tty && !detach
+        }
+
         public init() {}
         public static let configuration = CommandConfiguration(
             commandName: "run",
@@ -193,7 +197,16 @@ extension Application {
                     dynamicEnv["SSH_AUTH_SOCK"] = sshAuthSock
                 }
 
-                let process = try await client.bootstrap(id: id, stdio: io.stdio, dynamicEnv: dynamicEnv)
+                let process = try await client.bootstrap(
+                    id: id,
+                    stdio: io.stdio,
+                    dynamicEnv: dynamicEnv,
+                    closeStdinOnEOF: Self.closesStdinOnEOF(
+                        interactive: self.processFlags.interactive,
+                        tty: self.processFlags.tty,
+                        detach: detach
+                    )
+                )
                 progress?.finish()
 
                 if !self.managementFlags.cidfile.isEmpty {

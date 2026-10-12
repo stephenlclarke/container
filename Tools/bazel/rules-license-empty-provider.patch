@@ -1,0 +1,28 @@
+# Backport rules_license ed5bb2515c7e57ef48e361cc4977b54a25002d71.
+# Apache-2.0; https://github.com/bazelbuild/rules_license/pull/161
+--- a/rules/licenses_core.bzl
++++ b/rules/licenses_core.bzl
+@@ -151,5 +151,10 @@
+     # configuration is probably cfg = exec.
+     if "-exec-" in ctx.bin_dir.path:
+-        return [provider_factory(deps = depset(), licenses = depset(), traces = [])]
++        return [provider_factory(
++            target_under_license = target.label,
++            deps = depset(),
++            licenses = depset(),
++            traces = [],
++        )]
+ 
+     # Now gather transitive collection of providers from the targets
+@@ -166,5 +171,10 @@
+ 
+     if not licenses and not trans_licenses:
+-        return [provider_factory(deps = depset(), licenses = depset(), traces = [])]
++        return [provider_factory(
++            target_under_license = target.label,
++            deps = depset(),
++            licenses = depset(),
++            traces = [],
++        )]
+ 
+     # If this is the target, start the sequence of traces.

@@ -1,0 +1,11 @@
+--- a/Package.swift
++++ b/Package.swift
+@@ -2425,7 +2425,7 @@
+ 
+ private var runtimeTestTargets: [Target] {
+     if excludeRuntimeUnitTests { return [] }
+-    if let batch, batch.number != 0 { return [] } // only run these tests with batch 0 if batching
++    // Keep runtime unit tests available in the CloudWatch Logs-only Bazel import.
+     return [
+         .testTarget(
+             name: "AWSClientRuntimeTests",

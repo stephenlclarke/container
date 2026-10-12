@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Analyze an immutable source checkpoint with source-verified coverage and Sonar policy."""
+
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import urllib.parse
+import urllib.request
+
+from coverage import source_files
+from fork_benchmark import ROOT, STORAGE, Runner, digest, install_signal_handlers
+from preflight import github_environment
+
+PROJECT = 'stephenlclarke_container'
+REPOSITORY = 'stephenlclarke/container'
+
+
+def api(endpoint: str, parameters: dict) -> dict:
+    token = os.environ.get('SONAR_TOKEN') or os.environ.get('SONAR_TOKEN_PERSONAL')
+    if not token:
+        raise RuntimeError('Sonar token is not configured')
+    authorization = base64.b64encode((token + ':').encode()).decode()
+    request = urllib.request.Request('https://sonarcloud.io/api/' + endpoint + '?' + urllib.parse.urlencode(parameters),
+                                     headers={'Authorization': 'Basic ' + authorization})
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def validate_policy(settings: dict) -> None:
+    values = {row['key']: row.get('value') for row in settings['settings']}
+    if any(values.get(key) != 'previous_version' for key in ('sonar.leak.period', 'sonar.leak.period.type')):
+        raise RuntimeError('Sonar project new-code policy is not Previous version')
+
+
+def checkpoint() -> str:
+    if subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip():
+        raise RuntimeError('Authoritative quality analysis requires a clean, committed checkpoint')
+    revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+    if not re.fullmatch('[0-9a-f]{40}', revision):
+        raise RuntimeError('Quality analysis requires an exact Git SHA')
+    return revision
+
+
+def pull_request_context(pulls: list[dict], branch: str, revision: str) -> dict:
+    """Only analyze the real open PR for this exact pushed source checkpoint."""
+    if len(pulls) != 1:
+        raise RuntimeError('Quality analysis requires exactly one open pull request targeting main')
+    pull = pulls[0]
+    head, base = pull['head'], pull['base']
+    if (pull['state'] != 'open' or head['repo']['full_name'] != REPOSITORY
+            or base['repo']['full_name'] != REPOSITORY or head['ref'] != branch
+            or base['ref'] != 'main' or head['sha'] != revision):
+        raise RuntimeError('Pull request repository, branch, base or pushed revision does not match this checkpoint')
+    return {'kind': 'pull_request', 'key': str(pull['number']), 'branch': branch,
+            'base': base['ref'], 'base_revision': base['sha'], 'revision': revision}
+
+
+def analysis_context(revision: str) -> dict:
+    branch = subprocess.check_output(['git', 'branch', '--show-current'], cwd=ROOT, text=True).strip()
+    if not branch:
+        raise RuntimeError('Quality analysis requires a named source branch')
+    if branch == 'main':
+        return {'kind': 'branch', 'branch': branch, 'revision': revision}
+    query = urllib.parse.urlencode({'state': 'open', 'head': 'stephenlclarke:' + branch, 'base': 'main'})
+    pulls = json.loads(subprocess.check_output(['gh', 'api', 'repos/' + REPOSITORY + '/pulls?' + query],
+                                             env=github_environment(), text=True, timeout=30))
+    return pull_request_context(pulls, branch, revision)
+
+
+def context_arguments(context: dict) -> list[str]:
+    if context['kind'] == 'branch':
+        return ['-Dsonar.branch.name=' + context['branch']]
+    return ['-Dsonar.pullrequest.' + key + '=' + context[key] for key in ('key', 'branch', 'base')]
+
+
+def clean_code_checks(context: dict, evidence: Path) -> dict:
+    """Preserve the original workflow's stricter issue and hotspot authority."""
+    scope = ({'pullRequest': context['key'], 'inNewCodePeriod': 'true'}
+             if context['kind'] == 'pull_request' else {'branch': context['branch']})
+    issues = api('issues/search', {'componentKeys': PROJECT, 'resolved': 'false', 'ps': 1, **scope})
+    (evidence / 'unresolved-issues.json').write_text(json.dumps(issues, indent=2) + '\n')
+    hotspots = api('hotspots/search', {'projectKey': PROJECT, 'status': 'TO_REVIEW', 'ps': 1, **scope})
+    (evidence / 'unreviewed-hotspots.json').write_text(json.dumps(hotspots, indent=2) + '\n')
+    counts = {'unresolved_issues': issues.get('total'),
+              'unreviewed_hotspots': hotspots.get('paging', {}).get('total')}
+    if any(type(count) is not int or count != 0 for count in counts.values()):
+        raise RuntimeError('Sonar requires zero unresolved issues and zero unreviewed hotspots; see retained responses')
+    return counts
+
+
+def verified_coverage(coverage: Path) -> dict:
+    """Admit only the complete source-bound report for an authoritative scan."""
+    receipt = coverage / 'coverage.json'
+    report = json.loads(receipt.read_text())
+    if (report.get('passed') is not True or report.get('kind') != 'unit-and-full-integration'
+            or report.get('source_files') != source_files()):
+        raise RuntimeError('Quality requires passed combined coverage for the current sources')
+    xml = coverage / 'coverage.xml'
+    sha = digest(xml)
+    if sha != report.get('reports', {}).get('coverage.xml'):
+        raise RuntimeError('Coverage report changed after collection')
+    return {'kind': report['kind'], 'receipt_sha256': digest(receipt),
+            'xml': str(xml), 'xml_sha256': sha}
+
+
+def run(evidence: Path, coverage: Path) -> None:
+    evidence.mkdir(parents=True, exist_ok=False)
+    result = {'passed': False, 'failures': []}
+    try:
+        revision = checkpoint()
+        result['revision'] = revision
+        context = analysis_context(revision)
+        result['context'] = context
+        result['coverage'] = verified_coverage(coverage)
+        xml = result['coverage']['xml']
+        policy = api('settings/values', {'component': PROJECT, 'keys': 'sonar.leak.period,sonar.leak.period.type'})
+        (evidence / 'new-code-policy.json').write_text(json.dumps(policy, indent=2) + '\n')
+        validate_policy(policy)
+        runner = Runner(evidence, STORAGE)
+        runner.env = dict(os.environ, SONAR_TOKEN=os.environ.get('SONAR_TOKEN') or os.environ['SONAR_TOKEN_PERSONAL'])
+        row = runner.run('quality', 'fork', 'sonar', 0, ['sonar-scanner',
+                         '-Dsonar.projectVersion=' + revision, '-Dsonar.scm.revision=' + revision,
+                         *context_arguments(context), '-Dsonar.coverageReportPaths=' + str(xml),
+                         '-Dsonar.working.directory=' + str(evidence / 'scanner'),
+                         '-Dsonar.qualitygate.wait=true', '-Dsonar.qualitygate.timeout=600'], ROOT, 1800)
+        task_file = evidence / 'scanner/report-task.txt'
+        if task_file.exists():
+            task = dict(line.split('=', 1) for line in task_file.read_text().splitlines() if '=' in line)
+            details = api('ce/task', {'id': task['ceTaskId']})
+            (evidence / 'analysis-task.json').write_text(json.dumps(details, indent=2) + '\n')
+            analysis = details['task'].get('analysisId')
+            if analysis:
+                gate = api('qualitygates/project_status', {'analysisId': analysis})
+                (evidence / 'quality-gate.json').write_text(json.dumps(gate, indent=2) + '\n')
+                result.update(analysis_id=analysis, dashboard=task.get('dashboardUrl'), gate=gate['projectStatus']['status'])
+        if row['status'] or result.get('gate') != 'OK':
+            raise RuntimeError('Sonar analysis or quality gate failed; see retained scanner output and gate conditions')
+        result['clean_code'] = clean_code_checks(context, evidence)
+        if checkpoint() != revision:
+            raise RuntimeError('Source changed during authoritative analysis')
+        if analysis_context(revision) != context:
+            raise RuntimeError('Pull request changed during authoritative analysis')
+        result['passed'] = True
+    except BaseException as error:
+        result['failures'].append(str(error))
+        raise
+    finally:
+        (evidence / 'quality.json').write_text(json.dumps(result, indent=2) + '\n')
+
+
+def main() -> None:
+    install_signal_handlers()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--evidence', type=Path, required=True)
+    parser.add_argument('--coverage', type=Path, required=True)
+    args = parser.parse_args()
+    run(args.evidence, args.coverage)
+
+
+if __name__ == '__main__':
+    main()

@@ -141,7 +141,7 @@ struct ApplicationHealthTests {
 
     @Test
     func rootHelpProvenanceShowsCustomBuild() throws {
-        let help = Application.addBuildProvenance("USAGE: container\n\nPLUGINS:\n  compose")
+        let help = Application.addBuildProvenance("USAGE: container\n\nOTHER SUBCOMMANDS:\n  compose")
         let containerization = try Self.expectedContainerizationProvenance()
 
         #expect(help.contains("BUILD:"))
@@ -149,13 +149,13 @@ struct ApplicationHealthTests {
         #expect(help.contains("source: stephenlclarke/container"))
         #expect(help.contains("containerization: \(containerization)"))
         #expect(help.contains("container-builder-shim: \(ReleaseVersion.builderShimImage())"))
-        #expect(help.contains("PLUGINS:\n  compose"))
+        #expect(help.contains("OTHER SUBCOMMANDS:\n  compose"))
     }
 
     @Test
     func composeOwnedResourceStoresRemainOutsideTheRuntimeCLI() {
         let rootHelp = Application.helpMessage(for: Application.self)
-        let buildHelp = Application.helpMessage(for: Application.BuildCommand.self)
+        let buildHelp = Application.BuildCommand.helpMessage()
 
         #expect(!rootHelp.contains("CONFIG SUBCOMMANDS:"))
         #expect(!rootHelp.contains("SECRET SUBCOMMANDS:"))
@@ -270,6 +270,14 @@ struct ApplicationHealthTests {
     }
 
     private static func expectedContainerizationProvenance() throws -> String {
+        let environment = ProcessInfo.processInfo.environment
+        if let localPath = environment["CONTAINERIZATION_PACKAGE_PATH"], !localPath.isEmpty {
+            // A local package is absent from Package.resolved. Require its explicit
+            // provenance rather than reporting the unrelated remote default pin.
+            let source = try #require(environment["CONTAINERIZATION_SOURCE"])
+            let revision = try #require(environment["CONTAINERIZATION_REF"])
+            return "\(githubRepositoryPath(from: source))@\(revision)"
+        }
         let data = try Data(contentsOf: URL(fileURLWithPath: "Package.resolved"))
         let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let pins = try #require(object["pins"] as? [[String: Any]])

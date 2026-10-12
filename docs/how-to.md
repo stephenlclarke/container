@@ -39,7 +39,7 @@ pick the one that matches what you're trying to do.
 - [Container machines](./container-machine.md) — persistent Linux environments
   built from OCI images, with your home directory mounted in and the filesystem
   surviving stop/start.
-- [Kubernetes clusters](./kubernetes.md) — run local single-node Kubernetes
+- [Kubernetes clusters](./kubernetes.md) — run local single-node or multi-node Kubernetes
   clusters for development and testing, load your own images, and test
   deployments before production.
 - [Shell completions](./shell-completions.md) — generate and install completion

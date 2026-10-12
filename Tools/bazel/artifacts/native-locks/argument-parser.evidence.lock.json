@@ -1,0 +1,8 @@
+{
+  "asset": "argument-parser-native-evidence.json",
+  "repository": "stephenlclarke/container",
+  "schema": 1,
+  "sha256": "ba57fce003366d772ed2dbc0b44abdc9fc844c57e0e60978fb8ad9a622b0d6e8",
+  "tag": "layer-argument-parser-native-329781d53291-27e1b6c484951208f867",
+  "targetCommit": "329781d532916a8aea6151ce162010e6d73728e2"
+}

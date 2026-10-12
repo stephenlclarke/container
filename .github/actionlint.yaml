@@ -2,3 +2,4 @@ self-hosted-runner:
   labels:
     - tahoe
     - ARM64
+    - container-only

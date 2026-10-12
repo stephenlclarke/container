@@ -46,7 +46,7 @@ extension K8sHelper {
     static func bootstrapControlPlane(
         nodeID: String, nodeImage: String, apiServerSANs: [String], advertiseAddress: String,
         controlPlaneEndpoint: String,
-        schedulable: Bool, customCNIManifest: String? = nil,
+        schedulable: Bool, customCNIManifest: String? = nil, skipCNI: Bool = false,
         dependencies: BootstrapDependencies
     ) async throws {
         let (client, log) = dependencies
@@ -90,12 +90,19 @@ extension K8sHelper {
 
         if schedulable {
             log.info("Removing control-plane taint for single-node scheduling", metadata: ["node": "\(nodeID)"])
-            _ = try await runProbe(
+            let taintCode = try await runProbe(
                 client: client, containerId: nodeID,
                 arguments: ["taint", "nodes", "--all", "node-role.kubernetes.io/control-plane-"])
+            guard taintCode == 0 else {
+                throw ContainerizationError(.internalError, message: "failed to remove control-plane taint on \(nodeID)")
+            }
         }
 
-        try await applyCNIManifest(nodeID: nodeID, manifest: customCNIManifest, client: client, log: log, execute: execCapture)
+        if skipCNI {
+            log.info("Skipping CNI installation", metadata: ["node": "\(nodeID)"])
+        } else {
+            try await applyCNIManifest(nodeID: nodeID, manifest: customCNIManifest, client: client, log: log, execute: execCapture)
+        }
     }
 
     static func applyCNIManifest(

@@ -24,9 +24,7 @@ import Yams
 struct TestK8sRunSerial {
 
     private func loadKubeconfig() throws -> [String: Any] {
-        let path = FilePath(FileManager.default.homeDirectoryForCurrentUser.path)
-            .appending(".kube")
-            .appending("config")
+        let path = integrationKubeconfigPath()
         let yaml = try String(contentsOfFile: path.string, encoding: .utf8)
         guard let parsed = try Yams.load(yaml: yaml) as? [String: Any] else {
             throw CommandError.executionFailed("could not parse kubeconfig at \(path.string)")
@@ -143,7 +141,7 @@ struct TestK8sRunSerial {
                 "sleep", "infinity",
             ]).check()
 
-            let restart = try f.run(["k8s", "start", "--name", name])
+            let restart = try f.run(["start", name])
             if restart.status != 0 {
                 print("[k8s-run] restart stderr: \(restart.error)")
                 f.dumpNodeDiagnostics(node: name)
@@ -166,6 +164,18 @@ struct TestK8sRunSerial {
             try f.run([
                 "exec", name, "grep", "-F", "advertiseAddress: \(restartedIP)", "/kind/kubeadm.conf",
             ]).check()
+            // Container start returns before the Kubernetes API finishes booting.
+            // kubectl wait cannot watch node readiness until that API is reachable.
+            let deadline = ContinuousClock.now.advanced(by: .seconds(30))
+            while true {
+                let ready = try f.run(["exec", name, "kubectl", "get", "--raw=/readyz", "--request-timeout=2s"])
+                if ready.status == 0 { break }
+                if ContinuousClock.now >= deadline {
+                    f.dumpNodeDiagnostics(node: name)
+                    try ready.check()
+                }
+                try await Task.sleep(for: .milliseconds(250))
+            }
             try f.run([
                 "exec", name, "kubectl", "wait", "--for=condition=Ready", "node", "--all", "--timeout=30s",
             ]).check()

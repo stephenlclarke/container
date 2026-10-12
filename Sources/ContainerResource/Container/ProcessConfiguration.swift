@@ -20,6 +20,20 @@ public struct ProcessConfiguration: Sendable, Codable {
     public var executable: String
     /// Arguments passed to the Process.
     public var arguments: [String]
+    /// Effective OCI command split, retained separately from the flattened runtime argv.
+    /// Older configurations and direct API callers may omit this metadata.
+    public var imageCommand: ImageCommand?
+
+    public struct ImageCommand: Sendable, Codable, Equatable {
+        public var entrypoint: [String]?
+        public var command: [String]?
+
+        public init(entrypoint: [String]?, command: [String]?) {
+            self.entrypoint = entrypoint
+            self.command = command
+        }
+    }
+
     /// Environment variables for the Process.
     public var environment: [String]
     /// The current working directory (cwd) for the Process.
@@ -92,7 +106,8 @@ public struct ProcessConfiguration: Sendable, Codable {
         rlimits: [Rlimit] = [],
         oomScoreAdj: Int? = nil,
         privileged: Bool = false,
-        noNewPrivileges: Bool = false
+        noNewPrivileges: Bool = false,
+        imageCommand: ImageCommand? = nil
     ) {
         self.executable = executable
         self.arguments = arguments
@@ -106,6 +121,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.oomScoreAdj = oomScoreAdj
         self.privileged = privileged
         self.noNewPrivileges = noNewPrivileges
+        self.imageCommand = imageCommand
     }
 
     enum CodingKeys: String, CodingKey {
@@ -121,6 +137,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         case oomScoreAdj
         case privileged
         case noNewPrivileges
+        case imageCommand
     }
 
     public init(from decoder: Decoder) throws {
@@ -137,6 +154,7 @@ public struct ProcessConfiguration: Sendable, Codable {
         self.oomScoreAdj = try container.decodeIfPresent(Int.self, forKey: .oomScoreAdj)
         self.privileged = try container.decodeIfPresent(Bool.self, forKey: .privileged) ?? false
         self.noNewPrivileges = try container.decodeIfPresent(Bool.self, forKey: .noNewPrivileges) ?? false
+        self.imageCommand = try container.decodeIfPresent(ImageCommand.self, forKey: .imageCommand)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -153,5 +171,6 @@ public struct ProcessConfiguration: Sendable, Codable {
         try container.encodeIfPresent(oomScoreAdj, forKey: .oomScoreAdj)
         try container.encode(privileged, forKey: .privileged)
         try container.encode(noNewPrivileges, forKey: .noNewPrivileges)
+        try container.encodeIfPresent(imageCommand, forKey: .imageCommand)
     }
 }

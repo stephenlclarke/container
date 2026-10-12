@@ -303,8 +303,11 @@ struct TestCLINetwork {
             let resolvConf = try f.doExec(client, cmd: ["cat", "/etc/resolv.conf"])
             #expect(resolvConf.contains("nameserver \(DNSProxyProtocol.guestAddress)"))
 
-            let externalLookup = try f.doExec(client, cmd: ["nslookup", "example.com"])
-            #expect(externalLookup.lowercased().contains("name:\texample.com"))
+            let externalLookup = try f.run(["exec", client, "nslookup", "example.com"])
+            try externalLookup.check(
+                "External DNS lookup failed. stdout: \(externalLookup.output) stderr: \(externalLookup.error)"
+            )
+            #expect(externalLookup.output.lowercased().contains("name:\texample.com"))
         }
     }
 

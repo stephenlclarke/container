@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+exports_files(["go.mod", "go.sum"])
+
+# Reuse the native manifest's source and oracle digests as compiled constants.
+genrule(
+    name = "metadata",
+    srcs = glob(["*.go"]) + ["build.py", "go.mod", "go.sum", "oracle-vectors.json"],
+    tools = ["//Tools/bazel:semantic_metadata.py"],
+    outs = ["semantic_metadata.go"],
+    cmd = "/usr/bin/python3 $(location //Tools/bazel:semantic_metadata.py) $(location build.py) $@",
+)
+
+go_library(
+    name = "helper_lib",
+    srcs = glob(["*.go"], exclude = ["*_test.go"]) + [":metadata"],
+    importpath = "github.com/stephenlclarke/container-semantic-helper",
+    deps = [
+        "@com_google_cloud_go_compute_metadata//:metadata",
+        "@com_google_cloud_go_logging//:logging",
+        "@org_golang_google_genproto_googleapis_api//monitoredres",
+    ],
+)
+
+go_binary(name = "helper_binary", embed = [":helper_lib"], pure = "on")
+
+go_test(
+    name = "helper_tests",
+    srcs = glob(["*_test.go"]),
+    embed = [":helper_lib"],
+    data = ["oracle-vectors.json"],
+    deps = ["@com_google_cloud_go_logging//:logging"],
+    pure = "on",
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "payload",
+    srcs = glob(["*.go"]) + ["build.py", "go.mod", "go.sum", "oracle-vectors.json"],
+    tools = [":helper_binary"],
+    outs = ["dist/container-semantic-helper", "dist/container-semantic-helper.manifest.json"],
+    cmd = "cp $(location :helper_binary) $(location dist/container-semantic-helper) && " +
+          "chmod u+w $(location dist/container-semantic-helper) && " +
+          "/usr/bin/codesign --force --sign - --timestamp=none --identifier com.apple.container.semantic-helper $(location dist/container-semantic-helper) && " +
+          "/usr/bin/python3 $(location build.py) manifest --binary $(location dist/container-semantic-helper) --output $(location dist/container-semantic-helper.manifest.json)",
+    visibility = ["//visibility:public"],
+)

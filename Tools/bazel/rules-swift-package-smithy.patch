@@ -1,0 +1,35 @@
+--- a/swiftpkg/internal/swiftpkg_build_files.bzl
++++ b/swiftpkg/internal/swiftpkg_build_files.bzl
+@@ -62,6 +62,32 @@
+         "srcs": pkginfo_targets.srcs(target),
+         "visibility": _implementation_target_visibility(),
+     }
++
++    if pkg_ctx.pkg_info.name == "aws-sdk-swift":
++        settings_path = paths.join(target.path, "swift-settings.json")
++        if repository_ctx.path(settings_path).exists:
++            settings = json.decode(repository_ctx.read(settings_path))
++            model = settings.get("modelPath") or paths.join(target.path, "model.json")
++            generated = target.name + ".smithy"
++            attrs["srcs"] = attrs["srcs"] + [":" + generated]
++            all_build_files.append(build_files.new(
++                load_stmts = [load_statements.new("@@//Tools/bazel:smithy_codegen.bzl", "smithy_codegen")],
++                decls = [build_decls.new("smithy_codegen", generated, attrs = {
++                    "settings": settings_path,
++                    "model": model,
++                    "service": settings["service"],
++                    "sdk_id": settings["sdkId"],
++                    "internal": settings["internalClient"],
++                    "operations": settings["operations"],
++                })],
++            ))
++    if pkg_ctx.pkg_info.name == "smithy-swift" and target.name == "SmithyCodegenCore":
++        all_build_files.append(build_files.new(decls = [
++            build_decls.new("exports_files", None, attrs = {
++                "srcs": ["Sources/SmithyCodegenCore/Resources/DefaultSwiftHeader.txt"],
++                "visibility": ["//visibility:public"],
++            }),
++        ]))
+ 
+     def _update_attr_list(name, value):
+         # We need to create a new list, because the retrieved list could be

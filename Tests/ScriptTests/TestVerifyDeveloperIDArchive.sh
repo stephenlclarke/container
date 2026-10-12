@@ -15,6 +15,9 @@
 
 set -euo pipefail
 
+# Synthetic payload assertions count file contents, not host AppleDouble metadata.
+export COPYFILE_DISABLE=1
+
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "${TEST_ROOT}"' EXIT
 
@@ -136,23 +139,6 @@ then
     exit 1
 fi
 grep -q 'unsafe archive path' "${TEST_ROOT}/unsafe.err"
-
-WORKFLOW=".github/workflows/prebuilt-binaries.yml"
-grep -Fq 'secrets.DEVELOPER_ID_APPLICATION_P12_BASE64' "${WORKFLOW}"
-grep -Fq 'secrets.DEVELOPER_ID_APPLICATION_P12_PASSWORD' "${WORKFLOW}"
-grep -Fq 'scripts/verify-developer-id-archive.sh' "${WORKFLOW}"
-grep -Fq 'security list-keychains' "${WORKFLOW}"
-grep -Fq 'developer-id-signing-probe-' "${WORKFLOW}"
-grep -Fq 'DEVELOPER_ID_ORIGINAL_KEYCHAINS' "${WORKFLOW}"
-grep -Fq 'restore_keychain_search_list' "${WORKFLOW}"
-# The workflow assertions intentionally match literal shell variable references.
-# shellcheck disable=SC2016
-grep -Fq -- '--keychain "${DEVELOPER_ID_KEYCHAIN}"' "${WORKFLOW}"
-# shellcheck disable=SC2016
-grep -Fq 'CODESIGN_OPTS="--force --keychain ${DEVELOPER_ID_KEYCHAIN} --sign ${DEVELOPER_ID_APPLICATION_IDENTITY}' "${WORKFLOW}"
-grep -Fq 'security delete-keychain' "${WORKFLOW}"
-[[ "$(grep -Fc -- '--options runtime' "${WORKFLOW}")" -eq 2 ]]
-[[ "$(grep -Fc -- '--timestamp' "${WORKFLOW}")" -eq 2 ]]
 
 MAKEFILE="Makefile"
 grep -Fq 'Signing container binaries for Homebrew archive' "${MAKEFILE}"

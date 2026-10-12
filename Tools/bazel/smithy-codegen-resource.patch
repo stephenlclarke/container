@@ -1,0 +1,21 @@
+--- a/Sources/SmithyCodegenCore/SwiftRendering/SwiftWriter.swift
++++ b/Sources/SmithyCodegenCore/SwiftRendering/SwiftWriter.swift
+@@ -6,6 +6,7 @@
+ //
+ 
+ import class Foundation.Bundle
++import class Foundation.ProcessInfo
+ import struct Foundation.Data
+ import struct Foundation.URL
+ 
+@@ -26,7 +27,9 @@
+     ///   The header contents are in a resource named `DefaultSwiftHeader.txt`.
+     init(includeHeader: Bool = true) {
+         if includeHeader {
+-            let defaultHeaderFileURL = Bundle.module.url(forResource: "DefaultSwiftHeader", withExtension: "txt")!
++            let defaultHeaderFileURL = ProcessInfo.processInfo.environment["SMITHY_CODEGEN_HEADER"]
++                .map { URL(fileURLWithPath: $0) }
++                ?? Bundle.module.url(forResource: "DefaultSwiftHeader", withExtension: "txt")!
+             // swiftlint:disable:next force_try
+             let defaultHeader = try! String(data: Data(contentsOf: defaultHeaderFileURL), encoding: .utf8)!
+             self.lines = defaultHeader.split(separator: "\n", omittingEmptySubsequences: false).map { String($0) }

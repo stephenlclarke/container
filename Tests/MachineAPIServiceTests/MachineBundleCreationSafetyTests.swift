@@ -39,7 +39,6 @@ struct MachineBundleCreationSafetyTests {
                 path: fixture.bundlePath,
                 machineConfiguration: try Self.configuration(),
                 resourceRoot: fixture.resourceRoot,
-                resources: nil,
                 bootConfig: .default
             )
         }
@@ -58,7 +57,6 @@ struct MachineBundleCreationSafetyTests {
                 path: fixture.bundlePath,
                 machineConfiguration: try Self.configuration(),
                 resourceRoot: fixture.resourceRoot,
-                resources: nil,
                 bootConfig: .default
             )
         }

@@ -215,18 +215,34 @@ def build(output_directory: Path) -> None:
 
 
 def run_linux_tests() -> None:
+    owned_args: list[str] = []
+    test_id = os.environ.get("CONTAINER_SERVICE_TEST_ID")
+    if test_id:
+        if not re.fullmatch(r"[a-f0-9]{32}", test_id):
+            raise RuntimeError("invalid service test ownership ID")
+        evidence = Path(os.environ["CONTAINER_SERVICE_TEST_EVIDENCE"]).resolve()
+        evidence.mkdir(parents=True, exist_ok=True)
+        owned_args = [
+            "--name", "container-service-test-" + test_id,
+            "--label", "io.container-only.owner=container-service-test-" + test_id,
+            "--cpus", "2", "--memory", "2g", "--pids-limit", "1024",
+            "--mount", f"type=bind,source={evidence},target=/evidence",
+            "-e", "SERVICE_COVERAGE=/evidence/coverage.out",
+        ]
     script = """
 set -eu
 format_files=$(gofmt -l .)
 test -z "$format_files"
 go vet -mod=readonly ./...
-go test -mod=readonly -race -coverprofile=/tmp/container-gelf-service.coverage.out ./...
-coverage=$(go tool cover -func=/tmp/container-gelf-service.coverage.out | awk '/^total:/ { sub(/%$/, "", $3); print $3 }')
+coverage_path=${SERVICE_COVERAGE:-/tmp/container-gelf-service.coverage.out}
+go test -mod=readonly -race -coverprofile="$coverage_path" ./...
+coverage=$(go tool cover -func="$coverage_path" | awk '/^total:/ { sub(/%$/, "", $3); print $3 }')
 awk -v coverage="$coverage" 'BEGIN { exit !(coverage + 0 >= 90) }'
 """
     subprocess.run(
         [
             "docker", "run", "--rm", "--platform", "linux/arm64",
+            *owned_args,
             "-v", f"{service_root()}:/src:ro", "-w", "/src",
             "-e", "GOTOOLCHAIN=local", "-e", "GOWORK=off",
             BUILDER_IMAGE, "bash", "-ceu", script,

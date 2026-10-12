@@ -222,16 +222,33 @@ public actor RuntimeService {
 
             let dynamicEnv = try message.dynamicEnv()
             let prewarming = message.bool(key: RuntimeKeys.prewarming.rawValue)
+            let copyOnlyBootstrap = message.bool(key: RuntimeKeys.copyOnlyBootstrap.rawValue)
 
             let bundle = ContainerResource.Bundle(path: self.root)
             let runtimeConfig = try RuntimeConfiguration.readRuntimeConfiguration(from: self.root)
             var config = try bundle.configuration
-            let loggingPlan = try ContainerLogRuntimePlan(configuration: config)
-            let loggingCapture = try loggingPlan.activate(
-                bundle: bundle,
-                terminal: config.initProcess.terminal
-            )
-            var loggingCaptureNeedsClose = true
+            if copyOnlyBootstrap {
+                config = Self.configurationForCopyOnlyBootstrap(config)
+            }
+            // A stopped-container copy needs the mounted rootfs and the
+            // containerization copy RPCs, but it must not open workload log
+            // files or truncate/capture the next run's output.
+            let loggingCapture: ContainerLogRuntimeCapture
+            if copyOnlyBootstrap {
+                loggingCapture = ContainerLogRuntimeCapture(
+                    stdout: nil,
+                    stderr: nil,
+                    session: nil,
+                    publicLogPath: nil
+                )
+            } else {
+                let loggingPlan = try ContainerLogRuntimePlan(configuration: config)
+                loggingCapture = try loggingPlan.activate(
+                    bundle: bundle,
+                    terminal: config.initProcess.terminal
+                )
+            }
+            var loggingCaptureNeedsClose = !copyOnlyBootstrap
             defer {
                 if loggingCaptureNeedsClose {
                     loggingCapture.close()
@@ -334,7 +351,8 @@ public actor RuntimeService {
             let stdio = message.stdio()
             let stdin = Self.attachableInput(
                 initial: stdio[0],
-                prewarming: prewarming
+                prewarming: prewarming,
+                closeOnEOF: message.bool(key: RuntimeKeys.closeStdinOnEOF.rawValue)
             )
             let stdout = AttachableOutput(
                 initial: stdio[1],
@@ -404,8 +422,10 @@ public actor RuntimeService {
                     )
                 }
 
-                try await self.initializeWaiters(for: id)
-                try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
+                if !copyOnlyBootstrap {
+                    try await self.initializeWaiters(for: id)
+                    try await self.monitor.registerProcess(id: config.id, onExit: self.onContainerExit)
+                }
                 await self.setState(.booted)
             } catch {
                 do {
@@ -510,7 +530,9 @@ public actor RuntimeService {
             if closeStdin {
                 container.io.input?.close()
             } else if let stdin = stdio[0] {
-                container.io.input?.add(stdin)
+                container.io.input?.add(
+                    stdin, closeOnEOF: message.bool(key: RuntimeKeys.closeStdinOnEOF.rawValue)
+                )
             }
             if let stdout = stdio[1] {
                 container.io.stdout.add(stdout)
@@ -524,12 +546,13 @@ public actor RuntimeService {
 
     static func attachableInput(
         initial: FileHandle?,
-        prewarming: Bool
+        prewarming: Bool,
+        closeOnEOF: Bool = false
     ) -> AttachableInput? {
         if prewarming {
-            return AttachableInput(initial: initial)
+            return AttachableInput(initial: initial, closeOnEOF: closeOnEOF)
         }
-        return initial.map(AttachableInput.init)
+        return initial.map { AttachableInput(initial: $0, closeOnEOF: closeOnEOF) }
     }
 
     static func acceptsAttach(in state: State) -> Bool {
@@ -1697,6 +1720,24 @@ public actor RuntimeService {
         config.hostNetwork ? [] : config.networks
     }
 
+    static func configurationForCopyOnlyBootstrap(
+        _ configuration: ContainerConfiguration
+    ) -> ContainerConfiguration {
+        var copyConfiguration = configuration
+        copyConfiguration.networks = []
+        copyConfiguration.publishedPorts = []
+        copyConfiguration.publishedSockets = []
+        copyConfiguration.inboundSockets = []
+        copyConfiguration.dns = nil
+        copyConfiguration.hostNetwork = false
+        // Host-gateway entries require an allocated container network. Copy
+        // bootstraps intentionally have none and do not start a workload that
+        // could consume /etc/hosts, so do not resolve workload host entries.
+        copyConfiguration.hosts = []
+        copyConfiguration.ssh = false
+        return copyConfiguration
+    }
+
     struct LinuxDeviceMetadata: Sendable {
         let type: String
         let major: Int64
@@ -2389,7 +2430,19 @@ extension FileHandle: @retroactive ReaderStream, @retroactive Writer {
     }
 
     public func stream() -> AsyncStream<Data> {
-        .init { cont in
+        var metadata = stat()
+        if fstat(fileDescriptor, &metadata) == 0, metadata.st_mode & S_IFMT == S_IFREG {
+            // Darwin does not deliver another readability event at regular-file
+            // EOF. Pull bounded chunks so staged exec input closes in the guest.
+            return .init(unfolding: {
+                guard let data = try? self.read(upToCount: 64 * 1024), !data.isEmpty else {
+                    return nil
+                }
+                return data
+            })
+        }
+        return .init { cont in
+            cont.onTermination = { _ in self.readabilityHandler = nil }
             self.readabilityHandler = { handle in
                 let data = handle.availableData
                 if data.isEmpty {
@@ -2607,8 +2660,7 @@ extension RuntimeService {
 
         let bundle = ContainerResource.Bundle(path: path)
         do {
-            _ = try bundle.configuration
-            return true
+            return try bundle.isPrepared
         } catch {
             return false
         }

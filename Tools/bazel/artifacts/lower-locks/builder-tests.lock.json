@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "repository": "stephenlclarke/container-builder-shim",
+  "tag": "layer-builder-016040197215-qualified-81fffa92fb19",
+  "targetCommit": "016040197215684db474181b444767eb58797cfa",
+  "asset": "builder-qualification.tar.gz",
+  "sha256": "81fffa92fb192e1fc61f0edabac2068dee0f528ee6b4568278686b64d066193b"
+}

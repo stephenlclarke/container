@@ -23,6 +23,30 @@ struct TestCLICopyCommand {
 
     // MARK: - Basic host/container copy
 
+    @Test(arguments: [0o640, 0o664, 0o755])
+    func testCopyPreservesFileModeWhileRunning(mode: Int) async throws {
+        try await ContainerFixture.with { fixture in
+            let image = WarmupImage.alpine320.rawValue
+            try await fixture.withContainer(image: image) { name in
+                let source = fixture.testDir.appending("mode-source")
+                let payload = "copy mode payload"
+                try payload.write(toFile: source.string, atomically: true, encoding: .utf8)
+                try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: source.string)
+                try fixture.run(["copy", source.string, "\(name):/tmp/mode-source"]).check()
+                let guestMode = try fixture.doExec(name, cmd: ["stat", "-c", "%a", "/tmp/mode-source"])
+                #expect(guestMode.trimmingCharacters(in: .whitespacesAndNewlines) == String(mode, radix: 8))
+
+                let destination = fixture.testDir.appending("mode-output")
+                try Data("old output".utf8).write(to: URL(filePath: destination.string))
+                try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: destination.string)
+                try fixture.run(["copy", "\(name):/tmp/mode-source", destination.string]).check()
+                #expect(try String(contentsOfFile: destination.string, encoding: .utf8) == payload)
+                let attributes = try FileManager.default.attributesOfItem(atPath: destination.string)
+                #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == mode)
+            }
+        }
+    }
+
     @Test func testCopyHostToContainer() async throws {
         try await ContainerFixture.with { f in
             let image = WarmupImage.alpine320.rawValue
@@ -98,16 +122,30 @@ struct TestCLICopyCommand {
         }
     }
 
-    @Test func testCopyToNonRunningContainerFails() async throws {
+    @Test(arguments: [0o640, 0o664, 0o755])
+    func testCopyToCreatedContainerSucceeds(mode: Int) async throws {
         try await ContainerFixture.with { f in
             let image = WarmupImage.alpine320.rawValue
             let name = "\(f.testID)-c"
             try f.doCreate(name: name, image: image)
             f.addCleanup { try f.doRemoveIfExists(name, ignoreFailure: true) }
             let src = f.testDir.appending("norun.txt")
-            try "test".write(toFile: src.string, atomically: true, encoding: .utf8)
-            let result = try f.run(["copy", src.string, "\(name):/tmp/"])
-            #expect(result.status != 0, "expected copy to non-running container to fail")
+            let content = "copy before first start"
+            try content.write(toFile: src.string, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: mode], ofItemAtPath: src.string)
+            try f.run(["copy", src.string, "\(name):/tmp/"]).check()
+
+            let dest = f.testDir.appending("created-copy.txt")
+            try f.run(["copy", "\(name):/tmp/norun.txt", dest.string]).check()
+            #expect(try String(contentsOfFile: dest.string, encoding: .utf8) == content)
+            let attributes = try FileManager.default.attributesOfItem(atPath: dest.string)
+            #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == mode)
+
+            try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: dest.string)
+            try f.run(["copy", "\(name):/tmp/norun.txt", dest.string]).check()
+            let overwritten = try FileManager.default.attributesOfItem(atPath: dest.string)
+            #expect((overwritten[.posixPermissions] as? NSNumber)?.intValue == mode)
+            #expect(try f.getContainerStatus(name) == "stopped")
         }
     }
 

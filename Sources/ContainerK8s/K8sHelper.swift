@@ -56,6 +56,8 @@ public struct K8sHelper {
     public static let ignorePreflightErrors =
         "Swap,SystemVerification,FileContent--proc-sys-net-bridge-bridge-nf-call-iptables"
     static let podSubnet = "10.244.0.0/16"
+    /// Sentinel value for `--cni` (compared case-insensitively) that skips installing a CNI entirely.
+    static let noCNIName = "NONE"
     // kubeadm default service subnet; must stay in sync if ClusterConfiguration.serviceSubnet is ever set.
     static let serviceSubnet = "10.96.0.0/12"
 
@@ -124,15 +126,49 @@ public struct K8sHelper {
         }
     }
 
+    // MARK: - Node enumeration
+
+    /// Names of worker containers belonging to `clusterName`, sorted (e.g. `<clusterName>-worker-1`).
+    /// Only dedicated workers are returned, never the control-plane container. With no workers
+    /// (`--workers 0`) the control plane doubles as the worker node and this list is empty; with
+    /// one or more workers the control plane is tainted and is not a combined control-plane/worker node.
+    static func workerContainerNames(clusterName: String, client: ContainerClient) async throws -> [String] {
+        let snapshots = try await client.list(
+            filters: ContainerListFilters(labels: [ResourceLabelKeys.plugin: pluginName])
+        )
+        return workerContainerNames(from: snapshots, clusterName: clusterName)
+    }
+
+    /// Pure filtering logic behind `workerContainerNames(clusterName:client:)`, split out for unit testing.
+    static func workerContainerNames(from snapshots: [ContainerSnapshot], clusterName: String) -> [String] {
+        snapshots
+            .filter { $0.configuration.labels[ResourceLabelKeys.role] == workerRoleName }
+            .map { $0.configuration.id }
+            .filter { isWorker($0, of: clusterName) }
+            .sorted()
+    }
+
+    static func isWorker(_ id: String, of clusterName: String) -> Bool {
+        let prefix = "\(clusterName)-worker-"
+        guard id.hasPrefix(prefix) else { return false }
+        let suffix = id.dropFirst(prefix.count)
+        return suffix.first.map { $0 >= "1" && $0 <= "9" } == true
+            && suffix.allSatisfy { $0 >= "0" && $0 <= "9" }
+    }
+
     // MARK: - List rows
 
     static func buildK8sRows(from snapshots: [ContainerSnapshot]) -> [K8sNodeResource] {
         var controlPlanes: [ContainerSnapshot] = []
         var workers: [ContainerSnapshot] = []
         for snapshot in snapshots {
-            switch snapshot.configuration.labels[ResourceLabelKeys.role] {
-            case controlPlaneRoleName: controlPlanes.append(snapshot)
-            default: workers.append(snapshot)
+            let roles = snapshot.configuration.labels[ResourceLabelKeys.role, default: ""]
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            if roles.contains(controlPlaneRoleName) {
+                controlPlanes.append(snapshot)
+            } else {
+                workers.append(snapshot)
             }
         }
 
@@ -144,7 +180,7 @@ public struct K8sHelper {
             rows.append(K8sNodeResource(clusterName: clusterName, snapshot: cp))
             let cpWorkers =
                 workers
-                .filter { $0.configuration.id.hasPrefix("\(clusterName)-worker-") }
+                .filter { isWorker($0.configuration.id, of: clusterName) }
                 .sorted { $0.configuration.id < $1.configuration.id }
             for w in cpWorkers {
                 rows.append(K8sNodeResource(clusterName: clusterName, snapshot: w))

@@ -1,0 +1,8 @@
+{
+  "asset": "argument-parser-native-darwin-arm64-opt.tar.gz",
+  "repository": "stephenlclarke/container",
+  "schema": 1,
+  "sha256": "27e1b6c484951208f8671adf8c19985e9be99f65c0834da068677e389648ee91",
+  "tag": "layer-argument-parser-native-329781d53291-27e1b6c484951208f867",
+  "targetCommit": "329781d532916a8aea6151ce162010e6d73728e2"
+}

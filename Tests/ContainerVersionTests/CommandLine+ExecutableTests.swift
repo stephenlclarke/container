@@ -21,7 +21,8 @@ import Testing
 
 struct CommandLineExecutableTests {
     @Test func lastComponentIsTestBinary() {
-        #expect(CommandLine.executablePath.lastComponent?.string == "swiftpm-testing-helper")
+        let invokedBinary = FilePath(CommandLine.arguments[0]).lastComponent
+        #expect(CommandLine.executablePath.lastComponent == invokedBinary)
     }
 
     @Test func pathIsAbsolute() {

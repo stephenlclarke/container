@@ -1,5 +1,5 @@
 {
-  "originHash" : "ce6083fa4922af3bd92c33f556af1d859cab251798ffc1da7e1add35787bdbcd",
+  "originHash" : "d837233bb3a60b38fb40314ecb8e4025aadbd2ecbeacface9fec82a278687a91",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -41,7 +41,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
-        "revision" : "7b9eb0a77ff615d764fbbf52125e2b6cdd846db8"
+        "revision" : "f98a11cb494529e2ed4f889deadef10515ee1740"
       }
     },
     {
@@ -56,10 +56,9 @@
     {
       "identity" : "grpc-swift-nio-transport",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/grpc/grpc-swift-nio-transport.git",
+      "location" : "https://github.com/stephenlclarke/grpc-swift-nio-transport.git",
       "state" : {
-        "revision" : "2ca31f06658ed288a2560e23ad649acbb3d6b3a3",
-        "version" : "2.9.0"
+        "revision" : "2ddb7175729b30e5a12f4c3cb14f15985b1b2b1e"
       }
     },
     {
@@ -76,8 +75,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/futamura/PunycodeSwift.git",
       "state" : {
-        "revision" : "de703481cf48b859a04bac8ef1d98217b9c97aa9",
-        "version" : "4.0.3"
+        "revision" : "01d1465a1ab47d7ba43ae573ba277a13538f852f",
+        "version" : "4.0.4"
       }
     },
     {
@@ -272,9 +271,9 @@
     {
       "identity" : "swift-nio-ssl",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-nio-ssl.git",
+      "location" : "https://github.com/stephenlclarke/swift-nio-ssl.git",
       "state" : {
-        "revision" : "322f3c2a4a21df31c84ca416bf65ee5e9059e440"
+        "revision" : "8f2f979a28610f47714d50eccfe16b435e7e04a5"
       }
     },
     {

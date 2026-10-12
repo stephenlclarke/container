@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+##===----------------------------------------------------------------------===##
+## Copyright © 2026 container project authors.
+##
+## Licensed under the Apache License, Version 2.0 (the "License");
+## you may not use this file except in compliance with the License.
+## You may obtain a copy of the License at
+##
+##   https://www.apache.org/licenses/LICENSE-2.0
+##
+## Unless required by applicable law or agreed to in writing, software
+## distributed under the License is distributed on an "AS IS" BASIS,
+## WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+## See the License for the specific language governing permissions and
+## limitations under the License.
+##===----------------------------------------------------------------------===##
+
+"""Admit finite, byte-bound verifier and test-only recipe transitions."""
+
+import hashlib
+import json
+from pathlib import Path
+import re
+
+IMPORTER = 'Tools/bazel/artifacts/native_layers.py'
+CONSUMER = 'Tools/bazel/artifacts/native_consumer.py'
+OLD = {
+    IMPORTER: 'fb7d2a828b5d11316288bfb1ec8a1b1908e5f32aafb4912fb2635ed3aa669630',
+    CONSUMER: '3dc681d3e736e83f74e0ddea6cd54b30e9f688d23df9ec30447c243cc0e51200',
+}
+NEW = {
+    IMPORTER: 'e18b15255c4032a1d2b8592394ad2b6bf556100d3cf31f19f77d6709f961015c',
+    CONSUMER: '84f0358f54801b7448f4fe81435cbf0b8ed0efe18aac6954a121e32ac2381ebe',
+}
+HOST_FIXTURE = 'Tools/bazel/async-http-client-host-tests.patch'
+HOST_FIXTURE_OLD = '9d437e372b38bca686d7839b48566442bdd41239e1b300010567b0861a328282'
+HOST_FIXTURE_NEW = '38bc850cf28df21d01a656eada236f434081233d1b8a4ab0407d9ae17d50e70f'
+PUBLIC_EVIDENCE_CHECK = 'Tools/bazel/artifacts/native_producer.py'
+PUBLIC_EVIDENCE_OLD = 'a0cf93cc6d08a47698f875faf9f835f924693d6b841021fbf4d420284c9db587'
+PUBLIC_EVIDENCE_NEW = 'd4c656f63c9119866bb60783a54a396051169d929b4bc7cf9f24fbfc1d3f5298'
+CONNECTION_PINS = 'Package.swift'
+CONNECTION_PINS_OLD = '7a26bc03b698590fd3f72e5d7b178226c26ccb18b5e72e6375e94fc987aff39b'
+CONNECTION_PINS_NEW = '2d9afbf0bf3e6d573eadb32e649e9ea11998a7ea61ff86e11a0a2088d22885bf'
+STOPPED_COPY_PINS = 'a275c95095dde749cf02e389e3647c3a71d410163f0d11139f11324811b05f8f'
+STOPPED_COPY_MODE_PINS = '319b15ccaeda30dfcd93669171ef66e19adaada3b3b2ccc8d605d930487eac6b'
+STOPPED_COPY_SYMLINK_PINS = '304e9cff133c88056b78483fe1acc502535a0d4d5875a796031312be46a1151c'
+STOPPED_COPY_OFFLINE_PINS = 'bb3c022964a4a6ce44ed18e37b7f618c9f2ae9e5a7b0fd2a6ee923398ec641f6'
+UNALIGNED_METADATA_PINS = 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083'
+COPY_FIXTURE_PINS = 'd8665fe69c80762453638756577b35ae35971561db4bed8d272e3ad5b589d513'
+COPY_TRANSFER_PINS = 'd837233bb3a60b38fb40314ecb8e4025aadbd2ecbeacface9fec82a278687a91'
+CLIENT_EXPORT_OLD = {
+    'Tools/bazel/artifacts/native_layers.py': 'e18b15255c4032a1d2b8592394ad2b6bf556100d3cf31f19f77d6709f961015c',
+    'Tools/bazel/artifacts/native_producer.py': 'd4c656f63c9119866bb60783a54a396051169d929b4bc7cf9f24fbfc1d3f5298',
+    'Tools/bazel/artifacts/native_format.py': 'f14741318cb9b39fb860d18bf8c6cf40f063899a5fc0e409d93778b841a723b1',
+    'Tools/bazel/artifacts/native_evidence.py': '9f9dd38bf7ffbd1ecb500e872c5b7cab0b46f5df454307bae26e13d6dc774f22',
+}
+CLIENT_EXPORT_NEW = {
+    'Tools/bazel/artifacts/native_layers.py': 'f43d9e6bc78a67c398ddeede7b4935faf9dab143dfc12c5fc4aa77feed0f4bac',
+    'Tools/bazel/artifacts/native_producer.py': 'edc4841f65f5f8335189009c09a92d405158b943c4a54b8c4b4fe03af7afec29',
+    'Tools/bazel/artifacts/native_format.py': 'e31ccbf27a71c738b26654795fa0d061acca8a6584896493c43928a7608ebf68',
+    'Tools/bazel/artifacts/native_evidence.py': '0a6d6f68a175ec382cf87733836f3901525f997a4d9165d6c60b9e88aeb763c7',
+}
+OFFLINE_HELPER_OLD = {
+    'Package.swift': 'd837233bb3a60b38fb40314ecb8e4025aadbd2ecbeacface9fec82a278687a91',
+    'MODULE.bazel': '08b8b9c67faa1c20a655885494e4d96a8480008c19b029bf00d820c579df1815',
+    'BUILD.bazel': '0929383453d110928af982dff086287ef3fb395d16555b97562b36aa44d11b59',
+}
+OFFLINE_HELPER_NEW = {
+    'Package.swift': '3fd7dd179885795055c00fc561c1f1be2e09088d84a96acd061ad711adf80839',
+    'MODULE.bazel': '9e5faa5a8a04d9b322f3a7cb0a73286dc963815beb10ceae0eec825a5b69fe41',
+    'BUILD.bazel': 'eefb3fb6a569e6c5dcf2eb94f30a2ea9d0337ead828e8f1fc390107e020c6582',
+}
+REGISTRY_PUBLIC_PINS = 'a282ff768582b443895d3cfce4378caeb10f7d056c7d24fe5a7ef1291694efe4'
+SHA = re.compile(r'[0-9a-f]{64}\Z')
+
+
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def admit(producer: object, current: object, root: Path) -> dict:
+    selected = root / 'Tools/bazel/artifacts/recipe_compatibility.py'
+    loaded = Path(__file__)
+    if (selected.is_symlink() or not selected.is_file() or loaded.is_symlink()
+            or digest(selected.read_bytes()) != digest(loaded.read_bytes())):
+        raise ValueError('native recipe compatibility policy differs from selected source')
+    policy_sha = digest(loaded.read_bytes())
+    if (not isinstance(producer, dict) or not isinstance(current, dict)
+            or set(producer) != set(current) or not {IMPORTER, CONSUMER}.issubset(producer)
+            or any(not isinstance(key, str) or not isinstance(producer[key], str)
+                   or not SHA.fullmatch(producer[key]) or not isinstance(current[key], str)
+                   or not SHA.fullmatch(current[key]) for key in producer)):
+        raise ValueError('published native recipe inventory is incomplete or malformed')
+    changed = {key for key in producer if producer[key] != current[key]}
+    remaining = set(changed)
+    modes = []
+    # This exact manifest changes only the SDK revision for public RegistryInfo
+    # construction. Replay the preceding reviewed recipe for unchanged lower
+    # groups; independent source pins still require a new SDK archive.
+    if CONNECTION_PINS in remaining and current.get(CONNECTION_PINS) == REGISTRY_PUBLIC_PINS:
+        prior = admit(producer, dict(current, **{CONNECTION_PINS: OFFLINE_HELPER_NEW[CONNECTION_PINS]}), root)
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        return {**prior,
+                'mode': ((prior['mode'] + '+') if prior['mode'] != 'exact' else '')
+                        + 'known-registry-public-sdk-pin-update',
+                'currentRecipeSHA256': digest(canonical(current)),
+                'changedFiles': sorted(changed)}
+    # This exact vector adds a C process target to ContainerAPIService and a
+    # separate GPL helper to the top-level runtime filegroup. It does not change
+    # lower package targets, pins, compiler flags, toolchain or archive inputs.
+    # Only the complete reviewed vector can replay the prior lower recipe.
+    if any(key in remaining and current.get(key) == value
+           for key, value in OFFLINE_HELPER_NEW.items()):
+        if any(current.get(key) != value for key, value in OFFLINE_HELPER_NEW.items()):
+            raise ValueError('published native recipe differs from authenticated consumer update')
+        prior = admit(producer, dict(current, **OFFLINE_HELPER_OLD), root)
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        return {**prior,
+                'mode': ((prior['mode'] + '+') if prior['mode'] != 'exact' else '')
+                        + 'known-offline-copy-service-helper-addition',
+                'currentRecipeSHA256': digest(canonical(current)),
+                'changedFiles': sorted(changed)}
+    # This complete reviewed vector adds an export-only Container client group.
+    # Replay existing finite transitions through the exact pre-export recipe,
+    # then retain the actual selected recipe identity in the returned binding.
+    # A partial vector, unknown producer or unrelated recipe change fails closed.
+    if any(key in remaining and current.get(key) == value
+           for key, value in CLIENT_EXPORT_NEW.items()):
+        if any(current.get(key) != value for key, value in CLIENT_EXPORT_NEW.items()):
+            raise ValueError('published native recipe differs from authenticated consumer update')
+        prior = admit(producer, dict(current, **CLIENT_EXPORT_OLD), root)
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        return {**prior,
+                'mode': ((prior['mode'] + '+') if prior['mode'] != 'exact' else '')
+                        + 'known-client-exporter-only-update',
+                'currentRecipeSHA256': digest(canonical(current)),
+                'changedFiles': sorted(changed)}
+    verifier_pair = {IMPORTER, CONSUMER}
+    if verifier_pair.issubset(remaining) and all(
+            producer[key] == OLD[key] and current[key] == NEW[key] for key in verifier_pair):
+        remaining -= verifier_pair
+        modes.append('known-consumer-verifier-update')
+    # This reviewed patch changes two macOS test setups only. All production
+    # inputs, published archive/proof hashes and lower-chain identities stay exact.
+    if (HOST_FIXTURE in remaining and producer[HOST_FIXTURE] == HOST_FIXTURE_OLD
+            and current[HOST_FIXTURE] == HOST_FIXTURE_NEW):
+        remaining.remove(HOST_FIXTURE)
+        modes.append('known-host-timeout-fixture-update')
+    # This byte-bound change only recognizes a Swift parameter-assignment
+    # diagnostic in the public evidence credential scan. No compiled inputs,
+    # build flags, archive bytes or evidence normalization rules change.
+    if (PUBLIC_EVIDENCE_CHECK in remaining and producer[PUBLIC_EVIDENCE_CHECK] == PUBLIC_EVIDENCE_OLD
+            and current[PUBLIC_EVIDENCE_CHECK] == PUBLIC_EVIDENCE_NEW):
+        remaining.remove(PUBLIC_EVIDENCE_CHECK)
+        modes.append('known-parameter-diagnostic-scan-update')
+    # The exact manifest delta replaces only SDK and gRPC revision literals.
+    # ArgumentParser source and build settings are identical; every group's
+    # selected source pins and lower archives are still checked independently.
+    if (CONNECTION_PINS in remaining and producer[CONNECTION_PINS] == CONNECTION_PINS_OLD
+            and current[CONNECTION_PINS] == CONNECTION_PINS_NEW):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-sdk-transport-pin-update')
+    # Only the SDK revision literal changes for stopped-copy admission. Group
+    # source pins still independently force rebuilding the changed SDK archive.
+    # Unchanged ArgumentParser, foundation and Engine API archives are reusable.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW)
+            and current[CONNECTION_PINS] == STOPPED_COPY_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-stopped-copy-sdk-pin-update')
+    # This exact manifest changes only the SDK revision for mode preservation.
+    # Independent group source/lower-chain checks still reject the old SDK.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW, STOPPED_COPY_PINS)
+            and current[CONNECTION_PINS] == STOPPED_COPY_MODE_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-stopped-copy-mode-sdk-pin-update')
+    # Only the SDK revision changes for standalone-link preservation. Existing
+    # group source/lower identities continue to reject an unchanged old SDK.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS)
+            and current[CONNECTION_PINS] == STOPPED_COPY_SYMLINK_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-stopped-copy-symlink-sdk-pin-update')
+    # This exact manifest changes the SDK revision and adds direct Archive/EXT4
+    # dependencies to ContainerAPIServiceTests only. Lower production targets,
+    # flags and source pins remain independently authenticated; the SDK changes.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS,
+                                               STOPPED_COPY_SYMLINK_PINS)
+            and current[CONNECTION_PINS] == STOPPED_COPY_OFFLINE_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-stopped-copy-offline-sdk-and-test-update')
+    # Only the SDK revision changes to adopt the existing Compose unaligned
+    # metadata repair. Source-pin and lower-chain checks still force a new SDK
+    # artifact while retaining the exact ArgumentParser and foundation archives.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS,
+                                               STOPPED_COPY_SYMLINK_PINS, STOPPED_COPY_OFFLINE_PINS)
+            and current[CONNECTION_PINS] == UNALIGNED_METADATA_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-unaligned-metadata-sdk-pin-update')
+    # Only the SDK revision changes for the copy-out integration fixture.
+    # SDK source identity still forces a new SDK artifact; independently
+    # authenticated unchanged lower layers retain their original bytes.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS,
+                                               STOPPED_COPY_SYMLINK_PINS, STOPPED_COPY_OFFLINE_PINS,
+                                               UNALIGNED_METADATA_PINS)
+            and current[CONNECTION_PINS] == COPY_FIXTURE_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-copy-fixture-sdk-pin-update')
+    # Only the SDK revision changes for copy-transfer closure extraction.
+    # Independent source pins still require the changed SDK; unchanged lower
+    # archive bytes, production flags and source identities remain exact.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS,
+                                               STOPPED_COPY_SYMLINK_PINS, STOPPED_COPY_OFFLINE_PINS,
+                                               UNALIGNED_METADATA_PINS, COPY_FIXTURE_PINS)
+            and current[CONNECTION_PINS] == COPY_TRANSFER_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-copy-transfer-sdk-pin-update')
+    if remaining:
+        raise ValueError('published native recipe differs from authenticated consumer update')
+    mode = '+'.join(modes) if modes else 'exact'
+    canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+    return {'schema': 1, 'mode': mode,
+            'producerRecipeSHA256': digest(canonical(producer)),
+            'currentRecipeSHA256': digest(canonical(current)),
+            'policySHA256': policy_sha,
+            'changedFiles': sorted(changed)}

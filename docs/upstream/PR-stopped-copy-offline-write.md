@@ -1,0 +1,44 @@
+<!-- markdownlint-disable MD013 -->
+
+# perf(copy): update eligible stopped images without guest startup
+
+## Type of Change
+
+- Performance improvement with maintained helper and packaging changes.
+
+## Motivation and Context
+
+Cold regular-file copy-in still incurs about 621 ms and exceeds both corresponding retained Docker timing thresholds. The service now clones an eligible private stopped rootfs under its lifecycle mutation fence, transfers through a separate filesystem helper, independently verifies bytes and requested metadata, and atomically replaces the original. Unsupported operations discard staging and use the guest path. Postcommit durability errors propagate rather than performing a duplicate guest transfer.
+
+The helper uses authenticated e2fsprogs 1.47.4 sources with static, system-only linkage. Because the linked source closure includes GPL code, it remains a separate GPL-2.0-or-later executable with the complete original source archive, notices and exact helper build sources. No library code is linked into the Swift service or SDK. Its deny-default sandbox is established before parsing guest-controlled metadata; the deprecated sandbox API is an explicit dependency. CPU, wall-time and parent memory-watchdog bounds reap the child before releasing lifecycle ownership. The sandbox does not prove integrity of unrelated staged-image entries if the parser is exploited.
+
+Native and Bazel builds produce the helper, manifest and corresponding-source archive. Product inventory v4 retains all three and signing updates only the executable hash. Historical inventories and baseline results retain their original identity.
+
+The API service overlaps an authenticated, sandboxed helper startup probe with ordinary initialization. The retained advisory task opens no container image, source data or guest; file copy joins it within the lifecycle fence. A failed probe retains guest fallback, and successful preparation never skips per-copy authentication or filesystem protections. Diagnostic timings locate first-helper execution as the remaining cold cost; acceptance records service startup together with first copy rather than claiming a shifted cost is free.
+
+The first cold copy lazily prepares only the private rootfs under the same lifecycle fence. Its image is installed and fsynced before publishing the rootfs descriptor commit marker. Kernel/init resources remain deferred until real start, whose full preparation preserves the described image and copied bytes before publishing the durable configuration readiness marker. Metadata uses final paths. Crash retries replace only unpublished reserved resources, preserving runtime configuration, lifecycle and logs; a later real start consumes the prepared rootfs instead of cloning over copied data.
+
+A newly captured read-only Docker fixture rejects both regular and directory copy-in; the prior signed fork incorrectly accepted both. Copy-in now rejects an immutable root with no writable mounts before materialization or guest transfer. Read-only copy-out stays eligible. Mounted destinations retain existing runtime path handling and require their separate parity fixture.
+
+Legacy config-first partial bundles now check required resources, rather than trusting any decodable config. Repair preserves an existing described rootfs and current container configuration. An existing legacy image whose descriptor is missing is retained with an explicit recovery error rather than erased or assigned guessed provenance.
+
+CLI creation leaves the VM cold by default, with `--prewarm` preserving explicit background preparation. The API default remains unchanged. This avoids first copy waiting behind speculative bootstrap; a later start pays the VM boot cost. End-to-end create/copy/start and retained-reference timing are recorded separately so this tradeoff cannot be hidden by moving time across command boundaries.
+
+## Testing
+
+- Focused component evidence: 15 helper cases, independent e2fsck/debugfs checks, sandbox denial tests, four Swift commit transactions and six noncommit checks pass in transaction-v6.
+- The clean-journal correction passes 40 filesystem cases across journaled and journal-free fixtures, including malformed journal rejection, independent CRC32C checks, sticky-directory mode preservation and journal-inode destination rejection. The prior helper fails the valid-journal regression. A private clone of the production image passes helper transfer and independent readback in clean-journal-v2. Independent review found no actionable issue; final packaged-helper transaction and matched CLI qualification remain pending.
+- Explicit mode 0600 is verified with source mode 0640 and ownership preservation enabled.
+- Process tests cover launch errors, exit status, deadline, memory exhaustion, child reaping and caller descriptor lifetime.
+- The maintained Make target passes with explicit fixture/oracle inputs; the standalone helper also builds through the actual Bazel Darwin sandbox.
+- The exact three-file Container-only recipe transition passes 21 policy tests, rejects partial/reverse/unrelated changes, and admits all four published lower artifact groups without rebuilding them.
+- `make test-offline-ext4-helper` runs the maintained source-authentication, sandbox, process and filesystem checks with explicit test-only fixture/oracle inputs.
+- Independent read-only review found no remaining transaction or release-wiring blocker after corrections; full service compilation, matched runtime parity/performance, coverage and distribution qualification remain pending.
+
+The retained evidence root is `performance-parity-20261011T150042Z/candidate-container-startup-timings/offline-dependency`. Earlier failed attempts remain intact. No unchanged baseline was rebuilt or rerun. There is no measured product speedup claim until the full candidate runs against authenticated retained references.
+
+## Compatibility and remaining gates
+
+Regular files, overwrites, existing destination directories and optional parent creation use the fast path when eligible. Clean internal V2 journals are checked and preserved, including supported checksum validation. Sticky directories such as `/tmp` retain their mode. Directory/archive transfers, path-dependent symlinks, recovery-required or unsupported journals, inherited ACLs, SGID inheritance, special inode flags and unsupported spellings use the guest path. Shared and live images are excluded. Source licensing, stable signed identity, full runtime correctness and performance must qualify before publication.
+
+Related handoff: ISSUE-stopped-copy-offline-write.md. No Apple issue, PR or comment is published by this change.

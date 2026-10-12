@@ -245,6 +245,7 @@ struct JournaldServiceWireTests {
 
     @Test func cancellationInterruptsOutstandingReadWithoutReconnect() async throws {
         let pair = try journaldWireSocketPair()
+        defer { try? pair.server.close() }
         let connector = JournaldWireSocketConnector(handles: [pair.client])
         let transport = JournaldServiceFileHandleTransportV1 {
             try await connector.connect()
@@ -254,7 +255,6 @@ struct JournaldServiceWireTests {
             readerSequence: 1
         )
         let server = Task.detached {
-            defer { try? pair.server.close() }
             return try JournaldServiceFrameCodecV1.read(
                 JournaldServiceWireRequestV1.self,
                 from: pair.server

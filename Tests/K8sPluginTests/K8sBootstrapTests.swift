@@ -21,22 +21,45 @@ import Yams
 
 @Suite("K8s bootstrap configuration")
 struct K8sBootstrapTests {
-    @Test func nodeLocalEndpointUsesClusterPort() {
-        #expect(K8sHelper.nodeLocalControlPlaneEndpoint == "127.0.0.1:6443")
-    }
+    private let vmIP = "192.168.64.2"
 
-    @Test func nodeLocalControlPlaneEndpointIsRendered() throws {
+    private func assertControlPlaneEndpoint(arguments: [String], workers: UInt, expected: String) throws {
+        let command = try K8sCreate.parse(arguments)
+        #expect(command.workers == workers)
+
+        let endpoint = K8sCreate.controlPlaneEndpoint(vmIP: vmIP, workers: command.workers)
+        #expect(endpoint == expected)
+
         let yaml = try K8sHelper.initConfigYAML(
             nodeImage: K8sHelper.nodeImage,
-            advertiseAddress: "192.168.64.2",
+            advertiseAddress: vmIP,
             certSANs: ["127.0.0.1"],
-            controlPlaneEndpoint: K8sHelper.nodeLocalControlPlaneEndpoint)
-
-        #expect(yaml.contains("controlPlaneEndpoint: 127.0.0.1:6443"))
-        #expect(yaml.contains("advertiseAddress: 192.168.64.2"))
+            controlPlaneEndpoint: endpoint)
+        #expect(yaml.contains("controlPlaneEndpoint: \(expected)"))
+        #expect(yaml.contains("advertiseAddress: \(vmIP)"))
         #expect(yaml.contains("  - 127.0.0.1"))
         for document in yaml.components(separatedBy: "\n---\n") {
             #expect((try? Yams.load(yaml: document)) != nil)
         }
+    }
+
+    @Test func nodeLocalEndpointUsesClusterPort() {
+        #expect(K8sHelper.nodeLocalControlPlaneEndpoint == "127.0.0.1:6443")
+    }
+
+    @Test func defaultWorkerCountKeepsNodeLocalEndpoint() throws {
+        try assertControlPlaneEndpoint(arguments: [], workers: 0, expected: "127.0.0.1:6443")
+    }
+
+    @Test func explicitZeroWorkersKeepsNodeLocalEndpoint() throws {
+        try assertControlPlaneEndpoint(arguments: ["--workers", "0"], workers: 0, expected: "127.0.0.1:6443")
+    }
+
+    @Test(arguments: [UInt(1), UInt(3)])
+    func workersUseTheControlPlaneVMEndpoint(workerCount: UInt) throws {
+        try assertControlPlaneEndpoint(
+            arguments: ["--workers", "\(workerCount)"],
+            workers: workerCount,
+            expected: "\(vmIP):6443")
     }
 }

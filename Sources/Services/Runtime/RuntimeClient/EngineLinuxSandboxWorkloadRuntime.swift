@@ -37,6 +37,8 @@ public struct EngineLinuxSandboxWorkloadStartRequestV1: Codable, Equatable, Send
     public let workloadConfigurationDigest: String
     public let dynamicEnvironment: [String: String]
     public let networkEndpoints: [WorkloadNetworkEndpoint]
+    /// Primary foreground input owns guest EOF; later attachments never do.
+    public let closeStdinOnEOF: Bool
     /// Whether the helper must watch the init process and withdraw protected
     /// service routing as soon as that process terminates.
     public let monitorTerminal: Bool
@@ -47,6 +49,7 @@ public struct EngineLinuxSandboxWorkloadStartRequestV1: Codable, Equatable, Send
         workloadConfigurationDigest: String,
         dynamicEnvironment: [String: String] = [:],
         networkEndpoints: [WorkloadNetworkEndpoint] = [],
+        closeStdinOnEOF: Bool = false,
         monitorTerminal: Bool = false
     ) {
         self.context = context
@@ -54,7 +57,24 @@ public struct EngineLinuxSandboxWorkloadStartRequestV1: Codable, Equatable, Send
         self.workloadConfigurationDigest = workloadConfigurationDigest
         self.dynamicEnvironment = dynamicEnvironment
         self.networkEndpoints = networkEndpoints
+        self.closeStdinOnEOF = closeStdinOnEOF
         self.monitorTerminal = monitorTerminal
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case context, workloadRoot, workloadConfigurationDigest
+        case dynamicEnvironment, networkEndpoints, closeStdinOnEOF, monitorTerminal
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        context = try values.decode(WorkloadStartContextV1.self, forKey: .context)
+        workloadRoot = try values.decode(URL.self, forKey: .workloadRoot)
+        workloadConfigurationDigest = try values.decode(String.self, forKey: .workloadConfigurationDigest)
+        dynamicEnvironment = try values.decode([String: String].self, forKey: .dynamicEnvironment)
+        networkEndpoints = try values.decode([WorkloadNetworkEndpoint].self, forKey: .networkEndpoints)
+        closeStdinOnEOF = try values.decodeIfPresent(Bool.self, forKey: .closeStdinOnEOF) ?? false
+        monitorTerminal = try values.decode(Bool.self, forKey: .monitorTerminal)
     }
 }
 
@@ -201,12 +221,23 @@ public protocol EngineLinuxSandboxWorkloadRuntimeV1: Sendable {
 
 /// Binds one sealed workload intent to the generic transaction resolver.
 public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarterV1 {
+    /// Standard streams and the primary input descriptor's guest EOF ownership.
+    public struct StandardIO: Sendable {
+        public let handles: [FileHandle?]
+        public let closeStdinOnEOF: Bool
+
+        public init(handles: [FileHandle?] = [], closeStdinOnEOF: Bool = false) {
+            self.handles = handles
+            self.closeStdinOnEOF = closeStdinOnEOF
+        }
+    }
+
     private let runtime: any EngineLinuxSandboxWorkloadRuntimeV1
     private let workloadRoot: URL
     private let workloadConfigurationDigest: String
     private let dynamicEnvironment: [String: String]
     private let networkEndpoints: [WorkloadNetworkEndpoint]
-    private let stdio: [FileHandle?]
+    private let stdio: StandardIO
     private let monitorTerminal: Bool
 
     public init(
@@ -215,7 +246,7 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
         workloadConfigurationDigest: String,
         dynamicEnvironment: [String: String] = [:],
         networkEndpoints: [WorkloadNetworkEndpoint] = [],
-        stdio: [FileHandle?] = [],
+        stdio: StandardIO = .init(),
         monitorTerminal: Bool = false
     ) {
         self.runtime = runtime
@@ -228,7 +259,7 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
     }
 
     public func start(context: WorkloadStartContextV1) async throws -> WorkloadProcessReceiptV1 {
-        try await runtime.startWorkload(request(for: context), stdio: stdio)
+        try await runtime.startWorkload(request(for: context), stdio: stdio.handles)
     }
 
     public func observe(context: WorkloadStartContextV1) async throws -> WorkloadProcessObservationV1 {
@@ -242,6 +273,7 @@ public struct EngineLinuxSandboxWorkloadProcessStarterV1: WorkloadProcessStarter
             workloadConfigurationDigest: workloadConfigurationDigest,
             dynamicEnvironment: dynamicEnvironment,
             networkEndpoints: networkEndpoints,
+            closeStdinOnEOF: stdio.closeStdinOnEOF,
             monitorTerminal: monitorTerminal
         )
     }

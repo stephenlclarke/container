@@ -200,6 +200,27 @@ struct ContainerBootstrapConcurrencyTests {
                 isServiceRegistered: { _ in true }
             )
         }
+
+        var checked = false
+        #expect(throws: ContainerizationError.self) {
+            try ContainersService.stopRuntimeServiceAndConfirmInactive(
+                fullServiceLabel: "test.runtime",
+                deregisterService: { _ in 0 },
+                isServiceRegistered: { label in
+                    checked = true
+                    #expect(label == "test.runtime")
+                    return true
+                }
+            )
+        }
+        #expect(checked)
+        #expect(throws: RuntimeCleanupProbeError.failed) {
+            try ContainersService.stopRuntimeServiceAndConfirmInactive(
+                fullServiceLabel: "test.runtime",
+                deregisterService: { _ in 0 },
+                isServiceRegistered: { _ in throw RuntimeCleanupProbeError.failed }
+            )
+        }
     }
 
     @Test("State copies retain identity while replacements receive a new generation")
@@ -491,6 +512,10 @@ struct ContainerBootstrapConcurrencyTests {
             startedDate: nil
         )
     }
+}
+
+private enum RuntimeCleanupProbeError: Error {
+    case failed
 }
 
 private enum BootstrapLimiterTestError: Error {

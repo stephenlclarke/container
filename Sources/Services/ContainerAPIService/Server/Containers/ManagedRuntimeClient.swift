@@ -38,7 +38,9 @@ enum ManagedRuntimeClient: Sendable {
         stdio: [FileHandle?],
         networkBootstrapInfos: [NetworkBootstrapInfo],
         dynamicEnv: [String: String] = [:],
-        prewarming: Bool = false
+        prewarming: Bool = false,
+        copyOnly: Bool = false,
+        closeStdinOnEOF: Bool = false
     ) async throws {
         switch self {
         case .dedicated(let client):
@@ -46,7 +48,9 @@ enum ManagedRuntimeClient: Sendable {
                 stdio: stdio,
                 networkBootstrapInfos: networkBootstrapInfos,
                 dynamicEnv: dynamicEnv,
-                prewarming: prewarming
+                prewarming: prewarming,
+                copyOnly: copyOnly,
+                closeStdinOnEOF: closeStdinOnEOF
             )
         case .shared(let client):
             guard !prewarming else {
@@ -58,7 +62,8 @@ enum ManagedRuntimeClient: Sendable {
             try await client.bootstrap(
                 stdio: stdio,
                 networkBootstrapInfos: networkBootstrapInfos,
-                dynamicEnv: dynamicEnv
+                dynamicEnv: dynamicEnv,
+                closeStdinOnEOF: closeStdinOnEOF
             )
         }
     }
@@ -96,16 +101,18 @@ enum ManagedRuntimeClient: Sendable {
 
     func attach(
         stdio: [FileHandle?],
-        closeStdin: Bool = false
+        closeStdin: Bool = false,
+        closeStdinOnEOF: Bool = false
     ) async throws {
         switch self {
         case .dedicated(let client):
             try await client.attach(
                 stdio: stdio,
-                closeStdin: closeStdin
+                closeStdin: closeStdin,
+                closeStdinOnEOF: closeStdinOnEOF
             )
         case .shared(let client):
-            guard !closeStdin else {
+            guard !closeStdin && !closeStdinOnEOF else {
                 throw ContainerizationError(
                     .invalidArgument,
                     message: "shared-vm workloads do not have deferred dedicated stdin"
@@ -471,7 +478,8 @@ actor SharedSandboxRuntimeClient {
     func bootstrap(
         stdio: [FileHandle?],
         networkBootstrapInfos: [NetworkBootstrapInfo],
-        dynamicEnv: [String: String]
+        dynamicEnv: [String: String],
+        closeStdinOnEOF: Bool = false
     ) async throws {
         guard workload == nil else {
             throw ContainerizationError(
@@ -521,6 +529,7 @@ actor SharedSandboxRuntimeClient {
             dynamicEnvironment: dynamicEnv,
             networkEndpoints: networkEndpoints,
             stdio: stdio,
+            closeStdinOnEOF: closeStdinOnEOF,
             controllers: controllers,
             monitorTerminal: false
         )

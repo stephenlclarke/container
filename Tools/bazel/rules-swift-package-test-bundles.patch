@@ -1,0 +1,70 @@
+diff --git a/swiftpkg/internal/swiftpkg_build_files.bzl b/swiftpkg/internal/swiftpkg_build_files.bzl
+--- a/swiftpkg/internal/swiftpkg_build_files.bzl
++++ b/swiftpkg/internal/swiftpkg_build_files.bzl
+@@ -18,6 +18,7 @@
+ load(":pkginfo_targets.bzl", "pkginfo_targets")
+ load(":pkginfos.bzl", "build_setting_kinds", "module_types", "pkginfos", "target_types")
+ load(":semver.bzl", "semver")
++load(":repository_files.bzl", "repository_files")
+ load(":starlark_codegen.bzl", scg = "starlark_codegen")
+ 
+ # MARK: - Target Entry Point
+@@ -278,6 +279,7 @@
+         ]
+     elif target.type == target_types.test:
+         extra_data = getattr(repository_ctx.attr, "test_data", {}).get(target.name, [])
++        extra_data = extra_data + _test_bundle_files(repository_ctx, pkg_ctx.pkg_info, target)
+         patterns = getattr(repository_ctx.attr, "test_data_globs", {}).get(target.name, [])
+         if patterns:
+             extra_data = scg.new_expr(extra_data, scg.new_op("+"), scg.new_fn_call("glob", patterns, allow_empty = False))
+@@ -308,6 +310,33 @@
+     ))
+ 
+     return build_files.merge(*all_build_files)
++
++
++def _test_bundle_files(repository_ctx, pkg_info, target):
++    # Standalone swift_test does not assemble AppleResourceInfo into an app bundle.
++    # Materialize plain test fixtures as declared source inputs; compilation stays in Bazel.
++    if not target.resources:
++        return []
++    bundle = "_bazel_test_resources/" + pkginfo_targets.resource_bundle_name(pkg_info.name, target.c99name) + ".bundle"
++    plist = bundle + "/Info.plist"
++    repository_ctx.file(plist, '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>CFBundlePackageType</key><string>BNDL</string></dict></plist>', executable = False)
++    result = [plist]
++    for resource in target.resources:
++        if resource.rule.embed_in_code:
++            fail("Embedded test resources need a dedicated rule: " + resource.path)
++        directory = repository_files.is_directory(repository_ctx, resource.path)
++        sources = repository_files.list_files_under(repository_ctx, resource.path, exclude_directories = True) if directory else [resource.path]
++        for source in sources:
++            if any([part.endswith((".xcassets", ".storyboard", ".xib")) for part in source.split("/")]):
++                fail("Compiled test resources need an Apple bundle test rule: " + source)
++            relative = source[len(paths.dirname(resource.path)) + 1:] if directory and resource.rule.copy else paths.basename(source)
++            destination = bundle + "/" + relative
++            if destination in result:
++                fail("Duplicate test resource: " + destination)
++            repository_ctx.symlink(repository_ctx.path(source), destination)
++            result.append(destination)
++            result.append(source)
++    return result
+ 
+ def _swift_library_from_target(name, attrs):
+     # Mark swift_library targets as manual. We do this so that they are always
+diff --git a/swiftpkg/internal/ResourceBundleAccessor.swift.tmpl b/swiftpkg/internal/ResourceBundleAccessor.swift.tmpl
+--- a/swiftpkg/internal/ResourceBundleAccessor.swift.tmpl
++++ b/swiftpkg/internal/ResourceBundleAccessor.swift.tmpl
+@@ -11,6 +11,13 @@
+     static let module: Bundle = {
+         let bundleName = "{BUNDLE_NAME}"
+         let localBundleName = "LocalPackages_{BUNDLE_NAME}"
++
++        if ProcessInfo.processInfo.environment["TEST_SRCDIR"] != nil {
++            let directory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
++                .appendingPathComponent("_bazel_test_resources")
++                .appendingPathComponent(bundleName + ".bundle")
++            if let bundle = Bundle(url: directory) { return bundle }
++        }
+ 
+         let candidates = [
+             /* Bundle should be present here when the package is linked into an App. */

@@ -83,6 +83,25 @@ public struct ClientImage: Sendable {
         return content
     }
 
+    func configDigests() async throws -> [String] {
+        let index = try await self.index()
+        var digests: [String] = []
+        for descriptor in index.manifests {
+            guard descriptor.platform != nil,
+                descriptor.annotations?["vnd.docker.reference.type"] != "attestation-manifest",
+                [MediaTypes.imageManifest, MediaTypes.dockerManifest].contains(descriptor.mediaType)
+            else {
+                continue
+            }
+            guard let content: Content = try await contentStore.get(digest: descriptor.digest) else {
+                throw ContainerizationError(.internalError, message: "platform manifest content is missing during config digest lookup")
+            }
+            let manifest: Manifest = try content.decode()
+            digests.append(manifest.config.digest)
+        }
+        return digests
+    }
+
     /// Returns the resolved OCI descriptor for the image.
     package func resolved() async throws -> Descriptor {
         let index = try await self.index()
@@ -179,16 +198,42 @@ extension ClientImage {
 
     public static func get(names: [String], containerSystemConfig: ContainerSystemConfig) async throws -> (images: [ClientImage], error: [String]) {
         let all = try await self.list()
+        return try await Self.lookup(
+            names: names,
+            in: all,
+            containerSystemConfig: containerSystemConfig,
+            configDigestResolver: { try await $0.configDigests() }
+        )
+    }
+
+    static func lookup(
+        names: [String],
+        in all: [ClientImage],
+        containerSystemConfig: ContainerSystemConfig,
+        configDigestResolver: ConfigDigestResolver
+    ) async throws -> (images: [ClientImage], error: [String]) {
         var errors: [String] = []
         var found: [ClientImage] = []
         for name in names {
             do {
-                guard let img = try Self.match(reference: name, in: all, containerSystemConfig: containerSystemConfig) else {
+                guard
+                    let img = try await Self.match(
+                        reference: name,
+                        in: all,
+                        containerSystemConfig: containerSystemConfig,
+                        configDigestResolver: configDigestResolver
+                    )
+                else {
                     errors.append(name)
                     continue
                 }
                 found.append(img)
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
+                if Self.fullConfigDigest(from: name) != nil {
+                    throw error
+                }
                 errors.append(name)
             }
         }
@@ -197,10 +242,101 @@ extension ClientImage {
 
     public static func get(reference: String, containerSystemConfig: ContainerSystemConfig) async throws -> ClientImage {
         let all = try await self.list()
-        guard let found = try self.match(reference: reference, in: all, containerSystemConfig: containerSystemConfig) else {
+        guard
+            let found = try await Self.match(
+                reference: reference,
+                in: all,
+                containerSystemConfig: containerSystemConfig,
+                configDigestResolver: { try await $0.configDigests() }
+            )
+        else {
             throw ContainerizationError(.notFound, message: "image with reference \(reference)")
         }
         return found
+    }
+
+    typealias ConfigDigestResolver = @Sendable (ClientImage) async throws -> [String]
+
+    static func match(
+        reference: String,
+        in all: [ClientImage],
+        containerSystemConfig: ContainerSystemConfig,
+        configDigestResolver: ConfigDigestResolver
+    ) async throws -> ClientImage? {
+        if let image = try Self.match(reference: reference, in: all, containerSystemConfig: containerSystemConfig) {
+            return image
+        }
+
+        guard let requestedDigest = Self.fullConfigDigest(from: reference) else {
+            return nil
+        }
+
+        // A full SHA-256 digest may already be an image's index digest. Preserve
+        // the existing digest-prefix behavior, including its ambiguous case.
+        let requestedHash = String(requestedDigest.dropFirst("sha256:".count))
+        if all.contains(where: { Self.sha256Identifier(from: $0.digest)?.hasPrefix(requestedHash) == true }) {
+            return nil
+        }
+
+        var matches: [String: ClientImage] = [:]
+        var configDigestsByIndex: [String: [String]] = [:]
+        for image in all.sorted(by: { $0.reference < $1.reference }) {
+            let configDigests: [String]
+            if let cached = configDigestsByIndex[image.digest] {
+                configDigests = cached
+            } else {
+                do {
+                    configDigests = try await configDigestResolver(image)
+                } catch let error as ContainerizationError where error.isCode(.notFound) {
+                    throw ContainerizationError(
+                        .internalError,
+                        message: "failed to resolve local image content for config digest lookup"
+                    )
+                }
+                configDigestsByIndex[image.digest] = configDigests
+            }
+            guard configDigests.contains(requestedDigest) else {
+                continue
+            }
+            guard configDigests.count == 1 else {
+                throw ContainerizationError(
+                    .unsupported,
+                    message: "config ID lookup for a multi-platform image requires platform-pinned image selection"
+                )
+            }
+            // Multiple stored names may describe the same image index. Count
+            // that image once while keeping distinct indexes ambiguous.
+            matches[image.digest] = matches[image.digest] ?? image
+            if matches.count > 1 {
+                throw ContainerizationError(.invalidArgument, message: "config ID is ambiguous across multiple local images")
+            }
+        }
+        return matches.values.first
+    }
+
+    private static func fullConfigDigest(from reference: String) -> String? {
+        guard !reference.contains("/") && !reference.contains("@") else {
+            return nil
+        }
+        let components = reference.split(separator: ":", maxSplits: 1)
+        guard components.count == 2,
+            components[0].lowercased() == "sha256"
+        else {
+            return nil
+        }
+        let hash = Array(components[1].utf8)
+        guard hash.count == 64,
+            hash.allSatisfy({
+                (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0)
+            })
+        else {
+            return nil
+        }
+        return "sha256:\(String(decoding: hash, as: UTF8.self).lowercased())"
+    }
+
+    static func shouldPullAfterNotFound(reference: String) -> Bool {
+        Self.fullConfigDigest(from: reference) == nil
     }
 
     /// Returns the total size of an image in bytes.
@@ -444,6 +580,7 @@ extension ClientImage {
     /// Calculate disk usage for images
     /// - Parameter activeReferences: Set of image references currently in use by containers
     /// - Returns: Tuple of (total count, active count, total size, reclaimable size)
+    /// - Throws: An error if active references cannot be encoded or the service request fails.
     public static func calculateDiskUsage(activeReferences: Set<String>) async throws -> (totalCount: Int, activeCount: Int, totalSize: UInt64, reclaimableSize: UInt64) {
         let client = newXPCClient()
         let request = newRequest(.imageDiskUsage)
@@ -479,6 +616,9 @@ extension ClientImage {
             return match
         } catch let err as ContainerizationError {
             guard err.isCode(.notFound) else {
+                throw err
+            }
+            guard Self.shouldPullAfterNotFound(reference: reference) else {
                 throw err
             }
             return try await Self.pull(

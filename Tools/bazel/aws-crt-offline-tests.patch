@@ -1,0 +1,26 @@
+--- a/Package.swift
++++ b/Package.swift
+@@ -369,4 +369,23 @@
+     swiftSettings: swiftTestSettings
+   ),
+ ])
++// Offline unit tests retain upstream source and assertions. Network/provider suites
++// remain outside the normal container dependency qualification.
++packageTargets.removeAll { $0.name == "AwsCommonRuntimeKitTests" }
++packageTargets.append(.testTarget(
++  name: "AwsCommonRuntimeKitOfflineTests",
++  dependencies: ["AwsCommonRuntimeKit"],
++  path: "Test/AwsCommonRuntimeKitTests",
++  sources: [
++    "XCBaseTestCase.swift", "crt", "sdkutils", "event-stream",
++    "auth/SignerTests.swift", "auth/SigningConfigTests.swift",
++    "auth/ChunkSignerTests.swift", "auth/CredentialsTests.swift",
++    "io/BootstrapTests.swift", "io/EventLoopGroupTests.swift",
++    "io/StreamTests.swift", "io/RetryerTests.swift", "io/SocketOptionsTest.swift",
++    "http/HTTPRequestTests.swift", "http/HTTP2SettingsTests.swift",
++    "http/HTTPMonitoringOptionsTests.swift", "http/HTTPProxyEnvSettingsTests.swift",
++  ],
++  resources: [.process("Resources")],
++  swiftSettings: swiftTestSettings
++))
+ package.targets = packageTargets

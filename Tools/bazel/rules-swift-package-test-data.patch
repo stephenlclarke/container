@@ -1,0 +1,28 @@
+diff --git a/swiftpkg/internal/swift_package.bzl b/swiftpkg/internal/swift_package.bzl
+--- a/swiftpkg/internal/swift_package.bzl
++++ b/swiftpkg/internal/swift_package.bzl
+@@ -226,6 +226,8 @@
+ }
+ 
+ TOOL_ATTRS = {
++    "test_data": attr.string_list_dict(doc = "Additional declared runfiles for upstream tests."),
++    "test_data_globs": attr.string_list_dict(doc = "Declared fixture patterns for upstream tests."),
+     "test_targets": attr.string_list(doc = "Upstream test targets whose dependencies are pinned."),
+     "publicly_expose_all_targets": attr.bool(
+         default = False,
+diff --git a/swiftpkg/internal/swiftpkg_build_files.bzl b/swiftpkg/internal/swiftpkg_build_files.bzl
+--- a/swiftpkg/internal/swiftpkg_build_files.bzl
++++ b/swiftpkg/internal/swiftpkg_build_files.bzl
+@@ -277,6 +277,12 @@
+             ),
+         ]
+     elif target.type == target_types.test:
++        extra_data = getattr(repository_ctx.attr, "test_data", {}).get(target.name, [])
++        patterns = getattr(repository_ctx.attr, "test_data_globs", {}).get(target.name, [])
++        if patterns:
++            extra_data = scg.new_expr(extra_data, scg.new_op("+"), scg.new_fn_call("glob", patterns, allow_empty = False))
++        if extra_data:
++            attrs["data"] = scg.new_expr(attrs.get("data", []), scg.new_op("+"), extra_data)
+         load_stmts = [swift_test_load_stmt, spm_minimum_os_test_load_stmt]
+         decls = [
+             _minimum_os_wrapper_decl(

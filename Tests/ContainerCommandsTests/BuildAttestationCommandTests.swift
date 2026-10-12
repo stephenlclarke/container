@@ -36,9 +36,9 @@ struct BuildAttestationCommandTests {
             directory.path,
         ])
 
-        #expect(command.provenance == "mode=max")
-        #expect(command.sbom == "true")
-        #expect(command.contextDir == directory.path)
-        #expect(command.targetImageNames == ["example/app:latest"])
+        #expect(command.options.provenance == "mode=max")
+        #expect(command.options.sbom == "true")
+        #expect(command.options.contextDir == directory.path)
+        #expect(command.options.targetImageNames == ["example/app:latest"])
     }
 }

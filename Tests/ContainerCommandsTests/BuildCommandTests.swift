@@ -19,20 +19,21 @@ import ContainerResource
 import Foundation
 import Testing
 
+@testable import ContainerBuild
 @testable import ContainerCommands
 
 struct BuildCommandTests {
     @Test
     func stoppedBuilderFailsBeforeRestarting() {
-        #expect(Application.BuildCommand.builderExitedBeforeDial(status: .stopped))
-        #expect(!Application.BuildCommand.builderExitedBeforeDial(status: .running))
-        #expect(!Application.BuildCommand.builderExitedBeforeDial(status: .paused))
-        #expect(!Application.BuildCommand.builderExitedBeforeDial(status: nil))
+        #expect(BuildOptions.builderExitedBeforeDial(status: .stopped))
+        #expect(!BuildOptions.builderExitedBeforeDial(status: .running))
+        #expect(!BuildOptions.builderExitedBeforeDial(status: .paused))
+        #expect(!BuildOptions.builderExitedBeforeDial(status: nil))
     }
 
     @Test
     func builderShimUsesRuntimeDNSProxy() {
-        let arguments = Application.BuilderStart.shimArguments(
+        let arguments = Builder.shimArguments(
             useRosetta: true,
             dnsDomain: nil,
             dnsSearchDomains: ["build.internal", "example.test"],
@@ -57,7 +58,7 @@ struct BuildCommandTests {
 
     @Test
     func builderShimUsesDNSDomainAsSearchFallbackAndKeepsQEMU() {
-        let arguments = Application.BuilderStart.shimArguments(
+        let arguments = Builder.shimArguments(
             useRosetta: false,
             dnsDomain: "build.internal",
             dnsSearchDomains: [],
@@ -87,7 +88,7 @@ struct BuildCommandTests {
         )
 
         #expect(
-            !Application.BuilderStart.dnsOverridesChanged(
+            !Builder.dnsOverridesChanged(
                 existingDNS: existingDNS,
                 dnsNameservers: ["192.0.2.53"],
                 dnsDomain: "build.internal",
@@ -96,7 +97,7 @@ struct BuildCommandTests {
             )
         )
         #expect(
-            Application.BuilderStart.dnsOverridesChanged(
+            Builder.dnsOverridesChanged(
                 existingDNS: existingDNS,
                 dnsNameservers: ["192.0.2.53"],
                 dnsDomain: "build.internal",
@@ -105,7 +106,7 @@ struct BuildCommandTests {
             )
         )
         #expect(
-            Application.BuilderStart.dnsOverridesChanged(
+            Builder.dnsOverridesChanged(
                 existingDNS: existingDNS,
                 dnsNameservers: ["192.0.2.53"],
                 dnsDomain: "build.internal",
@@ -142,7 +143,7 @@ struct BuildCommandTests {
         try Data("FROM scratch\n".utf8).write(to: directory.appendingPathComponent("Dockerfile"))
         try Data("ignored.txt\n".utf8).write(to: context.appendingPathComponent(".dockerignore"))
 
-        let data = try Application.BuildCommand.dockerignoreData(
+        let data = try BuildOptions.dockerignoreData(
             dockerfile: directory.appendingPathComponent("Dockerfile").path,
             contextDir: context.path
         )
@@ -161,7 +162,7 @@ struct BuildCommandTests {
         try Data("specific.txt\n".utf8).write(to: directory.appendingPathComponent("Dockerfile.dockerignore"))
         try Data("general.txt\n".utf8).write(to: context.appendingPathComponent(".dockerignore"))
 
-        let data = try Application.BuildCommand.dockerignoreData(
+        let data = try BuildOptions.dockerignoreData(
             dockerfile: dockerfile.path,
             contextDir: context.path
         )
@@ -177,7 +178,7 @@ struct BuildCommandTests {
         try FileManager.default.createDirectory(at: context, withIntermediateDirectories: true)
         try Data("stdin-ignore.txt\n".utf8).write(to: context.appendingPathComponent(".dockerignore"))
 
-        let data = try Application.BuildCommand.dockerignoreData(
+        let data = try BuildOptions.dockerignoreData(
             dockerfile: "-",
             contextDir: context.path
         )
@@ -213,49 +214,33 @@ struct BuildCommandTests {
             directory.path,
         ])
 
-        #expect(command.check)
-        #expect(command.builder == "remote")
-        #expect(command.buildContext == ["shared=./shared", "base=docker-image://example/base:latest"])
-        #expect(command.allow == ["network.host"])
-        #expect(command.addHost == ["build.local=127.0.0.1"])
-        #expect(command.network == "host")
-        #expect(command.privileged)
-        #expect(command.shmSize == "67108864")
-        #expect(command.ulimit == ["nofile=1024:2048"])
-        #expect(command.noCacheFilter == ["base", "compile", "final"])
-        #expect(command.ssh == ["default", "git=/tmp/agent.sock"])
-        #expect(command.contextDir == directory.path)
-        #expect(command.targetImageNames == ["example/app:latest"])
+        #expect(command.options.check)
+        #expect(command.options.builder == "remote")
+        #expect(command.options.buildContext == ["shared=./shared", "base=docker-image://example/base:latest"])
+        #expect(command.options.allow == ["network.host"])
+        #expect(command.options.addHost == ["build.local=127.0.0.1"])
+        #expect(command.options.network == "host")
+        #expect(command.options.privileged)
+        #expect(command.options.shmSize == "67108864")
+        #expect(command.options.ulimit == ["nofile=1024:2048"])
+        #expect(command.options.noCacheFilter == ["base", "compile", "final"])
+        #expect(command.options.ssh == ["default", "git=/tmp/agent.sock"])
+        #expect(command.options.contextDir == directory.path)
+        #expect(command.options.targetImageNames == ["example/app:latest"])
     }
 
     @Test
     func buildRejectsEmptyNoCacheFilterStages() throws {
         #expect(throws: ValidationError.self) {
-            _ = try Application.BuildCommand.normalizedNoCacheFilters(["base,,compile"])
+            _ = try BuildOptions.normalizedNoCacheFilters(["base,,compile"])
         }
-        #expect(try Application.BuildCommand.normalizedNoCacheFilters([]).isEmpty)
+        #expect(try BuildOptions.normalizedNoCacheFilters([]).isEmpty)
     }
 
     private func makeTemporaryDirectory() throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
-    }
-
-    @Test
-    func builderCommandsParseNamedBuilderOptions() throws {
-        let start = try Application.BuilderStart.parse(["--builder", "remote"])
-        #expect(start.builder == "remote")
-
-        let status = try Application.BuilderStatus.parse(["--builder", "remote"])
-        #expect(status.builder == "remote")
-
-        let stop = try Application.BuilderStop.parse(["--builder", "remote"])
-        #expect(stop.builder == "remote")
-
-        let delete = try Application.BuilderDelete.parse(["--builder", "remote", "--force"])
-        #expect(delete.builder == "remote")
-        #expect(delete.force)
     }
 
     @Test

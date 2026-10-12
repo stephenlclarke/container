@@ -574,7 +574,9 @@ struct TestCLIRunCommand {
 
     @Test func testRunCommandUnixSocketMount() async throws {
         try await ContainerFixture.with { f in
-            let image = alpine.preparedReference
+            // The client is preloaded by warmup; socket correctness must not depend
+            // on an unrelated package server being reachable from the guest.
+            let image = WarmupImage.python311Alpine320.rawValue
             let c = "\(f.testID)-c"
             let socketDir = try f.makeShortSocketDir("sock")
             let socketPath = socketDir + "/ssh-auth.sock"
@@ -594,13 +596,17 @@ struct TestCLIRunCommand {
                 try? f.doRemove(c)
             }
 
-            _ = try f.doExec(c, cmd: ["apk", "add", "netcat-openbsd"])
             let perms = try f.doExec(
                 c, cmd: ["sh", "-c", "stat -c \"%a\" \"${SSH_AUTH_SOCK}\""],
                 user: "guest"
             ).trimmingCharacters(in: .whitespacesAndNewlines)
             #expect(perms == "766")
-            _ = try f.doExec(c, cmd: ["sh", "-c", "nc -zU \"${SSH_AUTH_SOCK}\""], user: "guest")
+            _ = try f.doExec(
+                c,
+                cmd: [
+                    "python3", "-c",
+                    "import os, socket; s = socket.socket(socket.AF_UNIX); s.settimeout(5); s.connect(os.environ['SSH_AUTH_SOCK']); s.close()",
+                ], user: "guest")
         }
     }
 

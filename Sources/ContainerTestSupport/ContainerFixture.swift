@@ -21,10 +21,6 @@ import Logging
 import Synchronization
 import SystemPackage
 
-#if canImport(Testing)
-import Testing
-#endif
-
 /// Per-test fixture for CLI integration tests.
 ///
 /// Open a fixture scope with ``ContainerFixture/with(_:)``. Every resource
@@ -76,41 +72,44 @@ public final class ContainerFixture: Sendable {
 
     // MARK: - Unstructured API
 
+    /// Identity of the running test, supplied by the test target.
+    ///
+    /// `ContainerTestSupport` does not import the Testing module, so callers that
+    /// can `import Testing` should pass `Test.current` / `Test.Case.current` here.
+    public struct TestIdentity: Sendable {
+        public var name: String?
+        public var identifier: String?
+        public var isParameterized: Bool
+
+        public init(name: String? = nil, identifier: String? = nil, isParameterized: Bool = false) {
+            self.name = name
+            self.identifier = identifier
+            self.isParameterized = isParameterized
+        }
+    }
+
     /// Runs `body` with a fresh fixture, then tears down all registered resources.
     ///
     /// Cleanup runs in LIFO order regardless of whether `body` throws.
+    /// Pass `identity` from the test target so log files and scratch directories
+    /// keep the current test name without this module importing Testing.
     @discardableResult
-    public static func with<T>(_ body: (ContainerFixture) async throws -> T) async throws -> T {
+    public static func with<T>(identity: TestIdentity, _ body: (ContainerFixture) async throws -> T) async throws -> T {
         let testID = String(UUID().uuidString.prefix(8)).lowercased()
 
-        #if canImport(Testing)
-        let currentTest = Test.current
-        let testName =
-            currentTest.map { $0.name.hasSuffix("()") ? String($0.name.dropLast(2)) : $0.name }
-            ?? testID
-        // Test.current is a value describing the running test, not an instance of the suite
-        // type, so `type(of:)` always yields `Test` itself. Derive the suite from the test's
-        // fully-qualified ID instead (e.g. "IntegrationTests.TestCLIStatus/explicitTableFormat()/...")
-        // — the same identifier format used in the swift-testing event-stream JSON.
-        let testIdentifier = currentTest.map { "\($0.id)" }
+        let testName: String = {
+            guard let name = identity.name else { return testID }
+            return name.hasSuffix("()") ? String(name.dropLast(2)) : name
+        }()
+        // Derive the suite from the test's fully-qualified ID
+        // (e.g. "IntegrationTests.TestCLIStatus/explicitTableFormat()/..."),
+        // the same identifier format used in the swift-testing event-stream JSON.
+        let testIdentifier = identity.identifier
         let suiteName = testIdentifier?.split(separator: "/", maxSplits: 1).first.map(String.init) ?? "unknown"
 
-        // Swift Testing doesn't expose a stable per-case identifier or the case's arguments
-        // publicly, only `isParameterized`. Parameterized tests share one `testName` across all
-        // their concurrently-running cases, so fall back to the per-invocation `testID` to keep
-        // each case's log file distinct.
-        let isParameterized = Test.Case.current?.isParameterized ?? false
-        #else
-        let testName = testID
-        let testIdentifier: String? = nil
-        let suiteName = "unknown"
-        #endif
-
-        #if canImport(Testing)
-        let logFileName = isParameterized ? "\(testName)-\(testID).log" : "\(testName).log"
-        #else
-        let logFileName = "\(testName).log"
-        #endif
+        // Parameterized tests share one `testName` across concurrently-running cases,
+        // so fall back to the per-invocation `testID` to keep each case's log file distinct.
+        let logFileName = identity.isParameterized ? "\(testName)-\(testID).log" : "\(testName).log"
 
         // Set up logging before any fixture work (scratch dir creation, etc.) so a "test start"
         // message is the first thing recorded — bookended by "test end" once `body` returns.
@@ -139,7 +138,7 @@ public final class ContainerFixture: Sendable {
         // Name the scratch directory so it's immediately identifiable when browsing:
         // {sanitizedTestName}-{testID}
         let safeName = testName.replacingOccurrences(
-            of: "[^a-zA-Z0-9]", with: "-", options: .regularExpression)
+            of: "[^a-zA-Z0-9]", with: "-", options: String.CompareOptions.regularExpression)
         let testDir = scratchRoot.appending("\(safeName)-\(testID)")
         try FileManager.default.createDirectory(
             atPath: testDir.string, withIntermediateDirectories: true, attributes: nil)
@@ -188,7 +187,8 @@ public final class ContainerFixture: Sendable {
         currentDirectory: FilePath? = nil,
         env: [String: String] = [:],
         pty: Bool = false,
-        dnsOverride: Bool = true
+        dnsOverride: Bool = true,
+        timeout: TimeInterval? = nil
     ) throws -> CommandResult {
         let arguments = argumentsWithDNSOverride(arguments, enabled: dnsOverride)
         let seq = Self.commandSeq.withLock { n in
@@ -249,6 +249,22 @@ public final class ContainerFixture: Sendable {
         } catch {
             throw CommandError.executionFailed("process launch failed: \(error)")
         }
+        let timedOut = Mutex(false)
+        let deadline: DispatchSourceTimer?
+        if let seconds = timeout {
+            let timer = DispatchSource.makeTimerSource(queue: .global())
+            timer.schedule(deadline: .now() + seconds)
+            timer.setEventHandler {
+                guard process.isRunning else { return }
+                timedOut.withLock { $0 = true }
+                process.terminate()
+            }
+            timer.resume()
+            deadline = timer
+        } else {
+            deadline = nil
+        }
+        defer { deadline?.cancel() }
         if pty {
             // Write through the master side; the kernel tty buffers input until the
             // child reads it, so this works even before the child is ready (e.g. a
@@ -264,6 +280,26 @@ public final class ContainerFixture: Sendable {
 
         let outputData = (try? Data(contentsOf: URL(filePath: stdoutPath.string))) ?? Data()
         let errorData = (try? Data(contentsOf: URL(filePath: stderrPath.string))) ?? Data()
+
+        if timedOut.withLock({ $0 }) {
+            let root =
+                ProcessInfo.processInfo.environment["CLITEST_LOG_ROOT"]
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent("container-test-timeouts").path
+            let retained = URL(fileURLWithPath: root)
+                .appendingPathComponent("command-timeouts")
+                .appendingPathComponent("\(testID)-\(seq)")
+            try FileManager.default.createDirectory(
+                at: retained, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            for (name, data) in [("stdout", outputData), ("stderr", errorData)] {
+                let file = retained.appendingPathComponent(name)
+                try data.write(to: file, options: .atomic)
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: file.path)
+            }
+            log.error("command deadline", metadata: ["seq": "\(seq)", "evidence": "\(retained.path)"])
+            throw CommandError.executionFailed("command exceeded \(timeout ?? 0) seconds; output: \(retained.path)")
+        }
 
         log.info(
             "command end",
