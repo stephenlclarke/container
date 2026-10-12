@@ -124,6 +124,18 @@ GROUP_TEST_TARGETS = {
 }
 
 
+# Finite host-only client qualification; this does not run IntegrationTests or
+# expand the existing dependency-tests suite/default native import inventory.
+GROUP_TEST_TARGETS['container-sdk'] = frozenset(_test_label('container', name) for name in (
+    'ContainerVersionTests', 'SocketForwarderTests', 'CLITests', 'ContainerXPCTests',
+    'ContainerOSTests', 'TerminalProgressTests', 'DNSServerTests',
+    'ContainerPersistenceTests', 'ContainerPluginTests', 'ContainerAPIClientTests',
+    'ContainerLoggingProvidersTests', 'ContainerBuildTests', 'ContainerBuilderPluginTests',
+    'ContainerResourceTests', 'ContainerCommandsTests',
+))
+ALL_TEST_TARGETS = ALL_TEST_TARGETS | GROUP_TEST_TARGETS['container-sdk']
+
+
 def _sha(path: Path) -> str:
     if not path.is_file():
         raise ValueError('evidence is not a regular file')

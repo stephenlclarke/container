@@ -33,7 +33,8 @@ from . import native_evidence, native_format, native_layers
 from .release_asset import fetch, publish_assets
 
 ROOT = native_layers.ROOT
-GROUPS = ('argument-parser', *native_layers.GROUPS)
+# The self-owned client archive is export-only; default runtime imports stay lower-only.
+GROUPS = ('argument-parser', *native_layers.GROUPS, 'container-sdk')
 
 
 def _source_state(root: Path) -> dict:
@@ -43,6 +44,22 @@ def _source_state(root: Path) -> dict:
                                     text=True, timeout=20).strip()
     return {'commit': commit, 'dirty': bool(dirty), 'recipe': native_layers.recipe(root),
             'pins': native_layers.pin_records(root), 'toolchain': native_layers.toolchain(root)}
+
+
+def _group_source_pins(group: str, state: dict) -> dict:
+    if group != 'container-sdk':
+        return native_layers.group_pins(group, state['pins'])
+    if (not native_layers.COMMIT.fullmatch(state['commit']) or 'container' in state['pins']):
+        raise ValueError('Container SDK export requires an immutable own-source identity')
+    return {'container': {'identity': 'container', 'kind': 'remoteSourceControl',
+                          'location': 'https://github.com/stephenlclarke/container.git',
+                          'state': {'revision': state['commit']}}}
+
+
+def _lower_groups(group: str) -> tuple[str, ...]:
+    if group == 'container-sdk':
+        return native_layers.GROUPS
+    return () if group == 'foundation' else ('foundation',)
 
 
 def _run_bazel(root: Path, action: str, flags: list[str], target: str | list[str],
@@ -95,10 +112,11 @@ def produce(group: str, output: Path, *, development_proof: bool = False,
     if group not in GROUPS or not output.is_absolute() or output.exists():
         raise ValueError('native producer requires one group and a fresh absolute output')
     before = _source_state(root)
+    selected = _group_source_pins(group, before)
     nonpublishable = development_proof or before['dirty']
     if before['dirty'] and not development_proof:
         raise ValueError('publishable native producer requires a clean Q checkout')
-    lower_groups = () if group == 'foundation' else ('foundation',)
+    lower_groups = _lower_groups(group)
     lower = ({'layers': {}, 'overrides': {}} if group == 'argument-parser' else
              native_layers.import_layers(root, groups=lower_groups))
     output.mkdir(parents=True, mode=0o700)
@@ -146,8 +164,6 @@ def produce(group: str, output: Path, *, development_proof: bool = False,
     execution = Path(subprocess.check_output([str(root / 'Tools/bazel/run.sh'), 'info', 'execution_root'],
                                              cwd=root, text=True, timeout=90).splitlines()[-1])
     loaded = native_layers.verify_loaded_repositories(lower, base)
-    selected = ({'swift-argument-parser': before['pins']['swift-argument-parser']}
-                if group == 'argument-parser' else native_layers.group_pins(group, before['pins']))
     allowed = {native_layers.repo_name(name): name for name in selected}
     output_lines = listed.splitlines()
     if group == 'argument-parser':
@@ -198,7 +214,7 @@ def produce(group: str, output: Path, *, development_proof: bool = False,
                           'configuredOutputs': identity['configured']}
     required = {'argument-parser': 'swift-argument-parser',
                 'foundation': 'swift-log', 'containerization': 'containerization',
-                'engine-api': 'container-engine-api'}[group]
+                'engine-api': 'container-engine-api', 'container-sdk': 'container'}[group]
     if required not in packages or not members:
         raise ValueError('Q configured closure omitted the required native package')
     after = _source_state(root)
@@ -590,11 +606,9 @@ def plan(receipt_path: Path, qualification_path: Path, output: Path) -> dict:
         raise ValueError('native group has no exact passed qualification')
     group = manifest['group']
     if (group not in GROUPS or manifest.get('sourcePins') !=
-            ({'swift-argument-parser': before['pins']['swift-argument-parser']}
-             if group == 'argument-parser' else
-             native_layers.group_pins(group, before['pins']))):
+            _group_source_pins(group, before)):
         raise ValueError('native group source pins changed after production')
-    lower_groups = () if group == 'foundation' else ('foundation',)
+    lower_groups = _lower_groups(group)
     current_lower = ({} if group == 'argument-parser' else
                      native_layers.import_layers(ROOT, groups=lower_groups)['layers'])
     if manifest.get('lower') != {
@@ -623,7 +637,7 @@ def plan(receipt_path: Path, qualification_path: Path, output: Path) -> dict:
                 or member_sizes.get(member) != record['size']):
             raise ValueError('native archive binary differs from successful build BEP')
     tag = f'layer-{manifest["group"]}-native-{manifest["producerCommit"][:12]}-{observed["archiveSHA256"][:20]}'
-    target = (manifest['producerCommit'] if group in ('argument-parser', 'foundation') else
+    target = (manifest['producerCommit'] if group in ('argument-parser', 'foundation', 'container-sdk') else
               manifest['sourcePins'][native_layers.GROUP_PIN[group]]['state']['revision'])
     sidecar = {'schema': 1, 'group': group, 'passed': True,
                'developmentProof': False, 'source': manifest['producerCommit'],

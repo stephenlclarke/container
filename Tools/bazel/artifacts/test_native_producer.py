@@ -88,9 +88,11 @@ class SealedProducerFixture:
                 'producerCommit': self.source,
                 'sourcePins': native_layers.group_pins(name, self.pins)}
         package = {'argument-parser': 'swift-argument-parser', 'foundation': 'swift-log',
-                   'containerization': 'containerization', 'engine-api': 'container-engine-api'}[group]
+                   'containerization': 'containerization', 'engine-api': 'container-engine-api',
+                   'container-sdk': 'container'}[group]
         repo = native_layers.repo_name(package)
-        modules = ('ArgumentParser', 'ArgumentParserToolInfo') if group == 'argument-parser' else ('Logging',)
+        modules = (('ArgumentParser', 'ArgumentParserToolInfo') if group == 'argument-parser' else
+                   ('ContainerAPIClient', 'ContainerResource', 'ContainerXPC') if group == 'container-sdk' else ('Logging',))
         self.targets = (['@' + repo + '//:' + module + '.rspm.__impl' for module in modules]
                         if group == 'argument-parser' else ['//:container-executables'])
         self.aspect = None if group == 'argument-parser' else '//Tools/bazel/artifacts:compiled_outputs.bzl%' + group.replace('-', '_') + '_outputs'
@@ -134,11 +136,11 @@ class SealedProducerFixture:
             'schema': 1, 'group': group, 'profile': 'native', 'graph': 'container-native',
             'configuration': 'opt', 'platform': 'darwin-arm64', 'developmentProof': False,
             'minimumMacOS': '12.0' if group == 'argument-parser' else '15.0',
-            'producerCommit': self.source, 'sourcePins': native_layers.group_pins(group, self.pins),
+            'producerCommit': self.source, 'sourcePins': native_producer._group_source_pins(group, self.state),
             'recipeSHA256': self.recipe, 'toolchain': self.state['toolchain'],
             'lower': {name: native_layers.lower_identity(row) for name, row in self.lower['layers'].items()},
-            'packages': {package: {'sourceCommit': self.pins[package]['state']['revision'],
-                                   'sourceLocation': self.pins[package]['location'], 'repository': repo,
+            'packages': {package: {'sourceCommit': native_producer._group_source_pins(group, self.state)[package]['state']['revision'],
+                                   'sourceLocation': native_producer._group_source_pins(group, self.state)[package]['location'], 'repository': repo,
                                    'generatedBuildSHA256': native_format.digest(self.members[f'{group}/{repo}/BUILD.bazel'])}},
             'payloadOutputs': self.payload,
             'files': {name: native_format.digest(value) for name, value in self.members.items()}}
@@ -238,6 +240,71 @@ class NativeProducerTests(unittest.TestCase):
         with self.assertRaises((ValueError, FileNotFoundError)):
             fixture.plan()
         self.assertFalse((fixture.directory / 'publication').exists())
+
+    def test_container_sdk_export_keeps_default_imports_and_owns_exact_source(self):
+        fixture = self.fixture('container-sdk')
+        self.assertEqual(native_layers.GROUPS, ('foundation', 'containerization', 'engine-api'))
+        self.assertEqual(native_layers.ALL_GROUPS, ('argument-parser', *native_layers.GROUPS))
+        self.assertEqual(native_layers.LOWER['container-sdk'], native_layers.ALL_GROUPS)
+        self.assertEqual(native_producer._lower_groups('container-sdk'), native_layers.GROUPS)
+        self.assertNotIn('container', {row['identity'] for row in
+                                       json.loads((fixture.root / 'Package.resolved').read_text())['pins']})
+        self.assertNotIn('container', fixture.pins)
+        self.assertEqual(fixture.manifest['sourcePins']['container']['state']['revision'], fixture.source)
+        result = fixture.plan()
+        self.assertEqual(result['archive']['targetCommit'], fixture.source)
+        self.assertEqual(result['archive']['repository'], 'stephenlclarke/container')
+        self.assertEqual(set(fixture.manifest['lower']), set(native_layers.ALL_GROUPS))
+        evidence = json.loads((fixture.directory / 'publication/container-sdk-native-evidence.json').read_text())
+        proof = fixture.directory / 'publication/container-sdk-native-proof.tar.gz'
+        self.assertTrue(native_producer.verify_proof_bundle(proof, evidence)['passed'])
+
+    def test_container_sdk_cannot_relabel_source_or_replace_any_lower(self):
+        for group in native_layers.ALL_GROUPS:
+            fixture = self.fixture('container-sdk')
+            fixture.lower['layers'][group]['archiveSHA256'] = '0' * 64
+            with self.subTest(group=group):
+                self.rejected(fixture)
+        fixture = self.fixture('container-sdk')
+        fixture.manifest['sourcePins']['container']['state']['revision'] = 'b' * 40
+        fixture.seal()
+        self.rejected(fixture)
+        for change in [{'commit': 'unknown'}, {'pins': {'container': {}}}]:
+            with self.subTest(change=change), self.assertRaisesRegex(ValueError, 'own-source'):
+                native_producer._group_source_pins('container-sdk', dict(fixture.state, **change))
+
+    def test_container_sdk_production_imports_all_four_before_building(self):
+        fixture = self.fixture('container-sdk')
+        fixture.lower['overrides'] = {'+dependencies+swiftpkg_swift_log': str(fixture.root / 'Logging')}
+        with mock.patch.object(native_producer, '_source_state', return_value=fixture.state), \
+             mock.patch.object(native_layers, 'import_layers', return_value=fixture.lower) as imported, \
+             mock.patch.object(native_producer, '_run_bazel', side_effect=RuntimeError('stop before build')) as built:
+            with self.assertRaisesRegex(RuntimeError, 'stop before build'):
+                native_producer.produce('container-sdk', fixture.directory / 'fresh-producer', root=fixture.root)
+        imported.assert_called_once_with(fixture.root, groups=native_layers.GROUPS)
+        flags = built.call_args.args[2]
+        self.assertIn('--aspects=//Tools/bazel/artifacts:compiled_outputs.bzl%container_sdk_outputs', flags)
+        self.assertEqual(built.call_args.args[3], '//:container-executables')
+
+    def test_container_sdk_qualification_requires_original_client_and_xpc_tests(self):
+        fixture = self.fixture('container-sdk')
+        required = native_evidence.GROUP_TEST_TARGETS['container-sdk']
+        self.assertIn('@swiftpkg_container//:ContainerAPIClientTests.rspm', required)
+        self.assertIn('@swiftpkg_container//:ContainerXPCTests.rspm', required)
+        self.assertFalse(any('IntegrationTests' in label for label in required))
+        log = fixture.test_events.with_name('tests.log')
+        log.write_text('Original client source tests passed\n')
+        with mock.patch.object(native_producer, '_source_state', return_value=fixture.current), \
+             mock.patch.object(native_producer, '_run_bazel', return_value=('', log)) as runner:
+            proof = native_producer.qualify('container-sdk', fixture.directory / 'qualification-run', root=fixture.root)
+        self.assertTrue(proof['passed'])
+        self.assertEqual(runner.call_args.args[:4], (fixture.root, 'test', [], sorted(required)))
+        rows = [json.loads(line) for line in fixture.test_events.read_text().splitlines()]
+        rows = [row for row in rows if 'ContainerXPCTests' not in json.dumps(row)]
+        write_events(fixture.test_events, rows)
+        write_json(fixture.qualification, native_producer._qualification_document(
+            fixture.test_events, fixture.source, 'container-sdk'))
+        self.rejected(fixture)
 
     def test_sealed_plan_reads_real_bep_xml_and_source_inventory(self):
         fixture = self.fixture()

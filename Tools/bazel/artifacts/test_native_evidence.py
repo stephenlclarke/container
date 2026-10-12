@@ -409,13 +409,19 @@ class NativeEvidenceTests(unittest.TestCase):
         node = next(n.value for n in tree.body if isinstance(n, ast.Assign)
                     and any(isinstance(t, ast.Name) and t.id == 'LAYERS' for t in n.targets))
         actual = {}
+        container_tests = set()
         for key, value in zip(node.keys, node.values):
             fields = {k.arg: ast.literal_eval(k.value) for k in value.keywords}
+            if fields['package'] == 'container':
+                container_tests.update(evidence._test_label('container', name) for name in fields['tests'])
             if fields['package'] != 'container' and fields['tests']:
                 actual[ast.literal_eval(key)] = (fields['package'], tuple(fields['tests']))
         self.assertEqual(evidence.TEST_LAYERS, actual)
         self.assertEqual({g: len(v) for g, v in evidence.GROUP_TEST_TARGETS.items()},
-                         {'argument-parser': 2, 'foundation': 49, 'containerization': 10, 'engine-api': 9})
+                         {'argument-parser': 2, 'foundation': 49, 'containerization': 10, 'engine-api': 9, 'container-sdk': 15})
+        self.assertTrue(evidence.GROUP_TEST_TARGETS['container-sdk'].issubset(container_tests))
+        self.assertTrue(evidence.GROUP_TEST_TARGETS['container-sdk'].isdisjoint(
+            evidence.SUITE_TARGETS['//:dependency-tests']))
 
 
 if __name__ == '__main__':

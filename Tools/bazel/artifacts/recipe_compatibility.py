@@ -47,6 +47,18 @@ STOPPED_COPY_SYMLINK_PINS = '304e9cff133c88056b78483fe1acc502535a0d4d5875a796031
 STOPPED_COPY_OFFLINE_PINS = 'bb3c022964a4a6ce44ed18e37b7f618c9f2ae9e5a7b0fd2a6ee923398ec641f6'
 UNALIGNED_METADATA_PINS = 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083'
 COPY_FIXTURE_PINS = 'd8665fe69c80762453638756577b35ae35971561db4bed8d272e3ad5b589d513'
+CLIENT_EXPORT_OLD = {
+    'Tools/bazel/artifacts/native_layers.py': 'e18b15255c4032a1d2b8592394ad2b6bf556100d3cf31f19f77d6709f961015c',
+    'Tools/bazel/artifacts/native_producer.py': 'd4c656f63c9119866bb60783a54a396051169d929b4bc7cf9f24fbfc1d3f5298',
+    'Tools/bazel/artifacts/native_format.py': 'f14741318cb9b39fb860d18bf8c6cf40f063899a5fc0e409d93778b841a723b1',
+    'Tools/bazel/artifacts/native_evidence.py': '9f9dd38bf7ffbd1ecb500e872c5b7cab0b46f5df454307bae26e13d6dc774f22',
+}
+CLIENT_EXPORT_NEW = {
+    'Tools/bazel/artifacts/native_layers.py': 'f43d9e6bc78a67c398ddeede7b4935faf9dab143dfc12c5fc4aa77feed0f4bac',
+    'Tools/bazel/artifacts/native_producer.py': '0012e9485381ed5c98597d53fb119e784a4edffe159ed7f69971be6f12b4695d',
+    'Tools/bazel/artifacts/native_format.py': 'e31ccbf27a71c738b26654795fa0d061acca8a6584896493c43928a7608ebf68',
+    'Tools/bazel/artifacts/native_evidence.py': '0a6d6f68a175ec382cf87733836f3901525f997a4d9165d6c60b9e88aeb763c7',
+}
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -70,6 +82,21 @@ def admit(producer: object, current: object, root: Path) -> dict:
     changed = {key for key in producer if producer[key] != current[key]}
     remaining = set(changed)
     modes = []
+    # This complete reviewed vector adds an export-only Container client group.
+    # Replay existing finite transitions through the exact pre-export recipe,
+    # then retain the actual selected recipe identity in the returned binding.
+    # A partial vector, unknown producer or unrelated recipe change fails closed.
+    if any(key in remaining and current.get(key) == value
+           for key, value in CLIENT_EXPORT_NEW.items()):
+        if any(current.get(key) != value for key, value in CLIENT_EXPORT_NEW.items()):
+            raise ValueError('published native recipe differs from authenticated consumer update')
+        prior = admit(producer, dict(current, **CLIENT_EXPORT_OLD), root)
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        return {**prior,
+                'mode': ((prior['mode'] + '+') if prior['mode'] != 'exact' else '')
+                        + 'known-client-exporter-only-update',
+                'currentRecipeSHA256': digest(canonical(current)),
+                'changedFiles': sorted(changed)}
     verifier_pair = {IMPORTER, CONSUMER}
     if verifier_pair.issubset(remaining) and all(
             producer[key] == OLD[key] and current[key] == NEW[key] for key in verifier_pair):

@@ -30,7 +30,7 @@ import re
 import tarfile
 
 SHA = re.compile(r"[0-9a-f]{64}\Z")
-GROUPS = ("argument-parser", "foundation", "containerization", "engine-api")
+GROUPS = ("argument-parser", "foundation", "containerization", "engine-api", "container-sdk")
 IMPLEMENTATION_EXTENSIONS = {".swift", ".c", ".cc", ".cpp", ".cxx", ".m", ".mm", ".s", ".S", ".asm"}
 OUTPUT_SUFFIXES = (".swiftmodule", ".swiftdoc", ".a", ".lo")
 FOUNDATION_EXECUTABLES = {"SmithyCodegenCLI.rspm.__impl"}

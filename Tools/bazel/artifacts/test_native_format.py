@@ -41,6 +41,16 @@ class NativeFormatTests(unittest.TestCase):
         archive.write_bytes(native_format.archive_bytes(members, manifest))
         return archive
 
+    def test_export_only_container_sdk_archive_retains_native_profile_and_member_hashes(self):
+        member = 'container-sdk/swiftpkg_container/binary/ContainerAPIClient.swiftmodule'
+        archive = self.archive({member: b'compiled client'}, group='container-sdk')
+        manifest = native_format.inspect(archive)['manifest']
+        self.assertEqual(manifest['group'], 'container-sdk')
+        self.assertEqual(manifest['profile'], 'native')
+        self.assertEqual(manifest['files'], {member: native_format.digest(b'compiled client')})
+        with self.assertRaisesRegex(ValueError, 'checksum'):
+            native_format.inspect(archive, '0' * 64)
+
     def test_contained_alias_directory_header_becomes_an_ordinary_archive_file(self):
         source = self.root / 'source'
         (source / 'config').mkdir(parents=True)

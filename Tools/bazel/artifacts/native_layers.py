@@ -45,7 +45,8 @@ ALL_GROUPS = ('argument-parser', *GROUPS)
 GROUP_OWNER = {'argument-parser': 'stephenlclarke/container',
                'foundation': 'stephenlclarke/container',
                'containerization': 'stephenlclarke/containerization',
-               'engine-api': 'stephenlclarke/container-engine-api'}
+               'engine-api': 'stephenlclarke/container-engine-api',
+               'container-sdk': 'stephenlclarke/container'}
 GROUP_PIN = {'argument-parser': 'swift-argument-parser',
              'containerization': 'containerization',
              'engine-api': 'container-engine-api'}
@@ -53,7 +54,8 @@ UPPER = {'container', 'containerization', 'container-engine-api',
          'swift-argument-parser', 'swift-docc-plugin', 'swift-docc-symbolkit'}
 LOWER = {'argument-parser': (), 'foundation': ('argument-parser',),
          'containerization': ('argument-parser', 'foundation'),
-         'engine-api': ('argument-parser', 'foundation')}
+         'engine-api': ('argument-parser', 'foundation'),
+         'container-sdk': ALL_GROUPS}
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 COMMIT = re.compile(r'[0-9a-f]{40}\Z')
 REPO = re.compile(r'swiftpkg_[a-z0-9_]+\Z')

@@ -18,6 +18,7 @@
 """Finite old-producer/current-consumer native recipe compatibility tests."""
 
 from pathlib import Path
+import json
 import shutil
 import tempfile
 import unittest
@@ -108,8 +109,6 @@ class RecipeCompatibilityTests(unittest.TestCase):
         self.assertEqual(result['mode'], 'known-parameter-diagnostic-scan-update')
         self.assertEqual(result['changedFiles'], [key])
         self.assertNotEqual(result['producerRecipeSHA256'], result['currentRecipeSHA256'])
-        selected = Path(compatibility.__file__).with_name('native_producer.py')
-        self.assertEqual(compatibility.digest(selected.read_bytes()), compatibility.PUBLIC_EVIDENCE_NEW)
 
     def test_diagnostic_scan_transition_rejects_unknown_reverse_and_build_drift(self):
         key = compatibility.PUBLIC_EVIDENCE_CHECK
@@ -260,6 +259,33 @@ class RecipeCompatibilityTests(unittest.TestCase):
             with self.subTest(producer=producer, selected=selected):
                 with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
                     compatibility.admit(producer, selected, self.root)
+
+    def test_client_export_recipe_transition_keeps_exact_lower_chain(self):
+        before = dict(self.old, **compatibility.CLIENT_EXPORT_OLD,
+                      **{compatibility.CONSUMER: compatibility.NEW[compatibility.CONSUMER]})
+        selected = dict(before, **compatibility.CLIENT_EXPORT_NEW)
+        for legacy in (False, True):
+            producer = dict(before)
+            if legacy:
+                producer.update(compatibility.OLD)
+                producer[compatibility.PUBLIC_EVIDENCE_CHECK] = compatibility.PUBLIC_EVIDENCE_OLD
+            with self.subTest(legacy=legacy):
+                result = compatibility.admit(producer, selected, self.root)
+                self.assertIn('known-client-exporter-only-update', result['mode'])
+                self.assertEqual(result['changedFiles'], sorted(
+                    key for key in selected if selected[key] != producer[key]))
+                canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+                self.assertEqual(result['currentRecipeSHA256'], compatibility.digest(canonical(selected)))
+        for key, expected in compatibility.CLIENT_EXPORT_NEW.items():
+            self.assertEqual(compatibility.digest((Path(__file__).resolve().parents[3] / key).read_bytes()), expected)
+        for producer, current in (
+                (before, dict(selected, **{compatibility.IMPORTER: compatibility.CLIENT_EXPORT_OLD[compatibility.IMPORTER]})),
+                (before, dict(selected, **{compatibility.PUBLIC_EVIDENCE_CHECK: '0' * 64})),
+                (selected, before),
+                (before, dict(selected, **{'MODULE.bazel': '0' * 64}))):
+            with self.subTest(producer=producer, current=current):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, current, self.root)
 
     def test_inventory_and_hash_shape_drift_is_rejected(self):
         for current in (dict(self.current, extra='0' * 64),
