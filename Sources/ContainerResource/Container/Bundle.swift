@@ -91,7 +91,9 @@ extension Bundle {
             path: path, initialFilesystem: initialFilesystem, kernel: kernel,
             containerConfiguration: containerConfiguration,
             containerRootFilesystem: containerRootFilesystem, options: options,
-            didPublish: { _ in }
+            didPublish: { _ in
+                // Production preparation has no fault-injection observer.
+            }
         )
     }
 
@@ -188,7 +190,11 @@ extension Bundle {
     /// Prepares only the private image needed for stopped filesystem access.
     /// A later full preparation retains this described image and its edits.
     public func materializeRootfs(cloning filesystem: Filesystem, readonly: Bool = false) throws {
-        try materializeRootfs(cloning: filesystem, readonly: readonly, didPublish: { _ in })
+        try materializeRootfs(
+            cloning: filesystem, readonly: readonly,
+            didPublish: { _ in
+                // Production rootfs preparation has no fault-injection observer.
+            })
     }
 
     func materializeRootfs(cloning filesystem: Filesystem, readonly: Bool, didPublish: (String) throws -> Void) throws {

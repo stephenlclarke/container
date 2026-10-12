@@ -225,6 +225,8 @@ XPC response deadlines use a direct monotonic clock deadline to avoid a Swift cr
 
 ## Contributing
 
+Builder startup and machine configuration have grouped option APIs while retaining their original public entry points. The [quality-boundary handoff](docs/PR-container-quality-boundaries.md) records compatibility, focused validation and the remaining candidate qualification gates.
+
 Contributions to `container` are welcome and encouraged. Please see our
 [main contributing guide](https://github.com/apple/containerization/blob/main/CONTRIBUTING.md)
 for more information.

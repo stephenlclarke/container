@@ -15,6 +15,9 @@
 //===----------------------------------------------------------------------===//
 
 import ContainerBuild
+import ContainerPersistence
+import ContainerizationError
+import Logging
 import Testing
 
 struct BuilderNameTests {
@@ -39,5 +42,32 @@ struct BuilderNameTests {
         #expect(throws: (any Error).self) {
             _ = try Builder.containerId(for: "bad/name")
         }
+    }
+
+    @Test
+    func optionsRejectInvalidBuilderBeforeContactingService() async {
+        var options = Builder.StartOptions()
+        options.builderContainerId = "bad/name"
+        let error = await #expect(throws: ContainerizationError.self) {
+            try await Builder.start(
+                options: options, log: Logger(label: "BuilderNameTests"),
+                progressUpdate: { _ in
+                    Issue.record("Invalid builder must be rejected before image-fetch progress")
+                }, containerSystemConfig: .init())
+        }
+        #expect(error?.code == .invalidArgument)
+    }
+
+    @Test
+    func legacyStartPreservesBuilderValidation() async {
+        let error = await #expect(throws: ContainerizationError.self) {
+            try await Builder.start(
+                cpus: nil, memory: nil, log: Logger(label: "BuilderNameTests"),
+                builderContainerId: "bad/name",
+                progressUpdate: { _ in
+                    Issue.record("Legacy adapter must preserve validation before image fetch")
+                }, containerSystemConfig: .init())
+        }
+        #expect(error?.code == .invalidArgument)
     }
 }

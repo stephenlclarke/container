@@ -68,18 +68,16 @@ struct BuilderStart: AsyncParsableCommand {
             progress.finish()
         }
         progress.start()
+        var options = Builder.StartOptions(cpus: self.cpus, memory: self.memory)
+        options.dnsNameservers = self.dns.nameservers
+        options.dnsDomain = self.dns.domain
+        options.dnsSearchDomains = self.dns.searchDomains
+        options.dnsOptions = self.dns.options
+        options.builderContainerId = try Builder.containerId(for: builder)
         try await Builder.start(
-            cpus: self.cpus,
-            memory: self.memory,
-            log: log,
-            dnsNameservers: self.dns.nameservers,
-            dnsDomain: self.dns.domain,
-            dnsSearchDomains: self.dns.searchDomains,
-            dnsOptions: self.dns.options,
-            builderContainerId: try Builder.containerId(for: builder),
-            progressUpdate: progress.handler,
-            containerSystemConfig: containerSystemConfig,
-        )
+            options: options, log: log, progressUpdate: progress.handler,
+            containerSystemConfig: containerSystemConfig)
+
         progress.finish()
     }
 }

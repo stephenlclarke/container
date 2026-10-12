@@ -28,7 +28,7 @@ import TerminalProgress
 extension Builder {
     public static let builderResourceDir = "builder"
 
-    public static func start(
+    public static func start(  // NOSONAR: swift:S107 - source-compatible legacy adapter; implementation uses StartOptions.
         cpus: Int64?,
         memory: String?,
         log: Logger,
@@ -43,6 +43,56 @@ extension Builder {
         progressUpdate: @escaping ProgressUpdateHandler,
         containerSystemConfig: ContainerSystemConfig,
     ) async throws {
+        var options = StartOptions(cpus: cpus, memory: memory)
+        options.dnsNameservers = dnsNameservers
+        options.dnsDomain = dnsDomain
+        options.dnsSearchDomains = dnsSearchDomains
+        options.dnsOptions = dnsOptions
+        options.enableSSHForwarding = enableSSHForwarding
+        options.sshAuthSocketPath = sshAuthSocketPath
+        options.sshSocketMounts = sshSocketMounts
+        options.builderContainerId = builderContainerId
+        try await start(options: options, log: log, progressUpdate: progressUpdate, containerSystemConfig: containerSystemConfig)
+    }
+
+    /// Settings shared by initial builder startup and readiness recovery.
+    public struct StartOptions: Sendable {
+        public var cpus: Int64?
+        public var memory: String?
+        public var dnsNameservers: [String] = []
+        public var dnsDomain: String?
+        public var dnsSearchDomains: [String] = []
+        public var dnsOptions: [String] = []
+        public var enableSSHForwarding = false
+        public var sshAuthSocketPath: String?
+        public var sshSocketMounts: [BuildSSHForwarding.SocketMount] = []
+        public var builderContainerId = Builder.builderContainerId
+
+        public init(cpus: Int64? = nil, memory: String? = nil) {
+            self.cpus = cpus
+            self.memory = memory
+        }
+    }
+
+    // These guest paths are the selected builder image/shim protocol, not host configuration.
+    static let shimExecutable = "/usr/local/bin/container-builder-shim"
+    static let runtimeMountDestination = "/run"
+    static let exportsMountDestination = "/var/lib/container-builder-shim/exports"
+
+    public static func start(
+        options: StartOptions, log: Logger, progressUpdate: @escaping ProgressUpdateHandler,
+        containerSystemConfig: ContainerSystemConfig
+    ) async throws {
+        let cpus = options.cpus
+        let memory = options.memory
+        let dnsNameservers = options.dnsNameservers
+        let dnsDomain = options.dnsDomain
+        let dnsSearchDomains = options.dnsSearchDomains
+        let dnsOptions = options.dnsOptions
+        let enableSSHForwarding = options.enableSSHForwarding
+        let sshAuthSocketPath = options.sshAuthSocketPath
+        let sshSocketMounts = options.sshSocketMounts
+        let builderContainerId = options.builderContainerId
         guard ManagedContainer.nameValid(builderContainerId) else {
             throw ContainerizationError(.invalidArgument, message: "container ID \(builderContainerId) is not a valid container ID")
         }
@@ -154,7 +204,6 @@ extension Builder {
                     try await startBuildKit(
                         client: client,
                         id: existingContainer.id,
-                        progressUpdate,
                         nil,
                         sshAuthSocketPath: targetSSHAuthSocketPath,
                         inheritSSHAuthSocketFromEnvironment: sshSocketMounts.isEmpty
@@ -217,7 +266,7 @@ extension Builder {
         environment.append(contentsOf: targetEnvVars)
 
         let processConfig = ProcessConfiguration(
-            executable: "/usr/local/bin/container-builder-shim",
+            executable: shimExecutable,
             arguments: shimArguments,
             environment: environment,
             workingDirectory: "/",
@@ -240,13 +289,13 @@ extension Builder {
             .init(
                 type: .tmpfs,
                 source: "",
-                destination: "/run",
+                destination: runtimeMountDestination,
                 options: []
             ),
             .init(
                 type: .virtiofs,
                 source: exportsMount,
-                destination: "/var/lib/container-builder-shim/exports",
+                destination: exportsMountDestination,
                 options: []
             ),
         ]
@@ -300,7 +349,6 @@ extension Builder {
         try await startBuildKit(
             client: client,
             id: builderContainerId,
-            progressUpdate,
             taskManager,
             sshAuthSocketPath: targetSSHAuthSocketPath,
             inheritSSHAuthSocketFromEnvironment: sshSocketMounts.isEmpty
@@ -357,7 +405,6 @@ extension Builder {
 private func startBuildKit(
     client: ContainerClient,
     id: String,
-    _ progress: @escaping ProgressUpdateHandler,
     _ taskManager: ProgressTaskCoordinator? = nil,
     sshAuthSocketPath: String? = nil,
     inheritSSHAuthSocketFromEnvironment: Bool = true

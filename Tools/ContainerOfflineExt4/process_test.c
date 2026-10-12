@@ -31,6 +31,13 @@ static void expect_failed_spawn_cleanup(void) {
 
 int main(int argc, char **argv) {
     if (argc == 2 && strcmp(argv[1], "--probe") == 0) return 0;
+    if (argc == 3 && strcmp(argv[1], "arguments-child") == 0) {
+        assert(strcmp(argv[2], "literal space and 'quote'") == 0);
+        assert((fcntl(3, F_GETFL) & O_ACCMODE) == O_RDWR);
+        assert((fcntl(4, F_GETFL) & O_ACCMODE) == O_RDONLY);
+        assert(getenv("CONTAINER_PROCESS_TEST_ONLY") == NULL);
+        return 0;
+    }
     if (argc == 2 && strcmp(argv[1], "memory-child") == 0) {
         // Touch anonymous pages gradually so the watchdog is exercised without
         // creating an unbounded allocation or relying on allocator bookkeeping.
@@ -58,6 +65,10 @@ int main(int argc, char **argv) {
     assert(cec_probe("/nonexistent-container-copy-helper", 5, &status) == ENOENT);
     expect_failed_spawn_cleanup();
     assert(cec_run(success[0], success, image, source, 5, &status) == 0 && status == 0);
+    assert(setenv("CONTAINER_PROCESS_TEST_ONLY", "must-not-inherit", 1) == 0);
+    const char *arguments[] = {argv[0], "arguments-child", "literal space and 'quote'", NULL};
+    assert(cec_run(arguments[0], arguments, image, source, 5, &status) == 0 && status == 0);
+    assert(unsetenv("CONTAINER_PROCESS_TEST_ONLY") == 0);
     const char *failure[] = {"/usr/bin/false", NULL};
     assert(cec_run(failure[0], failure, image, source, 5, &status) == 0 && status == 1);
     const char *missing[] = {"/nonexistent-container-copy-helper", NULL};

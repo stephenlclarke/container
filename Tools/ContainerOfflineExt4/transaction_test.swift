@@ -44,8 +44,8 @@ struct TransactionTests {
         ) throws -> Bool {
             try OfflineStoppedCopyIn.copy(
                 rootfs: image, source: (input ?? source).path,
-                destination: destination, mode: mode, createParents: parents,
-                followSymlink: false, preserveOwnership: preserve,
+                destination: destination,
+                options: .init(mode: mode, createParents: parents, followSymlink: false, preserveOwnership: preserve),
                 helper: tool ?? helper, log: log)
         }
 

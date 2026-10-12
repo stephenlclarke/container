@@ -77,7 +77,7 @@ func bootMachine(
         }
 
         let processConfig = ProcessConfiguration(
-            executable: "/bin/sh",
+            executable: MachineUserSetup.shellExecutable,
             arguments: ["-c", MachineUserSetup.script],
             environment: snapshot.configuration.processEnvironment,
             terminal: false

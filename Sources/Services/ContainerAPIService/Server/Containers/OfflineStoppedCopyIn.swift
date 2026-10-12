@@ -34,11 +34,21 @@ enum OfflineStoppedCopyIn {
         return launch == 0 && status == 0
     }
 
+    struct Options: Sendable {
+        var mode: UInt32
+        var createParents: Bool
+        var followSymlink: Bool
+        var preserveOwnership: Bool
+    }
+
     static func copy(
-        rootfs: URL, source: String, destination: String, mode: UInt32,
-        createParents: Bool, followSymlink: Bool, preserveOwnership: Bool,
+        rootfs: URL, source: String, destination: String, options: Options,
         helper: URL, log: Logger
     ) throws -> Bool {
+        let mode = options.mode
+        let createParents = options.createParents
+        let followSymlink = options.followSymlink
+        let preserveOwnership = options.preserveOwnership
         let clock = ContinuousClock()
         var started = clock.now
         func phase(_ name: String) {

@@ -29,7 +29,7 @@ public struct MachineClient: Sendable {
         ContainerServiceNamespace.current.machineAPIServerIdentifier
     }
 
-    public static func machineConfigFromFlags(
+    public static func machineConfigFromFlags(  // NOSONAR: swift:S107 - source-compatible legacy adapter; implementation uses ConfigurationFlags.
         id: String,
         image: String,
         management: Flags.MachineManagement,
@@ -39,6 +39,34 @@ public struct MachineClient: Sendable {
         containerSystemConfig: ContainerSystemConfig,
         progressUpdate: @escaping ProgressUpdateHandler
     ) async throws -> MachineConfiguration {
+        try await machineConfigFromFlags(
+            id: id, image: image,
+            flags: .init(management: management, user: user, registry: registry, imageFetch: imageFetch),
+            containerSystemConfig: containerSystemConfig, progressUpdate: progressUpdate)
+    }
+
+    public struct ConfigurationFlags {
+        public var management: Flags.MachineManagement
+        public var user: Flags.MachineUser
+        public var registry: Flags.Registry
+        public var imageFetch: Flags.ImageFetch
+
+        public init(management: Flags.MachineManagement, user: Flags.MachineUser, registry: Flags.Registry, imageFetch: Flags.ImageFetch) {
+            self.management = management
+            self.user = user
+            self.registry = registry
+            self.imageFetch = imageFetch
+        }
+    }
+
+    public static func machineConfigFromFlags(
+        id: String, image: String, flags: ConfigurationFlags,
+        containerSystemConfig: ContainerSystemConfig, progressUpdate: @escaping ProgressUpdateHandler
+    ) async throws -> MachineConfiguration {
+        let management = flags.management
+        let user = flags.user
+        let registry = flags.registry
+        let imageFetch = flags.imageFetch
         var requestedPlatform = Parser.platform(os: management.os, arch: management.arch)
         // Prefer --platform
         if let platform = management.platform {

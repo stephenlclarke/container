@@ -127,10 +127,7 @@ extension Application {
             let config = try await MachineClient.machineConfigFromFlags(
                 id: id,
                 image: image,
-                management: managementFlags,
-                user: userFlags,
-                registry: registryFlags,
-                imageFetch: imageFetchFlags,
+                flags: .init(management: managementFlags, user: userFlags, registry: registryFlags, imageFetch: imageFetchFlags),
                 containerSystemConfig: containerSystemConfig,
                 progressUpdate: progress.handler
             )

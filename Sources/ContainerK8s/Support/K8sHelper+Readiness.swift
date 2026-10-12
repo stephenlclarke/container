@@ -24,6 +24,9 @@ import Logging
 extension K8sHelper {
     // MARK: - Readiness
 
+    // Kubernetes API readiness route; it deliberately precedes CNI-dependent probes.
+    static let apiReadinessRoute = "/readyz"
+
     static let readinessPollInterval: Duration = .seconds(2)
 
     static func readinessPollDelay(elapsed: Duration) -> Duration? {
@@ -86,7 +89,7 @@ extension K8sHelper {
             do {
                 code = try await runProbe(
                     client: client, containerId: containerId,
-                    arguments: ["get", "--raw", "/readyz", "--request-timeout=2s"])
+                    arguments: ["get", "--raw", apiReadinessRoute, "--request-timeout=2s"])
             } catch {
                 throw ContainerizationError(
                     .internalError, message: "k8s cluster \(containerId) stopped unexpectedly during startup: \(error)")

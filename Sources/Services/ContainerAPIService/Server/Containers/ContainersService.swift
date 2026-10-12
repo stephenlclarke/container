@@ -5522,12 +5522,13 @@ public actor ContainersService {
                 let transferStarted = clock.now
                 let copied = try await Task.detached {
                     try OfflineStoppedCopyIn.copy(
-                        rootfs: rootfs, source: source, destination: destination, mode: mode,
-                        createParents: createParents, followSymlink: followSymlink,
-                        preserveOwnership: preserveOwnership, helper: helper, log: log
+                        rootfs: rootfs, source: source, destination: destination,
+                        options: .init(mode: mode, createParents: createParents, followSymlink: followSymlink, preserveOwnership: preserveOwnership),
+                        helper: helper, log: log
                     )
                 }.value
-                self.log.debug("copyIn: offline phase", metadata: ["id": "\(id)", "phase": "transaction", "duration": "\(transferStarted.duration(to: clock.now))", "copied": "\(copied)"])
+                self.log.debug(
+                    "copyIn: offline phase", metadata: ["id": "\(id)", "phase": "transaction", "duration": "\(transferStarted.duration(to: clock.now))", "copied": "\(copied)"])
                 if copied { return }
             }
             try await self.withCopyClient(id: id) { client in

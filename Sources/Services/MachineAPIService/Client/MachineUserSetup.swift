@@ -32,6 +32,9 @@
 /// Expects CONTAINER_USER, CONTAINER_UID, CONTAINER_GID, and CONTAINER_HOME
 /// to be set in the environment.
 public enum MachineUserSetup {
+    /// The user setup script below requires a POSIX shell in the Linux guest.
+    public static let shellExecutable = "/bin/sh"
+
     public static let script = #"""
         set -e
 

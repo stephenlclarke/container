@@ -239,6 +239,35 @@ public actor MachinesService {
         return results
     }
 
+    static private func pipeLogs(from inputs: [FileHandle], to outputs: [FileHandle], log: Logger, id: String) async {
+        await withTaskGroup(of: Result<Void, Error>.self) { group in
+            for (from, to) in zip(inputs, outputs) {
+                group.addTask {
+                    do {
+                        try await Self.pipeFile(from: from, to: to)
+                        return .success(())
+                    } catch {
+                        return .failure(error)
+                    }
+                }
+            }
+
+            for await result in group {
+                switch result {
+                case .success():
+                    continue
+                case .failure(let error):
+                    log.error(
+                        "log pipe failed",
+                        metadata: [
+                            "id": "\(id)",
+                            "error": "\(error)",
+                        ])
+                }
+            }
+        }
+    }
+
     static private func pipeFile(from: FileHandle, to: FileHandle) async throws {
         try to.seekToEnd()
 
@@ -697,32 +726,7 @@ public actor MachinesService {
                         try? bootLog.close()
                     }
 
-                    await withTaskGroup(of: Result<Void, Error>.self) { group in
-                        for (from, to) in zip(fhs, [stdioLog, bootLog]) {
-                            group.addTask {
-                                do {
-                                    try await Self.pipeFile(from: from, to: to)
-                                    return .success(())
-                                } catch {
-                                    return .failure(error)
-                                }
-                            }
-                        }
-
-                        for await result in group {
-                            switch result {
-                            case .success():
-                                continue
-                            case .failure(let error):
-                                log.error(
-                                    "log pipe failed",
-                                    metadata: [
-                                        "id": "\(id)",
-                                        "error": "\(error)",
-                                    ])
-                            }
-                        }
-                    }
+                    await Self.pipeLogs(from: fhs, to: [stdioLog, bootLog], log: log, id: id)
                 }
 
                 let generation = state.generation

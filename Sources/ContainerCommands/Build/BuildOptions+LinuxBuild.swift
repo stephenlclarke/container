@@ -112,21 +112,20 @@ extension BuildOptions {
             let dnsOptions = self.dns.options
             progress.set(tasks: 0)
             progress.set(totalTasks: 3)
+            var configuredStart = Builder.StartOptions(cpus: cpus, memory: memory)
+            configuredStart.dnsNameservers = dnsNameservers
+            configuredStart.dnsDomain = dnsDomain
+            configuredStart.dnsSearchDomains = dnsSearchDomains
+            configuredStart.dnsOptions = dnsOptions
+            configuredStart.enableSSHForwarding = enableSSHForwarding
+            configuredStart.sshAuthSocketPath = sshForwarding.environmentSocketGuestPath
+            configuredStart.sshSocketMounts = sshForwarding.socketMounts
+            configuredStart.builderContainerId = builderContainerId
+            let startOptions = configuredStart
             try await Builder.start(
-                cpus: cpus,
-                memory: memory,
-                log: log,
-                dnsNameservers: dnsNameservers,
-                dnsDomain: dnsDomain,
-                dnsSearchDomains: dnsSearchDomains,
-                dnsOptions: dnsOptions,
-                enableSSHForwarding: enableSSHForwarding,
-                sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
-                sshSocketMounts: sshForwarding.socketMounts,
-                builderContainerId: builderContainerId,
-                progressUpdate: progress.handler,
-                containerSystemConfig: containerSystemConfig,
-            )
+                options: startOptions, log: log, progressUpdate: progress.handler,
+                containerSystemConfig: containerSystemConfig)
+
             progress.set(description: "Dialing builder")
 
             let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) {
@@ -196,20 +195,8 @@ extension BuildOptions {
                                 builderStatusError: builderStatusError
                             ) {
                                 try await Builder.start(
-                                    cpus: cpus,
-                                    memory: memory,
-                                    log: log,
-                                    dnsNameservers: dnsNameservers,
-                                    dnsDomain: dnsDomain,
-                                    dnsSearchDomains: dnsSearchDomains,
-                                    dnsOptions: dnsOptions,
-                                    enableSSHForwarding: enableSSHForwarding,
-                                    sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
-                                    sshSocketMounts: sshForwarding.socketMounts,
-                                    builderContainerId: builderContainerId,
-                                    progressUpdate: progress.handler,
-                                    containerSystemConfig: containerSystemConfig,
-                                )
+                                    options: startOptions, log: log, progressUpdate: progress.handler,
+                                    containerSystemConfig: containerSystemConfig)
                             }
 
                             try await Task.sleep(for: retryBackoff.nextDelay())
@@ -266,7 +253,7 @@ extension BuildOptions {
 
             // BUG: See https://github.com/apple/container/issues/735.
             // Reject dockerfiles larger than 16kb before attempting to build.
-            // TODO: Remove when #735 was been resolved.
+            // Retain this explicit limit while upstream issue #735 remains open.
             let maxDockerfileSize = 16 * 1024  // 16 KiB
             guard buildFileData.count < maxDockerfileSize else {
                 throw ContainerizationError(
