@@ -1,5 +1,6 @@
 """Retain real layer results and reject green runs which selected no test cases."""
 
+from contextlib import ExitStack
 from pathlib import Path
 import json
 import os
@@ -45,13 +46,14 @@ class IntegrationReportsTests(unittest.TestCase):
                 'fork': 'a' * 40, 'source_sha256': {'fork': {
                     'Sources/a.swift': runtime_integration.digest(root / 'Sources/a.swift')}},
                 'build_inputs': {}}))
+            admission = {'layers': {}}
             with (mock.patch.object(runtime_integration, 'ROOT', root),
                   mock.patch.object(runtime_integration, 'build_inputs', return_value={}),
                   mock.patch.object(runtime_integration.native_layers, 'import_layers',
-                                    return_value={'layers': {}}),
+                                    return_value=admission),
                   mock.patch.object(runtime_integration.native_consumer, 'verify_receipt',
                                     return_value=compiled) as verify):
-                runtime_integration.verify_prepared(prepared)
+                self.assertIs(runtime_integration.verify_prepared(prepared), admission)
                 self.assertNotIn('output_base', verify.call_args.kwargs)
                 fingerprint['unsigned_native_inputs']['container'] = 'f' * 64
                 (prepared / 'fork-fingerprint.json').write_text(json.dumps(fingerprint))
@@ -128,8 +130,8 @@ class IntegrationReportsTests(unittest.TestCase):
             root = Path(directory)
             prepared = root / 'prepared'
             prepared.mkdir()
-            for name in ('source-inputs.json', 'guest-artifact.json', 'builder-artifact.json',
-                         'compiled-consumer.json', 'fork-release.events.json',
+            (prepared / 'source-inputs.json').write_text(json.dumps({'fork': 'b' * 40}) + '\n')
+            for name in ('guest-artifact.json', 'builder-artifact.json', 'compiled-consumer.json', 'fork-release.events.json',
                          'fork-release-native-aquery.json'):
                 (prepared / name).write_text('{}\n')
             (prepared / 'fork-fingerprint.json').write_text(json.dumps({
@@ -145,7 +147,9 @@ class IntegrationReportsTests(unittest.TestCase):
 
             with (mock.patch.object(runtime_integration, 'STATE', root / 'state'),
                   mock.patch.object(runtime_integration, 'INSTALLS', installs),
-                  mock.patch.object(runtime_integration, 'verify_prepared'),
+                  mock.patch.object(runtime_integration, 'verify_prepared',
+                                    return_value={'overrides': {
+                                        '+dependencies+swiftpkg_containerization': str(root / 'lower')}}),
                   mock.patch.object(runtime_integration, 'stop_owned'),
                   mock.patch.object(runtime_integration, 'stop_test_children', return_value=[]),
                   mock.patch.object(runtime_integration, 'reset_state', return_value='kernel'),
@@ -157,6 +161,85 @@ class IntegrationReportsTests(unittest.TestCase):
                              ['system', 'start', '--app-root', '/private/app', '--debug'])
             result = json.loads((root / 'evidence/integration.json').read_text())
             self.assertEqual(result['selection'], None)
+
+    def test_run_passes_native_overrides_to_warmup_and_each_layer(self):
+        admission = {'overrides': {
+            '+dependencies+swiftpkg_containerization': '/verified/lower/containerization',
+            '+dependencies+swiftpkg_container_engine_api': '/verified/lower/engine-api',
+        }}
+        expected_flags = runtime_integration.native_layers.bazel_flags(admission)
+
+        for coverage in (False, True):
+            with self.subTest(coverage=coverage), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                prepared = root / 'prepared'
+                prepared.mkdir()
+                (prepared / 'source-inputs.json').write_text(json.dumps({'fork': 'b' * 40}) + '\n')
+                for name in ('guest-artifact.json', 'builder-artifact.json', 'compiled-consumer.json',
+                             'fork-release.events.json', 'fork-release-native-aquery.json'):
+                    (prepared / name).write_text('{}\n')
+                (prepared / 'fork-fingerprint.json').write_text(json.dumps({
+                    'init_image': 'init', 'builder_image': 'builder', 'kernel_sha256': 'kernel',
+                }))
+                installs = root / 'installs'
+                installs.mkdir()
+                (installs / 'benchmark.lock').touch()
+                commands = []
+
+                def run_bazel(runner, component, lane, fixture, trial, args, cwd, timeout):
+                    commands.append(args)
+                    row = {'component': component, 'lane': lane, 'fixture': fixture,
+                           'trial': trial, 'seconds': 0.01, 'status': 0, 'command': args,
+                           'log': str(root / (fixture + '.log'))}
+                    runner.rows.append(row)
+                    Path(row['log']).write_text('mocked test run\n')
+                    return row
+
+                profiling = mock.Mock()
+                profiling.result = {'revision': 'a' * 40}
+                profiling.environment = {'LLVM_PROFILE_FILE': str(root / 'profile.profraw')}
+                patches = (
+                    mock.patch.object(runtime_integration, 'STATE', root / 'state'),
+                    mock.patch.object(runtime_integration, 'INSTALLS', installs),
+                    mock.patch.object(runtime_integration, 'verify_prepared', return_value=admission),
+                    mock.patch.object(runtime_integration, 'RuntimeCoverage', return_value=profiling),
+                    mock.patch.object(runtime_integration, 'stop_owned'),
+                    mock.patch.object(runtime_integration, 'stop_test_children', return_value=[]),
+                    mock.patch.object(runtime_integration, 'reset_state', return_value='kernel'),
+                    mock.patch.object(runtime_integration, 'start_lane'),
+                    mock.patch.object(runtime_integration, 'retain_layer_reports', return_value=1),
+                    mock.patch.object(runtime_integration, 'require_commit_cases'),
+                    mock.patch.object(EOFIntegrationRunner, 'run', new=run_bazel),
+                )
+                with ExitStack() as stack:
+                    for patcher in patches:
+                        stack.enter_context(patcher)
+                    runtime_integration.run(root / 'evidence', prepared, ['Containers'], coverage=coverage)
+
+                self.assertEqual(len(commands), 2)
+                expected_revision = 'a' * 40 if coverage else 'b' * 40
+                for args in commands:
+                    selected = [arg for arg in args if arg.startswith('--override_repository=')]
+                    self.assertEqual(selected, expected_flags)
+                    self.assertEqual([arg for arg in args if arg.startswith('--repo_env=GIT_COMMIT=')],
+                                     ['--repo_env=GIT_COMMIT=' + expected_revision])
+                    self.assertIn('//:runtime-integration-tests', args)
+                self.assertEqual(profiling.prepare.call_count, 1 if coverage else 0)
+
+    def test_run_rejects_missing_native_overrides_before_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prepared = root / 'prepared'
+            prepared.mkdir()
+            installs = root / 'installs'
+            installs.mkdir()
+            (installs / 'benchmark.lock').touch()
+            with (mock.patch.object(runtime_integration, 'INSTALLS', installs),
+                  mock.patch.object(runtime_integration, 'verify_prepared', return_value={'overrides': {}}),
+                  mock.patch.object(runtime_integration, 'start_lane') as start):
+                with self.assertRaisesRegex(ValueError, 'no verified canonical overrides'):
+                    runtime_integration.run(root / 'evidence', prepared, ['Containers'])
+            start.assert_not_called()
 
     def test_cleanup_stops_only_recorded_children(self):
         with tempfile.TemporaryDirectory() as directory:

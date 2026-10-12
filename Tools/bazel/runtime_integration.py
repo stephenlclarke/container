@@ -120,7 +120,7 @@ def test_filter(layer: str) -> str:
     return '^(' + '|'.join(suites) + ')/'
 
 
-def verify_prepared(prepared: Path) -> None:
+def verify_prepared(prepared: Path) -> dict:
     inputs = json.loads((prepared / 'source-inputs.json').read_text())
     current = {str(p.relative_to(ROOT)): digest(p) for p in sorted((ROOT / 'Sources').rglob('*')) if p.is_file()}
     if current != inputs['source_sha256']['fork']:
@@ -139,6 +139,7 @@ def verify_prepared(prepared: Path) -> None:
     if (fingerprint.get('compiled_consumer_sha256') != digest(compiled_path)
             or fingerprint.get('unsigned_native_inputs') != expected_unsigned):
         raise RuntimeError('Prepared signed products lack their verified native compiler inputs')
+    return admission
 
 
 def retain_layer_reports(log: Path, destination: Path) -> int:
@@ -157,7 +158,10 @@ def retain_layer_reports(log: Path, destination: Path) -> int:
 def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None = None,
         coverage: bool = False) -> None:
     evidence.mkdir(parents=True, exist_ok=False)
-    verify_prepared(prepared)
+    native_admission = verify_prepared(prepared)
+    native_flags = native_layers.bazel_flags(native_admission)
+    source_inputs = json.loads((prepared / 'source-inputs.json').read_text())
+    repo_revision = source_inputs['fork']
     for name in ['source-inputs.json', 'fork-fingerprint.json', 'guest-artifact.json', 'builder-artifact.json',
                  'compiled-consumer.json', 'fork-release.events.json', 'fork-release-native-aquery.json']:
         shutil.copy2(prepared / name, evidence / name)
@@ -197,10 +201,12 @@ def run(evidence: Path, prepared: Path, layers: list[str], selection: str | None
                      'CLITEST_APISERVER_LOG',
                      'KUBECONFIG', 'DOCKER_CONFIG', 'CLITEST_RUNTIME_PROFILE']
             flags = ['--test_env=' + name + '=' + env[name] for name in names if name in env]
+            flags.extend(native_flags)
+            flags.append('--repo_env=GIT_COMMIT=' + (profiling.result['revision'] if profiling else repo_revision))
             mode = 'coverage' if profiling else 'test'
             configuration = 'runtime-coverage' if profiling else 'release'
             if profiling:
-                flags += ['--combined_report=lcov', '--repo_env=GIT_COMMIT=' + profiling.result['revision']]
+                flags.append('--combined_report=lcov')
             for layer in ['Warmup', *layers]:
                 selected = '^ImageWarmup/' if layer == 'Warmup' else selection or test_filter(layer)
                 test_timeout = 300 if selection == EOF_SELECTION else 1800
