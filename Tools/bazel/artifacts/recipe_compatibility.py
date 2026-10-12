@@ -70,6 +70,7 @@ OFFLINE_HELPER_NEW = {
     'MODULE.bazel': '9e5faa5a8a04d9b322f3a7cb0a73286dc963815beb10ceae0eec825a5b69fe41',
     'BUILD.bazel': 'eefb3fb6a569e6c5dcf2eb94f30a2ea9d0337ead828e8f1fc390107e020c6582',
 }
+REGISTRY_PUBLIC_PINS = 'a282ff768582b443895d3cfce4378caeb10f7d056c7d24fe5a7ef1291694efe4'
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -93,6 +94,17 @@ def admit(producer: object, current: object, root: Path) -> dict:
     changed = {key for key in producer if producer[key] != current[key]}
     remaining = set(changed)
     modes = []
+    # This exact manifest changes only the SDK revision for public RegistryInfo
+    # construction. Replay the preceding reviewed recipe for unchanged lower
+    # groups; independent source pins still require a new SDK archive.
+    if CONNECTION_PINS in remaining and current.get(CONNECTION_PINS) == REGISTRY_PUBLIC_PINS:
+        prior = admit(producer, dict(current, **{CONNECTION_PINS: OFFLINE_HELPER_NEW[CONNECTION_PINS]}), root)
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        return {**prior,
+                'mode': ((prior['mode'] + '+') if prior['mode'] != 'exact' else '')
+                        + 'known-registry-public-sdk-pin-update',
+                'currentRecipeSHA256': digest(canonical(current)),
+                'changedFiles': sorted(changed)}
     # This exact vector adds a C process target to ContainerAPIService and a
     # separate GPL helper to the top-level runtime filegroup. It does not change
     # lower package targets, pins, compiler flags, toolchain or archive inputs.

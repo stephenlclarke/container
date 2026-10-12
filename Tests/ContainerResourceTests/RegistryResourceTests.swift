@@ -18,7 +18,7 @@ import Foundation
 import Testing
 
 @testable import ContainerResource
-@testable import ContainerizationOS
+import ContainerizationOS
 
 struct RegistryResourceTests {
 

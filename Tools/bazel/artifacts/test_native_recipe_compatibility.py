@@ -236,9 +236,31 @@ class RecipeCompatibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
                     compatibility.admit(producer, selected, self.root)
 
+    def test_registry_public_pin_transition_reuses_only_reviewed_lower_recipes(self):
+        key = compatibility.CONNECTION_PINS
+        manifest = (Path(__file__).resolve().parents[3] / 'Package.swift').read_text()
+        self.assertEqual(compatibility.digest(manifest.encode()), compatibility.REGISTRY_PUBLIC_PINS)
+        prior_manifest = manifest.replace(
+            "f98a11cb494529e2ed4f889deadef10515ee1740", "518f92a006c94c55e21422f3cf2f93c2f039d053")
+        self.assertEqual(compatibility.digest(prior_manifest.encode()), compatibility.OFFLINE_HELPER_NEW[key])
+        before = dict(self.old, **compatibility.OFFLINE_HELPER_NEW)
+        current = dict(before, **{key: compatibility.REGISTRY_PUBLIC_PINS})
+        accepted = compatibility.admit(before, current, self.root)
+        self.assertEqual(accepted['mode'], 'known-registry-public-sdk-pin-update')
+        self.assertEqual(accepted['changedFiles'], [key])
+        for producer, selected in (
+                (dict(before, **{key: '0' * 64}), current),
+                (current, before),
+                (before, dict(current, **{'MODULE.bazel': '0' * 64})),
+                (before, dict(current, **{key: '0' * 64}))):
+            with self.subTest(producer=producer, selected=selected):
+                with self.assertRaisesRegex(ValueError, 'authenticated consumer update'):
+                    compatibility.admit(producer, selected, self.root)
+
     def test_copy_transfer_pin_transition_retains_only_known_unchanged_lower_recipes(self):
         key = compatibility.CONNECTION_PINS
         manifest = (Path(__file__).resolve().parents[3] / 'Package.swift').read_text()
+        manifest = manifest.replace('f98a11cb494529e2ed4f889deadef10515ee1740', '518f92a006c94c55e21422f3cf2f93c2f039d053')
         self.assertEqual(compatibility.digest(manifest.encode()), compatibility.OFFLINE_HELPER_NEW[key])
         manifest = manifest.replace('                "COfflineCopyProcess",\n', '', 1).replace(
             '        .target(\n            name: "COfflineCopyProcess",\n'
