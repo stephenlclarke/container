@@ -91,7 +91,7 @@ struct TestCLICopyColdStopped {
             if !prewarm {
                 // The first regular copy must finish before any copy-only guest boot.
                 let prepared = ContainerResource.Bundle(path: bundle)
-                #expect(try prepared.isPrepared)
+                #expect(try !prepared.isPrepared)
                 #expect(try prepared.containerRootfs.source == prepared.containerRootfsBlock.path)
                 #expect(!FileManager.default.fileExists(atPath: prepared.bootlog.path))
                 #expect(try snapshotLogArtifacts(bundle: bundle) == logsBefore)
@@ -184,7 +184,7 @@ struct TestCLICopyColdStopped {
             let source = fixture.testDir.appending("cli-source")
             try payload.write(to: URL(filePath: source.string))
             try fixture.run(["cp", source.string, "\(name):/tmp/payload"]).check()
-            #expect(try ContainerResource.Bundle(path: path).isPrepared)
+            #expect(try !ContainerResource.Bundle(path: path).isPrepared)
             #expect(!FileManager.default.fileExists(atPath: path.appendingPathComponent("vminitd.log").path))
             try fixture.run(["start", "--attach", name]).check()
         }
@@ -226,7 +226,7 @@ struct TestCLICopyColdStopped {
             #expect(try canonicalInspect(fixture, name: name) == before)
             #expect(try snapshotLogArtifacts(bundle: path) == logsBefore)
             try fixture.run(["cp", "\(name):/etc/alpine-release", fixture.testDir.appending("release").string]).check()
-            #expect(try bundle.isPrepared)
+            #expect(try !bundle.isPrepared)
             #expect(!FileManager.default.fileExists(atPath: bundle.bootlog.path))
             #expect(try canonicalInspect(fixture, name: name) == before)
         }

@@ -14,7 +14,7 @@ The helper uses authenticated e2fsprogs 1.47.4 sources with static, system-only 
 
 Native and Bazel builds produce the helper, manifest and corresponding-source archive. Product inventory v4 retains all three and signing updates only the executable hash. Historical inventories and baseline results retain their original identity.
 
-The first cold copy lazily prepares the bundle under the same lifecycle fence. Kernel/init/rootfs resources are staged privately, fsynced and installed before publishing the durable configuration readiness marker. Metadata uses final paths. Crash retries replace only unpublished reserved resources, preserving runtime configuration, lifecycle and logs; a later real start consumes the prepared rootfs instead of cloning over copied data.
+The first cold copy lazily prepares only the private rootfs under the same lifecycle fence. Its image is installed and fsynced before publishing the rootfs descriptor commit marker. Kernel/init resources remain deferred until real start, whose full preparation preserves the described image and copied bytes before publishing the durable configuration readiness marker. Metadata uses final paths. Crash retries replace only unpublished reserved resources, preserving runtime configuration, lifecycle and logs; a later real start consumes the prepared rootfs instead of cloning over copied data.
 
 A newly captured read-only Docker fixture rejects both regular and directory copy-in; the prior signed fork incorrectly accepted both. Copy-in now rejects an immutable root with no writable mounts before materialization or guest transfer. Read-only copy-out stays eligible. Mounted destinations retain existing runtime path handling and require their separate parity fixture.
 

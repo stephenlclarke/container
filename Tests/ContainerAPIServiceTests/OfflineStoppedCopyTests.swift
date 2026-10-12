@@ -141,7 +141,7 @@ struct OfflineStoppedCopyTests {
         let sourceBefore = try Data(contentsOf: fixture.image)
         #expect(try !bundle.isPrepared)
         #expect(try OfflineStoppedCopy.prepareRootfs(bundle: bundle, options: .default) == bundle.containerRootfsBlock)
-        #expect(try bundle.isPrepared)
+        #expect(try !bundle.isPrepared)
         let output = fixture.directory.appendingPathComponent("cold-output")
         #expect(
             try OfflineStoppedCopy.copyOut(

@@ -49,25 +49,25 @@ enum OfflineStoppedCopy {
     /// RuntimeLinux observes the same final readiness marker on a later boot.
     static func prepareRootfs(bundle: ContainerResource.Bundle, options: ContainerCreateOptions) throws -> URL? {
         guard options.rootFsOverride == nil else { return nil }
-        if try !bundle.isPrepared {
-            let runtime = try RuntimeConfiguration.readRuntimeConfiguration(from: bundle.path)
-            // URL equality also compares cached directory hints. Codable URLs can
-            // retain a different hint after create, despite naming the same path.
-            guard runtime.path.standardizedFileURL.path == bundle.path.standardizedFileURL.path,
-                let configuration = runtime.containerConfiguration,
-                configuration.effectiveIsolation == .dedicatedVM,
-                configuration.runtimeHandler == "container-runtime-linux", configuration.mounts.isEmpty,
-                runtime.options?.rootFsOverride == nil,
-                let filesystem = runtime.containerRootFilesystem,
-                case .block(let format, _, _) = filesystem.type,
-                format == "ext4", filesystem.destination == "/", filesystem.sourceSubpath == nil
-            else { return nil }
-            _ = try ContainerResource.Bundle.create(
-                path: runtime.path, initialFilesystem: runtime.initialFilesystem,
-                kernel: runtime.kernel, containerConfiguration: configuration,
-                containerRootFilesystem: filesystem, options: runtime.options
-            )
+        do {
+            if let rootfs = try rootfsURL(bundle: bundle, options: options) { return rootfs }
+            if (try? bundle.containerRootfs) != nil { return nil }
+        } catch let error as POSIXError where error.code == .ENOENT {
+            // A described but missing private image can be reconstructed.
         }
+        let runtime = try RuntimeConfiguration.readRuntimeConfiguration(from: bundle.path)
+        // URL equality also compares cached directory hints. Codable URLs can
+        // retain a different hint after create, despite naming the same path.
+        guard runtime.path.standardizedFileURL.path == bundle.path.standardizedFileURL.path,
+            let configuration = runtime.containerConfiguration,
+            configuration.effectiveIsolation == .dedicatedVM,
+            configuration.runtimeHandler == "container-runtime-linux", configuration.mounts.isEmpty,
+            runtime.options?.rootFsOverride == nil,
+            let filesystem = runtime.containerRootFilesystem,
+            case .block(let format, _, _) = filesystem.type,
+            format == "ext4", filesystem.destination == "/", filesystem.sourceSubpath == nil
+        else { return nil }
+        try bundle.materializeRootfs(cloning: filesystem, readonly: configuration.readOnly)
         return try rootfsURL(bundle: bundle, options: options)
     }
 

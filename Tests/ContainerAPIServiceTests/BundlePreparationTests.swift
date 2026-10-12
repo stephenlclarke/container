@@ -23,6 +23,30 @@ import Testing
 struct BundlePreparationTests {
     private enum Interrupted: Error { case publication }
 
+    @Test(arguments: ["staged", "rootfs.ext4", "rootfs.json"])
+    func rootfsOnlyRecoveryPreservesEditsThroughLaterVMPreparation(boundary: String) throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        #expect(throws: Interrupted.self) {
+            try fixture.bundle.materializeRootfs(cloning: fixture.rootFilesystem, readonly: false) { name in
+                if name == boundary { throw Interrupted.publication }
+            }
+        }
+        try fixture.bundle.materializeRootfs(cloning: fixture.rootFilesystem)
+        #expect(try !fixture.bundle.isPrepared)
+        #expect(!FileManager.default.fileExists(atPath: fixture.bundle.path.appendingPathComponent("kernel.bin").path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.bundle.path.appendingPathComponent("initfs.ext4").path))
+        let copied = Data("copied-before-any-vm".utf8)
+        try copied.write(to: fixture.bundle.containerRootfsBlock)
+        try fixture.bundle.materializeRootfs(cloning: fixture.rootFilesystem)
+        #expect(try Data(contentsOf: fixture.bundle.containerRootfsBlock) == copied)
+        _ = try fixture.prepare()
+        #expect(try fixture.bundle.isPrepared)
+        #expect(try Data(contentsOf: fixture.bundle.containerRootfsBlock) == copied)
+        #expect(try Data(contentsOf: fixture.rootSource) == fixture.rootBytes)
+        try fixture.checkState()
+    }
+
     @Test(arguments: ["staged", "kernel.bin", "kernel.json", "initfs.ext4", "rootfs.ext4", "rootfs.json", "options.json"])
     func interruptedPublicationRecoversWithoutDeletingContainerState(boundary: String) throws {
         let fixture = try Fixture()

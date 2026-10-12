@@ -185,6 +185,55 @@ extension Bundle {
         return bundle
     }
 
+    /// Prepares only the private image needed for stopped filesystem access.
+    /// A later full preparation retains this described image and its edits.
+    public func materializeRootfs(cloning filesystem: Filesystem, readonly: Bool = false) throws {
+        try materializeRootfs(cloning: filesystem, readonly: readonly, didPublish: { _ in })
+    }
+
+    func materializeRootfs(cloning filesystem: Filesystem, readonly: Bool, didPublish: (String) throws -> Void) throws {
+        let existing = try? containerRootfs
+        if let existing, Self.filesystemExists(existing) {
+            guard URL(fileURLWithPath: existing.source).standardizedFileURL == containerRootfsBlock.standardizedFileURL else {
+                throw POSIXError(.EEXIST)
+            }
+            return
+        }
+        if (try? configuration) != nil, existing == nil, Self.regularFileExists(containerRootfsBlock) {
+            throw POSIXError(.ENOTRECOVERABLE)
+        }
+        guard case .block(let format, _, _) = filesystem.type, format == "ext4", filesystem.destination == "/", filesystem.sourceSubpath == nil else {
+            throw POSIXError(.EINVAL)
+        }
+        let stage = path.appendingPathComponent(".bundle-preparation", isDirectory: true)
+        let names = [
+            Self.kernelBinaryFilename, Self.kernelFilename, Self.initfsFilename,
+            Self.containerRootFsBlockFilename, Self.containerRootFsFilename, "options.json",
+        ]
+        try Self.removePreparationStage(stage, allowedNames: names)
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? Self.removePreparationStage(stage, allowedNames: names) }
+        let staged = Bundle(path: stage)
+        var final = try filesystem.clone(to: staged.containerRootfsBlock.path)
+        final.source = containerRootfsBlock.path
+        if readonly, !final.options.contains("ro") { final.options.append("ro") }
+        try JSONEncoder().encode(final).write(to: staged.containerRootfsConfig)
+        try Self.syncResource(staged.containerRootfsBlock, directory: false)
+        try Self.syncResource(staged.containerRootfsConfig, directory: false)
+        try didPublish("staged")
+        guard Darwin.rename(staged.containerRootfsBlock.path, containerRootfsBlock.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        // The descriptor is the rootfs commit marker, separate from VM readiness.
+        try Self.syncResource(path, directory: true)
+        try didPublish(Self.containerRootFsBlockFilename)
+        guard Darwin.rename(staged.containerRootfsConfig.path, containerRootfsConfig.path) == 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        try Self.syncResource(path, directory: true)
+        try didPublish(Self.containerRootFsFilename)
+    }
+
     private static func regularFileExists(_ url: URL) -> Bool {
         var status = stat()
         return lstat(url.path, &status) == 0 && status.st_mode & S_IFMT == S_IFREG
