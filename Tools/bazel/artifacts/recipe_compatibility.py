@@ -47,6 +47,7 @@ STOPPED_COPY_SYMLINK_PINS = '304e9cff133c88056b78483fe1acc502535a0d4d5875a796031
 STOPPED_COPY_OFFLINE_PINS = 'bb3c022964a4a6ce44ed18e37b7f618c9f2ae9e5a7b0fd2a6ee923398ec641f6'
 UNALIGNED_METADATA_PINS = 'be8e2cdf7655f9d5c489d4750bdcf9d9901356a64de3783b71978ce65c80e083'
 COPY_FIXTURE_PINS = 'd8665fe69c80762453638756577b35ae35971561db4bed8d272e3ad5b589d513'
+COPY_TRANSFER_PINS = 'd837233bb3a60b38fb40314ecb8e4025aadbd2ecbeacface9fec82a278687a91'
 CLIENT_EXPORT_OLD = {
     'Tools/bazel/artifacts/native_layers.py': 'e18b15255c4032a1d2b8592394ad2b6bf556100d3cf31f19f77d6709f961015c',
     'Tools/bazel/artifacts/native_producer.py': 'd4c656f63c9119866bb60783a54a396051169d929b4bc7cf9f24fbfc1d3f5298',
@@ -176,6 +177,17 @@ def admit(producer: object, current: object, root: Path) -> dict:
             and current[CONNECTION_PINS] == COPY_FIXTURE_PINS):
         remaining.remove(CONNECTION_PINS)
         modes.append('known-copy-fixture-sdk-pin-update')
+    # Only the SDK revision changes for copy-transfer closure extraction.
+    # Independent source pins still require the changed SDK; unchanged lower
+    # archive bytes, production flags and source identities remain exact.
+    if (CONNECTION_PINS in remaining
+            and producer[CONNECTION_PINS] in (CONNECTION_PINS_OLD, CONNECTION_PINS_NEW,
+                                               STOPPED_COPY_PINS, STOPPED_COPY_MODE_PINS,
+                                               STOPPED_COPY_SYMLINK_PINS, STOPPED_COPY_OFFLINE_PINS,
+                                               UNALIGNED_METADATA_PINS, COPY_FIXTURE_PINS)
+            and current[CONNECTION_PINS] == COPY_TRANSFER_PINS):
+        remaining.remove(CONNECTION_PINS)
+        modes.append('known-copy-transfer-sdk-pin-update')
     if remaining:
         raise ValueError('published native recipe differs from authenticated consumer update')
     mode = '+'.join(modes) if modes else 'exact'
