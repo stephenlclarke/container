@@ -211,6 +211,8 @@ Component benchmarks now start only after integration passes. The `bf0e10bd` att
 
 The prior runtime-v7 copy checkpoint selected signed SDK `940c2034e43f4f71543149930662f9129dc36019` and gRPC transport `2ddb7175729b30e5a12f4c3cb14f15985b1b2b1e` for guest connection shutdown, stopped-copy lifecycle, permission and standalone-symlink corrections. A byte-bound SDK-only manifest transition preserves unchanged published ArgumentParser, Foundation and Engine API artifacts; independently checked source pins require a fresh SDK artifact and guest. The local Linux test image includes Python for the existing coverage exporters. The symlink correction passed its native qualification, all stopped-copy behavior operations and 41 selected integration cases; five cold-copy timings remain above the differential threshold; see the [dependency consumption handoff](docs/upstream/PR-connection-dependency-consumption.md).
 
+XPC response deadlines use a direct monotonic clock deadline to avoid a Swift cross-module sleep-specialization crash in optimized consumers. Timeout, cancellation and late-reply semantics are preserved; see the [XPC timeout handoff](docs/upstream/PR-xpc-response-deadline-sleep.md) for the reproducer and validation status.
+
 ## Contributing
 
 Contributions to `container` are welcome and encouraged. Please see our

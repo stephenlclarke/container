@@ -110,7 +110,10 @@ extension XPCClient {
                     let route = message.string(key: XPCMessage.routeKey) ?? "nil"
                     let timeoutTask = Task.detached {
                         do {
-                            try await Task.sleep(for: responseTimeout)
+                            // Avoid the cross-module clock specialization emitted by
+                            // Task.sleep(for:), which can corrupt optimized task frames.
+                            let clock = ContinuousClock()
+                            try await clock.sleep(until: clock.now.advanced(by: responseTimeout))
                         } catch {
                             return
                         }

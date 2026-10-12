@@ -238,6 +238,40 @@ struct XPCClientTests {
     }
 
     @Test
+    func repeatedResponseDeadlinesExpireAndLeaveClientReusable() async throws {
+        let server = AnonymousXPCServer()
+        defer { server.close() }
+
+        let client = server.makeClient()
+        defer { client.close() }
+        for _ in 0..<16 {
+            do {
+                _ = try await client.send(XPCMessage(route: "hang"), responseTimeout: .milliseconds(10))
+                Issue.record("expected send to time out")
+            } catch let error as ContainerizationError {
+                #expect(error.code == .timeout)
+            }
+        }
+        let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: .seconds(1))
+        #expect(response.string(key: "result") == "ok")
+    }
+
+    @Test(arguments: [Duration.seconds(1), Duration.seconds(60)])
+    func successfulRepliesCancelRepeatedResponseDeadlines(timeout: Duration) async throws {
+        let server = AnonymousXPCServer()
+        defer { server.close() }
+
+        let client = server.makeClient()
+        defer { client.close() }
+        for _ in 0..<64 {
+            let response = try await client.send(XPCMessage(route: "echo"), responseTimeout: timeout)
+            #expect(response.string(key: "result") == "ok")
+            // Give the cancelled timeout task an opportunity to unwind its frame.
+            await Task.yield()
+        }
+    }
+
+    @Test
     func lateReplyAfterResponseTimeoutIsIgnored() async throws {
         let server = AnonymousXPCServer()
         defer { server.close() }
