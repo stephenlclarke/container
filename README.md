@@ -200,6 +200,8 @@ The optimized runtime now imports four published [native dependency layers](./do
 
 Component benchmarks now start only after integration passes. The `bf0e10bd` attempt passed the corrected native coverage check but failed two commit-command integration cases; their failed evidence remains intact. Blocking component timing after that failure preserves the complete benchmark workloads and release gates for a successful run.
 
+XPC response deadlines use a direct monotonic clock deadline to avoid a Swift cross-module sleep-specialization crash in optimized consumers. Timeout, cancellation and late-reply semantics are preserved; see the [XPC timeout handoff](docs/upstream/PR-xpc-response-deadline-sleep.md). This candidate contains only the timeout hotfix on the retained Compose runtime SDK source, preserving other published lower layers for comparison.
+
 ## Contributing
 
 Contributions to `container` are welcome and encouraged. Please see our
