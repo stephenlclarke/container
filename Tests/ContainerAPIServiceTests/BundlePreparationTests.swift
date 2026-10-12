@@ -137,7 +137,12 @@ struct BundlePreparationTests {
             path: other, initialFilesystem: fixture.initialFilesystem, kernel: fixture.kernel,
             containerConfiguration: configuration, containerRootFilesystem: fixture.rootFilesystem,
             options: .init(autoRemove: false, rootFsOverride: override))
-        #expect(try bundle.containerRootfs == override)
+        let actual = try bundle.containerRootfs
+        #expect(actual.type == override.type)
+        #expect(actual.source == override.source)
+        #expect(actual.destination == override.destination)
+        #expect(actual.options == override.options)
+        #expect(actual.sourceSubpath == override.sourceSubpath)
         #expect(!FileManager.default.fileExists(atPath: bundle.containerRootfsBlock.path))
     }
 
