@@ -14,13 +14,14 @@ import time
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    for option in ("helper", "fixture", "fsck", "debugfs"):
+    for option in ("helper", "fixture", "journal-fixture", "fsck", "debugfs"):
         parser.add_argument("--" + option, type=Path, required=True)
     args = parser.parse_args()
     root = Path(__file__).resolve().parent
     repository = root.parents[1]
     bridge = repository / "Sources/COfflineCopyProcess"
-    inputs = {name: getattr(args, name).resolve() for name in ("helper", "fixture", "fsck", "debugfs")}
+    inputs = {name: getattr(args, name.replace("-", "_")).resolve()
+              for name in ("helper", "fixture", "journal-fixture", "fsck", "debugfs")}
     for name, path in inputs.items():
         if not path.is_file():
             parser.error(name + " must identify an existing regular file")

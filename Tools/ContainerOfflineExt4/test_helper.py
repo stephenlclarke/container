@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import os
 import re
+import struct
 from pathlib import Path
 import subprocess
 import tempfile
@@ -158,8 +159,29 @@ class CopyTests(unittest.TestCase):
 
     def test_inline_attributes_use_guest_semantics(self) -> None:
         self.debug("ea_set / user.copy-test inline-value", write=True)
+        self.assertIn("user.copy-test", self.debug("ea_list /"))
         before = sha(self.image)
         self.assertEqual(self.invoke("/new"), 3)
+        self.assertEqual(sha(self.image), before)
+
+    def test_sticky_directory_preserves_mode_and_allows_root_copy(self) -> None:
+        self.debug("mkdir /sticky", write=True)
+        self.debug("set_inode_field /sticky mode 041777", write=True)
+        self.assertRegex(self.debug("stat /sticky"), r"Mode:\s+01777\b")
+        self.assertEqual(self.invoke("/sticky/new"), 0)
+        self.check_file("/sticky/new")
+        self.assertRegex(self.debug("stat /sticky"), r"Mode:\s+01777\b")
+        self.payload = b"root overwrite in sticky directory"
+        self.source.write_bytes(self.payload)
+        self.assertEqual(self.invoke("/sticky/new"), 0)
+        self.check_file("/sticky/new")
+
+    def test_setgid_directory_uses_guest_inheritance(self) -> None:
+        self.debug("mkdir /setgid", write=True)
+        self.debug("set_inode_field /setgid mode 042775", write=True)
+        self.assertRegex(self.debug("stat /setgid"), r"Mode:\s+02775\b")
+        before = sha(self.image)
+        self.assertEqual(self.invoke("/setgid/new"), 3)
         self.assertEqual(sha(self.image), before)
 
     def test_invalid_protocol_and_component_reject(self) -> None:
@@ -183,16 +205,134 @@ class CopyTests(unittest.TestCase):
         self.assertEqual(sha(self.image), before)
 
 
+class JournalCopyTests(CopyTests):
+    def setUp(self) -> None:
+        super().setUp()
+        with self.image.open("rb") as stream:
+            stream.seek(1024)
+            superblock = stream.read(1024)
+        self.assertTrue(struct.unpack_from("<I", superblock, 92)[0] & 4)
+        inode = struct.unpack_from("<I", superblock, 224)[0]
+        block_size = 1024 << struct.unpack_from("<I", superblock, 24)[0]
+        mapping = self.debug(f"bmap <{inode}> 0").splitlines()
+        self.journal_offset = int(mapping[-1]) * block_size
+
+    def journal_bytes(self) -> bytes:
+        with self.image.open("rb") as stream:
+            stream.seek(self.journal_offset)
+            return stream.read(1024)
+
+    def write_at(self, offset: int, value: bytes) -> None:
+        with self.image.open("r+b") as stream:
+            stream.seek(offset)
+            stream.write(value)
+
+    @staticmethod
+    def checksum(superblock: bytearray) -> None:
+        # Independent bitwise CRC32C oracle; no helper/libext2fs code is called.
+        superblock[0xfc:0x100] = bytes(4)
+        crc = 0xffffffff
+        for byte in superblock:
+            crc ^= byte
+            for _ in range(8):
+                crc = (crc >> 1) ^ (0x82f63b78 if crc & 1 else 0)
+        struct.pack_into(">I", superblock, 0xfc, crc)
+
+    def test_valid_journal_is_preserved(self) -> None:
+        before = self.journal_bytes()
+        self.assertEqual(self.invoke("/journal-copy"), 0)
+        self.assertEqual(self.journal_bytes(), before)
+        self.check_file("/journal-copy")
+
+    def test_journal_inode_cannot_be_a_copy_destination(self) -> None:
+        self.debug("link <8> /journal-alias", write=True)
+        self.assertIn("Inode: 8", self.debug("stat /journal-alias"))
+        before = sha(self.image)
+        self.assertEqual(self.invoke("/journal-alias"), 3)
+        self.assertEqual(sha(self.image), before)
+
+    def test_standard_journal_checksums_and_features(self) -> None:
+        original = self.journal_bytes()
+        for compat, incompat in ((0, 1), (0, 3), (1, 1), (0, 9), (0, 17)):
+            with self.subTest(compat=compat, incompat=incompat):
+                header = bytearray(original)
+                struct.pack_into(">II", header, 0x24, compat, incompat)
+                if incompat & 0x18:
+                    header[0x50] = 4
+                    self.checksum(header)
+                self.write_at(self.journal_offset, header)
+                self.assertEqual(self.invoke("/journal-features"), 0)
+                self.assertEqual(self.journal_bytes(), header)
+                self.check_file("/journal-features")
+
+    def test_malformed_or_nonempty_journal_rejects_without_change(self) -> None:
+        original = self.journal_bytes()
+        mutations = {
+            "bad-magic": (0, 0), "unknown-version": (4, 9),
+            "wrong-blocksize": (0x0c, 512), "short-journal": (0x10, 1),
+            "long-journal": (0x10, 0xffffffff), "zero-first": (0x14, 0),
+            "invalid-first": (0x14, 0xffffffff), "unflushed-log": (0x1c, 1),
+            "aborted-log": (0x20, 5), "unknown-compatible": (0x24, 2),
+            "unknown-incompatible": (0x28, 0x80000000), "fast-commit": (0x28, 0x20),
+            "unknown-readonly": (0x2c, 1), "wrong-uuid": (0x30, 0),
+            "shared-log": (0x40, 2), "dynamic-superblock": (0x44, 1),
+            "unexpected-fast-commit-blocks": (0x54, 1), "conflicting-checksums": (0x28, 0x18),
+            "missing-checksum-type": (0x28, 8),
+        }
+        for name, (offset, value) in mutations.items():
+            with self.subTest(name=name):
+                header = bytearray(original)
+                struct.pack_into(">I", header, offset, value)
+                self.write_at(self.journal_offset, header)
+                before = sha(self.image)
+                self.assertEqual(self.invoke("/new"), 3)
+                self.assertEqual(sha(self.image), before)
+        self.write_at(self.journal_offset, original)
+
+    def test_corrupt_checksum_and_mixed_formats_reject_without_change(self) -> None:
+        for compat, incompat, corrupt in ((0, 8, True), (1, 8, False)):
+            with self.subTest(compat=compat, incompat=incompat, corrupt=corrupt):
+                header = bytearray(self.journal_bytes())
+                struct.pack_into(">II", header, 0x24, compat, incompat)
+                header[0x50] = 4
+                self.checksum(header)
+                if corrupt:
+                    header[0xfc] ^= 1
+                self.write_at(self.journal_offset, header)
+                before = sha(self.image)
+                self.assertEqual(self.invoke("/new"), 3)
+                self.assertEqual(sha(self.image), before)
+
+    def test_filesystem_recovery_and_external_journal_reject_without_change(self) -> None:
+        with self.image.open("rb") as stream:
+            stream.seek(1024)
+            original = stream.read(1024)
+        mutations = ((92, 0x400), (96, 4), (96, 8), (100, 0x10000), (224, 0), (228, 1), (208, 1), (232, 11))
+        for offset, value in mutations:
+            with self.subTest(offset=offset, value=value):
+                superblock = bytearray(original)
+                if offset in (92, 96, 100):
+                    value |= struct.unpack_from("<I", superblock, offset)[0]
+                struct.pack_into("<I", superblock, offset, value)
+                self.write_at(1024, superblock)
+                before = sha(self.image)
+                self.assertEqual(self.invoke("/new"), 3)
+                self.assertEqual(sha(self.image), before)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("helper", "fixture", "fsck", "debugfs"):
+    for name in ("helper", "fixture", "fsck", "debugfs", "journal-fixture"):
         parser.add_argument("--" + name, type=Path, required=True)
     args = parser.parse_args()
     for name in ("helper", "fixture", "fsck", "debugfs"):
         setattr(CopyTests, name, getattr(args, name).resolve())
-    original = sha(CopyTests.fixture)
-    result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(CopyTests))
-    if sha(CopyTests.fixture) != original:
+    JournalCopyTests.fixture = args.journal_fixture.resolve()
+    originals = {path: sha(path) for path in (CopyTests.fixture, JournalCopyTests.fixture)}
+    suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromTestCase(case)
+                               for case in (CopyTests, JournalCopyTests))
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if any(sha(path) != digest for path, digest in originals.items()):
         raise RuntimeError("Read-only input fixture changed")
     raise SystemExit(0 if result.wasSuccessful() else 1)
 

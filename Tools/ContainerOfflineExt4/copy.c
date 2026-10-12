@@ -58,8 +58,11 @@ static int parse(int argc, char **argv, struct request *request) {
 static int simple_inode(ext2_filsys fs, ext2_ino_t ino, const struct ext2_inode *inode) {
     /* The SDK formatter uses filesystem-block units for i_blocks, including
      * directories. libext2fs understands this flag; it is not an inode policy. */
+    /* Transfers run as guest root. A directory sticky bit restricts unlink by
+     * other users, not root's creation/overwrite; SGID inheritance stays guest. */
+    unsigned int special = LINUX_S_ISDIR(inode->i_mode) ? 06000 : 07000;
     if ((inode->i_flags & ~(EXT4_EXTENTS_FL | EXT4_HUGE_FILE_FL)) || inode->i_file_acl ||
-        inode->osd2.linux2.l_i_file_acl_high || (inode->i_mode & 07000)) return 0;
+        inode->osd2.linux2.l_i_file_acl_high || (inode->i_mode & special)) return 0;
     /* ACLs and capabilities may be inline, with no external xattr block. */
     struct ext2_xattr_handle *attributes = NULL;
     size_t count = 0;
@@ -240,6 +243,65 @@ static errcode_t transfer(ext2_filsys fs, ext2_ino_t ino,
     return ext2fs_write_inode(fs, ino, &inode);
 }
 
+static uint32_t journal_word(const unsigned char *bytes, size_t offset) {
+    return ((uint32_t)bytes[offset] << 24) | ((uint32_t)bytes[offset + 1] << 16) |
+        ((uint32_t)bytes[offset + 2] << 8) | bytes[offset + 3];
+}
+
+/* JBD2 superblock offsets and checksum rules follow the pinned e2fsprogs
+ * kernel-jbd.h and e2fsck/journal.c. A clean, empty internal journal has no
+ * transaction to replay: offline libext2fs edits can leave it untouched.
+ * Failed writes affect only the disposable clone owned by the parent. */
+static int clean_journal(ext2_filsys fs) {
+    static const unsigned char zero_uuid[16] = {0};
+    struct ext2_inode inode;
+    ext2_file_t file = NULL;
+    unsigned char superblock[1024];
+    unsigned int received = 0;
+    uint64_t size = 0;
+    errcode_t error;
+    if (ext2fs_has_feature_journal_dev(fs->super) || ext2fs_has_feature_fast_commit(fs->super) ||
+        fs->super->s_journal_dev ||
+        memcmp(fs->super->s_journal_uuid, zero_uuid, sizeof(zero_uuid))) return 0;
+    if (!ext2fs_has_feature_journal(fs->super)) return !fs->super->s_journal_inum;
+    if (!fs->super->s_journal_inum ||
+        ext2fs_read_inode(fs, fs->super->s_journal_inum, &inode) ||
+        !LINUX_S_ISREG(inode.i_mode) || inode.i_links_count != 1 || inode.i_dtime ||
+        !simple_inode(fs, fs->super->s_journal_inum, &inode)) return 0;
+    error = ext2fs_file_open(fs, fs->super->s_journal_inum, 0, &file);
+    if (!error) error = ext2fs_file_get_lsize(file, &size);
+    if (!error) error = ext2fs_file_read(file, superblock, sizeof(superblock), &received);
+    if (file) {
+        errcode_t close_error = ext2fs_file_close(file);
+        if (!error) error = close_error;
+    }
+    if (error || received != sizeof(superblock) || size % fs->blocksize) return 0;
+    uint32_t blocks = journal_word(superblock, 0x10);
+    uint32_t first = journal_word(superblock, 0x14);
+    uint32_t compat = journal_word(superblock, 0x24);
+    uint32_t incompat = journal_word(superblock, 0x28);
+    /* Accept V2 with revoke, 64-bit and the three standard checksum formats.
+     * External/shared, fast-commit and unknown journal formats use the guest. */
+    if (journal_word(superblock, 0) != 0xc03b3998U ||
+        journal_word(superblock, 4) != 4 ||
+        journal_word(superblock, 0x0c) != fs->blocksize ||
+        blocks < 1024 || (uint64_t)blocks * fs->blocksize > size || !first || first >= blocks ||
+        journal_word(superblock, 0x1c) || journal_word(superblock, 0x20) ||
+        (compat & ~1U) || (incompat & ~0x1bU) ||
+        journal_word(superblock, 0x2c) ||
+        memcmp(superblock + 0x30, fs->super->s_uuid, sizeof(zero_uuid)) ||
+        journal_word(superblock, 0x40) != 1 || journal_word(superblock, 0x44) ||
+        journal_word(superblock, 0x54)) return 0;
+    if ((incompat & 0x18U) == 0x18U || ((incompat & 0x18U) && (compat & 1U))) return 0;
+    if (incompat & 0x18U) {
+        uint32_t provided = journal_word(superblock, 0xfc);
+        if (superblock[0x50] != 4) return 0;
+        memset(superblock + 0xfc, 0, sizeof(uint32_t));
+        if (ext2fs_crc32c_le(~0U, superblock, sizeof(superblock)) != provided) return 0;
+    }
+    return 1;
+}
+
 int main(int argc, char **argv) {
     struct request request = {0};
     struct stat image, source, after;
@@ -264,12 +326,14 @@ int main(int argc, char **argv) {
     if (error) goto cleanup;
     if (!(fs->super->s_state & EXT2_VALID_FS) || (fs->super->s_state & EXT2_ERROR_FS) ||
         ext2fs_has_feature_journal_needs_recovery(fs->super) ||
-        ext2fs_has_feature_journal(fs->super) || fs->super->s_last_orphan ||
+        fs->super->s_last_orphan || ext2fs_has_feature_orphan_present(fs->super) ||
+        !clean_journal(fs) ||
         !ext2fs_has_feature_extents(fs->super)) goto cleanup;
     error = ext2fs_read_bitmaps(fs);
     if (error) goto cleanup;
     error = destination(fs, &request, &parent, &name, &ino);
     if (error) goto cleanup;
+    if (ino && ino == fs->super->s_journal_inum) goto cleanup;
     if (!ino) error = create_file(fs, parent, name, &ino);
     if (!error) error = transfer(fs, ino, &request, source.st_size);
     if (error || fstat(SOURCE_FD, &after) || !unchanged_source(&source, &after)) goto cleanup;

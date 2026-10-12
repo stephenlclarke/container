@@ -17,6 +17,7 @@ Native and Bazel builds produce the helper, manifest and corresponding-source ar
 ## Testing
 
 - Focused component evidence: 15 helper cases, independent e2fsck/debugfs checks, sandbox denial tests, four Swift commit transactions and six noncommit checks pass in transaction-v6.
+- The clean-journal correction passes 40 filesystem cases across journaled and journal-free fixtures, including malformed journal rejection, independent CRC32C checks, sticky-directory mode preservation and journal-inode destination rejection. The prior helper fails the valid-journal regression. A private clone of the production image passes helper transfer and independent readback in clean-journal-v2. Independent review found no actionable issue; final packaged-helper transaction and matched CLI qualification remain pending.
 - Explicit mode 0600 is verified with source mode 0640 and ownership preservation enabled.
 - Process tests cover launch errors, exit status, deadline, memory exhaustion, child reaping and caller descriptor lifetime.
 - The maintained Make target passes with explicit fixture/oracle inputs; the standalone helper also builds through the actual Bazel Darwin sandbox.
@@ -28,6 +29,6 @@ The retained evidence root is `performance-parity-20261011T150042Z/candidate-con
 
 ## Compatibility and remaining gates
 
-Regular files, overwrites, existing destination directories and optional parent creation use the fast path when eligible. Directory/archive transfers, path-dependent symlinks, journaled/recovery images, inherited ACLs, special inode flags and unsupported spellings use the guest path. Shared and live images are excluded. Source licensing, stable signed identity, full runtime correctness and performance must qualify before publication.
+Regular files, overwrites, existing destination directories and optional parent creation use the fast path when eligible. Clean internal V2 journals are checked and preserved, including supported checksum validation. Sticky directories such as `/tmp` retain their mode. Directory/archive transfers, path-dependent symlinks, recovery-required or unsupported journals, inherited ACLs, SGID inheritance, special inode flags and unsupported spellings use the guest path. Shared and live images are excluded. Source licensing, stable signed identity, full runtime correctness and performance must qualify before publication.
 
 Related handoff: ISSUE-stopped-copy-offline-write.md. No Apple issue, PR or comment is published by this change.

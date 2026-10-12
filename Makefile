@@ -67,7 +67,8 @@ offline-ext4-helper:
 # Explicit independent fixtures/oracles keep test tools out of product inputs.
 test-offline-ext4-helper:
 	@$(PYTHON3) Tools/ContainerOfflineExt4/test.py --helper "$(OFFLINE_EXT4_BUILD_DIR)/container-ext4-copy" \
-		--fixture "$(OFFLINE_EXT4_TEST_FIXTURE)" --fsck "$(OFFLINE_EXT4_TEST_FSCK)" --debugfs "$(OFFLINE_EXT4_TEST_DEBUGFS)"
+		--fixture "$(OFFLINE_EXT4_TEST_FIXTURE)" --journal-fixture "$(OFFLINE_EXT4_TEST_JOURNAL_FIXTURE)" \
+		--fsck "$(OFFLINE_EXT4_TEST_FSCK)" --debugfs "$(OFFLINE_EXT4_TEST_DEBUGFS)"
 JOURNALD_SERVICE_BUILD_DIR := $(ROOT_DIR)/.build/container-journald-service
 JOURNALD_SERVICE_ARCHIVE := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.oci.tar
 JOURNALD_SERVICE_MANIFEST := $(JOURNALD_SERVICE_BUILD_DIR)/container-journald-service.manifest.json
