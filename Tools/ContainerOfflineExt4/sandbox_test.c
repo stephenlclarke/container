@@ -8,13 +8,15 @@
 #include <netinet/in.h>
 #include <spawn.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
-    assert(argc == 2);
+    assert(argc == 2 || (argc == 3 && !strcmp(argv[2], "probe")));
+    int probe = argc == 3;
     char image_path[4096], source_path[4096], outside_path[4096], new_path[4096];
     assert(mkdir(argv[1], 0700) == 0);
     snprintf(image_path, sizeof(image_path), "%s/image", argv[1]);
@@ -29,10 +31,18 @@ int main(int argc, char **argv) {
     close(source);
     source = open(source_path, O_RDONLY);
     close(outside);
-    assert(container_copy_sandbox(image, source) == 0);
-    assert(pwrite(image, "i", 1, 0) == 1);
     char byte;
-    assert(pread(source, &byte, 1, 0) == 1 && byte == 's');
+    if (probe) {
+        close(image);
+        close(source);
+        assert(container_copy_probe() == 0);
+        assert(open(image_path, O_RDWR) == -1 && (errno == EPERM || errno == EACCES));
+        assert(open(source_path, O_RDONLY) == -1 && (errno == EPERM || errno == EACCES));
+    } else {
+        assert(container_copy_sandbox(image, source) == 0);
+        assert(pwrite(image, "i", 1, 0) == 1);
+        assert(pread(source, &byte, 1, 0) == 1 && byte == 's');
+    }
     assert(open("/etc/passwd", O_RDONLY) == -1 && (errno == EPERM || errno == EACCES));
     assert(open(outside_path, O_RDONLY) == -1 && (errno == EPERM || errno == EACCES));
     assert(open(new_path, O_CREAT | O_WRONLY, 0600) == -1 && (errno == EPERM || errno == EACCES));
@@ -54,7 +64,9 @@ int main(int argc, char **argv) {
     int spawned = posix_spawn(&child, arguments[0], NULL, NULL, arguments, environment);
     if (!spawned) { int status; (void)waitpid(child, &status, 0); }
     assert(spawned == EPERM || spawned == EACCES);
-    close(image);
-    close(source);
+    if (!probe) {
+        close(image);
+        close(source);
+    }
     return 0;
 }

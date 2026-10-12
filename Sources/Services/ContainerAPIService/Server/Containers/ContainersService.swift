@@ -234,6 +234,7 @@ public actor ContainersService {
 
     private let log: Logger
     private let debugHelpers: Bool
+    private let offlineCopyHelperPreparation: Task<Bool, Never>
     private let containerRoot: URL
     private let pluginLoader: PluginLoader
     private let runtimePlugins: [Plugin]
@@ -432,6 +433,9 @@ public actor ContainersService {
         self.containers = containers
         self.lifecycleRecords = lifecycleRecords
         self.quarantinedContainerNames = quarantinedContainerNames
+        self.offlineCopyHelperPreparation = Task.detached(priority: .utility) {
+            OfflineStoppedCopyIn.prepareHelper(helper: OfflineStoppedCopyIn.discoverHelper(), log: log)
+        }
     }
 
     /// Reclaims ordinary shared workloads before recovered public lifecycle
@@ -5506,8 +5510,12 @@ public actor ContainersService {
         let requested = clock.now
         try await withLifecycleMutation(id: id) {
             self.log.debug("copyIn: offline phase", metadata: ["id": "\(id)", "phase": "lifecycleFence", "duration": "\(requested.duration(to: clock.now))"])
-            try OfflineStoppedCopy.validateCopyInRootfs(self._getContainerState(id: id).snapshot.configuration)
-            if let helper = OfflineStoppedCopyIn.discoverHelper(),
+            let state = try self._getContainerState(id: id)
+            try OfflineStoppedCopy.validateCopyInRootfs(state.snapshot.configuration)
+            if OfflineStoppedCopy.canReadRootfs(state),
+                try self.getContainerCreationOptions(id: id).rootFsOverride == nil,
+                await self.offlineCopyHelperPreparation.value,
+                let helper = OfflineStoppedCopyIn.discoverHelper(),
                 let rootfs = try await self.offlineCopyRootfs(id: id)
             {
                 let log = self.log

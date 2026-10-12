@@ -310,6 +310,11 @@ int main(int argc, char **argv) {
     char *name = NULL;
     errcode_t error;
     int result = UNSUPPORTED;
+    if (argc == 2 && !strcmp(argv[1], "--probe")) {
+        struct rlimit cpu = {5, 5};
+        if (setrlimit(RLIMIT_CPU, &cpu)) return 2;
+        return container_copy_probe() ? UNSUPPORTED : 0;
+    }
     if (!parse(argc, argv, &request)) return 2;
     if (fstat(IMAGE_FD, &image) || fstat(SOURCE_FD, &source) ||
         !S_ISREG(image.st_mode) || !S_ISREG(source.st_mode) || source.st_size < 0 ||

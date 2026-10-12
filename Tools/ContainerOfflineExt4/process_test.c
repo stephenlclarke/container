@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 int main(int argc, char **argv) {
+    if (argc == 2 && strcmp(argv[1], "--probe") == 0) return 0;
     if (argc == 2 && strcmp(argv[1], "memory-child") == 0) {
         // Touch anonymous pages gradually so the watchdog is exercised without
         // creating an unbounded allocation or relying on allocator bookkeeping.
@@ -29,6 +30,11 @@ int main(int argc, char **argv) {
     assert(image >= 0 && source >= 0);
     int status = -1;
     const char *success[] = {"/usr/bin/true", NULL};
+    assert(cec_probe(argv[0], 5, &status) == 0 && status == 0);
+    assert(cec_probe("/nonexistent-container-copy-helper", 5, &status) == ENOENT);
+    assert(cec_probe(NULL, 5, &status) == EINVAL);
+    assert(cec_probe(argv[0], 0, &status) == EINVAL);
+    assert(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD);
     assert(cec_run(success[0], success, image, source, 5, &status) == 0 && status == 0);
     const char *failure[] = {"/usr/bin/false", NULL};
     assert(cec_run(failure[0], failure, image, source, 5, &status) == 0 && status == 1);

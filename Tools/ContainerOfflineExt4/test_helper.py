@@ -30,6 +30,16 @@ class CopyTests(unittest.TestCase):
     fsck: Path
     debugfs: Path
 
+    def test_startup_probe_requires_no_files_and_rejects_extra_arguments(self) -> None:
+        before = self.image.stat(), self.source.stat()
+        result = subprocess.run([str(self.helper), "--probe"], env={"LANG": "C", "LC_ALL": "C"},
+                                capture_output=True, timeout=10, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.image.stat(), self.source.stat()), before)
+        invalid = subprocess.run([str(self.helper), "--probe", "unexpected"],
+                                 env={"LANG": "C", "LC_ALL": "C"}, capture_output=True, timeout=10, check=False)
+        self.assertEqual(invalid.returncode, 2)
+
     def setUp(self) -> None:
         # APFS clones require the scratch directory and immutable input on the
         # same volume; a runner's unrelated TMPDIR may live on the external SSD.

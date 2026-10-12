@@ -32,6 +32,12 @@ struct OfflineStoppedCopyTests {
     private let log = Logger(label: "offline-copy-test")
 
     @Test
+    func helperPreparationRejectsMissingOrUnauthenticatedExecutable() throws {
+        #expect(!OfflineStoppedCopyIn.prepareHelper(helper: nil, log: log))
+        #expect(!OfflineStoppedCopyIn.prepareHelper(helper: URL(fileURLWithPath: "/usr/bin/true"), log: log))
+    }
+
+    @Test
     func runtimeAndMountOwnershipExcludeOfflineReading() throws {
         let image = ImageDescription(
             reference: "alpine", descriptor: .init(mediaType: "application/vnd.oci.image.manifest.v1+json", digest: "sha256:" + String(repeating: "0", count: 64), size: 0))

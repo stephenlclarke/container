@@ -22,6 +22,21 @@ static int descriptor_literal(int fd, char *output, size_t capacity) {
     return 0;
 }
 
+static int apply_profile(const char *profile) {
+    char *error = NULL;
+    /* Failure is always fatal to this helper operation. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    int result = sandbox_init(profile, 0, &error);
+    if (error) sandbox_free_error(error);
+#pragma clang diagnostic pop
+    return result;
+}
+
+int container_copy_probe(void) {
+    return apply_profile("(version 1)(deny default)(allow file-read-metadata)");
+}
+
 int container_copy_sandbox(int image_fd, int source_fd) {
     char image[2 * MAXPATHLEN], source[2 * MAXPATHLEN], profile[4 * MAXPATHLEN + 512];
     if (descriptor_literal(image_fd, image, sizeof(image)) ||
@@ -32,14 +47,8 @@ int container_copy_sandbox(int image_fd, int source_fd) {
         "(allow file-read-data file-write-data (literal \"%s\"))"
         "(allow file-read-data file-write-data (literal \"/dev/null\"))", source, image);
     if (length < 0 || (size_t)length >= sizeof(profile)) return -1;
-    char *error = NULL;
     /* macOS provides this process-level API, but marks it deprecated. Failure
      * is a hard eligibility boundary: no unsandboxed filesystem parser runs.
      * A future replacement must pass the same negative confinement tests. */
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    int result = sandbox_init(profile, 0, &error);
-    if (error) sandbox_free_error(error);
-#pragma clang diagnostic pop
-    return result;
+    return apply_profile(profile);
 }

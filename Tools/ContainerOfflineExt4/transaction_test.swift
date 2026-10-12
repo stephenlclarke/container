@@ -34,6 +34,9 @@ struct TransactionTests {
         try payload.write(to: source)
         try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: source.path)
         let log = Logger(label: "offline-copy-transaction-test")
+        try expect(OfflineStoppedCopyIn.prepareHelper(helper: helper, log: log), "authenticated startup probe failed")
+        try expect(digest(image) == originalHash, "startup probe changed private rootfs")
+        try expect(Data(contentsOf: source) == payload, "startup probe changed source")
 
         func copy(
             _ destination: String, from input: URL? = nil, mode: UInt32 = 0o600,

@@ -25,6 +25,16 @@ static int64_t monotonic_seconds(void) {
     return now.tv_sec;
 }
 
+int cec_probe(const char *executable, unsigned int timeout_seconds, int *status) {
+    if (!executable || !status || !timeout_seconds || timeout_seconds > 300) return EINVAL;
+    int descriptor = open("/dev/null", O_RDWR | O_CLOEXEC);
+    if (descriptor < 0) return errno;
+    const char *arguments[] = {executable, "--probe", NULL};
+    int error = cec_run(executable, arguments, descriptor, descriptor, timeout_seconds, status);
+    close(descriptor);
+    return error;
+}
+
 int cec_run(const char *executable, const char *const arguments[],
             int image_fd, int source_fd, unsigned int timeout_seconds, int *status) {
     if (!executable || !arguments || !status || !timeout_seconds || timeout_seconds > 300)

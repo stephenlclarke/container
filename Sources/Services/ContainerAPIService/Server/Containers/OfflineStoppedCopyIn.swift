@@ -22,6 +22,18 @@ enum OfflineStoppedCopyIn {
         return FileManager.default.isExecutableFile(atPath: installed.path) ? installed : nil
     }
 
+    /// Overlap first executable/sandbox initialization with API startup. This
+    /// never opens a container image and never replaces per-copy authentication.
+    static func prepareHelper(helper: URL?, log: Logger) -> Bool {
+        let clock = ContinuousClock()
+        let started = clock.now
+        guard let helper, verifyHelper(helper, log: log) else { return false }
+        var status: Int32 = -1
+        let launch = helper.path.withCString { cec_probe($0, 5, &status) }
+        log.debug("copyIn: helper preparation", metadata: ["launch": "\(launch)", "status": "\(status)", "duration": "\(started.duration(to: clock.now))"])
+        return launch == 0 && status == 0
+    }
+
     static func copy(
         rootfs: URL, source: String, destination: String, mode: UInt32,
         createParents: Bool, followSymlink: Bool, preserveOwnership: Bool,

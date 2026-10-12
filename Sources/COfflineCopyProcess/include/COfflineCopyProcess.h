@@ -11,4 +11,7 @@
 int cec_run(const char *executable, const char *const arguments[],
             int image_fd, int source_fd, unsigned int timeout_seconds, int *status);
 
+/* Launch only the no-data startup probe, retaining the same watchdog and reap. */
+int cec_probe(const char *executable, unsigned int timeout_seconds, int *status);
+
 #endif

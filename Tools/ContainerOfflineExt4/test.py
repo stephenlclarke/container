@@ -33,6 +33,7 @@ def main() -> None:
              "-I" + str(root), str(root / "copy_sandbox.c"), str(root / "sandbox_test.c"),
              "-o", str(output / "sandbox-tests")],
             [str(output / "sandbox-tests"), str(output / "sandbox-files")],
+            [str(output / "sandbox-tests"), str(output / "sandbox-probe-files"), "probe"],
             ["/usr/bin/clang", "-std=c11", "-Wall", "-Wextra", "-Werror", "-O2",
              "-I" + str(bridge / "include"), str(bridge / "COfflineCopyProcess.c"),
              str(root / "process_test.c"), "-o", str(output / "process-tests")],
