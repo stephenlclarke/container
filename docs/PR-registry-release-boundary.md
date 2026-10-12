@@ -8,7 +8,7 @@ RegistryResourceTests cannot compile against the released ContainerizationOS mod
 
 ## Validation
 
-Add positive, unknown-recipe, reversed-transition and unrelated-file-drift checks for recipe admission. Existing mapping tests exercise the actual public initializer against the imported release. Fresh SDK artifact and upper-layer checks remain pending; previous failures and benchmark records are retained.
+Add positive, unknown-recipe, reversed-transition and unrelated-file-drift checks for recipe admission. Existing mapping tests exercise the actual public initializer against the imported release. The source SDK f98a11c passes fresh native qualification and SonarCloud quality analysis with zero new issues; its three published artifacts are download-verified. All 363 maintained workflow tests pass. Upper-layer release-consumer checks remain pending; previous failures and benchmark records are retained.
 
 ## Compatibility and risks
 
