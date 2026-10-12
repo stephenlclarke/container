@@ -45,8 +45,8 @@ struct TestCLIPrimaryInputEOF {
         try await ContainerFixture.with { fixture in
             let name = "\(fixture.testID)-eof-prewarm"
             fixture.addCleanup { try fixture.doRemoveIfExists(name, force: true, ignoreFailure: true) }
-            try fixture.run(["create", "-i", "--name", name, image, "sh"], timeout: 120).check()
-            // Create schedules an asynchronous dedicated bootstrap. Observe its
+            try fixture.run(["create", "--prewarm", "-i", "--name", name, image, "sh"], timeout: 120).check()
+            // Explicit prewarm schedules an asynchronous dedicated bootstrap. Observe its
             // successful completion before start, so a cold retry cannot pass.
             try await waitForDedicatedPrewarm(name)
             let marker = "EOF-PREWARM-\(fixture.testID)"
