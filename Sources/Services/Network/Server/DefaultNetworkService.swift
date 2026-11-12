@@ -126,7 +126,8 @@ public actor DefaultNetworkService: NetworkService {
         }
 
         do {
-            _ = try AliasPolicy.validate(aliases: aliases,
+            _ = try AliasPolicy.validate(
+                aliases: aliases,
                 hostname: try? DNSName(AttachmentOptions.canonicalHostname(hostname)),
                 network: network.id, allowSharedLocalAliases: true)
         } catch {
@@ -290,7 +291,8 @@ public actor DefaultNetworkService: NetworkService {
         guard let macAddress = macAddresses[match.index] else {
             throw ContainerizationError(.invalidState, message: "missing MAC address for network attachment '\(match.hostname)'")
         }
-        let attachment = try attachment(status: status, hostname: match.hostname, aliases: [], index: match.index,
+        let attachment = try attachment(
+            status: status, hostname: match.hostname, aliases: [], index: match.index,
             macAddress: macAddress, ipv6Address: ipv6Addresses[match.index])
         switch match.kind {
         case .hostname: return NetworkMatch(attachment: attachment, kind: .hostname)

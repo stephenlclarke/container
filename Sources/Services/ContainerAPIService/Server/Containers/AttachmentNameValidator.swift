@@ -20,8 +20,8 @@ import DNSServer
 
 /// Validates the DNS names that the network attachments of a new container claim.
 ///
-/// A container claims the hostname of each attachment and the aliases it declares. Exact names must be
-/// unique across all containers, whether they are running or stopped. A subtree alias such as
+/// The strict policy requires exact names to be unique across containers. The fork uses
+/// `validateSharedAliases` for network-scoped service discovery. A subtree alias such as
 /// `.example.test` must be rooted at a name that the same attachment owns, so a container cannot claim
 /// the part of the namespace below another container's name.
 enum AttachmentNameValidator {
@@ -102,7 +102,8 @@ enum AttachmentNameValidator {
     static func validateSharedAliases(networks: [AttachmentConfiguration]) throws {
         for attachment in networks {
             do {
-                _ = try AliasPolicy.validate(aliases: attachment.options.aliases,
+                _ = try AliasPolicy.validate(
+                    aliases: attachment.options.aliases,
                     hostname: try? DNSName(AttachmentOptions.canonicalHostname(attachment.options.hostname)),
                     network: attachment.network, allowSharedLocalAliases: true)
             } catch {
@@ -118,9 +119,13 @@ enum AttachmentNameValidator {
     /// other containers, so a stored container with bad names fails to start with an explanation.
     ///
     /// - Throws: `ContainerizationError` with code `.invalidState` if the stored names break a rule.
-    static func validateStored(id: String, networks: [AttachmentConfiguration]) throws {
+    static func validateStored(id: String, networks: [AttachmentConfiguration], allowSharedAliases: Bool = false) throws {
         do {
-            try validate(networks: networks, existing: [])
+            if allowSharedAliases {
+                try validateSharedAliases(networks: networks)
+            } else {
+                try validate(networks: networks, existing: [])
+            }
         } catch let error as ContainerizationError {
             throw ContainerizationError(
                 .invalidState,

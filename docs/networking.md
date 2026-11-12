@@ -1,16 +1,21 @@
 # Networking
 
-Learn how `container` networks containers with one another, with the host, and with
+Learn how `container` networks containers with one another, with the host, and
+with
 external systems.
 
-Running `container system start` creates a vmnet network named `default`, to which your
-containers attach unless you specify otherwise. Every container gets an IP address on
-its network, always reachable by that IP from the host and from other containers on the
+Running `container system start` creates a vmnet network named `default`, to
+which your
+containers attach unless you specify otherwise. Every container gets an IP
+address on
+its network, always reachable by that IP from the host and from other containers
+on the
 same network (find it with `container inspect <name>`).
 
 ## Set up DNS-based container names
 
-Reaching a container by name instead of IP goes through `container`'s embedded DNS
+Reaching a container by name instead of IP goes through `container`'s embedded
+DNS
 service. Set this up in two steps:
 
 ### Step 1: Tell the `container` service what domain to use
@@ -29,39 +34,48 @@ container system stop
 container system start
 ```
 
-From this point on, every container you run gets registered under `<name>.test` inside
-`container`'s DNS service, and every container's own DNS resolver is configured to look
+From this point on, every container you run gets registered under `<name>.test`
+inside
+`container`'s DNS service, and every container's own DNS resolver is configured
+to look
 up `.test` names there too.
 
 ### Step 2: Tell macOS to use that domain too
 
-Step 1 only affects the `container` service and the containers it runs — your Mac's own
-DNS resolver still knows nothing about `test`. Point it at `container`'s DNS service:
+Step 1 only affects the `container` service and the containers it runs — your
+Mac's own
+DNS resolver still knows nothing about `test`. Point it at `container`'s DNS
+service:
 
 ```bash
 sudo container system dns create test
 ```
 
 Enter your administrator password when prompted. This writes a resolver file to
-`/etc/resolver/` that tells macOS: for any `*.test` query, ask `127.0.0.1` instead of
+`/etc/resolver/` that tells macOS: for any `*.test` query, ask `127.0.0.1`
+instead of
 your normal DNS server.
 
-Both steps are needed. See [`[dns]` reference](./container-system-config.md#dns) for the
+Both steps are needed. See [`[dns]` reference](./container-system-config.md#dns)
+for the
 config-key-level detail.
 
 With both steps done, confirm it end-to-end from your Mac:
 
 ```console
-% container run -d --rm --name my-web-server python:alpine python3 -m http.server 8000
+% container run -d --rm --name my-web-server python:alpine python3 -m \
+  http.server 8000
 % curl http://my-web-server.test:8000
 ```
 
-See [Host integration](./host-integration.md) for the reverse direction — reaching a
+See [Host integration](./host-integration.md) for the reverse direction —
+reaching a
 service running on your Mac from inside a container.
 
 ## Set default DNS settings for containers
 
-To avoid passing `--dns`, `--dns-search`, and `--dns-option` on every `container run`,
+To avoid passing `--dns`, `--dns-search`, and `--dns-option` on every `container
+run`,
 `container build`, or `container builder start` invocation, set defaults in
 `~/.config/container/config.toml`:
 
@@ -73,14 +87,18 @@ searchDomains = ["corp.local", "lab.corp.local"]
 options = ["ndots:2", "timeout:1"]
 ```
 
-CLI flags override these defaults when provided. Use `container run --no-dns` to skip DNS
-configuration entirely. The top-level [`[dns]`](./container-system-config.md#dns) section
-configures the internal DNS domain used by the host and API server. Restart the daemon
+CLI flags override these defaults when provided. Use `container run --no-dns` to
+skip DNS
+configuration entirely. The top-level
+[`[dns]`](./container-system-config.md#dns) section
+configures the internal DNS domain used by the host and API server. Restart the
+daemon
 (`container system stop && container system start`) for changes to take effect.
 
 ## Container-to-container networking
 
-From one container, use another container's DNS name to reach a service it exposes.
+From one container, use another container's DNS name to reach a service it
+exposes.
 This requires the DNS setup above ([Set up DNS-based container
 names](#set-up-dns-based-container-names)):
 
@@ -91,27 +109,40 @@ container stop http-server
 ```
 
 > [!WARNING]
-> This works for containers on the `default` network using a domain-qualified name
-> (`http-server.test`, as above). It does **not** currently work for looking up another
-> container by its *bare* hostname (no domain suffix) on a custom network created with
-> `container network create` — the kind of zero-configuration, Compose-style service
+> This works for containers on the `default` network using a domain-qualified
+name
+> (`http-server.test`, as above). It does **not** currently work for looking up
+another
+> container by its *bare* hostname (no domain suffix) on a custom network
+created with
+> `container network create` — the kind of zero-configuration, Compose-style
+service
 > discovery some users expect. That gap is tracked upstream as
-> [apple/container#1809](https://github.com/apple/container/issues/1809) (open feature
+> [apple/container#1809](https://github.com/apple/container/issues/1809) (open
+feature
 > request, not yet implemented) and related broader reports in
-> [apple/container#856](https://github.com/apple/container/issues/856). Until resolved,
-> reach a container on a custom network by its IP address instead (`container inspect
+> [apple/container#856](https://github.com/apple/container/issues/856). Until
+resolved,
+> reach a container on a custom network by its IP address instead (`container
+inspect
 > <name>` to find it).
 
 ## Forward traffic from `localhost` to your container
 
-Use the `--publish` option to forward TCP or UDP traffic from your loopback IP to the container you run. The option value has the form `[host-ip:]host-port:container-port[/protocol]`, where protocol may be `tcp` or `udp`, case insensitive.
+Use the `--publish` option to forward TCP or UDP traffic from your loopback IP
+to the container you run. The option value has the form
+`[host-ip:]host-port:container-port[/protocol]`, where protocol may be `tcp` or
+`udp`, case insensitive.
 
-If your container attaches to multiple networks, the ports you publish forward to the IP address of the interface attached to the first network.
+If your container attaches to multiple networks, the ports you publish forward
+to the IP address of the interface attached to the first network.
 
-To forward requests from port 8080 on the IPv4 loopback IP to a NodeJS webserver on container port 8000, run:
+To forward requests from port 8080 on the IPv4 loopback IP to a NodeJS webserver
+on container port 8000, run:
 
 ```bash
-container run -d --rm -p 127.0.0.1:8080:8000 node:latest npx http-server -a :: -p 8000
+container run -d --rm -p 127.0.0.1:8080:8000 node:latest npx http-server -a \
+  :: -p 8000
 ```
 
 Test access using `curl`:
@@ -125,14 +156,19 @@ Test access using `curl`:
     <meta name="viewport" content="width=device-width">
     <title>Index of /</title>
 ...
-<br><address>Node.js v25.2.1/ <a href="https://github.com/http-party/http-server">http-server</a> server running @ 127.0.0.1:8080</address>
+<br>
+<address>Node.js v25.2.1/ <a
+href="https://github.com/http-party/http-server">http-server</a>
+server running @ 127.0.0.1:8080</address>
 </body></html>
 ```
 
-To forward requests from port 8080 on the IPv6 loopback IP to a NodeJS webserver on container port 8000, run:
+To forward requests from port 8080 on the IPv6 loopback IP to a NodeJS webserver
+on container port 8000, run:
 
 ```bash
-container run -d --rm -p '[::1]:8080:8000' node:latest npx http-server -a :: -p 8000
+container run -d --rm -p '[::1]:8080:8000' node:latest npx http-server -a :: \
+  -p 8000
 ```
 
 Test access using `curl`:
@@ -146,17 +182,24 @@ Test access using `curl`:
     <meta name="viewport" content="width=device-width">
     <title>Index of /</title>
 ...
-<br><address>Node.js v25.2.1/ <a href="https://github.com/http-party/http-server">http-server</a> server running @ [::1]:8080</address>
+<br>
+<address>Node.js v25.2.1/ <a
+href="https://github.com/http-party/http-server">http-server</a>
+server running @ [::1]:8080</address>
 </body></html>
 ```
 
 ## Set a custom MAC address for your container
 
-Use the `mac` option to specify a custom MAC address for your container's network interface. This is useful for:
+Use the `mac` option to specify a custom MAC address for your container's
+network interface. This is useful for:
+
 - Network testing scenarios requiring predictable MAC addresses
 - Consistent network configuration across container restarts
 
-The MAC address must be in the format `XX:XX:XX:XX:XX:XX` (with colons or hyphens as separators). Set the two least significant bits of the first octet to `10` (locally signed, unicast address).
+The MAC address must be in the format `XX:XX:XX:XX:XX:XX` (with colons or
+hyphens as separators). Set the two least significant bits of the first octet to
+`10` (locally signed, unicast address).
 
 ```bash
 container run --network default,mac=02:42:ac:11:00:02 ubuntu:latest
@@ -166,7 +209,8 @@ To assign a stable interface name inside the guest, append `interface=NAME` to
 the network attachment:
 
 ```bash
-container run --network default,interface=frontend ubuntu:latest ip link show frontend
+container run --network default,interface=frontend ubuntu:latest ip link \
+  show frontend
 ```
 
 To configure additional IPv4 or IPv6 addresses, repeat `address=IP`. An address
@@ -185,57 +229,104 @@ prefix, from the configured subnet. The service reserves requested addresses so
 later dynamic attachments cannot receive them:
 
 ```bash
-container run --network appnet,ip=192.0.2.8,ip6=2001:db8::8 ubuntu:latest ip address show eth0
+container run --network appnet,ip=192.0.2.8,ip6=2001:db8::8 ubuntu:latest ip \
+  address show eth0
 ```
 
-To verify the MAC address is set correctly, read the interface MAC directly from sysfs inside the container:
+To verify the MAC address is set correctly, read the interface MAC directly from
+sysfs inside the container:
 
 ```console
-% container run --rm --network default,mac=02:42:ac:11:00:02 ubuntu:latest cat /sys/class/net/eth0/address
+% container run --rm --network default,mac=02:42:ac:11:00:02 ubuntu:latest \
+  cat /sys/class/net/eth0/address
 02:42:ac:11:00:02
 ```
 
-If you don't specify a MAC address, `container` will generate one for you. The generated address has a first nibble set to hexadecimal `f` (`fX:XX:XX:XX:XX:XX`) in case you want to minimize the very small chance of conflict between your MAC address and generated addresses.
+If you don't specify a MAC address, `container` will generate one for you. The
+generated address has a first nibble set to hexadecimal `f`
+(`fX:XX:XX:XX:XX:XX`) in case you want to minimize the very small chance of
+conflict between your MAC address and generated addresses.
 
 ## Give a container additional DNS names
 
-By default a container is reachable by one DNS name, built from its name and your DNS domain. Use the `alias` option of `--network` to give a container more names that resolve to the same address. This is useful when one container, such as a reverse proxy or an ingress gateway, answers for several names, or for every name under a domain.
+By default a container is reachable by one DNS name, built from its name and
+your DNS domain. Use the `alias` option of `--network` to give a container more
+names that resolve to the same address. This is useful when one container, such
+as a reverse proxy or an ingress gateway, answers for several names, or for
+every name under a domain.
 
-Aliases are served by the same DNS service as container names, so set up a DNS domain first, as described in [Set up DNS-based container names](#set-up-dns-based-container-names). The examples below assume the domain is `test`.
+Aliases are served by the same DNS service as container names, so set up a DNS
+domain first, as described in [Set up DNS-based container
+names](#set-up-dns-based-container-names). The examples below assume the domain
+is `test`.
 
-An alias is either an exact name, or a name with a leading dot that matches every name below it. Repeat `alias` to add more than one:
+An alias is either an exact name, or a name with a leading dot that matches
+every name below it. Repeat `alias` to add more than one:
 
 ```bash
-container run -d --name gateway --network default,alias=api.test,alias=.gateway.test nginx:latest
+container run -d --name gateway --network \
+  default,alias=api.test,alias=.gateway.test nginx:latest
 ```
 
-This container is reachable as `gateway.test` by its name, as `api.test` by the exact alias, and as `web.gateway.test`, `a.b.gateway.test` and any other name below `gateway.test` by the subtree alias:
+This container is reachable as `gateway.test` by its name, as `api.test` by the
+exact alias, and as `web.gateway.test`, `a.b.gateway.test` and any other name
+below `gateway.test` by the subtree alias:
 
 ```console
 % curl http://web.gateway.test
 ```
 
-A name with a leading dot matches every name below it, at one or more labels, but not the name itself. `.gateway.test` matches `web.gateway.test` and `a.b.gateway.test`, and does not match `gateway.test`, which the container already has as its own name. Matching is by whole labels, so `evilgateway.test` does not match. Names are not case sensitive.
+A name with a leading dot matches every name below it, at one or more labels,
+but not the name itself. `.gateway.test` matches `web.gateway.test` and
+`a.b.gateway.test`, and does not match `gateway.test`, which the container
+already has as its own name. Matching is by whole labels, so `evilgateway.test`
+does not match. Names are not case sensitive.
 
-Like container names, an alias that has no dot gets your default DNS domain. With the domain `test`, `alias=api` is `api.test` and `alias=.gateway` is `.gateway.test`, so the example above can also be written `--name gateway --network default,alias=api,alias=.gateway`. A name that contains a dot is used as written, so `alias=api.internal` is not given the domain. The names are stored with the domain added, so they stay the same if you later change the default domain.
+Like container names, an alias that has no dot gets your default DNS domain.
+With the domain `test`, `alias=api` is `api.test` and `alias=.gateway` is
+`.gateway.test`, so the example above can also be written `--name gateway
+--network default,alias=api,alias=.gateway`. A name that contains a dot is used
+as written, so `alias=api.internal` is not given the domain. The names are
+stored with the domain added, so they stay the same if you later change the
+default domain.
 
-An alias that contains `*` is rejected. Use the leading-dot form instead, which also avoids quoting in the shell.
+An alias that contains `*` is rejected. Use the leading-dot form instead, which
+also avoids quoting in the shell.
 
 ### Rules for aliases
 
-* A name with a leading dot must be below a name that the same network attachment owns, which is its own hostname or one of its exact aliases. `gateway.test` with `.gateway.test` is allowed. `.apps.test` on a container that has no `apps.test` name is not.
-* An exact alias needs at least two labels, such as `api.test`, and the part after the leading dot of a subtree alias needs at least two labels too. A name with a single label is not under any domain, so macOS would never send queries for it to the container DNS service. When a default DNS domain is configured, a name without a dot gets the domain, as described above. When none is configured, `api` and `.test` are rejected.
-* Every exact name is unique across all containers, whether they are running or stopped. A new container cannot use an alias or a hostname that another container already has, and an alias cannot match another container's name.
-* A container can have at most 32 aliases for each network.
-* Aliases are fixed when the container is created.
+- A name with a leading dot must be below a name that the same network
+  attachment owns, which is its own hostname or one of its exact aliases.
+  `gateway.test` with `.gateway.test` is allowed. `.apps.test` on a container
+  that has no `apps.test` name is not.
+- A subtree alias needs at least two labels after the leading dot. Exact aliases
+  can use a single label for service discovery within a container network.
+  Without a default DNS domain, macOS does not send queries for those short
+  names to the container DNS service.
+- Container names must be unique on each network. Several containers on the same
+  network can share an alias. The network DNS service returns all addresses for
+  a shared exact alias. This fork keeps shared aliases for service discovery.
+- A container can have at most 32 aliases for each network.
+- Aliases are fixed when the container is created.
 
-The exact name always wins over a subtree. If another container is named `db.gateway.test`, then `db.gateway.test` goes to that container, and the other names below `gateway.test` go to the gateway.
+An exact match always wins over a subtree. Host DNS chooses the primary
+container name first, then an exact alias, then the longest matching subtree. If
+several containers share the selected alias, host DNS chooses one address;
+network DNS can return all matching addresses. If another container is named
+`db.gateway.test`, then `db.gateway.test` goes to that container, and the other
+names below `gateway.test` go to the gateway.
 
 ### Things to know
 
-* A proxy that answers for every name under a domain receives the requested name in the `Host` header of each request. Treat that header as untrusted input.
-* macOS sends a query to the container DNS service only for domains you registered with `sudo container system dns create`. An alias outside those domains is not reachable from your Mac. A domain created with `--localhost` is answered by a different service that does not know about aliases, so aliases under it do not resolve.
-* To check an alias without changing your Mac's resolver configuration, query the DNS service directly:
+- A proxy that answers for every name under a domain receives the requested name
+  in the `Host` header of each request. Treat that header as untrusted input.
+- macOS sends a query to the container DNS service only for domains you
+  registered with `sudo container system dns create`. An alias outside those
+  domains is not reachable from your Mac. A domain created with `--localhost` is
+  answered by a different service that does not know about aliases, so aliases
+  under it do not resolve.
+- To check an alias without changing your Mac's resolver configuration, query
+  the DNS service directly:
 
   ```console
   % dig +short @127.0.0.1 -p 2053 web.gateway.test
@@ -247,7 +338,8 @@ The exact name always wins over a subtree. If another container is named `db.gat
 > [!NOTE]
 > This feature is available on macOS 26 and later.
 
-Running `container system start` creates a vmnet network named `default` to which your containers will attach unless you specify otherwise.
+Running `container system start` creates a vmnet network named `default` to
+which your containers will attach unless you specify otherwise.
 
 You can create a separate isolated network using `container network create`.
 
@@ -260,7 +352,8 @@ container network create foo
 You can also specify custom IPv4 and IPv6 subnets when creating a network:
 
 ```bash
-container network create foo --subnet 192.168.100.0/24 --subnet-v6 fd00:1234::/64
+container network create foo --subnet 192.168.100.0/24 --subnet-v6 \
+  fd00:1234::/64
 ```
 
 To select a specific IPv6 gateway, provide `--gateway-v6` with an address in the
@@ -268,10 +361,13 @@ IPv6 subnet. When omitted, the vmnet network uses the first address in that
 subnet:
 
 ```bash
-container network create foo --subnet-v6 fd00:1234::/64 --gateway-v6 fd00:1234::53
+container network create foo --subnet-v6 fd00:1234::/64 --gateway-v6 \
+  fd00:1234::53
 ```
 
-The `foo` network, the default network, and any other networks you create are isolated from one another. A container on one network has no connectivity to containers on other networks.
+The `foo` network, the default network, and any other networks you create are
+isolated from one another. A container on one network has no connectivity to
+containers on other networks.
 
 Run `container network list` to see the networks that exist:
 
@@ -304,11 +400,17 @@ container stop my-web-server
 container network delete foo
 ```
 
-Networks support both IPv4 and IPv6. When creating a network without explicit subnet options, the system uses default values if configured in your runtime configuration file (see [Configure default network subnets](#configure-default-network-subnets)), or automatically allocates subnets. The system validates that custom subnets don't overlap with existing networks.
+Networks support both IPv4 and IPv6. When creating a network without explicit
+subnet options, the system uses default values if configured in your runtime
+configuration file (see [Configure default network
+subnets](#configure-default-network-subnets)), or automatically allocates
+subnets. The system validates that custom subnets don't overlap with existing
+networks.
 
 ## Configure default network subnets
 
-You can customize the default IPv4 and IPv6 subnets used for new networks by editing your runtime configuration file at `~/.config/container/config.toml`:
+You can customize the default IPv4 and IPv6 subnets used for new networks by
+editing your runtime configuration file at `~/.config/container/config.toml`:
 
 ```toml
 [network]
@@ -316,4 +418,5 @@ subnet = "192.168.100.1/24"
 subnetv6 = "fd00:abcd::/64"
 ```
 
-These settings apply to networks created without explicit `--subnet` or `--subnet-v6` options.
+These settings apply to networks created without explicit `--subnet` or
+`--subnet-v6` options.

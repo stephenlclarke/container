@@ -37,8 +37,7 @@ public struct ClusterWriteConfig: AsyncParsableCommand {
     var kubeconfig: String?
 
     public func run() async throws {
-        LoggingSystem.bootstrap { _ in StderrLogHandler() }
-        let log = Logger(label: ClusterHelper.pluginName)
+        let log = Logger(label: ClusterHelper.pluginName, factory: { _ in StderrLogHandler() })
 
         let targetPath = kubeconfig.map { FilePath($0) }
         let client = ContainerClient()

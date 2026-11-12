@@ -341,20 +341,6 @@ extension Builder {
         return arguments
     }
 
-    static func dnsOverridesChanged(
-        existingDNS: ContainerConfiguration.DNSConfiguration?,
-        dnsNameservers: [String],
-        dnsDomain: String?,
-        dnsSearchDomains: [String],
-        dnsOptions: [String]
-    ) -> Bool {
-        (!dnsNameservers.isEmpty && existingDNS?.nameservers != dnsNameservers)
-            || (dnsDomain != nil && existingDNS?.domain != dnsDomain)
-            || (!dnsSearchDomains.isEmpty && existingDNS?.searchDomains != dnsSearchDomains)
-            || (!dnsOptions.isEmpty && existingDNS?.options != dnsOptions)
-    }
-
-
     static func dnsConfigurationChanged(
         existing: ContainerConfiguration.DNSConfiguration?,
         desired: ContainerConfiguration.DNSConfiguration

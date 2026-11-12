@@ -207,7 +207,7 @@ extension ClientImage {
     }
 
     private static func getOrNil(reference: String, containerSystemConfig: ContainerSystemConfig) async throws -> ClientImage? {
-        try self._search(reference: reference, in: try await self.list(), containerSystemConfig: containerSystemConfig)
+        try self.match(reference: reference, in: try await self.list(), containerSystemConfig: containerSystemConfig)
     }
 
     /// Returns the total size of an image in bytes.

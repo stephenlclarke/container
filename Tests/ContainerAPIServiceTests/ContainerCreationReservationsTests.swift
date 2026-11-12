@@ -114,7 +114,7 @@ struct ContainerCreationReservationsTests {
             pluginDirectories: [],
             pluginFactories: []
         )
-        let service = try ContainersService(
+        let service = try await ContainersService(
             appRoot: appRoot,
             pluginLoader: pluginLoader,
             containerSystemConfig: ContainerSystemConfig(),

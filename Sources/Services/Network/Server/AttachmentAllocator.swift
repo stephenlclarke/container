@@ -143,7 +143,7 @@ actor AttachmentAllocator {
         return index
     }
 
-    /// Retrieve the allocator index for a hostname. Aliases are not considered.
+    /// Retrieve the first allocator index for a hostname or alias.
     func lookup(hostname: String) async throws -> UInt32? {
         try await lookupAll(hostname: hostname).first
     }

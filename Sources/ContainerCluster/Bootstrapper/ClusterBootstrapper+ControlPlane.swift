@@ -30,7 +30,6 @@ extension ClusterBootstrapper {
         _ standardInput: Data
     ) async throws -> (code: Int32, output: String)
 
-
     func bootstrapControlPlane(
         nodeID: String, apiServerSANs: [String], advertiseAddress: String,
         schedulable: Bool, client: ContainerClient, log: Logger
@@ -85,7 +84,8 @@ extension ClusterBootstrapper {
             log.info("Skipping CNI installation", metadata: ["node": "\(nodeID)"])
         } else {
             log.info("Applying CNI manifest", metadata: ["node": "\(nodeID)"])
-            let manifest = try await Self.resolveCNIManifest(customManifest: cniManifest, log: log)
+            let manifest: String
+            if let cniManifest { manifest = cniManifest } else { manifest = try await Self.loadCNIManifest(path: cni, log: log) }
             try await Self.applyCNIManifest(nodeID: nodeID, manifest: manifest, client: client, log: log) { id, executable, arguments, client, input in
                 try await ClusterHelper.execCapture(containerId: id, executable: executable, arguments: arguments, client: client, standardInput: input)
             }

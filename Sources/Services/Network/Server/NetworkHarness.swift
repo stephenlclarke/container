@@ -46,7 +46,6 @@ public actor NetworkHarness: Sendable {
         let requestedIPv6Address = try message.requestedIPv6Address()
         let retainOnDisconnect = message.bool(key: NetworkKeys.retainOnDisconnect.rawValue)
 
-
         let (attachment:attachment, additionalData:additionalData) = try await service.allocate(
             hostname: hostname,
             aliases: aliases,

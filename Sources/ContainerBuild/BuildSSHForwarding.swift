@@ -140,7 +140,8 @@ public struct BuildSSHForwarding: Equatable, Sendable {
         return value.isEmpty ? nil : value
     }
 
-    private static func isUnixSocket(_ path: String) -> Bool {
+    @usableFromInline
+    internal static func isUnixSocket(_ path: String) -> Bool {
         let attributes = try? FileManager.default.attributesOfItem(atPath: path)
         return attributes?[.type] as? FileAttributeType == .typeSocket
     }

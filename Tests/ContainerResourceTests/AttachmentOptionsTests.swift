@@ -53,7 +53,7 @@ struct AttachmentOptionsTests {
     @Test("Aliases round trip through JSON")
     func aliasesRoundTrip() throws {
         let aliases = ["api.example.test", ".example.test"]
-        let original = AttachmentOptions(hostname: "foo.test.", mtu: 1500, aliases: aliases)
+        let original = AttachmentOptions(hostname: "foo.test.", aliases: aliases, mtu: 1500)
         let decoded = try JSONDecoder().decode(AttachmentOptions.self, from: JSONEncoder().encode(original))
         #expect(decoded.hostname == original.hostname)
         #expect(decoded.mtu == original.mtu)

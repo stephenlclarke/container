@@ -102,7 +102,7 @@ public actor ClusterService {
                 guard let snapshot = byID[node.name] else {
                     return ClusterNodeState(name: node.name, status: .stopped)
                 }
-                let addresses = snapshot.networks.map { $0.ipv4Address.address.description }
+                let addresses = snapshot.networks.compactMap { $0.ipv4Address?.address.description }
                 let ports = snapshot.configuration.publishedPorts.map { "\($0.hostPort)->\($0.containerPort)" }
                 return ClusterNodeState(
                     name: node.name, status: snapshot.status,

@@ -560,6 +560,27 @@ import Testing
         #expect(secretLeak == nil, "no entry for the external file should appear in walk() results: \(infos.map { $0.name })")
     }
 
+    @Test(arguments: [false, true])
+    func readKeepsOriginalContextWhenRootPathIsReplaced(named: Bool) async throws {
+        let root = named ? base.appendingPathComponent("shared") : contextDir
+        if named { try fm.createDirectory(at: root, withIntermediateDirectories: true) }
+        try write("original", to: root.appendingPathComponent("value.txt"))
+        let fssync = try BuildFSSync(contextDir, namedContexts: named ? ["shared": root.path] : [:])
+        try fm.moveItem(at: root, to: base.appendingPathComponent("original-context"))
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try write("replacement", to: root.appendingPathComponent("value.txt"))
+
+        var packet = readPacket(source: "value.txt")
+        if named { packet.metadata = ["dir-name": "shared"] }
+        let (stream, sender) = AsyncStream<ClientStream>.makeStream()
+        defer { sender.finish() }
+        try await fssync.read(sender, packet, "context-pin")
+        sender.finish()
+        var iterator = stream.makeAsyncIterator()
+        let response = try #require(await iterator.next())
+        #expect(String(data: response.buildTransfer.data, encoding: .utf8) == "original")
+    }
+
     @Test func readRejectsSymlinkEscapeFromNamedContext() async throws {
         let shared = base.appendingPathComponent("shared")
         try fm.createDirectory(at: shared, withIntermediateDirectories: true)

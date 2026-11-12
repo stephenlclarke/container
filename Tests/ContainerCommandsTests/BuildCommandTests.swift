@@ -18,8 +18,8 @@ import ArgumentParser
 import ContainerResource
 import Foundation
 import Testing
-@testable import ContainerBuild
 
+@testable import ContainerBuild
 @testable import ContainerCommands
 
 struct BuildCommandTests {
@@ -78,42 +78,15 @@ struct BuildCommandTests {
         )
     }
 
-    @Test
-    func builderDNSChangeDetectionChecksEveryRequestedOverride() {
-        let existingDNS = ContainerConfiguration.DNSConfiguration(
-            nameservers: ["192.0.2.53"],
-            domain: "build.internal",
-            searchDomains: ["old.internal"],
-            options: ["ndots:1"]
-        )
-
-        #expect(
-            !Builder.dnsOverridesChanged(
-                existingDNS: existingDNS,
-                dnsNameservers: ["192.0.2.53"],
-                dnsDomain: "build.internal",
-                dnsSearchDomains: ["old.internal"],
-                dnsOptions: ["ndots:1"]
-            )
-        )
-        #expect(
-            Builder.dnsOverridesChanged(
-                existingDNS: existingDNS,
-                dnsNameservers: ["192.0.2.53"],
-                dnsDomain: "build.internal",
-                dnsSearchDomains: ["new.internal"],
-                dnsOptions: ["ndots:1"]
-            )
-        )
-        #expect(
-            Builder.dnsOverridesChanged(
-                existingDNS: existingDNS,
-                dnsNameservers: ["192.0.2.53"],
-                dnsDomain: "build.internal",
-                dnsSearchDomains: ["old.internal"],
-                dnsOptions: ["timeout:2"]
-            )
-        )
+    @Test func builderDNSChangeDetectionChecksSearchDomainsAndOptions() {
+        let existing = ContainerConfiguration.DNSConfiguration(nameservers: ["192.0.2.53"], domain: "build.internal", searchDomains: ["old.internal"], options: ["ndots:1"])
+        #expect(!Builder.dnsConfigurationChanged(existing: existing, desired: existing))
+        let newSearch = ContainerConfiguration.DNSConfiguration(
+            nameservers: existing.nameservers, domain: existing.domain, searchDomains: ["new.internal"], options: existing.options)
+        #expect(Builder.dnsConfigurationChanged(existing: existing, desired: newSearch))
+        let newOptions = ContainerConfiguration.DNSConfiguration(
+            nameservers: existing.nameservers, domain: existing.domain, searchDomains: existing.searchDomains, options: ["timeout:2"])
+        #expect(Builder.dnsConfigurationChanged(existing: existing, desired: newOptions))
     }
 
     @Test

@@ -98,7 +98,7 @@ struct TestCLINetworkAlias {
             try? f.doRemove(name)
         }
         let container = try f.inspectContainer(name)
-        return "\(container.networks[0].ipv4Address.address)"
+        return "\(try #require(container.networks.first?.ipv4Address).address)"
     }
 
     @Test func testAliasesResolveToTheContainer() async throws {

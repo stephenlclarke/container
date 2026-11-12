@@ -17,12 +17,14 @@
 import ArgumentParser
 import ContainerAPIClient
 import ContainerLog
+import ContainerPersistence
 import ContainerPlugin
 import ContainerVersion
 import ContainerizationError
 import ContainerizationOS
 import Foundation
 import Logging
+import SystemPackage
 import TerminalProgress
 
 // This logger is only used until `asyncCommand.run()`.

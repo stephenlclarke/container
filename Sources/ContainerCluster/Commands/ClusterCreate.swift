@@ -72,7 +72,7 @@ public struct ClusterCreate: AsyncParsableCommand {
     public func validate() throws {
         // Fail before anything is created, the same as invalid --workers values do.
         do {
-            if let cpus = resourceFlags.cpus { _ = try Parser.cpus(cpus) }
+            if let cpus = resourceFlags.cpus { _ = try Parser.fractionalCPUs(cpus) }
             if let memory = resourceFlags.memory { _ = try Parser.memoryInBytes(memory) }
         } catch {
             throw ValidationError(wrapping: error)
@@ -89,8 +89,7 @@ public struct ClusterCreate: AsyncParsableCommand {
     }
 
     public func run() async throws {
-        LoggingSystem.bootstrap { _ in StderrLogHandler() }
-        let log = Logger(label: ClusterHelper.pluginName)
+        let log = Logger(label: ClusterHelper.pluginName, factory: { _ in StderrLogHandler() })
 
         let skipCNI = cni?.uppercased() == ClusterHelper.noCNIName
         let cniManifest = try Self.snapshotCNIManifest(at: skipCNI ? nil : cni)

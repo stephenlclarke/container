@@ -993,7 +993,7 @@ public actor ContainersService {
         }
     }
 
-    private func resumeInterruptedRemovals() async {
+    func resumeInterruptedRemovals() async {
         let containerIDs = lifecycleRecords.compactMap { id, record in
             record.intent.removalRequested ? id : nil
         }
@@ -2341,7 +2341,7 @@ public actor ContainersService {
 
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let (config, _) = try Self.getContainerConfiguration(at: path)
-            try AttachmentNameValidator.validateSharedAliases(networks: config.networks)
+            try AttachmentNameValidator.validateStored(id: id, networks: config.networks, allowSharedAliases: true)
             return ContainerBootstrapPlan(
                 containerGeneration: state.generation,
                 operationGeneration: lifecycle.snapshot.operationGeneration,

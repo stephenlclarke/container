@@ -126,7 +126,9 @@ struct ContainerTestSupportTests {
         }
 
         try await withFakeContainerCLI {
-            try await ContainerFixture.with { fixture in
+            try await ContainerFixture.with(
+                identity: .init(name: Test.current?.name, identifier: Test.current.map { "\($0.id)" }, isParameterized: Test.Case.current?.isParameterized ?? false)
+            ) { fixture in
                 for command in ["build", "create", "run"] {
                     let result = try fixture.run([command, "example"])
                     #expect(
@@ -171,7 +173,9 @@ struct ContainerTestSupportTests {
     @Test
     func assertionsReportCommandFailuresWithoutTestingRuntime() async throws {
         try await withFakeContainerCLI {
-            try await ContainerFixture.with { fixture in
+            try await ContainerFixture.with(
+                identity: .init(name: Test.current?.name, identifier: Test.current.map { "\($0.id)" }, isParameterized: Test.Case.current?.isParameterized ?? false)
+            ) { fixture in
                 try fixture.assertContainerHasFile("fixture", at: "present")
                 try fixture.assertContainerMissingFile("fixture", at: "missing")
                 try fixture.assertImageBuilt("expected")
@@ -239,9 +243,13 @@ struct ContainerTestSupportTests {
                 *) exit 1 ;;
               esac
             fi
+            if [ "$1" = "system" ] && [ "$2" = "property" ] && [ "$3" = "list" ]; then
+              printf '%s\\n' '{"diagnosticKind":"container-system-config-inspection-v1","logging":{"diagnosticKind":"logging-config-inspection-v1"},"registry":{"domain":"registry.example.test"}}'
+              exit 0
+            fi
             if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
               case "$3" in
-                expected) printf '%s\\n' '[{"configuration":{"name":"expected"},"variants":[]}]' ;;
+                expected) printf '%s\\n' '[{"configuration":{"name":"registry.example.test/expected:latest"},"variants":[]}]' ;;
                 mismatched) printf '%s\\n' '[{"configuration":{"name":"other"},"variants":[]}]' ;;
                 *) exit 1 ;;
               esac

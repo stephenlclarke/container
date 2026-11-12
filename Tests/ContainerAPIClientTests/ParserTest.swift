@@ -1388,7 +1388,7 @@ struct ParserTest {
             guard let error = error as? ContainerizationError else {
                 return false
             }
-            return error.description.contains("invalid network alias value: hostname is empty")
+            return error.code == .invalidArgument && error.description.contains("invalid alias")
         }
     }
 
@@ -1411,7 +1411,7 @@ struct ParserTest {
     }
 
     @Test
-    func testParseNetworkWithAliases() throws {
+    func testParseNetworkWithSubtreeAliases() throws {
         let result = try Parser.network("backend,alias=api.example.test,alias=.example.test")
         #expect(result.name == "backend")
         #expect(result.aliases == ["api.example.test", ".example.test"])
@@ -2470,6 +2470,14 @@ struct ParserTest {
         #expect(masked != readonly)
     }
 
+    @Test func cpuQuotaRejectsRoundedIntegerBoundary() throws {
+        #expect(throws: ContainerizationError.self) {
+            try Parser.resources(
+                cpus: Double(Int64.max) / 100_000, memory: nil,
+                defaultCPUs: 2, defaultMemory: MemorySize("2g"))
+        }
+    }
+
     @Test func cpusReturnsTheValidatedCount() throws {
         #expect(try Parser.cpus(1) == 1)
         #expect(throws: ContainerizationError.self) { try Parser.cpus(0) }
@@ -2483,7 +2491,7 @@ struct ParserTest {
 
     @Test func resourcesValidateExplicitValues() {
         #expect(throws: ContainerizationError.self) {
-            try Parser.resources(cpus: 0, memory: nil, defaultCPUs: 2, defaultMemory: MemorySize("2g"))
+            try Parser.resources(cpus: -1, memory: nil, defaultCPUs: 2, defaultMemory: MemorySize("2g"))
         }
         #expect(throws: ContainerizationError.self) {
             try Parser.resources(cpus: nil, memory: "1m", defaultCPUs: 2, defaultMemory: MemorySize("2g"))

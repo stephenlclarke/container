@@ -18,6 +18,7 @@ import ArgumentParser
 import ContainerAPIClient
 import ContainerBuild
 import ContainerImagesServiceClient
+import ContainerLog
 import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
@@ -26,6 +27,7 @@ import ContainerizationError
 import ContainerizationOCI
 import ContainerizationOS
 import Foundation
+import Logging
 import NIO
 import TerminalProgress
 
@@ -117,7 +119,6 @@ public struct BuildOptions: ParsableArguments {
 
     @Option(name: .shortAndLong, help: ArgumentHelp("Path to Dockerfile", valueName: "path"))
     public var file: String?
-
 
     @Option(name: .shortAndLong, help: ArgumentHelp("Set a label", valueName: "key=val"))
     public var label: [String] = []

@@ -83,7 +83,11 @@ DEBUG_SYMBOL_PRODUCTS := \
 	container-runtime-linux \
 	container-network-vmnet \
 	machine-apiserver \
-	k8s
+	cluster \
+	cluster-hoststore \
+	container-core-clusters \
+	container-build \
+	container-builder
 HOMEBREW_ARCHIVE ?= bin/$(BUILD_CONFIGURATION)/container-homebrew-$(BUILD_CONFIGURATION)-arm64.tar.gz
 CODESIGN_OPTS ?= --force --sign - --timestamp=none
 
@@ -446,7 +450,11 @@ homebrew-package: build $(STAGING_DIR)
 	@$(PYTHON3) $(GELF_SERVICE_BUILD_TOOL) verify \
 		--archive "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.oci.tar)" \
 		--manifest "$(join $(STAGING_DIR), libexec/container/services/gelf/container-gelf-service.manifest.json)"
-	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/k8s/bin/k8s)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/cluster/bin/cluster)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/cluster-hoststore/bin/cluster-hoststore)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/container-core-clusters/bin/container-core-clusters)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/build/bin/build)"
+	@codesign $(CODESIGN_OPTS) --prefix=com.apple.container. "$(join $(STAGING_DIR), libexec/container/plugins/builder/bin/builder)"
 	@install scripts/ensure-container-stopped.sh "$(join $(STAGING_DIR), libexec/ensure-container-stopped.sh)"
 	@mkdir -p "$(dir $(HOMEBREW_ARCHIVE))"
 	@tar -czf "$(HOMEBREW_ARCHIVE)" -C "$(STAGING_DIR)" .
@@ -462,7 +470,7 @@ dsym:
 		--archive "$(DSYM_PATH)" \
 		$(foreach product,$(DEBUG_SYMBOL_PRODUCTS),--product "$(product)")
 
-.PHONY: test test-build-artifact-directory test-create-machine-user test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
+.PHONY: test test-build-artifact-directory test-debug-symbol-packaging test-homebrew-archive-checksum test-install-init test-verify-developer-id-archive
 test-build-artifact-directory:
 	@bash Tests/ScriptTests/TestBuildArtifactDirectory.sh
 
@@ -661,9 +669,14 @@ endef
 # root cannot lose that image and fall back to an external registry pull. Keep
 # the target non-parallel while allowing command-line PRESERVE_KERNELS=false
 # when a full app-root wipe is needed.
-.NOTPARALLEL: integration
-integration coverage-integration: PRESERVE_KERNELS = true
-integration: container init-block
+.NOTPARALLEL: integration integration-only
+integration integration-only coverage-integration: PRESERVE_KERNELS = true
+integration: container
+	@echo "HOSTNAME: $$(hostname)"
+	$(RUN_INTEGRATION)
+
+.PHONY: integration-only
+integration-only:
 	@echo "HOSTNAME: $$(hostname)"
 	$(RUN_INTEGRATION)
 

@@ -319,4 +319,18 @@ struct AttachmentNameValidatorTests {
             )
         }
     }
+    @Test func storedSharedLocalAliasesAreAccepted() throws {
+        try AttachmentNameValidator.validateStored(
+            id: "api", networks: [attachment("api", aliases: ["api", "service"])],
+            allowSharedAliases: true)
+    }
+
+    @Test func storedSharedMalformedAliasNamesTheContainer() {
+        expectError(.invalidState, containing: "container api") {
+            try AttachmentNameValidator.validateStored(
+                id: "api", networks: [attachment("api", aliases: ["*.test"])],
+                allowSharedAliases: true)
+        }
+    }
+
 }

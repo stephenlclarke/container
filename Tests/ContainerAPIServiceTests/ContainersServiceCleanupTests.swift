@@ -14,7 +14,6 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
-import ContainerAPIService
 import ContainerPersistence
 import ContainerPlugin
 import ContainerResource
@@ -22,6 +21,8 @@ import ContainerTestSupport
 import Foundation
 import Logging
 import Testing
+
+@testable import ContainerAPIService
 
 struct ContainersServiceCleanupTests {
     private enum Runtime {
@@ -121,13 +122,20 @@ struct ContainersServiceCleanupTests {
     }
 
     @Test
-    func bootReapRunsCleanup() async throws {
+    func bootRecoveryRunsCleanup() async throws {
         try await TemporaryStorage.withTempDir { root in
             let appRoot = URL(fileURLWithPath: root.string)
             let id = "reap-\(UUID())"
             let bundle = try Self.createBundle(appRoot: appRoot, id: id, removal: .auto)
+            try ContainerResource.Bundle(path: bundle).setDurably(
+                lifecycleState: ContainerLifecycleStateV1(
+                    startedDate: Date(timeIntervalSince1970: 1), exitCode: 0,
+                    exitedDate: Date(timeIntervalSince1970: 2)))
 
             let service = try await makeService(appRoot: appRoot, runtime: .installed)
+            // Startup resumes durable removal after network service registration.
+            #expect(FileManager.default.fileExists(atPath: bundle.path))
+            await service.resumeInterruptedRemovals()
 
             try Self.expectCleanup(appRoot: appRoot, id: id)
             #expect(!FileManager.default.fileExists(atPath: bundle.path))
@@ -154,7 +162,7 @@ struct ContainersServiceCleanupTests {
     }
 
     @Test
-    func bootDropsContainerWithMissingRuntime() async throws {
+    func bootPreservesContainerWithMissingRuntime() async throws {
         try await TemporaryStorage.withTempDir { root in
             let appRoot = URL(fileURLWithPath: root.string)
             let bundle = try Self.createBundle(appRoot: appRoot, id: "orphan-\(UUID())", removal: .auto)
@@ -162,7 +170,7 @@ struct ContainersServiceCleanupTests {
             let service = try await makeService(appRoot: appRoot, runtime: .missing)
 
             #expect(Self.cleanupArgs(appRoot: appRoot) == nil)
-            #expect(!FileManager.default.fileExists(atPath: bundle.path))
+            #expect(FileManager.default.fileExists(atPath: bundle.path))
             #expect(try await service.list().isEmpty)
         }
     }

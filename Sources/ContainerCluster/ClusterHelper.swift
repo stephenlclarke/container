@@ -39,7 +39,6 @@ public struct ClusterHelper {
         }
     }
 
-
     public static let pluginName: String = ResourcePluginValues.cluster
     public static let defaultName: String = "cluster-dev"
     public static let controlPlaneRoleName: String = ClusterConfiguration.controlPlaneRole

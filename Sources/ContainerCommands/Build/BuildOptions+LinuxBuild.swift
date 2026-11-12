@@ -20,6 +20,7 @@ import ContainerBuild
 import ContainerImagesServiceClient
 import ContainerLog
 import ContainerPersistence
+import ContainerResource
 import Containerization
 import ContainerizationError
 import ContainerizationOCI
@@ -71,6 +72,9 @@ extension BuildOptions {
             return URL(fileURLWithPath: filepath, relativeTo: .currentDirectory()).path
         case .none:
             guard let defaultDockerfile = try BuildFile.resolvePath(contextDir: contextDir) else {
+                guard (try? FileManager.default.contentsOfDirectory(atPath: contextDir)) != nil else {
+                    throw ValidationError("cannot read context dir \(contextDir): permission denied")
+                }
                 throw ValidationError("dockerfile not found in context dir")
             }
 
@@ -103,6 +107,9 @@ extension BuildOptions {
             let enableSSHForwarding = sshForwarding.isEnabled
             let attestations = buildAttestations()
             let dnsNameservers = self.dns.nameservers
+            let dnsDomain = self.dns.domain
+            let dnsSearchDomains = self.dns.searchDomains
+            let dnsOptions = self.dns.options
             progress.set(tasks: 0)
             progress.set(totalTasks: 3)
             try await Builder.start(
@@ -110,6 +117,9 @@ extension BuildOptions {
                 memory: memory,
                 log: log,
                 dnsNameservers: dnsNameservers,
+                dnsDomain: dnsDomain,
+                dnsSearchDomains: dnsSearchDomains,
+                dnsOptions: dnsOptions,
                 enableSSHForwarding: enableSSHForwarding,
                 sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
                 sshSocketMounts: sshForwarding.socketMounts,
@@ -120,12 +130,12 @@ extension BuildOptions {
             progress.set(description: "Dialing builder")
 
             let builder: Builder? = try await withThrowingTaskGroup(of: Builder.self) {
-                [builderContainerId, vsockPort, cpus, memory, dnsNameservers, enableSSHForwarding, sshForwarding] group in
+                [builderContainerId, vsockPort, cpus, memory, dnsNameservers, dnsDomain, dnsSearchDomains, dnsOptions, enableSSHForwarding, sshForwarding] group in
                 defer {
                     group.cancelAll()
                 }
 
-                group.addTask { [builderContainerId, vsockPort, cpus, memory, log, dnsNameservers, sshForwarding] in
+                group.addTask { [builderContainerId, vsockPort, cpus, memory, log, dnsNameservers, dnsDomain, dnsSearchDomains, dnsOptions, sshForwarding] in
                     let client = ContainerClient()
                     var retryBackoff = BuilderReadinessBackoff()
                     while true {
@@ -190,6 +200,9 @@ extension BuildOptions {
                                     memory: memory,
                                     log: log,
                                     dnsNameservers: dnsNameservers,
+                                    dnsDomain: dnsDomain,
+                                    dnsSearchDomains: dnsSearchDomains,
+                                    dnsOptions: dnsOptions,
                                     enableSSHForwarding: enableSSHForwarding,
                                     sshAuthSocketPath: sshForwarding.environmentSocketGuestPath,
                                     sshSocketMounts: sshForwarding.socketMounts,

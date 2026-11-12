@@ -169,8 +169,11 @@ struct ClusterCreateCNIFlagTests {
             .appendingPathComponent(UUID().uuidString + "-missing.yaml").path
         let command = try ClusterCreate.parse(["--cni", path])
 
-        await #expect(throws: ContainerizationError.self) {
-            try await command.run()
+        // Calling a library command twice must not bootstrap process-wide logging twice.
+        for _ in 0..<2 {
+            await #expect(throws: ContainerizationError.self) {
+                try await command.run()
+            }
         }
     }
 }

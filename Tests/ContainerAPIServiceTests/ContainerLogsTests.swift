@@ -395,7 +395,7 @@ struct ContainerLogsTests {
         try Data("oldest\n".utf8).write(to: rotatedLogURL(for: bundle.containerLog, index: 3))
         try Data("boot\n".utf8).write(to: bundle.bootlog)
 
-        let service = try service(appRoot: tempURL, logLabel: "container-rotated-log-replay-test")
+        let service = try await service(appRoot: tempURL, logLabel: "container-rotated-log-replay-test")
         let handles = try await service.logs(
             id: id,
             options: .default,
@@ -463,7 +463,7 @@ struct ContainerLogsTests {
         try store.close()
         try Data("boot\n".utf8).write(to: bundle.bootlog)
 
-        let service = try service(
+        let service = try await service(
             appRoot: tempURL,
             logLabel: "container-v2-log-read-test"
         )
@@ -575,7 +575,7 @@ struct ContainerLogsTests {
             )
         )
 
-        let containers = try service(
+        let containers = try await service(
             appRoot: tempURL,
             logLabel: "container-engine-log-read-test"
         )
@@ -1280,7 +1280,7 @@ struct ContainerLogsTests {
         configuration.dockerName = dockerName
         try bundle.set(configuration: configuration)
 
-        let containers = try service(
+        let containers = try await service(
             appRoot: tempURL,
             logLabel: "container-engine-docker-identity-test"
         )
@@ -1342,7 +1342,7 @@ struct ContainerLogsTests {
             _ = try createBundle(appRoot: tempURL, id: id)
         }
 
-        let containers = try service(
+        let containers = try await service(
             appRoot: tempURL,
             logLabel: "container-engine-docker-wait-test"
         )
@@ -1538,7 +1538,7 @@ struct ContainerLogsTests {
         try bundle.set(configuration: configuration)
 
         let backend = ContainerDockerLoggingBackend(
-            containers: try service(
+            containers: try await service(
                 appRoot: tempURL,
                 logLabel: "container-engine-image-discovery-test"
             ),
@@ -1765,7 +1765,7 @@ struct ContainerLogsTests {
         defer { try? FileManager.default.removeItem(at: tempURL) }
         let fixture = DockerImageMutationFixture()
         let backend = ContainerDockerLoggingBackend(
-            containers: try service(
+            containers: try await service(
                 appRoot: tempURL,
                 logLabel: "container-engine-image-mutation-test"
             ),
@@ -1880,7 +1880,7 @@ struct ContainerLogsTests {
         configuration.logging = try version2JSONFileConfiguration()
         try bundle.set(configuration: configuration)
 
-        let containers = try service(
+        let containers = try await service(
             appRoot: tempURL,
             logLabel: "container-engine-created-log-inspect-test"
         )
@@ -2078,7 +2078,7 @@ struct ContainerLogsTests {
         try Data("older\n".utf8).write(to: rotatedLogURL(for: bundle.containerLog, index: 2))
         try Data("boot\n".utf8).write(to: bundle.bootlog)
 
-        let service = try service(appRoot: tempURL, logLabel: "container-rotated-log-tail-test")
+        let service = try await service(appRoot: tempURL, logLabel: "container-rotated-log-tail-test")
         let handles = try await service.logs(
             id: id,
             options: ContainerLogOptions(tail: 2),
@@ -2125,7 +2125,7 @@ struct ContainerLogsTests {
         try Data("rotated\n".utf8).write(to: rotatedLogURL(for: bundle.containerLog, index: 1))
         try Data("boot\n".utf8).write(to: bundle.bootlog)
 
-        let service = try service(appRoot: tempURL, logLabel: "container-active-log-replay-test")
+        let service = try await service(appRoot: tempURL, logLabel: "container-active-log-replay-test")
         let handles = try await service.logs(id: id, options: .default)
         defer {
             for handle in handles {
@@ -2399,7 +2399,7 @@ struct ContainerLogsTests {
         let bundle = try createBundle(appRoot: tempURL, id: id)
         try Data("active\n".utf8).write(to: bundle.containerLog)
 
-        let service = try service(appRoot: tempURL, logLabel: "container-follow-log-filter-test")
+        let service = try await service(appRoot: tempURL, logLabel: "container-follow-log-filter-test")
 
         await #expect(throws: (any Error).self) {
             _ = try await service.followLogs(
@@ -2425,7 +2425,7 @@ struct ContainerLogsTests {
         try logRecordData([newer]).write(to: rotatedLogURL(for: bundle.containerLogRecords, index: 1))
         try logRecordData([oldest]).write(to: rotatedLogURL(for: bundle.containerLogRecords, index: 2))
 
-        let service = try service(appRoot: tempURL, logLabel: "container-rotated-record-replay-test")
+        let service = try await service(appRoot: tempURL, logLabel: "container-rotated-record-replay-test")
         let records = try await service.logRecords(
             id: id,
             replay: ContainerLogReplayOptions(includeRotated: true)
@@ -2456,7 +2456,7 @@ struct ContainerLogsTests {
         let expectedData = try logRecordData(records)
         try expectedData.write(to: bundle.containerLogRecords)
 
-        let service = try ContainersService(
+        let service = try await ContainersService(
             appRoot: tempURL,
             pluginLoader: try pluginLoader(appRoot: tempURL),
             containerSystemConfig: ContainerSystemConfig(),
@@ -2513,7 +2513,7 @@ struct ContainerLogsTests {
         )
         try active.write(to: bundle.containerLogRecords)
 
-        let service = try service(
+        let service = try await service(
             appRoot: tempURL,
             logLabel: "container-log-record-stream-test"
         )
@@ -2655,8 +2655,8 @@ struct ContainerLogsTests {
         }
     }
 
-    private func service(appRoot: URL, logLabel: String) throws -> ContainersService {
-        try ContainersService(
+    private func service(appRoot: URL, logLabel: String) async throws -> ContainersService {
+        try await ContainersService(
             appRoot: appRoot,
             pluginLoader: try pluginLoader(appRoot: appRoot),
             containerSystemConfig: ContainerSystemConfig(),

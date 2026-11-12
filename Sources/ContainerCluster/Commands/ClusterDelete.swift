@@ -35,8 +35,7 @@ public struct ClusterDelete: AsyncParsableCommand {
     var name: String = ClusterHelper.defaultName
 
     public func run() async throws {
-        LoggingSystem.bootstrap { _ in StderrLogHandler() }
-        let log = Logger(label: ClusterHelper.pluginName)
+        let log = Logger(label: ClusterHelper.pluginName, factory: { _ in StderrLogHandler() })
 
         let client = ContainerClient()
         let clusterClient = ClusterClient()

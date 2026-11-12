@@ -16,6 +16,7 @@
 
 import ContainerCommands
 import ContainerResource
+import Foundation
 import Testing
 
 @testable import ContainerCommands

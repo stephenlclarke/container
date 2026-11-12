@@ -44,7 +44,6 @@ public struct ClusterList: AsyncParsableCommand {
     var quiet = false
 
     public func run() async throws {
-        LoggingSystem.bootstrap { _ in StderrLogHandler() }
 
         let clusters = try await ClusterClient().list()
 

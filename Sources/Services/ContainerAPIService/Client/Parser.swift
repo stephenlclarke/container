@@ -238,7 +238,7 @@ public struct Parser {
         return Int(cpus)
     }
 
-    public static func cpus(_ cpus: Double) throws -> Int {
+    public static func fractionalCPUs(_ cpus: Double) throws -> Int {
         guard cpus.isFinite, cpus > 0, cpus <= Double(ContainerConfiguration.Resources.maximumCPUs) else {
             throw ContainerizationError(.invalidArgument, message: "cpus must be positive and no more than the host core count")
         }
@@ -249,12 +249,11 @@ public struct Parser {
     ///
     /// - Throws: `.invalidArgument` if `memory` can't be parsed, is out of range, or is below the minimum.
     public static func memoryInBytes(_ memory: String) throws -> UInt64 {
-        let mib = try Measurement.parse(parsing: memory).converted(to: .mebibytes).value
-        // Leave headroom so converting to bytes cannot overflow.
-        guard mib.isFinite, mib < Double(Int64.max / (1024 * 1024)) else {
+        let value = try Measurement.parse(parsing: memory).converted(to: .bytes).value
+        guard value.isFinite, value >= 0, value < Double(UInt64.max) else {
             throw ContainerizationError(.invalidArgument, message: "memory '\(memory)' is out of range")
         }
-        let bytes = Int64(mib).mib()
+        let bytes = UInt64(value)
         try ContainerConfiguration.Resources.validate(memoryInBytes: bytes)
         return bytes
     }
