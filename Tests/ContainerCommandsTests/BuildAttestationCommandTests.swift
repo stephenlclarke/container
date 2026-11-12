@@ -29,7 +29,7 @@ struct BuildAttestationCommandTests {
         }
         try Data("FROM scratch\n".utf8).write(to: directory.appendingPathComponent("Dockerfile"))
 
-        let command = try Application.BuildCommand.parse([
+        let command = try BuildOptions.parse([
             "--provenance", "mode=max",
             "--sbom", "true",
             "--tag", "example/app:latest",

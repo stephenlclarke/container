@@ -58,6 +58,7 @@ public struct Application: AsyncLoggableCommand {
                 subcommands: [
                     ContainerAttach.self,
                     ContainerClean.self,
+                    ContainerCommit.self,
                     ContainerCopy.self,
                     ContainerCreate.self,
                     ContainerDelete.self,
@@ -82,7 +83,6 @@ public struct Application: AsyncLoggableCommand {
             CommandGroup(
                 name: "Image",
                 subcommands: [
-                    BuildCommand.self,
                     ImageCommand.self,
                     RegistryCommand.self,
                 ]
@@ -109,7 +109,7 @@ public struct Application: AsyncLoggableCommand {
     )
 
     public static func main(arguments: [String] = Array(CommandLine.arguments.dropFirst())) async throws {
-        restoreCursorAtExit()
+        ProgressBar.restoreCursorAtExit()
 
         #if DEBUG
         let warning = "Running debug build. Performance may be degraded."
@@ -360,35 +360,16 @@ public struct Application: AsyncLoggableCommand {
     private static func otherCommands() -> [any ParsableCommand.Type] {
         guard #available(macOS 26, *) else {
             return [
-                BuilderCommand.self,
-                SystemCommand.self,
+                SystemCommand.self
             ]
         }
 
         return [
-            BuilderCommand.self,
             NetworkCommand.self,
             SystemCommand.self,
         ]
     }
 
-    private static func restoreCursorAtExit() {
-        let signalHandler: @convention(c) (Int32) -> Void = { signal in
-            let exitCode = ExitCode(signal + 128)
-            Application.exit(withError: exitCode)
-        }
-        // Termination by Ctrl+C.
-        signal(SIGINT, signalHandler)
-        // Termination using `kill`.
-        signal(SIGTERM, signalHandler)
-        // Normal and explicit exit.
-        atexit {
-            if let progressConfig = try? ProgressConfig() {
-                let progressBar = ProgressBar(config: progressConfig)
-                progressBar.resetCursor()
-            }
-        }
-    }
 }
 
 private actor HealthCheckResult {
@@ -433,7 +414,7 @@ extension Application {
         let original = Application.helpMessage(for: Application.self)
         guard let pluginLoader else {
             print(addBuildProvenance(addGroupSpacing(original)))
-            print("\nPLUGINS: not available, run `container system start`")
+            print("\n[Warning] CLI plugins not available, run `container system start`")
             return
         }
         let altered = pluginLoader.alterCLIHelpText(original: original)
@@ -443,7 +424,6 @@ extension Application {
     private static func addGroupSpacing(_ text: String) -> String {
         text
             .replacingOccurrences(of: "\n([A-Z].+SUBCOMMANDS:)", with: "\n\n$1", options: .regularExpression)
-            .replacingOccurrences(of: "\nPLUGINS:", with: "\n\nPLUGINS:")
     }
 
     static func addBuildProvenance(_ text: String) -> String {

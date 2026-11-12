@@ -26,6 +26,7 @@ struct RuntimeLinuxHelper: AsyncParsableCommand {
         subcommands: [
             Start.self,
             SharedSandbox.self,
+            Cleanup.self,
         ]
     )
 }

@@ -423,7 +423,7 @@ struct AuthorityRemoteLogDriverPlaneTests {
             try bundle.set(configuration: dockerPluginConfiguration(id: id))
             try Data("boot-history\n".utf8).write(to: bundle.bootlog)
 
-            let service = try ContainersService(
+            let service = try await ContainersService(
                 appRoot: root,
                 pluginLoader: try authorityPluginLoader(appRoot: root),
                 containerSystemConfig: ContainerSystemConfig(),

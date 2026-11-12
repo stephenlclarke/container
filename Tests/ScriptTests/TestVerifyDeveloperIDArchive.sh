@@ -156,4 +156,6 @@ grep -Fq 'security delete-keychain' "${WORKFLOW}"
 
 MAKEFILE="Makefile"
 grep -Fq 'Signing container binaries for Homebrew archive' "${MAKEFILE}"
-grep -Fq 'libexec/container/plugins/k8s/bin/k8s' "${MAKEFILE}"
+for plugin in cluster build builder; do
+    grep -Fq "libexec/container/plugins/${plugin}/bin/${plugin}" "${MAKEFILE}"
+done

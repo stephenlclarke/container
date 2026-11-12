@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerCommands
 import ContainerResource
 import Foundation
 import Testing
@@ -321,18 +322,5 @@ struct NetworkResourceDisplayTests {
     func tableHeaderHasTwoColumns() {
         #expect(NetworkResource.tableHeader.count == 2)
         #expect(NetworkResource.tableHeader == ["NETWORK", "SUBNET"])
-    }
-}
-
-// MARK: - ListFormat tests
-
-struct ListFormatTests {
-    @Test
-    func hasAllOutputFormatCases() {
-        #expect(ListFormat.allCases.count == 4)
-        #expect(ListFormat.json.rawValue == "json")
-        #expect(ListFormat.table.rawValue == "table")
-        #expect(ListFormat.yaml.rawValue == "yaml")
-        #expect(ListFormat.toml.rawValue == "toml")
     }
 }

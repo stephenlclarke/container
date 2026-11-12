@@ -353,6 +353,8 @@ public actor RuntimeService {
 
             let id = config.id
             let rootfs = try bundle.containerRootfs.asMount
+            // Give the VM headroom beyond the container's cgroup limits for the guest kernel,
+            // vminitd, and the overhead configured via `config.resources.cpuOverhead`.
             let vmResources = VMResources(
                 cpus: config.resources.cpus + config.resources.cpuOverhead,
                 memoryInBytes: config.resources.memoryInBytes + VMResources.guestMemoryOverhead
@@ -1824,6 +1826,7 @@ public actor RuntimeService {
         czConfig.cpuQuotaInMicroseconds = config.resources.cpuQuotaInMicroseconds
         czConfig.cpuPeriodInMicroseconds = config.resources.cpuPeriodInMicroseconds
         czConfig.cpuSet = config.resources.cpuSet
+        czConfig.cpuOverhead = config.resources.cpuOverhead
         czConfig.memoryInBytes = config.resources.memoryInBytes
         if let runtimeData {
             let linuxData = try JSONDecoder().decode(LinuxRuntimeData.self, from: runtimeData)

@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerPersistence
 import ContainerXPC
 import ContainerizationError
 import Foundation
@@ -67,6 +68,20 @@ extension ClientHealthCheck {
             apiServerBuilderShimRepository: apiServerBuilderShimRepository,
             apiServerBuilderShimVersion: apiServerBuilderShimVersion,
             apiServerBuilderShimDigest: apiServerBuilderShimDigest
+        )
+    }
+
+    /// Load the system configuration using `appRoot` / `installRoot` reported by the
+    /// daemon. `container system start` MUST have previously been run to start the daemon.
+    public static func loadContainerSystemConfig() async throws -> ContainerSystemConfig {
+        let health = try await Self.ping(timeout: .seconds(10))
+        let appRoot = FilePath(health.appRoot.path(percentEncoded: false))
+        let installRoot = FilePath(health.installRoot.path(percentEncoded: false))
+        return try await ConfigurationLoader.load(
+            configurationFiles: [
+                ConfigurationLoader.configurationFile(in: appRoot, of: .appRoot),
+                ConfigurationLoader.configurationFile(in: installRoot, of: .installRoot),
+            ]
         )
     }
 }

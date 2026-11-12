@@ -382,7 +382,7 @@ struct VolumeDriverResolutionTests {
             }
         }
 
-        let containersService = try ContainersService(
+        let containersService = try await ContainersService(
             appRoot: root,
             pluginLoader: PluginLoader(
                 appRoot: root,

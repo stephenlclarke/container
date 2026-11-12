@@ -155,7 +155,7 @@ struct ApplicationHealthTests {
     @Test
     func composeOwnedResourceStoresRemainOutsideTheRuntimeCLI() {
         let rootHelp = Application.helpMessage(for: Application.self)
-        let buildHelp = Application.helpMessage(for: Application.BuildCommand.self)
+        let buildHelp = BuildOptions.helpMessage()
 
         #expect(!rootHelp.contains("CONFIG SUBCOMMANDS:"))
         #expect(!rootHelp.contains("SECRET SUBCOMMANDS:"))
