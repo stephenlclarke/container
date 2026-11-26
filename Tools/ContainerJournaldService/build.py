@@ -107,6 +107,17 @@ def checked_environment() -> dict[str, str]:
     return environment
 
 
+def build_ca_options() -> list[str]:
+    """Supply an optional trusted CA bundle to the Go download step."""
+    bundle = os.environ.get("CONTAINER_GO_BUILD_CA_BUNDLE")
+    if not bundle:
+        return []
+    path = Path(bundle).resolve(strict=True)
+    if not path.is_file() or "," in str(path):
+        raise ValueError("CONTAINER_GO_BUILD_CA_BUNDLE must name a file without commas")
+    return ["--secret", f"type=file,id=go_build_ca_bundle,src={path}"]
+
+
 def build_oci(archive: Path, metadata_path: Path) -> str:
     archive.parent.mkdir(parents=True, exist_ok=True)
     command = [
@@ -118,6 +129,7 @@ def build_oci(archive: Path, metadata_path: Path) -> str:
         "--platform",
         "linux/arm64",
         "--provenance=mode=max",
+        *build_ca_options(),
         "--build-arg",
         f"SERVICE_SOURCE_SHA256={production_source_digest()}",
         "--output",
@@ -330,6 +342,7 @@ def load_integration_image(tag: str) -> None:
             "--platform",
             "linux/arm64",
             "--provenance=mode=max",
+            *build_ca_options(),
             "--build-arg",
             f"SERVICE_SOURCE_SHA256={production_source_digest()}",
             "--load",

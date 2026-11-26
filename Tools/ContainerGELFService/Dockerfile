@@ -18,7 +18,11 @@ FROM golang:1.25.6-bookworm@sha256:f4490d7b261d73af4543c46ac6597d7d101b6e1755bcd
 ENV GOTOOLCHAIN=local GOWORK=off CGO_ENABLED=0 GOOS=linux GOARCH=arm64
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=secret,id=go_build_ca_bundle \
+    if [ -f /run/secrets/go_build_ca_bundle ]; then \
+        export SSL_CERT_FILE=/run/secrets/go_build_ca_bundle; \
+    fi; \
+    go mod download
 COPY *.go ./
 RUN go test -mod=readonly ./... \
     && go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' \

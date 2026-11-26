@@ -78,6 +78,19 @@ make PRESERVE_KERNELS=true LOG_ROOT=.test-data/logs integration
 
 ### Build installer package
 
+Run `make installer-pkg` to build the package without installing it.
+If a TLS inspection proxy causes `go mod download` to fail in the Linux
+logging-service builds, point `CONTAINER_GO_BUILD_CA_BUNDLE` at a trusted
+PEM CA bundle that includes the proxy's CA:
+
+```bash
+CONTAINER_GO_BUILD_CA_BUNDLE=/path/to/trusted-ca-bundle.pem make installer-pkg
+```
+
+The bundle is mounted only for module downloads. It is not copied into
+either service image or the installer. TLS and Go checksum verification
+remain enabled.
+
 
 Integration tests run one VM-backed CLI test at a time by default. This avoids
 local API-server launch saturation on high-core-count Macs. Set
