@@ -312,10 +312,11 @@ public struct ServiceManager {
             .map { String($0[2]) }
     }
 
-    /// Check if a service has been registered or not.
+    /// Check a service label in the current domain, or a qualified launchd target.
     public static func isRegistered(fullServiceLabel label: String) throws -> Bool {
-        let result = try runLaunchctlCommand(args: ["print", label])
-        return try Self.interpretPrintStatus(result.status, target: label, standardError: result.standardError)
+        let target = label.contains("/") ? label : "\(try Self.getDomainString())/\(label)"
+        let result = try runLaunchctlCommand(args: ["print", target])
+        return try Self.interpretPrintStatus(result.status, target: target, standardError: result.standardError)
     }
 
     static func interpretPrintStatus(_ status: Int32, target: String = "", standardError: String = "") throws -> Bool {
