@@ -20,6 +20,10 @@ import Dispatch
 import Foundation
 
 public struct ServiceManager {
+    enum LaunchctlStatus {
+        static let noSuchService: Int32 = 113
+    }
+
     enum RegistrationAction: Equatable {
         case register
         case reuse
@@ -308,10 +312,27 @@ public struct ServiceManager {
             .map { String($0[2]) }
     }
 
-    /// Check if a service has been registered or not.
+    /// Check a service label in the current domain, or a qualified launchd target.
     public static func isRegistered(fullServiceLabel label: String) throws -> Bool {
-        let result = try runLaunchctlCommand(args: ["list", label])
-        return result.status == 0
+        let target = label.contains("/") ? label : "\(try Self.getDomainString())/\(label)"
+        let result = try runLaunchctlCommand(args: ["print", target])
+        return try Self.interpretPrintStatus(result.status, target: target, standardError: result.standardError)
+    }
+
+    static func interpretPrintStatus(_ status: Int32, target: String = "", standardError: String = "") throws -> Bool {
+        switch status {
+        case 0:
+            return true
+        case LaunchctlStatus.noSuchService:
+            return false
+        default:
+            var message = "command `launchctl print \(target)` failed with status \(status)"
+            let details = standardError.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !details.isEmpty {
+                message += ", message: \(details)"
+            }
+            throw ContainerizationError(.internalError, message: message)
+        }
     }
 
     private static func getLaunchdSessionType() throws -> String {

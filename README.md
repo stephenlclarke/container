@@ -56,7 +56,7 @@ security, and maintainability ratings. Coverage is materially below the
 Container-family's approximately 90% objective and remains an explicit quality
 gap; the green quality gate must not be read as 90% coverage.
 
-![introductory movie showing some basic commands](./docs/assets/landing-movie.gif)
+<img src="./docs/assets/landing-movie.gif" width="830" alt="Introductory movie: running a web server in a container, then opening an Ubuntu container machine that shares your home directory">
 
 ## Get started
 
@@ -65,10 +65,9 @@ gap; the green quality gate must not be read as 90% coverage.
 You need a Mac with Apple silicon to run `container`. To build it, see the
 [BUILDING](./BUILDING.md) document.
 
-`container` is supported on macOS 26, since it takes advantage of new features
-and enhancements to virtualization and networking in this release. We do not
-support older versions of macOS and the `container` maintainers typically will
-not address issues that cannot be reproduced on macOS 26.
+`container` is designed to run on macOS 26 or later. It uses virtualization and
+networking features introduced in macOS 26. The maintainers typically do not
+address issues that cannot be reproduced on macOS 26 or later.
 
 ### Initial install
 
@@ -186,6 +185,8 @@ To retain your user data so that it is available should you reinstall later, run
 - Learn how to [use various `container` features](./docs/how-to.md).
 - Read a brief description and [technical overview](./docs/technical-overview.md)
   of `container`.
+- Explore the [container-examples repo](https://github.com/apple/container-examples/) that contains examples that show you how to work with `container`, such as [developing Linux apps in a container machine with Visual Studio Code](https://github.com/apple/container-examples/tree/main/container-machine-vscode) and [running a three-tier app on a container cluster behind a gateway](https://github.com/apple/container-examples/tree/main/container-cluster-gateway).
+- Read a brief description and [technical overview](./docs/technical-overview.md) of `container`.
 - Browse the [full command reference](./docs/command-reference.md).
 - [Build and run](./BUILDING.md) `container` on your own development system.
 - View the fork's [DocC API reference](https://stephenlclarke.github.io/api/container/) in the integrated container developer documentation.
@@ -203,7 +204,7 @@ for more information.
 
 The container project is under active development. Its release versions are product versions, not semantic versions.
 
-The `container` CLI compatibility generally preserves backward compatibility within a major release (not breaking existing scripts), however, there may be the odd case where breaking compatibility may be necessary. **Note:** Features marked *experimental* (for example, the `k8s` subcommand) may change and do not guarantee backward compatibility.
+The `container` CLI compatibility generally preserves backward compatibility within a major release (not breaking existing scripts), however, there may be the odd case where breaking compatibility may be necessary. **Note:** Features marked *experimental* (for example, the `cluster` subcommand) may change and do not guarantee backward compatibility.
 
 The `container-apiserver` XPC API compatibility preserves forward and backward compatibility within a major version.
 Other non-public XPC helpers do not guarantee CLI or API compatibility across different versions.

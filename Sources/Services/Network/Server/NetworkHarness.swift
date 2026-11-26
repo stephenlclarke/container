@@ -73,8 +73,16 @@ public actor NetworkHarness: Sendable {
 
     @Sendable
     public func lookup(_ message: XPCMessage) async throws -> XPCMessage {
-        let hostname = try message.hostname()
         let reply = message.reply()
+        if let name = message.string(key: NetworkKeys.name.rawValue) {
+            if let match = try await service.lookup(name: name) {
+                try reply.setAttachment(match.attachment)
+                reply.setMatchKind(match.kind)
+                try reply.setAttachments(try await service.lookupAll(hostname: name))
+            }
+            return reply
+        }
+        let hostname = try message.hostname()
         let attachments = try await service.lookupAll(hostname: hostname)
         guard let attachment = attachments.first else {
             return reply

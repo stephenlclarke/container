@@ -148,6 +148,28 @@ extension NetworkClient {
         return try response.attachments()
     }
 
+    /// Look up a name on the network.
+    ///
+    /// The name can be the hostname of an attachment, an alias of it, or a name below a subtree alias.
+    ///
+    /// - Returns: The attachment that the name resolves to and how the name matched, or nil if the
+    ///   name does not resolve on this network.
+    public func lookup(name: String) async throws -> NetworkMatch? {
+        let request = XPCMessage(route: NetworkRoutes.lookup.rawValue)
+        request.set(key: NetworkKeys.name.rawValue, value: name)
+
+        let client = createClient()
+
+        let response = try await client.send(request)
+        guard let data = response.dataNoCopy(key: NetworkKeys.attachment.rawValue) else {
+            return nil
+        }
+        return NetworkMatch(
+            attachment: try JSONDecoder().decode(Attachment.self, from: data),
+            kind: try response.matchKind()
+        )
+    }
+
     private func createClient() -> XPCClient {
         XPCClient(service: machServiceLabel)
     }
@@ -188,13 +210,6 @@ extension XPCMessage {
         return hostname
     }
 
-    public func aliases() throws -> [String] {
-        guard let data = self.dataNoCopy(key: NetworkKeys.aliases.rawValue) else {
-            return []
-        }
-        return try JSONDecoder().decode([String].self, from: data)
-    }
-
     public func requestedIPv4Address() throws -> IPv4Address? {
         guard let value = string(key: NetworkKeys.requestedIPv4Address.rawValue) else {
             return nil
@@ -211,6 +226,14 @@ extension XPCMessage {
             throw ContainerizationError(.invalidArgument, message: "requested network IPv6 address must not include a zone identifier")
         }
         return address
+    }
+
+    public func name() throws -> String {
+        let name = self.string(key: NetworkKeys.name.rawValue)
+        guard let name else {
+            throw ContainerizationError(.invalidArgument, message: "no name data in message")
+        }
+        return name
     }
 
     public func status() throws -> NetworkStatus {

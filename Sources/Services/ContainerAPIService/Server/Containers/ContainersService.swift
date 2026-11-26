@@ -78,6 +78,7 @@ struct ContainerCreationReservations: Sendable {
             )
         }
 
+        try AttachmentNameValidator.validateSharedAliases(networks: snapshot.configuration.networks)
         let conflictingHostnames = ContainersService.conflictingNetworkNames(
             existingAttachments: (existing + snapshots).map(\.configuration.networks),
             requestedAttachments: snapshot.configuration.networks
@@ -362,9 +363,9 @@ public actor ContainersService {
             (any EngineLinuxSandboxWorkloadAuthorityV1)? = nil,
         sharedSandboxConfigurationProvider:
             (any EngineLinuxSandboxConfigurationProvidingV1)? = nil
-    ) throws {
+    ) async throws {
         let containerRoot = appRoot.appendingPathComponent("containers")
-        try FileManager.default.createDirectory(at: containerRoot, withIntermediateDirectories: true)
+        try PathUtils.createDirectoryExcludingFromBackup(containerRoot)
         let loadedContainers = try Self.loadAtBoot(root: containerRoot, loader: pluginLoader, log: log)
         let lifecycleRecords = Self.loadLifecycleRecords(
             containers: loadedContainers,
@@ -992,7 +993,7 @@ public actor ContainersService {
         }
     }
 
-    private func resumeInterruptedRemovals() async {
+    func resumeInterruptedRemovals() async {
         let containerIDs = lifecycleRecords.compactMap { id, record in
             record.intent.removalRequested ? id : nil
         }
@@ -1100,6 +1101,10 @@ public actor ContainersService {
             do {
                 (config, _) = try Self.getContainerConfiguration(at: dir)
                 _ = try Self.containerPath(root: root, id: config.id)
+                guard dir.lastPathComponent == config.id else {
+                    log.warning("container ID does not match directory; leaving bundle on disk", metadata: ["path": "\(dir.path)", "id": "\(config.id)"])
+                    continue
+                }
             } catch {
                 log.warning(
                     "failed to load container; leaving bundle on disk",
@@ -2336,6 +2341,7 @@ public actor ContainersService {
 
             let path = try Self.containerPath(root: self.containerRoot, id: id)
             let (config, _) = try Self.getContainerConfiguration(at: path)
+            try AttachmentNameValidator.validateStored(id: id, networks: config.networks, allowSharedAliases: true)
             return ContainerBootstrapPlan(
                 containerGeneration: state.generation,
                 operationGeneration: lifecycle.snapshot.operationGeneration,
@@ -4310,7 +4316,7 @@ public actor ContainersService {
         }
 
         // Logs doesn't care if the container is running or not, just that
-        // the bundle is there, and that the files actually exist. We do
+        // the bundle is there; a log file that doesn't exist reads as empty. We do
         // first try and get the container state so we get a nicer error message
         // (container foo not found) however.
         do {
@@ -4328,14 +4334,14 @@ public actor ContainersService {
                 return [
                     Self.logHandle(for: reader),
                     Self.applyLogOptions(
-                        to: try FileHandle(forReadingFrom: bundle.bootlog),
+                        to: try self.openLog(bundle.bootlog, of: id),
                         options: options
                     ),
                 ]
             }
             let handles = [
                 try Self.logHandle(for: bundle.containerLog, options: options, replay: replay),
-                Self.applyLogOptions(to: try FileHandle(forReadingFrom: bundle.bootlog), options: options),
+                Self.applyLogOptions(to: try self.openLog(bundle.bootlog, of: id), options: options),
             ]
             return handles
         } catch {
@@ -4595,7 +4601,7 @@ public actor ContainersService {
         replay: ContainerLogReplayOptions
     ) throws -> FileHandle {
         guard replay.includeRotated else {
-            return Self.applyLogOptions(to: try FileHandle(forReadingFrom: url), options: options)
+            return Self.applyLogOptions(to: try Self.openIfPresent(url) ?? Self.emptyLog(), options: options)
         }
 
         let urls = Self.logReplayURLs(for: url, includeRotated: true)
@@ -4606,7 +4612,7 @@ public actor ContainersService {
                 try Self.filteredLogData(Self.logData(from: urls), options: options)
             }
         guard let replayHandle = Self.temporaryFileHandle(containing: filtered) else {
-            return Self.applyLogOptions(to: try FileHandle(forReadingFrom: url), options: options)
+            return Self.applyLogOptions(to: try Self.openIfPresent(url) ?? Self.emptyLog(), options: options)
         }
         return replayHandle
     }
@@ -5193,6 +5199,47 @@ public actor ContainersService {
 
     private enum LogByte {
         static let lineFeed = UInt8(ascii: "\n")
+    }
+
+    /// The log at `url`, or an empty stand-in when it doesn't exist. Other failures throw.
+    private func openLog(_ url: URL, of id: String) throws -> FileHandle {
+        if let handle = try Self.openIfPresent(url) {
+            return handle
+        }
+        log.debug(
+            "ContainersService: log not present, returning it empty",
+            metadata: ["id": "\(id)", "log": "\(url.lastPathComponent)"]
+        )
+        return try Self.emptyLog()
+    }
+
+    /// A stand-in for a log that doesn't exist: `/dev/null` opened for reading.
+    ///
+    /// Not `FileHandle.nullDevice`, which has no file descriptor (`fileDescriptor` is -1): these
+    /// handles go to the client over XPC, a -1 dups back as -1, and the client's
+    /// `fileHandles(key:)` then returns nil, so `container logs` would still fail.
+    static func emptyLog() throws -> FileHandle {
+        let fd = open("/dev/null", O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    /// Opens `url` for reading, or returns nil if it doesn't exist. Any other failure, such
+    /// as a permissions problem, still throws.
+    ///
+    /// `O_NOFOLLOW`: these are fixed paths inside a container's bundle that runtimes create as
+    /// regular files, so a symlink there is never legitimate, and following one would hand
+    /// the caller whatever file it points at. A symlink fails with ELOOP rather than ENOENT,
+    /// so it is refused, not read as an empty log.
+    static func openIfPresent(_ url: URL) throws -> FileHandle? {
+        let fd = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard fd >= 0 else {
+            if errno == ENOENT { return nil }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 
     /// Copy a file or directory from the host into the container.
@@ -6092,6 +6139,7 @@ public actor ContainersService {
         // Only try to deregister service if we have a valid config
         // TODO: Change this so we don't have to reread the config
         // possibly store the container ID to service label mapping
+        let plugin = config.flatMap { config in self.runtimePlugins.first { $0.name == config.runtimeHandler } }
         if let config = config {
             if config.effectiveIsolation == .dedicatedVM {
                 let label = Self.fullLaunchdServiceLabel(
@@ -6099,6 +6147,11 @@ public actor ContainersService {
                     instanceId: id
                 )
                 try? ServiceManager.deregister(fullServiceLabel: label)
+            }
+            if let plugin {
+                await RuntimeCleanupHook.run(plugin: plugin, root: path, id: id, log: self.log)
+            } else {
+                self.log.warning("no runtime plugin for container; skipping cleanup hook", metadata: ["id": "\(id)", "runtime": "\(config.runtimeHandler)"])
             }
             try await releaseNetworkAttachments(configuration: config)
         }

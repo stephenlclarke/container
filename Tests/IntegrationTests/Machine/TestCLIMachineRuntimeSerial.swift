@@ -395,27 +395,6 @@ struct TestCLIMachineRuntimeSerial {
         }
     }
 
-    @Test func testRunCommandUlimitNofile() async throws {
-        try await ContainerFixture.with { f in
-            let name = "\(f.testID)-machine"
-            f.addCleanup { f.cleanupMachine(name) }
-            try f.doMachineCreate(name: name, image: machineImage)
-            try f.doMachineBoot(name: name)
-            try await f.waitForMachineStatus(name, status: "running")
-
-            let softLimit = "1024"
-            let hardLimit = "2048"
-            let output = try f.doMachineRun(
-                name: name,
-                root: true,
-                ulimits: ["nofile=\(softLimit):\(hardLimit)"],
-                command: ["ulimit", "-n"])
-            #expect(
-                output.trimmingCharacters(in: .whitespacesAndNewlines) == softLimit,
-                "run with --ulimit should apply the requested soft nofile limit")
-        }
-    }
-
     // MARK: - List tests
 
     @Test func testListRunningMachines() async throws {
@@ -451,9 +430,7 @@ struct TestCLIMachineRuntimeSerial {
             try await f.waitForMachineStatus(name, status: "running")
 
             let result = try f.runMachine(["ls", "-q"]).check()
-            let listedNames = result.output.split(whereSeparator: \.isNewline).map(String.init)
-            #expect(listedNames.contains(name))
-            #expect(!listedNames.contains("NAME"), "quiet mode should not print a header")
+            #expect(result.output.trimmingCharacters(in: .whitespacesAndNewlines) == name)
         }
     }
 
@@ -561,10 +538,9 @@ struct TestCLIMachineRuntimeSerial {
             try await f.waitForMachineStatus(name, status: "running")
 
             let username = NSUserName()
-            let sudoersFile = username.replacingOccurrences(of: ".", with: "_")
             let output = try f.doMachineRun(
                 name: name, root: true,
-                command: ["cat", "/etc/sudoers.d/\(sudoersFile)"]
+                command: ["cat", "/etc/sudoers.d/\(username)"]
             )
             .trimmingCharacters(in: .whitespacesAndNewlines)
             #expect(output == "\(username) ALL=(ALL) NOPASSWD:ALL")
@@ -602,28 +578,102 @@ struct TestCLIMachineRuntimeSerial {
         }
     }
 
-    @Test func testMachineUsermodSupplementaryGroups() async throws {
+    @Test func testUserSetupRerunsAcrossRestart() async throws {
         try await ContainerFixture.with { f in
             let name = "\(f.testID)-machine"
             f.addCleanup { f.cleanupMachine(name) }
             try f.doMachineCreate(name: name, image: machineImage)
             try f.doMachineBoot(name: name)
             try await f.waitForMachineStatus(name, status: "running")
+            try f.doMachineStop(name: name)
 
-            // Initial groups check
-            let initialGroups = try f.doMachineRun(name: name, command: ["id", "-nG"])
+            try f.doMachineBoot(name: name)
+            try await f.waitForMachineStatus(name, status: "running")
+
+            let username = NSUserName()
+            let passwdCount = try f.doMachineRun(
+                name: name, root: true,
+                command: ["grep", "-c", "^\(username):", "/etc/passwd"]
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(passwdCount == "1", "user setup re-running on restart should not duplicate the passwd entry")
+
+            let sudoers = try f.doMachineRun(
+                name: name, root: true,
+                command: ["cat", "/etc/sudoers.d/\(username)"]
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(sudoers == "\(username) ALL=(ALL) NOPASSWD:ALL")
+        }
+    }
+
+    @Test func testCreateWithCustomUser() async throws {
+        try await ContainerFixture.with { f in
+            let name = "\(f.testID)-machine"
+            f.addCleanup { f.cleanupMachine(name) }
+            try f.doMachineCreate(
+                name: name, image: machineImage,
+                extraArgs: ["--user", "devuser", "--uid", "1500", "--gid", "1600"])
+            try f.doMachineBoot(name: name)
+            try await f.waitForMachineStatus(name, status: "running")
+
+            let uid = try f.doMachineRun(name: name, command: ["id", "-u"])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-
-            // Create new group inside guest and add user to it via addgroup
-            let user = NSUserName()
-            _ = try f.doMachineRun(name: name, root: true, command: ["addgroup", "testgroup"])
-            _ = try f.doMachineRun(name: name, root: true, command: ["addgroup", user, "testgroup"])
-
-            // Re-run machine run as non-root user and check if testgroup is in supplementary groups
-            let newGroups = try f.doMachineRun(name: name, command: ["id", "-nG"])
+            let gid = try f.doMachineRun(name: name, command: ["id", "-g"])
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let username = try f.doMachineRun(name: name, command: ["id", "-un"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let home = try f.doMachineRun(name: name, command: ["echo", "$HOME"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(uid == "1500")
+            #expect(gid == "1600")
+            #expect(username == "devuser")
+            #expect(home == "/home/devuser")
 
-            #expect(newGroups.contains("testgroup"), "machine run should reflect updated supplementary groups from /etc/group (got: \(newGroups), initial: \(initialGroups))")
+            let sudoers = try f.doMachineRun(
+                name: name, root: true,
+                command: ["cat", "/etc/sudoers.d/devuser"]
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(sudoers == "devuser ALL=(ALL) NOPASSWD:ALL")
+        }
+    }
+
+    @Test func testCreateWithUidGidOnlyKeepsHostUsername() async throws {
+        try await ContainerFixture.with { f in
+            let name = "\(f.testID)-machine"
+            f.addCleanup { f.cleanupMachine(name) }
+            try f.doMachineCreate(
+                name: name, image: machineImage,
+                extraArgs: ["--uid", "1500", "--gid", "1600"])
+            try f.doMachineBoot(name: name)
+            try await f.waitForMachineStatus(name, status: "running")
+
+            let uid = try f.doMachineRun(name: name, command: ["id", "-u"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let username = try f.doMachineRun(name: name, command: ["id", "-un"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(uid == "1500")
+            #expect(username == NSUserName(), "username should stay host-derived when only --uid/--gid are set")
+        }
+    }
+
+    @Test func testCreateWithCustomHome() async throws {
+        try await ContainerFixture.with { f in
+            let name = "\(f.testID)-machine"
+            f.addCleanup { f.cleanupMachine(name) }
+            try f.doMachineCreate(
+                name: name, image: machineImage,
+                extraArgs: ["--home", "/srv/devhome"])
+            try f.doMachineBoot(name: name)
+            try await f.waitForMachineStatus(name, status: "running")
+
+            let home = try f.doMachineRun(name: name, command: ["echo", "$HOME"])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(home == "/srv/devhome")
+
+            let listing = try f.doMachineRun(
+                name: name, root: true,
+                command: ["ls", "-ld", "/srv/devhome"]
+            ).trimmingCharacters(in: .whitespacesAndNewlines)
+            #expect(listing.hasPrefix("d"), "custom home directory should have been created")
         }
     }
 

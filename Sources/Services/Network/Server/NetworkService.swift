@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import ContainerNetworkClient
 import ContainerResource
 import ContainerXPC
 import ContainerizationExtras
@@ -45,9 +46,16 @@ public protocol NetworkService: Sendable {
 
     /// Return every attachment registered for a hostname or shared alias.
     func lookupAll(hostname: String) async throws -> [Attachment]
+
+    func lookup(name: String) async throws -> NetworkMatch?
 }
 
 extension NetworkService {
+    public func lookup(name: String) async throws -> NetworkMatch? {
+        guard let attachment = try await lookup(hostname: name) else { return nil }
+        return NetworkMatch(attachment: attachment, kind: .hostname)
+    }
+
     public func lookupAll(hostname: String) async throws -> [Attachment] {
         guard let attachment = try await lookup(hostname: hostname) else {
             return []

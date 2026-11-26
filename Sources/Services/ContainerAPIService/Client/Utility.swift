@@ -21,6 +21,7 @@ import Containerization
 import ContainerizationError
 import ContainerizationExtras
 import ContainerizationOCI
+import DNSServer
 import Foundation
 import Logging
 import TerminalProgress
@@ -32,6 +33,7 @@ import TerminalProgress
 
 public struct Utility {
     static let publishedPortCountLimit = 64
+    private static let runtimePrefix = "container-runtime-"
 
     enum NetworkSelection {
         case none
@@ -170,10 +172,16 @@ public struct Utility {
         log: Logger
     ) async throws -> (ContainerConfiguration, Kernel, String?) {
         let requestedIsolation = try Parser.isolation(management.isolation)
-        let requestedPlatform = try DefaultPlatform.resolveWithDefaults(
-            platform: management.platform,
+        let scheme = try RequestScheme(registry.scheme)
+        let candidates = try await ClientImage.platforms(reference: image, scheme: scheme, containerSystemConfig: containerSystemConfig)
+        let platform = try management.platform.map(Parser.platform(from:))
+
+        let requestedPlatform = try PlatformResolver.resolve(
+            platform: platform,
             os: management.os,
             arch: management.arch,
+            candidates: candidates,
+            reference: image,
             log: log
         )
         try validateIsolationCompatibility(
@@ -203,7 +211,6 @@ public struct Utility {
                 message: "adaptive memory reclamation requires --isolation dedicated-vm"
             )
         }
-        let scheme = try RequestScheme(registry.scheme)
         let imageDownloadLimits = try imageDownloadLimits(
             maxConcurrentDownloads: imageFetch.maxConcurrentDownloads
         )
@@ -432,12 +439,10 @@ public struct Utility {
         if management.dnsDisabled {
             config.dns = nil
         } else {
-            let domain = management.dns.domain ?? containerSystemConfig.dns.domain
-            config.dns = .init(
-                nameservers: management.dns.nameservers,
-                domain: domain,
-                searchDomains: management.dns.searchDomains,
-                options: management.dns.options
+            config.dns = dnsConfiguration(
+                from: management.dns,
+                defaults: containerSystemConfig.container.dns,
+                hostDomainFallback: containerSystemConfig.dns.domain
             )
         }
         config.hosts = try Parser.hostEntries(management.addHost)
@@ -490,9 +495,7 @@ public struct Utility {
         config.stopSignal = management.stopSignal ?? imageConfig?.stopSignal
         config.stopTimeoutInSeconds = management.stopTimeout
 
-        if let runtime = management.runtime {
-            config.runtimeHandler = runtime
-        }
+        config.runtimeHandler = management.runtime ?? "\(runtimePrefix)\(requestedPlatform.os)"
 
         return (config, kernel, management.initImage)
     }
@@ -663,12 +666,13 @@ public struct Utility {
             return try networks.enumerated().map { item in
                 let macAddress = try item.element.macAddress.map { try MACAddress($0) }
                 let mtu = item.element.mtu ?? 1280
+                let aliases = try qualifyAliases(item.element.aliases, dnsDomain: dnsDomain)
                 guard item.offset == 0 else {
                     return AttachmentConfiguration(
                         network: item.element.name,
                         options: AttachmentOptions(
                             hostname: containerId,
-                            aliases: item.element.aliases,
+                            aliases: aliases,
                             scopedDNSAliases: item.element.scopedDNSAliases,
                             macAddress: macAddress,
                             mtu: mtu,
@@ -683,7 +687,7 @@ public struct Utility {
                     network: item.element.name,
                     options: AttachmentOptions(
                         hostname: fqdn ?? containerId,
-                        aliases: item.element.aliases,
+                        aliases: aliases,
                         scopedDNSAliases: item.element.scopedDNSAliases,
                         macAddress: macAddress,
                         mtu: mtu,
@@ -737,6 +741,71 @@ public struct Utility {
         }
     }
 
+    /// Appends the default DNS domain to the aliases that have no domain of their own.
+    ///
+    /// This follows the rule that makes `--name foo` the hostname `foo.test.` when the default domain
+    /// is `test`: a name without a dot gets the domain, and a name with a dot is taken to be
+    /// qualified already. For a name with a leading dot, which matches every name below it, the rule
+    /// applies to the name after the dot. Without a default domain the aliases are left as they are,
+    /// and the server rejects any that is not fully qualified.
+    ///
+    /// - Parameters:
+    ///   - aliases: The aliases of an attachment, in their normalized form.
+    ///   - dnsDomain: The default DNS domain from the system configuration, if there is one.
+    /// - Returns: The qualified aliases.
+    static func qualifyAliases(_ aliases: [String], dnsDomain: String?) throws -> [String] {
+        guard let dnsDomain else {
+            return aliases
+        }
+        return try aliases.map { alias in
+            let isSubtree = alias.hasPrefix(".")
+            let name = isSubtree ? String(alias.dropFirst()) : alias
+            guard !name.contains(".") else {
+                return alias
+            }
+            do {
+                return try DNSMatchRule("\(isSubtree ? "." : "")\(name).\(dnsDomain)").description
+            } catch {
+                throw ContainerizationError(
+                    .invalidArgument,
+                    message: "cannot qualify alias \"\(alias)\" with the default DNS domain \"\(dnsDomain)\": \(error)"
+                )
+            }
+        }
+    }
+
+    /// Resolves the DNS configuration for a container from CLI flags, falling back
+    /// to the defaults configured in `~/.config/container/config.toml`.
+    ///
+    /// Precedence: CLI flags > `[container.dns]` defaults > host domain fallback.
+    /// `hostDomainFallback` is the API server's own DNS domain (the `[dns]` section),
+    /// used so a container's default domain still matches the host domain when no
+    /// `--dns-domain` flag and no `[container.dns]` domain are configured.
+    public static func dnsConfiguration(
+        from flags: Flags.DNS,
+        defaults: ContainerDNSConfig?,
+        hostDomainFallback: String? = nil
+    ) -> ContainerConfiguration.DNSConfiguration {
+        let nameservers =
+            flags.nameservers.isEmpty
+            ? (defaults?.nameservers ?? [])
+            : flags.nameservers
+        let domain = flags.domain ?? defaults?.domain ?? hostDomainFallback
+        let searchDomains =
+            flags.searchDomains.isEmpty
+            ? (defaults?.searchDomains ?? [])
+            : flags.searchDomains
+        let options =
+            flags.options.isEmpty
+            ? (defaults?.options ?? [])
+            : flags.options
+        return .init(
+            nameservers: nameservers,
+            domain: domain,
+            searchDomains: searchDomains,
+            options: options
+        )
+    }
     private static func getKernel(path: String?, arguments: [String]) async throws -> Kernel {
         // For the image itself we'll take the user input and try with it as we can do userspace
         // emulation for x86, but for the kernel we need it to match the hosts architecture.

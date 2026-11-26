@@ -24,7 +24,11 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
     && apt-get install -y --no-install-recommends "libsystemd-dev=${SYSTEMD_VERSION}" \
     && rm -rf /var/lib/apt/lists/*
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=secret,id=go_build_ca_bundle \
+    if [ -f /run/secrets/go_build_ca_bundle ]; then \
+        export SSL_CERT_FILE=/run/secrets/go_build_ca_bundle; \
+    fi; \
+    go mod download
 COPY *.go ./
 RUN go test -mod=readonly ./... \
     && go build -mod=readonly -trimpath -buildvcs=false -ldflags='-buildid=' \

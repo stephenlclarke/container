@@ -45,7 +45,7 @@ extension Application {
 
             let containers: [String]
             if self.all {
-                let filters = ContainerListFilters(status: .running).withoutMachines()
+                let filters = ContainerListFilters(status: .running).withoutPlugins([ResourcePluginValues.machine, ResourcePluginValues.cluster])
                 containers = try await client.list(filters: filters).map { $0.id }
             } else {
                 containers = containerIds

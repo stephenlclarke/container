@@ -96,6 +96,19 @@ public struct AttachmentOptions: Codable, Sendable {
         case requestedIPv6Address
     }
 
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(hostname, forKey: .hostname)
+        if !aliases.isEmpty { try container.encode(aliases, forKey: .aliases) }
+        try container.encode(scopedDNSAliases, forKey: .scopedDNSAliases)
+        try container.encodeIfPresent(macAddress, forKey: .macAddress)
+        try container.encodeIfPresent(mtu, forKey: .mtu)
+        try container.encodeIfPresent(guestInterfaceName, forKey: .guestInterfaceName)
+        try container.encode(additionalIPAddresses, forKey: .additionalIPAddresses)
+        try container.encodeIfPresent(requestedIPv4Address, forKey: .requestedIPv4Address)
+        try container.encodeIfPresent(requestedIPv6Address, forKey: .requestedIPv6Address)
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         hostname = try container.decode(String.self, forKey: .hostname)
@@ -107,5 +120,17 @@ public struct AttachmentOptions: Codable, Sendable {
         additionalIPAddresses = try container.decodeIfPresent([CIDR].self, forKey: .additionalIPAddresses) ?? []
         requestedIPv4Address = try container.decodeIfPresent(IPv4Address.self, forKey: .requestedIPv4Address)
         requestedIPv6Address = try container.decodeIfPresent(IPv6Address.self, forKey: .requestedIPv6Address)
+    }
+}
+
+extension AttachmentOptions {
+    /// Returns the form of a hostname used to compare hostnames and to look them up.
+    ///
+    /// DNS names are case-insensitive, and a trailing dot only marks a name as fully qualified,
+    /// so `Foo.Test.` and `foo.test` are the same name. The result is lowercase with any
+    /// trailing dot removed.
+    public static func canonicalHostname(_ hostname: String) -> String {
+        let name = hostname.hasSuffix(".") ? String(hostname.dropLast()) : hostname
+        return name.lowercased()
     }
 }

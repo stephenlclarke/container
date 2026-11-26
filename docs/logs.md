@@ -17,6 +17,9 @@ my-web-server
 %
 </pre>
 
+Use `--follow` (or `-f`) to display existing output and follow new log output.
+If the log is empty, the command waits for output instead of exiting.
+
 Use the `--boot` option to see the logs for the virtual machine boot and init process:
 
 <pre>
@@ -62,5 +65,5 @@ The `container system logs` command allows you to look at the log messages that 
 %
 </pre>
 
-See [bug report how-to](./bug-report-how-to.md) for gathering logs when filing an
+See [filing effective bug reports](https://github.com/apple/containerization/blob/main/CONTRIBUTING.md#filing-effective-bug-reports) for gathering logs when filing an
 issue.

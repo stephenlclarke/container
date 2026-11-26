@@ -19,8 +19,11 @@ public enum NetworkKeys: String {
     case aliases
     case attachment
     case attachments
+    case baseLabelCount
     case hostname
     case macAddress
+    case matchKind
+    case name
     case network
     case requestedIPv4Address
     case requestedIPv6Address

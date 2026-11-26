@@ -619,7 +619,7 @@ extension APIServer {
                     isDirectory: true
                 )
             )
-            let service = try ContainersService(
+            let service = try await ContainersService(
                 appRoot: appRootURL,
                 pluginLoader: pluginLoader,
                 containerSystemConfig: containerSystemConfig,

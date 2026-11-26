@@ -1,5 +1,5 @@
 {
-  "originHash" : "ce6083fa4922af3bd92c33f556af1d859cab251798ffc1da7e1add35787bdbcd",
+  "originHash" : "7b171e4ce9a2245ad5fd4e8b5fc3faa4bde2853a6567a6f3cb4d965ebb5797c1",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -41,7 +41,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/stephenlclarke/containerization.git",
       "state" : {
-        "revision" : "7b9eb0a77ff615d764fbbf52125e2b6cdd846db8"
+        "revision" : "36797af1669ef061997289407aacdcc26167c479"
       }
     },
     {
@@ -76,8 +76,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/futamura/PunycodeSwift.git",
       "state" : {
-        "revision" : "de703481cf48b859a04bac8ef1d98217b9c97aa9",
-        "version" : "4.0.3"
+        "revision" : "01d1465a1ab47d7ba43ae573ba277a13538f852f",
+        "version" : "4.0.4"
       }
     },
     {

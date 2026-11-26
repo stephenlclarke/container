@@ -14,6 +14,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+import DNSServer
 import Testing
 
 @testable import ContainerNetworkServer
@@ -309,5 +310,182 @@ struct AttachmentAllocatorTest {
         // Second deallocation should return nil since it's already deallocated
         let secondDeallocate = try await allocator.deallocate(hostname: "test-host")
         #expect(secondDeallocate == nil)
+    }
+
+    @Test func testLookupIgnoresCase() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let allocatedAddress = try await allocator.allocate(hostname: "Foo.Test.")
+
+        #expect(try await allocator.lookup(hostname: "foo.test.") == allocatedAddress)
+        #expect(try await allocator.lookup(hostname: "FOO.TEST.") == allocatedAddress)
+    }
+
+    @Test func testLookupIgnoresTrailingDot() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let allocatedAddress = try await allocator.allocate(hostname: "foo.test")
+
+        #expect(try await allocator.lookup(hostname: "foo.test.") == allocatedAddress)
+    }
+
+    @Test func testAllocateSameHostnameDifferentCaseReusesAddress() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let address1 = try await allocator.allocate(hostname: "foo.test.")
+        let address2 = try await allocator.allocate(hostname: "FOO.test.")
+
+        #expect(address1 == address2)
+    }
+
+    @Test func testDeallocateIgnoresCase() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let allocatedAddress = try await allocator.allocate(hostname: "Foo.Test.")
+        let deallocatedAddress = try await allocator.deallocate(hostname: "foo.test.")
+
+        #expect(deallocatedAddress == allocatedAddress)
+        #expect(try await allocator.lookup(hostname: "foo.test.") == nil)
+    }
+
+    // MARK: - Aliases
+
+    private func rules(_ strings: String...) throws -> [String] {
+        try strings.map { try DNSMatchRule($0).description }
+    }
+
+    @Test func testMatchResolvesHostnameAndAliasesToTheSameAddress() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let index = try await allocator.allocate(hostname: "gw.test.", aliases: rules("api.test", ".gw.test"))
+
+        #expect(try await allocator.match(name: "gw.test.") == AttachmentAllocator.Match(index: index, hostname: "gw.test", kind: .hostname))
+        #expect(try await allocator.match(name: "api.test.") == AttachmentAllocator.Match(index: index, hostname: "gw.test", kind: .alias))
+        #expect(try await allocator.match(name: "web.gw.test.") == AttachmentAllocator.Match(index: index, hostname: "gw.test", kind: .subtree(baseLabelCount: 2)))
+        #expect(try await allocator.match(name: "a.b.gw.test.") == AttachmentAllocator.Match(index: index, hostname: "gw.test", kind: .subtree(baseLabelCount: 2)))
+    }
+
+    @Test func testMatchIgnoresCaseAndTrailingDot() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let index = try await allocator.allocate(hostname: "gw.test.", aliases: rules("API.test", ".GW.test"))
+
+        #expect(try await allocator.match(name: "Api.Test")?.index == index)
+        #expect(try await allocator.match(name: "WEB.gw.test.")?.index == index)
+    }
+
+    @Test func testSubtreeDoesNotMatchItsBaseOrUnrelatedNames() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        try await allocator.allocate(hostname: "host.test.", aliases: rules(".example.test"))
+
+        #expect(try await allocator.match(name: "example.test.") == nil)
+        #expect(try await allocator.match(name: "evilexample.test.") == nil)
+        #expect(try await allocator.match(name: "web.example.com.") == nil)
+        #expect(try await allocator.match(name: "test.") == nil)
+        #expect(try await allocator.match(name: "") == nil)
+    }
+
+    @Test func testHostnameBeatsAliasAndAliasBeatsSubtree() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let gateway = try await allocator.allocate(hostname: "gw.test.", aliases: rules(".gw.test"))
+        let other = try await allocator.allocate(hostname: "other.test.", aliases: rules("web.gw.test"))
+        let api = try await allocator.allocate(hostname: "api.gw.test.")
+
+        #expect(try await allocator.match(name: "api.gw.test.")?.index == api)
+        #expect(try await allocator.match(name: "api.gw.test.")?.kind == .hostname)
+        #expect(try await allocator.match(name: "web.gw.test.")?.index == other)
+        #expect(try await allocator.match(name: "web.gw.test.")?.kind == .alias)
+        #expect(try await allocator.match(name: "x.gw.test.")?.index == gateway)
+        #expect(try await allocator.match(name: "x.gw.test.")?.kind == .subtree(baseLabelCount: 2))
+    }
+
+    @Test func testLongestSubtreeWins() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let outer = try await allocator.allocate(hostname: "example.test.", aliases: rules(".example.test"))
+        let inner = try await allocator.allocate(hostname: "sub.example.test.", aliases: rules(".sub.example.test"))
+
+        #expect(try await allocator.match(name: "a.sub.example.test.") == AttachmentAllocator.Match(index: inner, hostname: "sub.example.test", kind: .subtree(baseLabelCount: 3)))
+        #expect(try await allocator.match(name: "a.b.sub.example.test.")?.index == inner)
+        #expect(try await allocator.match(name: "a.example.test.") == AttachmentAllocator.Match(index: outer, hostname: "example.test", kind: .subtree(baseLabelCount: 2)))
+        // The inner base is a hostname, so it resolves as one and not as part of the outer subtree.
+        #expect(try await allocator.match(name: "sub.example.test.")?.kind == .hostname)
+    }
+
+    @Test func testPrimaryLookupDoesNotConsiderAliases() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+        try await allocator.allocate(hostname: "gw.test.", aliases: rules("api.test", ".gw.test"))
+        #expect(try await allocator.lookupPrimary(hostname: "api.test.") == nil)
+        #expect(try await allocator.lookupPrimary(hostname: "web.gw.test.") == nil)
+    }
+
+    @Test func testSharedAliasesRetainEveryOwner() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+        let first = try await allocator.allocate(hostname: "one.test.", aliases: rules("api.test", ".api.test"))
+        let second = try await allocator.allocate(hostname: "two.test.", aliases: rules("fresh.test", "api.test", ".api.test"))
+        #expect(try await allocator.lookupAll(hostname: "api.test.") == [first, second].sorted())
+        #expect(try await allocator.lookupAll(hostname: "web.api.test.") == [first, second].sorted())
+        #expect(try await allocator.match(name: "fresh.test.")?.hostname == "two.test")
+        #expect(try await allocator.match(name: "api.test.")?.index == min(first, second))
+        try await allocator.deallocate(hostname: "one.test.")
+        #expect(try await allocator.lookupAll(hostname: "web.api.test.") == [second])
+    }
+
+    @Test func testPrimaryHostnameWinsSingleMatchWithoutRemovingSharedAliases() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+        let alias = try await allocator.allocate(hostname: "one.test.", aliases: rules("api.test"))
+        let primary = try await allocator.allocate(hostname: "api.test.")
+        #expect(try await allocator.lookupAll(hostname: "api.test.") == [alias, primary].sorted())
+        #expect(try await allocator.match(name: "api.test.") == AttachmentAllocator.Match(index: primary, hostname: "api.test", kind: .hostname))
+    }
+
+    @Test func testAllocatingAgainWithTheSameAliasesIsIdempotent() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let index1 = try await allocator.allocate(hostname: "gw.test.", aliases: rules("api.test", ".gw.test"))
+        let index2 = try await allocator.allocate(hostname: "gw.test.", aliases: rules("api.test", ".gw.test"))
+        #expect(index1 == index2)
+
+        try await allocator.deallocate(hostname: "gw.test.")
+        #expect(try await allocator.match(name: "api.test.") == nil)
+        #expect(try await allocator.match(name: "web.gw.test.") == nil)
+    }
+
+    @Test func testAllocatingAgainAddsNewAliases() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+
+        let index = try await allocator.allocate(hostname: "gw.test.", aliases: rules("one.test"))
+        _ = try await allocator.allocate(hostname: "gw.test.", aliases: rules("one.test", "two.test"))
+
+        #expect(try await allocator.match(name: "one.test.")?.index == index)
+        #expect(try await allocator.match(name: "two.test.")?.index == index)
+    }
+
+    @Test func testDeallocateRemovesAliasesAndFreesThemForReuse() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 10)
+        try await allocator.allocate(hostname: "one.test.", aliases: rules("api.test", ".one.test"))
+
+        try await allocator.deallocate(hostname: "one.test.")
+
+        #expect(try await allocator.match(name: "api.test.") == nil)
+        #expect(try await allocator.match(name: "web.one.test.") == nil)
+
+        let index = try await allocator.allocate(hostname: "two.test.", aliases: rules("api.test", ".one.test"))
+        #expect(try await allocator.match(name: "api.test.")?.index == index)
+        #expect(try await allocator.match(name: "web.one.test.")?.index == index)
+    }
+
+    @Test func testFailedAllocationDoesNotRegisterAliases() async throws {
+        let allocator = try AttachmentAllocator(lower: 100, size: 1)
+        let first = try await allocator.allocate(hostname: "one.test.", aliases: rules("one-alias.test"))
+
+        await #expect(throws: (any Error).self) {
+            try await allocator.allocate(hostname: "two.test.", aliases: rules("two-alias.test"))
+        }
+
+        #expect(try await allocator.match(name: "two-alias.test.") == nil)
+        #expect(try await allocator.match(name: "one-alias.test.")?.index == first)
     }
 }

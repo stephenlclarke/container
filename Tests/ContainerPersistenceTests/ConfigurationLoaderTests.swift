@@ -91,6 +91,10 @@ struct ConfigurationLoaderTests {
             #expect(config.build.memory == BuildConfig.defaultMemory)
             #expect(config.container.cpus == 4)
             #expect(config.container.memory == ContainerConfig.defaultMemory)
+            #expect(config.container.dns?.domain == nil)
+            #expect(config.container.dns?.nameservers == nil)
+            #expect(config.container.dns?.searchDomains == nil)
+            #expect(config.container.dns?.options == nil)
             #expect(config.dns.domain == nil)
             #expect(config.build.image == BuildConfig.defaultImage)
             #expect(config.build.image == "ghcr.io/stephenlclarke/container-builder-shim/builder@sha256:a20bf1788286e46fb2c2025acdce6b6e9cdd11394e0875e0f3297415d1c4d108")
@@ -249,8 +253,14 @@ struct ConfigurationLoaderTests {
                 cpus = 16
                 memory = "8g"
 
+                [container.dns]
+                domain = "container.custom"
+                nameservers = ["1.1.1.1", "8.8.8.8"]
+                searchDomains = ["corp.local", "lab.corp.local"]
+                options = ["ndots:2", "timeout:1"]
+
                 [dns]
-                domain = "custom"
+                domain = "host.custom"
 
                 [kernel]
                 binaryPath = "custom/path"
@@ -278,7 +288,11 @@ struct ConfigurationLoaderTests {
             #expect(config.container.cpus == 16)
             let expectedContainerMemory = try MemorySize("8g")
             #expect(config.container.memory == expectedContainerMemory)
-            #expect(config.dns.domain == "custom")
+            #expect(config.container.dns?.domain == "container.custom")
+            #expect(config.container.dns?.nameservers == ["1.1.1.1", "8.8.8.8"])
+            #expect(config.container.dns?.searchDomains == ["corp.local", "lab.corp.local"])
+            #expect(config.container.dns?.options == ["ndots:2", "timeout:1"])
+            #expect(config.dns.domain == "host.custom")
             #expect(config.build.image == "custom-builder:latest")
             #expect(config.vminit.image == "custom-init:latest")
             #expect(config.kernel.binaryPath == "custom/path")
@@ -353,6 +367,24 @@ struct ConfigurationLoaderTests {
         let config = KernelConfig(url: URL(string: "https://example.com/custom-kernel.tar")!, digest: digest)
         #expect(config.url.absoluteString == "https://example.com/custom-kernel.tar")
         #expect(config.digest == digest)
+    }
+
+    @Test func containerDNSArraysLoadFromTomlIndependently() async throws {
+        try await TemporaryStorage.withTempDir { tempDir in
+            let toml = """
+                [container.dns]
+                nameservers = ["1.1.1.1", "8.8.8.8"]
+                """
+            let tmpFile = tempDir.appending("dns.toml")
+            try Self.writeToml(toml, to: tmpFile)
+
+            let config: ContainerSystemConfig = try await ConfigurationLoader.load(configurationFiles: [tmpFile])
+            #expect(config.container.dns?.nameservers == ["1.1.1.1", "8.8.8.8"])
+            #expect(config.container.dns?.domain == nil)
+            #expect(config.container.dns?.searchDomains == nil)
+            #expect(config.container.dns?.options == nil)
+            #expect(config.dns.domain == nil)
+        }
     }
 
     @Test func unknownKeysIgnored() async throws {

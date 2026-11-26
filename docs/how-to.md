@@ -44,3 +44,5 @@ pick the one that matches what you're trying to do.
   deployments before production.
 - [Shell completions](./shell-completions.md) — generate and install completion
   scripts for `zsh`, `bash`, and `fish`.
+
+- [Mounts and volumes](./volumes.md) — bind-mount host directories and create volumes.

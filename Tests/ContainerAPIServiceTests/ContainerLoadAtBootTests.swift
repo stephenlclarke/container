@@ -998,7 +998,7 @@ struct ContainerLoadAtBootTests {
     }
 
     @Test
-    func malformedLifecycleV2DoesNotTakeTheContainerAPIOffline() throws {
+    func malformedLifecycleV2DoesNotTakeTheContainerAPIOffline() async throws {
         let fixture = try Fixture(includeRuntime: true)
         defer { fixture.remove() }
 
@@ -1030,7 +1030,7 @@ struct ContainerLoadAtBootTests {
         #expect(records[validID] != nil)
         #expect(records[malformedID] == nil)
         #expect(FileManager.default.fileExists(atPath: malformedPath.path))
-        _ = try ContainersService(
+        _ = try await ContainersService(
             appRoot: fixture.root,
             pluginLoader: fixture.loader,
             containerSystemConfig: ContainerSystemConfig(),
@@ -1039,7 +1039,7 @@ struct ContainerLoadAtBootTests {
     }
 
     @Test
-    func lifecycleRecordBoundToAnotherBundleIsIsolatedAtBoot() throws {
+    func lifecycleRecordBoundToAnotherBundleIsIsolatedAtBoot() async throws {
         let fixture = try Fixture(includeRuntime: true)
         defer { fixture.remove() }
 
@@ -1074,7 +1074,7 @@ struct ContainerLoadAtBootTests {
 
         #expect(records[id] == nil)
         #expect(FileManager.default.fileExists(atPath: bundlePath.path))
-        _ = try ContainersService(
+        _ = try await ContainersService(
             appRoot: fixture.root,
             pluginLoader: fixture.loader,
             containerSystemConfig: ContainerSystemConfig(),
@@ -1112,7 +1112,7 @@ struct ContainerLoadAtBootTests {
             )
         )
 
-        let service = try ContainersService(
+        let service = try await ContainersService(
             appRoot: fixture.root,
             pluginLoader: fixture.loader,
             containerSystemConfig: ContainerSystemConfig(),

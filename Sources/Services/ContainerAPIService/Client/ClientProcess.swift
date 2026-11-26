@@ -34,7 +34,7 @@ public protocol ClientProcess: Sendable {
     func start() async throws
     /// Send a terminal resize request to the process `id`.
     func resize(_ size: Terminal.Size) async throws
-    /// Send a signal to the process `id`.
+    /// Send a host signal to the process `id`.
     /// Kill does not wait for the process to exit, it only delivers the signal.
     func kill(_ signal: Int32) async throws
     ///  Wait for the process `id` to complete and return its exit code.
@@ -81,19 +81,22 @@ struct ClientProcessImpl: ClientProcess, Sendable {
 
     /// Send a signal to the process.
     public func kill(_ signal: Int32) async throws {
+        try await xpcClient.send(Self.killRequest(containerId: containerId, processId: id, signal: signal))
+    }
+
+    static func killRequest(containerId: String, processId: String, signal: Int32) throws -> XPCMessage {
         let request = XPCMessage(route: .containerKill)
         request.set(key: .id, value: containerId)
-        request.set(key: .processIdentifier, value: id)
-        // The server reads `.signal` as a string and resolves it against the Linux
-        // signal table, so send the canonical signal name rather than a raw integer.
-        // A bare Int64 is read back as an empty string and rejected with
-        // "missing signal in xpc message". Translating the host signal number to its
-        // name (instead of sending the number) also keeps signals whose numbers differ
-        // between macOS and Linux (e.g. SIGUSR1) correct. Fall back to the numeric
-        // string for signals with no platform name (e.g. real-time signals).
-        request.set(key: .signal, value: Signal.platformName(signal) ?? "\(signal)")
+        request.set(key: .processIdentifier, value: processId)
+        request.set(key: .signal, value: try forwardedSignalName(signal))
+        return request
+    }
 
-        try await xpcClient.send(request)
+    static func forwardedSignalName(_ signal: Int32) throws -> String {
+        guard let name = Signal.platformName(signal), Signal.linux[name] != nil else {
+            throw ContainerizationError(.invalidArgument, message: "unsupported signal \(signal)")
+        }
+        return name
     }
 
     /// Resize the processes PTY if it has one.

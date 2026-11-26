@@ -52,7 +52,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     )
                 ]
             )
-            let sourceService = try makeService(
+            let sourceService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: sourcePlane
@@ -96,7 +96,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     ),
                 ]
             )
-            let upgradeService = try makeService(
+            let upgradeService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: upgradePlane
@@ -146,7 +146,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     )
                 ]
             )
-            let restartedService = try makeService(
+            let restartedService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: restartedPlane
@@ -181,7 +181,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     )
                 ]
             )
-            let sourceService = try makeService(
+            let sourceService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: sourcePlane
@@ -228,7 +228,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     ),
                 ]
             )
-            let interruptedService = try makeService(
+            let interruptedService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: interruptedPlane
@@ -269,7 +269,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     ),
                 ]
             )
-            let resumedService = try makeService(
+            let resumedService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: resumedPlane
@@ -312,7 +312,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     )
                 ]
             )
-            let sourceService = try makeService(
+            let sourceService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: sourcePlane
@@ -352,7 +352,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     ),
                 ]
             )
-            let upgradeService = try makeService(
+            let upgradeService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: upgradePlane
@@ -396,7 +396,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     )
                 ]
             )
-            let sourceService = try makeService(
+            let sourceService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: sourcePlane
@@ -447,7 +447,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     ),
                 ]
             )
-            let upgradeService = try makeService(
+            let upgradeService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: upgradePlane
@@ -496,7 +496,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     )
                 ]
             )
-            let sourceService = try makeService(
+            let sourceService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: sourcePlane
@@ -544,7 +544,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     ),
                 ]
             )
-            let interruptedService = try makeService(
+            let interruptedService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: interruptedPlane
@@ -592,7 +592,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     ),
                 ]
             )
-            let resumedService = try makeService(
+            let resumedService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 remoteLogDriverPlane: resumedPlane
@@ -625,7 +625,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 ]
             )
             let catalogProvider = StaticLogDriverCatalogProvider(catalog: catalog)
-            let sealingService = try makeService(
+            let sealingService = try await makeService(
                 appRoot: root,
                 includeRuntime: false,
                 logDriverCatalogProvider: catalogProvider
@@ -651,7 +651,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 logging: sealed.configuration
             )
 
-            let authoritativeService = try makeService(
+            let authoritativeService = try await makeService(
                 appRoot: root,
                 includeRuntime: true,
                 logDriverCatalogProvider: catalogProvider
@@ -681,7 +681,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                     descriptor
                 ]
             )
-            let service = try makeService(
+            let service = try await makeService(
                 appRoot: root,
                 includeRuntime: false,
                 logDriverCatalogProvider: StaticLogDriverCatalogProvider(
@@ -734,7 +734,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 descriptors: BuiltinLogDriverDescriptors.current.descriptors + [descriptor]
             )
             let provider = RecordingLogDriverCatalogProvider(catalog: catalog)
-            let service = try makeService(
+            let service = try await makeService(
                 appRoot: root,
                 includeRuntime: false,
                 logDriverCatalogProvider: provider
@@ -778,7 +778,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             let provider = RecordingLogDriverCatalogProvider(
                 catalogs: [createCatalog, startCatalog]
             )
-            let service = try makeService(
+            let service = try await makeService(
                 appRoot: root,
                 includeRuntime: false,
                 logDriverCatalogProvider: provider
@@ -807,7 +807,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
     @Test func sealedCreateConfigurationIsIdenticalAcrossRuntimeAndSnapshotPersistence() async throws {
         try await withTemporaryRoot { root in
             let secret = "DO_NOT_EXPOSE_THIS_VALUE"
-            let service = try makeService(appRoot: root, includeRuntime: false)
+            let service = try await makeService(appRoot: root, includeRuntime: false)
             let plan = try ContainersService.prepareLoggingForCreate(
                 configuration: .default,
                 request: ContainerLogRequest(
@@ -890,7 +890,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             )
             let logging = try prepared.finalizedConfiguration(protectedReference: reference)
             try persistConfiguration(appRoot: root, id: id, logging: logging)
-            let service = try makeService(appRoot: root, includeRuntime: true)
+            let service = try await makeService(appRoot: root, includeRuntime: true)
 
             let error = await #expect(throws: ContainerizationError.self) {
                 try await service.bootstrap(id: id, stdio: [], dynamicEnv: [:])
@@ -919,7 +919,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             )
             let logging = try prepared.finalizedConfiguration(protectedReference: nil)
             try persistConfiguration(appRoot: root, id: id, logging: logging)
-            let service = try makeService(appRoot: root, includeRuntime: true)
+            let service = try await makeService(appRoot: root, includeRuntime: true)
 
             let error = await #expect(throws: ContainerizationError.self) {
                 try await service.bootstrap(id: id, stdio: [], dynamicEnv: [:])
@@ -950,7 +950,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             let logging = try prepared.finalizedConfiguration(protectedReference: nil)
             try persistConfiguration(appRoot: root, id: id, logging: logging)
 
-            let service = try makeService(appRoot: root, includeRuntime: true)
+            let service = try await makeService(appRoot: root, includeRuntime: true)
             let backend = ContainerDockerLoggingBackend(containers: service)
             let error = await #expect(throws: DockerLoggingBackendError.self) {
                 try await backend.startContainer(containerID: id)
@@ -969,7 +969,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             #expect((initialState["StartedAt"] as? String) == "0001-01-01T00:00:00Z")
             #expect((initialState["FinishedAt"] as? String) == "0001-01-01T00:00:00Z")
 
-            let restartedService = try makeService(appRoot: root, includeRuntime: true)
+            let restartedService = try await makeService(appRoot: root, includeRuntime: true)
             let restartedBackend = ContainerDockerLoggingBackend(containers: restartedService)
             let restartedObject = try #require(
                 JSONSerialization.jsonObject(
@@ -992,7 +992,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             let objectURL = protectedObjectURL(appRoot: root, objectID: orphan.objectID)
             #expect(FileManager.default.fileExists(atPath: objectURL.path))
 
-            _ = try makeService(appRoot: root, includeRuntime: false)
+            _ = try await makeService(appRoot: root, includeRuntime: false)
 
             #expect(!FileManager.default.fileExists(atPath: objectURL.path))
         }
@@ -1012,7 +1012,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
                 withIntermediateDirectories: true
             )
 
-            _ = try makeService(appRoot: root, includeRuntime: false)
+            _ = try await makeService(appRoot: root, includeRuntime: false)
 
             #expect(FileManager.default.fileExists(atPath: objectURL.path))
         }
@@ -1041,7 +1041,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             let logging = try prepared.finalizedConfiguration(protectedReference: reference)
             let bundle = try persistConfiguration(appRoot: root, id: id, logging: logging)
             let objectURL = protectedObjectURL(appRoot: root, objectID: reference.objectID)
-            let service = try makeService(appRoot: root, includeRuntime: true)
+            let service = try await makeService(appRoot: root, includeRuntime: true)
 
             #expect(Darwin.chmod(storeRoot.path, mode_t(0o755)) == 0)
             defer { _ = Darwin.chmod(storeRoot.path, mode_t(0o700)) }
@@ -1051,7 +1051,7 @@ struct ContainerLoggingAuthorityIntegrationTests {
             #expect(FileManager.default.fileExists(atPath: objectURL.path))
             #expect(Darwin.chmod(storeRoot.path, mode_t(0o700)) == 0)
 
-            _ = try makeService(appRoot: root, includeRuntime: false)
+            _ = try await makeService(appRoot: root, includeRuntime: false)
             #expect(!FileManager.default.fileExists(atPath: objectURL.path))
         }
     }
@@ -1070,8 +1070,8 @@ struct ContainerLoggingAuthorityIntegrationTests {
             catalog: BuiltinLogDriverDescriptors.current
         ),
         remoteLogDriverPlane: AuthorityRemoteLogDriverPlane? = nil
-    ) throws -> ContainersService {
-        try ContainersService(
+    ) async throws -> ContainersService {
+        try await ContainersService(
             appRoot: appRoot,
             pluginLoader: try makePluginLoader(
                 appRoot: appRoot,
